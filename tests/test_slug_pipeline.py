@@ -5,7 +5,7 @@ Test suite for the portable slug pipeline used by /expert-plan (#377, #389).
 What this proves, and where:
 - Inline-pipeline sites (in commands/expert-plan-deprecated-v2.md) are extracted and executed.
   Count pinned: v2 has 1 inline-pipeline site.
-- Slugify sites (in commands/expert-plan.md invoking bash "$SLUGIFY") are extracted and executed.
+- Slugify sites (in commands/expert-plan.md invoking bash ~/.claude/scripts/slugify.sh) are extracted and executed.
   Count pinned: expert-plan.md has 2 slugify sites.
 - The /usr/bin/sed behavior is tested at inline sites; slugify sites test the script's own LC_ALL=C handling.
 - Each inline site runs under /usr/bin/sed when that binary exists. On macOS this exercises BSD sed;

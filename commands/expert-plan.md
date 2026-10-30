@@ -1,7 +1,7 @@
 ---
 description: Focused isolated-expert planning — cheap main-thread orchestration and dependency-ordered synthesis, with genuinely isolated per-expert contributions and a mandatory consistency check instead of a pods/router/digest pipeline. Effort 2 or 3 (+ one independent auditor) only; auto-sized from the ticket when --effort is omitted. Formerly known as v3; superseded /expert-plan-deprecated (v1) and /expert-plan-deprecated-v2 (v2) as the default — see ADR-0020.
 argument-hint: [--effort 2|3] [--models balanced|opus] [--flow <dir>] [--epic] [--allow-degraded]
-allowed-tools: Bash(bash "$HOME/.claude/scripts/slugify.sh":*), Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(date:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
+allowed-tools: Bash(bash ~/.claude/scripts/slugify.sh:*), Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(date:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
 model: sonnet
 ---
 
@@ -137,7 +137,7 @@ INVOCATION_ID="$(date +%Y%m%dT%H%M%S)-$(printf '%05d' $RANDOM)"
 SLUGIFY="$HOME/.claude/scripts/slugify.sh"
 SLUG=""
 if [ -f "$SLUGIFY" ]; then
-  SLUG=$(printf '%s\n' "${TICKET_TITLE:-plan}" | bash "$HOME/.claude/scripts/slugify.sh") || SLUG=""
+  SLUG=$(printf '%s\n' "${TICKET_TITLE:-plan}" | bash ~/.claude/scripts/slugify.sh) || SLUG=""
 else
   printf 'SLUG WARNING: %s is not linked — run /setup-local (or ./install.sh) in claude-helpers; slug falls back to '"'"'plan'"'"'.\n' "$SLUGIFY" >&2
 fi
@@ -406,7 +406,7 @@ elif [ ! -s "$TITLE_FILE" ]; then
   printf '%s\n' "$SLUG_MSG" >&2
   printf '%s\n' "$SLUG_MSG" >> "$SESSION_DIR/slug-warning.txt" 2>/dev/null || true
 else
-  SLUG=$(bash "$HOME/.claude/scripts/slugify.sh" < "$TITLE_FILE") || SLUG=""
+  SLUG=$(bash ~/.claude/scripts/slugify.sh < "$TITLE_FILE") || SLUG=""
 fi
 [ -n "$SLUG" ] || SLUG="plan"
 FINAL_PLAN_PATH="$HOME/.claude/plans/${SLUG}-${INVOCATION_ID}.md"

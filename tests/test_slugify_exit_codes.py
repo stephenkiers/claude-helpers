@@ -148,6 +148,8 @@ def test_exit_code_with_multiple_arguments():
     if result.returncode != 2:
         return False, f"multiple args: expected exit 2, got {result.returncode}"
 
+    # [WEAK_ASSERTION] This test checks exit code but not stdout (unlike test_exit_2_produces_no_stdout).
+    # A plausible broken implementation could output data on exit 2 and still pass this test.
     return True, ""
 
 
