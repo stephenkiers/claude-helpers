@@ -192,6 +192,22 @@ def test_strict_contract_with_indented_run_key_exits_1(h):
                       f"rc={rc} stdout={stdout!r} stderr={stderr!r}")
 
 
+def test_duplicate_run_key_is_invalid(h):
+    """Receipt with two strict RUN_KEY lines (duplicate) exits 1, not 0. Boundary test for > 1."""
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        repo, base, head = make_feature_repo(home)
+        # Two strict RUN_KEY lines
+        text = make_receipt(head, header_extra=("RUN_KEY: run-key-abc", "RUN_KEY: run-key-xyz"), strict_contract=True)
+        rc, stdout, stderr = verify_implement(home, text, repo, base)
+        h.test_result("duplicate RUN_KEY: exits 1 (not 0)",
+                      rc == 1,
+                      f"rc={rc} stdout={stdout!r} stderr={stderr!r}")
+        h.test_result("duplicate RUN_KEY: no ARTIFACTS: ok",
+                      "ARTIFACTS: ok" not in stdout.splitlines(),
+                      f"stdout={stdout!r}")
+
+
 def main():
     h = Harness("flow-verify-receipt.py near-miss RECEIPT_CONTRACT / RUN_KEY lines (#346)")
     test_control_grandfathered_receipt_passes(h)
@@ -199,6 +215,7 @@ def main():
     test_receipt_contract_near_miss_variants_exit_1(h)
     test_strict_run_key_with_indented_contract_exits_1(h)
     test_strict_contract_with_indented_run_key_exits_1(h)
+    test_duplicate_run_key_is_invalid(h)
     h.summarize_and_exit()
 
 

@@ -3799,7 +3799,8 @@ def main() -> None:
                 print("RUN_KEY_SOURCE: receipt")
                 print(f"RUN_KEY: {run_ref.key}")
             elif run_ref.status == "grandfathered":
-                print("RUN_KEY_SOURCE: locate-fallback (receipt has no RECEIPT_CONTRACT line)")
+                print("RUN_KEY_SOURCE: locate-fallback")
+                print("receipt has no RECEIPT_CONTRACT line", file=sys.stderr)
 
         print("ARTIFACTS: ok")
         sys.exit(0)
@@ -3945,7 +3946,8 @@ def main() -> None:
             print("RUN_KEY_SOURCE: receipt")
             print(f"RUN_KEY: {run_ref.key}")
         elif run_ref.status == "grandfathered":
-            print("RUN_KEY_SOURCE: locate-fallback (receipt has no RECEIPT_CONTRACT line)")
+            print("RUN_KEY_SOURCE: locate-fallback")
+            print("receipt has no RECEIPT_CONTRACT line", file=sys.stderr)
 
     print("ARTIFACTS: ok")
     sys.exit(0)
