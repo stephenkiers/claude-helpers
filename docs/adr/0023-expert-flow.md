@@ -892,7 +892,7 @@ The required `OUTSTANDING:` line and the #288 hand-off remain in force.
 
 **Failure path:** The normal hard-stop menu (Retry while `failures.assess < 2`, Take over, Abort).
 
-**Take over at assess:** Logs `assess taken-over`, then runs the human-only disposition relay. Every item gets a `by=human` disposition backed by an answers-file entry, and the marker records `assessment: taken-over`. The gate then accepts the marker without `steps/07-assess.md`, but rejects any `finished`, leave-as-is or assessor-option disposition, since no assessment backs them. Take over therefore always has a reachable legal marker and is never a dead end.
+**Take over at assess:** Logs `assess taken-over`, then runs the human-only disposition relay. Every item gets a `by=human` disposition backed by an answers-file entry, and the marker records `assessment: taken-over`. The gate then accepts the marker without `steps/07-assess.md`, but rejects any `finished`, leave-as-is or assessor-option disposition, since no assessment backs them. Take over therefore always has a reachable legal marker and is never a dead end. Conversely, an `assessment: assessor` marker is rejected when the newest `assess` log line is `taken-over`, even if a valid `07-assess.md` exists, since the take-over means no assessor backed the marker.
 
 ### 3. Assessor constraints
 

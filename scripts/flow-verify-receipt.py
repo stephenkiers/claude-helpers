@@ -3080,6 +3080,12 @@ def outstanding_gate(flow_dir: Path, marker_file: Path) -> NoReturn:
 
     # The assessment must back the marker (assessor) or the log must show the take-over (taken-over).
     if mode == "assessor":
+        try:
+            assessor_log = (flow_dir / "log.md").read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            assessor_log = ""
+        if _newest_assess_event(assessor_log) == "taken-over":
+            error("outstanding gate: assessment: assessor marker not allowed when the newest assess log line is 'taken-over'")
         if not assess_file.exists():
             error("outstanding gate: steps/07-assess.md missing for an assessor marker")
         assess_err = check_assess(assess_file, flow_dir)

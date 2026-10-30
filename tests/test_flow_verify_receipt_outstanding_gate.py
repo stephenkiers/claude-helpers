@@ -443,10 +443,13 @@ def main():
     # Opposite-direction tests for taken-over combinations (F37)
     with tempfile.TemporaryDirectory() as td:
         home, flow = taken_flow(td)
+        write_assess(flow, [assess_line("implement:coverage-unavailable", kind="decision", options=OPTS)])
         write_marker(flow, [disp("implement:coverage-unavailable", "filed-as-issue", option="Open an issue", route="issue", url=ISSUE_URL)],
                      assessment="assessor")
         rc, out, err = gate(flow, home)
-        h.test_result("assessor marker with a filed issue on taken-over item fails", rc != 0, f"rc={rc} out:\n{out}\nerr:\n{err}")
+        h.test_result("assessor marker with a valid assess receipt on a taken-over item fails",
+                      rc != 0 and "assessor marker not allowed when the newest assess log line is 'taken-over'" in combined(out, err),
+                      f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     with tempfile.TemporaryDirectory() as td:
         home, flow = taken_flow(td, log=[f"{TS} implement taken-over", f"{TS} assess ok"])
