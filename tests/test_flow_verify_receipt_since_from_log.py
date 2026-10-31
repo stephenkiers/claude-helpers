@@ -12,6 +12,8 @@ Covers:
 4. Happy path: a valid, in-the-past begin line bounds the verifier without an --since-from-log error.
 5. A truncated log tail with no matching begin line reports a Reason distinct from the plain
    'no begin or retry line' Reason.
+6. The review freshness bound: a stale action plan (older than the begin line) exits 1 with the
+   freshness Reason; a fresh one does not.
 
 Run with: python3 tests/test_flow_verify_receipt_since_from_log.py
 """
@@ -20,6 +22,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -159,6 +163,64 @@ def test_truncated_tail_reason_is_distinct(h, tmp):
                   reason_line(out_small) == PLAIN_NO_LINE_REASON, f"small={reason_line(out_small)!r}")
 
 
+STALE_REVIEW_REASON = "Reason: review artifacts missing (action plan older than this step's first attempt)"
+
+
+def make_review(home, name, plan_mtime):
+    """A review dir under ~/.claude/reviews with the required artifacts and two checkpoints.
+
+    The action plan's mtime is pinned to plan_mtime, which is what the freshness bound compares.
+    """
+    reviews_dir = home / ".claude" / "reviews" / name
+    reviews_dir.mkdir(parents=True)
+    (reviews_dir / "claude-action-plan.md").write_text("## Doing it\nNo items.\n\n## Needs you\nNo items.\n")
+    (reviews_dir / "final-report.md").write_text("# Final Report\n\nNo findings.\n")
+    (reviews_dir / "findings.json").write_text("{}")
+    (reviews_dir / "reviewer1-pass1.md").write_text("# Checkpoint\n")
+    (reviews_dir / "reviewer2-pass1.md").write_text("# Checkpoint\n")
+    os.utime(reviews_dir / "claude-action-plan.md", (plan_mtime, plan_mtime))
+    return reviews_dir
+
+
+def review_receipt(reviews_dir):
+    """A review receipt whose REVIEW_DIR names reviews_dir."""
+    return f"""ROUND 1
+ATTEMPT: 1
+Decision: OK
+REVIEW_DIR: {reviews_dir}
+OUTSTANDING: none
+<!-- step-end -->
+"""
+
+
+def test_since_from_log_applies_bound_to_review(h, tmp):
+    """--since-from-log's begin line is the freshness bound: a stale action plan is rejected, a fresh one is not."""
+    home = Path(tmp) / "home"
+    home.mkdir()
+    flow, receipt = make_flow(home)
+
+    # The begin line is 2026-10-28; the review's action plan is pinned either well before it or at now.
+    (flow / "log.md").write_text("2026-10-28T15:00:00Z review begin\n")
+    stale_mtime = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+    stale = make_review(home, "stale-review", stale_mtime)
+    fresh = make_review(home, "fresh-review", time.time())
+
+    args = ["--step", "review", "--receipt", str(receipt), "--since-from-log",
+            "--flow-dir", str(flow), "--repo", str(REPO_ROOT), "--branch", "HEAD", "--base", SHA]
+
+    receipt.write_text(review_receipt(stale))
+    rc, out = run_verifier(args, home, home)
+    h.test_result("stale action plan (older than the begin line): exits 1 with the freshness Reason",
+                  rc == 1 and reason_line(out) == STALE_REVIEW_REASON,
+                  f"rc={rc} reason={reason_line(out)!r} output={out.strip()}")
+
+    receipt.write_text(review_receipt(fresh))
+    rc, out = run_verifier(args, home, home)
+    h.test_result("fresh action plan (newer than the begin line): no freshness Reason",
+                  "older than this step's first attempt" not in out and "since-from-log" not in out,
+                  f"rc={rc} output={out.strip()}")
+
+
 def main():
     h = Harness("flow-verify-receipt.py --since-from-log")
     cases = (
@@ -167,6 +229,7 @@ def main():
         test_reason_carries_underlying_error,
         test_valid_begin_line_bounds_verifier,
         test_truncated_tail_reason_is_distinct,
+        test_since_from_log_applies_bound_to_review,
     )
     for case in cases:
         with tempfile.TemporaryDirectory() as tmp:

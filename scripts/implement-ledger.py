@@ -6,7 +6,7 @@ Usage:
                              [--carried A..B] [--session-id SID] [--run-key K]
     implement-ledger.py locate [--repo R] [--run-key K | --since ISO | --flow-dir D --step {implement,fix}]
     implement-ledger.py check [--run-key K]
-    implement-ledger.py render [--run-key K]
+    implement-ledger.py render [--run-key K] [--repo R] [--flow-dir D --step {implement,fix}]
     implement-ledger.py finish [--run-key K] [--log P --state-dir D]
 
 Each run has a ledger at <SCRATCH>/ledger.md with one line per mandatory step:
@@ -14,6 +14,9 @@ Each run has a ledger at <SCRATCH>/ledger.md with one line per mandatory step:
                                              or carried:<A>..<B> for round1 only)
     <run-key> SKIPPED <step-id> <reason>    (reason must be permitted for the run's class)
     <run-key> FINISHED                      (written by a successful finish; exactly-once per run)
+    # finish-event run-key=<run-key> outcome=<success|steps_skipped> epoch=<float seconds>
+                                            (appended by every finish that reaches the completeness gate;
+                                             render's --flow-dir cross-check reads these)
 Lines starting with '#' and blank lines are ignored. Any other line that does not parse, names a
 foreign run key, an unknown step or reason, or carries bad evidence is malformed: it is reported by
 check and never satisfies a step.
@@ -37,7 +40,10 @@ Exit codes:
             created_epoch (NaN, infinity, or an integer too large for a float). A bounded locate fails closed:
             it never skips an unreadable record.
     check   0 complete; 1 incomplete or malformed, or no pointer found; 2 unreadable state.
-    render  0 rendered; 3 nothing found; 2 unreadable state.
+    render  0 rendered (a warning on stderr when no finish event exists in the bound attempt); 3 nothing found,
+            binding check failed (repo mismatch, stale created_epoch, non-finite created_epoch), the run-key is
+            not the run the attempt's finish events name last (cross-check), or no begin/retry line for --step;
+            2 invalid arguments or unreadable state.
     finish  0 success, or already finished (no-op); 1 gate failed (command-end recorded as
             steps_skipped), or success event could not be recorded (FINISHED not written);
             3 no pointer or tombstone found (steps_skipped recorded); 2 bad arguments.
@@ -138,6 +144,9 @@ CARRIED_RE = re.compile(r"^carried:([0-9a-fA-F]{7,40})\.\.([0-9a-fA-F]{7,40})$")
 RUN_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 ROW_RE = re.compile(r"^(\S+) (?:(DONE) (\S+) (.+)|(SKIPPED) (\S+) (\S+)|(FINISHED))$")
 CLASS_RE = re.compile(r"^class=(mechanical|test-only|full)(?![\w-])")
+# A finish event: one '#' line appended to the run's ledger by every finish that reaches the completeness gate.
+# '#' lines are ignored by parse_ledger, so the event never changes a row, a verdict, or the FINISHED marker.
+FINISH_EVENT_RE = re.compile(r"^# finish-event run-key=(\S+) outcome=(success|steps_skipped) epoch=([0-9]+(?:\.[0-9]+)?)$")
 
 
 class LedgerError(Exception):
@@ -423,7 +432,13 @@ def _scan_records(root: Path, warn_unreadable: bool = False) -> Tuple[List[Tuple
 
 
 def _is_finite_epoch(created: Any) -> bool:
-    """True when created is a number that converts to a finite float. A huge int raises OverflowError: not finite."""
+    """True when created is an int or float (never a bool or a string) that is finite.
+
+    Rejected by type first, so "1700000000" and "abc" are not numbers. A huge int raises OverflowError on
+    conversion to float: not finite.
+    """
+    if isinstance(created, bool) or not isinstance(created, (int, float)):
+        return False
     try:
         return math.isfinite(float(created))
     except OverflowError:
@@ -743,13 +758,144 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0 if ev["complete"] else 1
 
 
+def _finish_events_in_window(root: Path, repo: str, since: float) -> List[Tuple[float, str, str]]:
+    """(epoch seconds, run_key, outcome) for each finish event of this repo's runs created at or after since - SKEW.
+
+    Reads pointers, tombstones and superseded files alike: a run replaced by a newer init in the same
+    attempt still holds the finish event it recorded. Each event is taken only from its own run's ledger
+    (the event's run-key must equal the record's run key). An unreadable record or ledger contributes
+    nothing; an empty result is a warning in cmd_render, never a failure.
+    """
+    events: List[Tuple[float, str, str]] = []
+    if not root.is_dir():
+        return events
+    floor = since - SINCE_SKEW_SECS
+    for path in root.iterdir():
+        if not path.name.endswith((POINTER_SUFFIX, FINISHED_SUFFIX, SUPERSEDED_SUFFIX)):
+            continue
+        try:
+            data = _read_record(path)
+        except LedgerError:
+            continue
+        created = data.get("created_epoch")
+        if not _same_repo(data.get("repo"), repo) or not _is_finite_epoch(created) or float(created) < floor:
+            continue
+        try:
+            text = (Path(data["scratch"]) / LEDGER_NAME).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for line in text.splitlines():
+            match = FINISH_EVENT_RE.fullmatch(line.strip())
+            if match and match.group(1) == data["run_key"]:
+                events.append((float(match.group(3)), match.group(1), match.group(2)))
+    return events
+
+
+def _same_repo(recorded: Any, repo: str) -> bool:
+    """True when a record's repo names the same directory as repo (compared by realpath, not by spelling)."""
+    return isinstance(recorded, str) and os.path.realpath(recorded) == repo
+
+
 def cmd_render(args: argparse.Namespace) -> int:
-    found = _resolve(args.run_key)
-    if found is None:
-        print("NOT FOUND: no implement-with-haiku run pointer", file=sys.stderr)
-        return 3
+    """Print the summary block.
+
+    Precondition for --repo: it is a directory path, compared by realpath against each record's repo, so a
+    symlinked or relative spelling of the same worktree matches. Omitted, the repo is the toplevel of the
+    current directory. A bare render (--run-key only) resolves the key with one read of its record.
+
+    When --flow-dir and --step are given, bind the key to the worktree and the attempt start:
+    resolve the record once, derive the attempt start from log.md, and check repo equality
+    and created_epoch >= attempt_start - SINCE_SKEW_SECS on that same record. The key is then
+    cross-checked against the finish events of this attempt (see _finish_events_in_window).
+    """
+    repo = os.path.realpath(args.repo) if args.repo else git_toplevel()
+    run_key = args.run_key
+    if run_key is not None:
+        if not RUN_KEY_RE.match(run_key):
+            raise LedgerError(f"invalid run key {run_key!r}")
+        found = locate_record(state_root(), None, None, run_key)
+        if found is None:
+            print(f"NOT FOUND: run {run_key} not found", file=sys.stderr)
+            return 3
+        record_repo = found[2].get("repo")
+        if record_repo is None:
+            print(f"NOT FOUND: run {run_key} not found", file=sys.stderr)
+            return 3
+        if not _same_repo(record_repo, repo):
+            print(
+                f"NOT FOUND: run {run_key} belongs to another repo ({record_repo}), not {repo}",
+                file=sys.stderr,
+            )
+            return 3
+    else:
+        found = _resolve(None, repo=repo)
+        if found is None:
+            print("NOT FOUND: no implement-with-haiku run pointer", file=sys.stderr)
+            return 3
+
     _path, _finished, data = found
-    ev = evaluate(data, Path(data["scratch"]) / LEDGER_NAME, data["run_key"])
+    run_key = data["run_key"]
+
+    # If binding flags are given, validate the epoch against the attempt start.
+    if args.flow_dir is not None:
+        try:
+            flow_dir = flow_log.validate_flow_dir(args.flow_dir)
+            since_iso, window_cut = flow_log.newest_attempt_start_detail(flow_dir / "log.md", args.step)
+        except flow_log.FlowLogError as e:
+            print(f"NOT FOUND: {e}", file=sys.stderr)
+            return 3
+
+        if since_iso is None and window_cut:
+            print(
+                f"NOT FOUND: no begin or retry line for {args.step} in the readable tail of log.md (only the "
+                f"last {flow_log.LOG_READ_CAP_BYTES} bytes were read; an older line may exist)",
+                file=sys.stderr,
+            )
+            return 3
+        if since_iso is None:
+            print(f"NOT FOUND: no begin or retry line for {args.step}", file=sys.stderr)
+            return 3
+
+        # Check created_epoch is finite and >= attempt_start - SINCE_SKEW_SECS.
+        created = data.get("created_epoch")
+        if not _is_finite_epoch(created):
+            print(f"NOT FOUND: run {run_key} has no finite created_epoch", file=sys.stderr)
+            return 3
+
+        try:
+            since_epoch = flow_log.parse_iso8601(since_iso)
+        except ValueError as e:
+            print(f"NOT FOUND: {e}", file=sys.stderr)
+            return 3
+
+        if float(created) < since_epoch - SINCE_SKEW_SECS:
+            print(
+                f"NOT FOUND: run {run_key} created before this attempt's start {since_iso}",
+                file=sys.stderr,
+            )
+            return 3
+
+        # Cross-check: the key must be the run this attempt recorded finishing last. No finish event in the
+        # attempt is a warning (a bare render before the run's own finish is expected), never a failure.
+        events = _finish_events_in_window(state_root(), repo, since_epoch)
+        if not events:
+            print(
+                f"render: warning: no finish event recorded in this attempt; RUN_KEY {run_key} was not "
+                f"cross-checked against the step's finish",
+                file=sys.stderr,
+            )
+        else:
+            latest = max(epoch for epoch, _key, _outcome in events)
+            latest_keys = sorted({key for epoch, key, _outcome in events if epoch == latest})
+            if latest_keys != [run_key]:
+                print(
+                    f"NOT FOUND: run {run_key} is not the run this step recorded finishing; "
+                    f"{', '.join(latest_keys)} finished last in this attempt",
+                    file=sys.stderr,
+                )
+                return 3
+
+    ev = evaluate(data, Path(data["scratch"]) / LEDGER_NAME, run_key)
     for line in render_lines(ev):
         print(line)
     return 0
@@ -780,6 +926,18 @@ def _emit_command_end(log: Optional[str], state_dir: Optional[str], success: boo
 
 def _replace_suffix(path: Path, old: str, new: str) -> Path:
     return path.with_name(path.name[: -len(old)] + new)
+
+
+def _record_finish_event(ledger: Path, run_key: str, outcome: str) -> None:
+    """Append this run's finish event (see FINISH_EVENT_RE). Best-effort: a failed append is a warning.
+
+    The append cannot change the verdict: render's cross-check only warns when an event is missing.
+    """
+    try:
+        with open(ledger, "a", encoding="utf-8") as f:
+            f.write(f"# finish-event run-key={run_key} outcome={outcome} epoch={time.time():.6f}\n")
+    except OSError as e:
+        print(f"finish: warning: could not record finish event: {e}", file=sys.stderr)
 
 
 def _mark_finished(pointer: Path, ledger: Path, run_key: str) -> None:
@@ -845,6 +1003,7 @@ def cmd_finish(args: argparse.Namespace) -> int:
     # run can be completed and finished again. This must precede the `finished` branch below, so a
     # hand-appended FINISHED row cannot bypass the completeness gate.
     if not ev["complete"]:
+        _record_finish_event(ledger, run_key, "steps_skipped")
         _emit_command_end(args.log, args.state_dir, False)
         return 1
 
@@ -864,6 +1023,7 @@ def cmd_finish(args: argparse.Namespace) -> int:
         print("finish: success event not recorded; FINISHED not written and the run stays open", file=sys.stderr)
         return 1
 
+    _record_finish_event(ledger, run_key, "success")
     try:
         _mark_finished(pointer, ledger, run_key)
     except OSError as e:
@@ -927,6 +1087,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_render = sub.add_parser("render", help="print the summary block")
     p_render.add_argument("--run-key", default=None, dest="run_key")
+    p_render.add_argument(
+        "--repo",
+        default=None,
+        dest="repo",
+        help="repo directory the record must belong to; compared by realpath (default: toplevel of the cwd)",
+    )
+    p_render.add_argument("--flow-dir", default=None, dest="flow_dir")
+    p_render.add_argument(
+        "--step",
+        default=None,
+        choices=["implement", "fix"],
+        help="step whose attempt start bounds the epoch check (required with --flow-dir, rejected otherwise)",
+    )
 
     p_finish = sub.add_parser("finish", help="check, record command-end, and tombstone the run")
     p_finish.add_argument("--run-key", default=None, dest="run_key")
@@ -944,6 +1117,9 @@ def main(argv: List[str]) -> int:
             parser.error("locate: --step is required with --flow-dir")
         if args.flow_dir is None and args.step is not None:
             parser.error("locate: --step is only valid with --flow-dir")
+    if args.command == "render":
+        if (args.flow_dir is None) != (args.step is None):
+            parser.error("render: --step is required with --flow-dir, and must be omitted without it")
     handlers = {
         "init": cmd_init,
         "locate": cmd_locate,

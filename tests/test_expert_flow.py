@@ -478,9 +478,40 @@ def main():
     h.test_result("Retry after a reduced run adds the extra line",
                   "Previous attempt was rejected as a reduced run" in audit.replace("\n", " ")
                   and "<<<REASON" in audit)
-    h.test_result("ledger locate passes --flow-dir and --step; render uses --run-key (render has no --repo)",
-                  'locate --repo "<WORKTREE>" --flow-dir "$FLOW_DIR" --step <STEP>' in audit
-                  and "render --run-key" in audit)
+    h.test_result("ledger key path: render with --repo, --flow-dir, --step; fallback path: locate then render",
+                  'render --run-key "<RUN_KEY>" --repo "<WORKTREE>" --flow-dir "$FLOW_DIR" --step <STEP>' in audit
+                  and 'locate --repo "<WORKTREE>" --flow-dir "$FLOW_DIR" --step <STEP>' in audit
+                  and 'LEDGER LOOKUP: locate-fallback (receipt predates RECEIPT_CONTRACT)' in audit)
+
+    print()
+    print("[Section 10a] Receipt template and rule 8 amendments (#346)")
+    impl_cmd = IMPL_CMD.read_text()
+    h.test_result("receipt template header order: CHECK_SHA -> RUN_KEY -> RECEIPT_CONTRACT: 1 -> OUTSTANDING",
+                  re.search(r'CHECK_SHA:.*\nRUN_KEY:.*\nRECEIPT_CONTRACT: 1\nOUTSTANDING:', impl_cmd, re.DOTALL) is not None)
+    rule8_start = text.find("8. For `Decision: OK` only")
+    rule8_end = text.find("Then branch on the validated `Decision`", rule8_start) if rule8_start >= 0 else -1
+    rule8_sec = text[rule8_start:rule8_end] if rule8_start >= 0 and rule8_end > rule8_start else ""
+    rule8_run_line = [ln for ln in rule8_sec.split('\n')
+                      if 'Run:' in ln and 'flow-verify-receipt.py' in ln and '--step <STEP>' in ln]
+    h.test_result("rule 8 uses --since-from-log, not --since",
+                  all([len(rule8_run_line) == 1,
+                       "--since-from-log" in rule8_run_line[0] if rule8_run_line else False,
+                       '--since "<live.since>"' not in rule8_sec]))
+    h.test_result("telemetry field ledger_lookup is in audits.jsonl command",
+                  '--arg ledger_lookup' in text and 'ledger_lookup:$ledger_lookup' in text)
+    h.test_result("rule 8 exit 1 reasons include all five receipt RUN_KEY and RECEIPT_CONTRACT reasons",
+                  all(reason in rule8_sec for reason in ['receipt RUN_KEY duplicated', 'receipt RUN_KEY outside the header block',
+                                                         'receipt RUN_KEY malformed', 'unknown RECEIPT_CONTRACT',
+                                                         'receipt missing RUN_KEY (required by RECEIPT_CONTRACT: 1)']))
+    begin_idx = text.find("**1. Attempt accounting")
+    open_idx = text.find("**2. Open the stage**", begin_idx) if begin_idx >= 0 else -1
+    spawn_idx = text.find("**3. Spawn the step.**", begin_idx) if begin_idx >= 0 else -1
+    begin_retry_section = text[begin_idx:open_idx] if begin_idx >= 0 and open_idx > begin_idx else ""
+    h.test_result("begin/retry-line logging comes before spawn and rule 8 (D3 gate test)",
+                  all(['begin' in begin_retry_section, 'retry' in begin_retry_section,
+                       begin_idx >= 0, begin_idx < spawn_idx, spawn_idx < rule8_start,
+                       rule8_start >= 0, bool(rule8_run_line)]))
+
     checklist_lines = text.splitlines()
     checklist = " ".join(" ".join(checklist_lines[i:i + 4])
                          for i, ln in enumerate(checklist_lines) if "implement, fix:" in ln)
