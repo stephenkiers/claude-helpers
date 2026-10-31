@@ -1221,12 +1221,12 @@ Never wrap any gate or check command in `timeout` or `gtimeout`. Any command tha
 
 The implementer is forbidden from touching test files or neutering the verify pipeline. Scan now.
 
-Run the shared scan script (substitute the literal `MAIN_WT_PATH` recorded in Step 2). It runs
+Run the shared scan script (substitute the literal `TICKET_WT_PATH` recorded in Step 2). It runs
 `git diff` itself, prints `{"verdict": "pass"|"fail", "reasons": [...]}` on stdout, and exits 1 on
 fail (a bad ref or unreadable diff also fails closed):
 
 ```bash
-python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <MAIN_WT_PATH> --base "$START_SHA" --head HEAD --profile implement
+python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <TICKET_WT_PATH> --base "$START_SHA" --head HEAD --profile implement
 ```
 
 Any `fail` verdict is a gate failure; each reason names the check and the file/line. The three

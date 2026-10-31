@@ -4301,11 +4301,11 @@ def main() -> None:
         )
     elif args.step == "verify":
         # Heal-aware checks need the flow dir; without one there is nothing to read.
-        if flow_dir is not None:
-            error_reason = check_verify_heal(receipt, flow_dir, args.repo, args.branch)
+        if step_flow_dir is not None:
+            step_error = check_verify_heal(receipt, step_flow_dir, args.repo, args.branch)
     elif args.step == "merge":
-        if flow_dir is not None:
-            error_reason = check_merge_heal(flow_dir, args.repo, args.branch)
+        if step_flow_dir is not None:
+            step_error = check_merge_heal(step_flow_dir, args.repo, args.branch)
     elif args.step in ["track", "ship"]:
         # No artifact checks
         step_error = None

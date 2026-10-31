@@ -1037,12 +1037,12 @@ This amendment adds the third bounded exception to the no-auto-remediation stanc
 - **Mechanism.** The dedicated `flow-healer` agent (`agents/flow-healer.md`) for check heals. The `--only-units` fix/implement re-spawn for Fix now, relayed before ship only. Fix now is a stopgap; #383 proposes a longer-term mechanism. The sequencing: Fix now lands in this amendment (2026-10-29, #380); #383 is absorbed into the flow's `fix` step design (post-2026-10-29 RFC).
 - **Budget.** `failures[verify]` bounds the check heal, so there is at most one check heal per flow. `failures[ship]` bounds Fix now plus ship attempts (two counters, which do not stack). A non-converging heal goes to Take over / Abort only: no Retry and no `Retry with sonnet`. Worst-case automatic spawns: 8 (4 verify-type, 1 `flow-healer`, 1 Fix now re-spawn, 2 ship).
 - **Required checks.**
-  - The mechanical anti-cheat scan (`scripts/anti-cheat-scan.py`): no test edits and the narrowed revert-to-pass rule on a check heal; Fix now's scan is no stricter than an ordinary `fix` (it omits the test-edit rule but keeps `test-removed`, so Fix now cannot delete tests).
+  - The mechanical anti-cheat scan (`scripts/anti-cheat-scan.py`): no test edits, the path lock on tests, config and CI, and the new-suppression ban on a check heal (the revert-to-pass rule was dropped, so test-only failures escalate to a human); Fix now's scan is no stricter than an ordinary `fix` (it omits the test-edit rule but keeps `test-removed`, so Fix now cannot delete tests).
   - Healer integrity checks: a single commit whose parent is `sha_before`; the judging scripts unchanged.
   - The complexity floor and behaviour check (`scripts/heal-check.py complexity`), run outside the healer.
   - The `HEAL:` record, plus the verifier and fidelity-audit requirements on it.
   - The merge gate always stops when any `HEAL:` record (any source or state) exists, `healed: true` is in `state.json`, or any commit matches `git log --grep '^Flow-Heal:' <bases[implement]>..HEAD`, even under `--auto-merge`.
-  - The per-repo `$FLOWS_ROOT/heals.jsonl` log (for #367).
+  - The per-repo `$FLOWS_ROOT/heals.jsonl` log (for #367). The escalation rate of heals is read from it as the share of rows with `state=needs-human` (or `rejected:*`) among all rows; no extra logging is needed.
   - `/shipit`'s own gate stays stop-and-report.
   - The `NEEDS_HUMAN` escalation exit: the healer may decline, and declining is encouraged over a risky edit.
 - **Grant diff.** The orchestrator's `allowed-tools` gains exactly these three lines and nothing else:
