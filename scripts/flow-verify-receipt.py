@@ -39,7 +39,7 @@ import sys
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast, Dict, FrozenSet, get_args, List, Literal, NamedTuple, NoReturn, Optional, Set, Tuple, TypedDict, Union
+from typing import cast, Dict, FrozenSet, get_args, List, Literal, NamedTuple, NoReturn, Optional, Set, Tuple, TypedDict
 
 # Import shared schema module
 try:
@@ -4728,8 +4728,6 @@ def main() -> None:
                             break
 
                 if not answered:
-                    # Check if referenced in plan's decisions.md
-                    decisions_file = flow_dir / ".." / "steps" / "01-plan.md"  # This is wrong, need to find the plan
                     # For now, just print the stop reason
                     print(REASON_QUESTION_UNANSWERED.format(n=seq))
                     sys.exit(1)
