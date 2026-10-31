@@ -1129,6 +1129,7 @@ FINAL_PLAN_PATH: <absolute FINAL_PLAN_PATH, $HOME expanded>
 ATTEMPT: <k>
 Decision: OK
 Reason: completed
+Addressed: none
 <!-- step-end -->
 ```
 
