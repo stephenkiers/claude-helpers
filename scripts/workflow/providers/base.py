@@ -8,8 +8,8 @@ Ensures cli.py never special-cases GitHub vs. local — both implementations
 validate against the same contract.
 """
 
-from typing import Optional, Tuple, Protocol, Union, List
-from ..models import IssueInfo
+from typing import Optional, Tuple, Protocol, Union, List, Any, Dict
+from ..models import IssueInfo, IssueWithComments
 
 
 class Provider(Protocol):
@@ -108,5 +108,26 @@ class Provider(Protocol):
 
         Raises:
             RuntimeError: if mutation is not allowed or command fails
+        """
+        ...
+
+    def fetch_issue_with_comments(self, number: int, repo: Tuple[str, str]) -> Tuple[Optional[Dict[str, Any]], Optional[Any]]:
+        """
+        Fetch an issue and its comments as raw gh JSON.
+
+        Returns (json_dict, error) tuple per ADR-0013 convention.
+        - json_dict: raw gh issue view --json output (dict with number, title, body, labels, state, url, createdAt, comments)
+        - error: None on success, or an Unknown object if fetch failed
+
+        GitHub: runs gh issue view <number> --repo <owner/name> --json number,title,body,labels,state,url,createdAt,comments
+        Local: returns (None, Unknown) with status unavailable (no comments for local mode)
+        External: depends on tracker API
+
+        Args:
+            number: Issue number (validated int, never 0)
+            repo: (owner, name) tuple (validated, pinned from provider's cwd)
+
+        Returns:
+            (json_dict, error) where exactly one is None
         """
         ...

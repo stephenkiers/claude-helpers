@@ -6,7 +6,7 @@ its own schema_version and content structure.
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 
 
 GITHUB_CACHE_SCHEMA_VERSION = "1.0"
@@ -351,3 +351,132 @@ def validate_local_tracker_data(data: Any) -> bool:
         if not isinstance(entry.get("status"), str):
             return False
     return True
+
+
+# Issue comments types (Step 2 of plan)
+CommentTrust = Literal["trusted", "unverified"]
+CommentsStatus = Literal["ok", "unavailable", "unsupported"]
+CommentSource = Literal["issue"]
+CommentKind = Literal["ordinary", "implementation_plan"]
+DropReason = Literal["outdated", "superseded_plan_content", "off_topic", "duplicate", "low_signal", "instruction_like"]
+
+
+@dataclass
+class IssueComment:
+    """A single issue comment with trust, kind, and acknowledged status."""
+    id: str  # GraphQL node id (string)
+    author_login: Optional[str]
+    author_association: Optional[str]
+    trust: CommentTrust
+    created_at: str  # ISO 8601 UTC
+    is_minimized: bool
+    kind: CommentKind
+    body: str
+    acknowledged: bool
+    source: CommentSource = "issue"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "IssueComment":
+        """Construct from parsed JSON dict."""
+        return cls(**data)
+
+
+@dataclass
+class CommentCounts:
+    """Counters for comment drops and truncation."""
+    dropped_minimized: int = 0
+    dropped_superseded: int = 0
+    dropped_pre_watermark: int = 0
+    dropped_pre_plan: int = 0
+    dropped_stale_implementation_plan: int = 0
+    dropped_relevance: int = 0
+    dropped_scout_invalid: int = 0
+    truncated_trusted: int = 0
+    truncated_unverified: int = 0
+    withheld_unverified: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CommentCounts":
+        """Construct from parsed JSON dict."""
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class IssueWithComments:
+    """Issue body plus fetched comments with filtering metadata."""
+    number: int
+    title: str
+    url: str
+    state: str
+    labels: List[str]
+    body: str
+    created_at: str
+    fetched_at: str  # UTC time taken immediately BEFORE the gh call
+    comments: List[IssueComment]
+    comments_status: CommentsStatus
+    watermark: Optional[str]  # ISO 8601 UTC of newest trusted superseded-plan comment
+    lower_bound_source: Literal["marker_watermark", "plan_fetch"]
+    counts: CommentCounts
+    truncated: bool
+    withheld_unverified_authors: List[str]
+    relevance_filter: Dict[str, Any]  # {"required": bool} or similar
+    schema_version: int = 1
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        d = asdict(self)
+        d["counts"] = self.counts.to_dict()
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "IssueWithComments":
+        """Construct from parsed JSON dict."""
+        comments_data = data.get("comments", [])
+        comments = [IssueComment.from_dict(c) for c in comments_data]
+        counts_data = data.get("counts", {})
+        counts = CommentCounts.from_dict(counts_data)
+        return cls(
+            number=data.get("number", 0),
+            title=data.get("title", ""),
+            url=data.get("url", ""),
+            state=data.get("state", "open"),
+            labels=data.get("labels", []),
+            body=data.get("body", ""),
+            created_at=data.get("created_at", ""),
+            fetched_at=data.get("fetched_at", ""),
+            comments=comments,
+            comments_status=data.get("comments_status", "unavailable"),
+            watermark=data.get("watermark"),
+            lower_bound_source=data.get("lower_bound_source", "marker_watermark"),
+            counts=counts,
+            truncated=data.get("truncated", False),
+            withheld_unverified_authors=data.get("withheld_unverified_authors", []),
+            relevance_filter=data.get("relevance_filter", {}),
+            schema_version=data.get("schema_version", 1)
+        )
+
+
+@dataclass
+class ScoutVerdict:
+    """A scout's verdict on a single comment."""
+    comment_id: str
+    verdict: Literal["include", "drop"]
+    reason: Optional[DropReason] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        d = asdict(self)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ScoutVerdict":
+        """Construct from parsed JSON dict."""
+        return cls(**data)

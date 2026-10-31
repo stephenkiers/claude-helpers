@@ -28,7 +28,7 @@ import json
 from pathlib import Path
 from typing import Callable, Any, Tuple
 
-from . import cleanup, merge, shipit, checks, track, verify_queue
+from . import cleanup, merge, shipit, checks, track, verify_queue, issue_comments
 from .models import RepoCacheData
 from .providers import GithubProvider, LocalProvider
 from .providers.base import Provider
@@ -331,6 +331,37 @@ def main() -> None:
     worktree_detect_parent_parser.add_argument(
         "--cwd", default=None,
         help="Directory inside the repo (defaults to current directory)"
+    )
+
+    issue_comments_parser = subparsers.add_parser("issue-comments", help="Fetch and filter issue comments")
+    issue_comments_subparsers = issue_comments_parser.add_subparsers(dest="issue_comments_action")
+
+    issue_comments_fetch_parser = issue_comments_subparsers.add_parser(
+        "fetch", help="Fetch issue comments with filtering"
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--issue", required=True,
+        help="Issue number or GitHub URL (e.g., 123 or https://github.com/owner/repo/issues/123)"
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--cwd", required=True,
+        help="Working directory of the target repo"
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--trusted-only", action="store_true",
+        help="Withhold unverified (non-OWNER/COLLABORATOR) comments"
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--flow-dir", default=None,
+        help="Flow directory (reads acknowledged ids and plan fetch record)"
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--format", choices=["json", "markdown"], default="json",
+        help="Output format (default: json)"
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--allow-other-repo", action="store_true",
+        help="Allow URLs for repos other than the target"
     )
 
     args = parser.parse_args()
@@ -636,6 +667,37 @@ def main() -> None:
                 sys.exit(1)
         else:
             checks_parser.print_help()
+            sys.exit(1)
+    elif args.command == "issue-comments":
+        if args.issue_comments_action == "fetch":
+            try:
+                ic_result, ic_error = issue_comments.fetch_issue_comments(
+                    issue_ref=args.issue,
+                    cwd=Path(args.cwd).resolve(),
+                    trusted_only=args.trusted_only,
+                    flow_dir=Path(args.flow_dir).resolve() if args.flow_dir else None,
+                    allow_other_repo=args.allow_other_repo
+                )
+                if ic_error:
+                    output = ic_result.to_dict() if ic_result else {}
+                    output["error"] = str(ic_error)
+                    print(json.dumps(output))
+                    sys.exit(3 if "fetch" in str(ic_error) or "issue" in str(ic_error).lower() else 0)
+                else:
+                    if ic_result is None:
+                        output = {"error": "Unexpected: no result or error"}
+                        print(json.dumps(output))
+                        sys.exit(2)
+                    if args.format == "markdown":
+                        print(issue_comments.render_markdown(ic_result))
+                    else:
+                        print(json.dumps(ic_result.to_dict()))
+            except Exception as e:
+                output = {"error": str(e)}
+                print(json.dumps(output))
+                sys.exit(2)
+        else:
+            issue_comments_parser.print_help()
             sys.exit(1)
     else:
         parser.print_help()
