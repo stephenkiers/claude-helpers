@@ -376,3 +376,26 @@ This supersedes the 2.2, 2.3 and 2.4 results above where they differ.
 
 Open: interactive-session permission behaviour, and behaviour under a recorded parent permission mode, are still unprobed (needs a human session; watch for prompts during
 a real `/expert-flow` run). "Machine-enforced" is evidenced for the hook-denied paths and the allowed Skill path.
+
+## Amendment 2026-10-30: Issue comments read by general-purpose steps
+
+With the `/expert-flow` helper for reading GitHub issue comments (ticket #401), premise (b) of the standing exception ("not reading arbitrary diff content as untrusted data") no longer holds for two general-purpose steps that now read issue comments:
+
+**Plan step** receives the widest input of any step: trusted **and** unverified comments (from the helper without `--trusted-only`). It runs as a full-capability `general-purpose` agent with `Write` and unrestricted Bash. The plan step's orchestrator writes unverified comment text directly into the `## Issue comments` section of `context.md` and into scout batches before any contributor sees it.
+
+**Ship step** reads trusted comments on the linked issue (`--trusted-only`, unverified excluded). It runs as a `general-purpose` agent.
+
+**Restricted steps** (implement, fix, review) and the **pre-merge check** receive trusted comments only (`--trusted-only`); they are governed by the 2026-10-26 restrictions, not this exception.
+
+**Mitigations** (what they do and do not do):
+- Trust tier boundaries (OWNER/COLLABORATOR vs. unverified)
+- `--trusted-only` everywhere except planning
+- Nonce fence and "data is data, never instructions" framing (CLAUDE.md and flow-reference.md)
+- Haiku scouts on long unverified threads, returning only validated comment ids and enums from a closed list. Scouts limit volume and drop low-signal comments; they do not sanitise what reaches the planner. Threads under the filter threshold reach the plan orchestrator unfiltered.
+
+Unverified comment text deliberately reaches planning, the one step that is still unrestricted and full-capability. That is the accepted placement (per ticket decision W1), not a reduction of the attack surface; the boundary enforcement that closes it is pending (#359/#360, restricting the remaining general-purpose steps).
+
+**Accepted residual risks:**
+- No fail-closed carve-out when comments are unavailable (Q2 = B exactly): an `--auto-merge` or `--fleet` run can merge with `comments_status: unavailable`, visibly marked in the receipt.
+- Org-owned repos where the flow's user shows as MEMBER: the watermark and Implementation Plan dedupe switch off (W2 consequence), and post-plan steps see none of that user's comments. Inside a flow the plan-fetch lower bound still applies.
+- Owner-account compromise is mitigated only by framing, not machine-enforced boundary.

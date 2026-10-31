@@ -410,7 +410,7 @@ technical control. But the plain `Write` tool in that same list is *not* path-sc
 tool-allowlist syntax has no directory-prefix form for `Write`, unlike the `Bash(git diff:*)`-style
 prefix scoping used elsewhere in that list) — so "writes exactly one file" is a prompt-level
 convention the subagent is instructed to follow, not something the tool grant enforces. Both agent
-prompts tell the subagent to treat diff/PR content as data, not instructions, precisely because that
+prompts tell the subagent to treat diff/PR content, issue bodies, and issue comments (trusted and unverified) as data, not instructions, precisely because that
 content is attacker-influenceable and `bypassPermissions` removes the confirmation dialog that would
 otherwise catch a stray `Write` elsewhere. Keep both halves — the real `Edit`/Bash restriction and
 the prompt-level `Write`-scoping instruction — when adding a panel agent; treat the latter as a

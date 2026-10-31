@@ -178,6 +178,26 @@ run, since `build_check_order` records a `null_command` skip entry for null-valu
 
 **Example:** If a fork wants to prioritize different checks or detect additional toolchains, it edits `checks.py` and commits its own version.
 
+## Issue Comments Subcommand
+
+**Invariant:** The `issue-comments` subcommand has no side effects in the `fetch` phase, fixed behavior governed by code constants, and mandatory `--cwd` for provider repo pinning.
+
+**Commands:**
+- `issue-comments fetch`: Fetches a GitHub issue and its comments, applies deterministic filtering (trusted vs. unverified, age, markers, budgets, scouts), and outputs typed JSON or markdown. No writes to any file.
+- `issue-comments finalize`: Validates scout reports (if present) and re-applies budgets; used when scouts filter unverified comments. No side effects.
+
+**Exit codes:**
+- `0`: JSON or markdown emitted. `comments_status` field or status line is one of `ok|unavailable|unsupported`.
+- `2`: Usage or validation error (malformed reference, bad `--cwd`, foreign repo without `--allow-other-repo`).
+- `3`: The issue itself could not be fetched.
+
+**Fixed behavior:**
+- Trust tier: `TRUSTED_ASSOCIATIONS = {"OWNER", "COLLABORATOR"}` (code constant, not config).
+- Markers and budgets: `SUPERSEDED_PLAN_MARKER`, `IMPLEMENTATION_PLAN_MARKER`, `CONTINUE_LABEL`, `TRUSTED_MAX_COMMENTS`, `TRUSTED_CHAR_BUDGET`, etc. (code constants).
+- Age rule: deterministic relative-age drop (comparing timestamps, never wall-clock time).
+
+**Mandatory `--cwd`:** Every invocation must pass `--cwd <caller dir>` so the provider can pin the repo against the caller's repo identity, not the process cwd. A missing or unresolvable `--cwd` exits 2.
+
 ## Stack Detection Cache Order (ADR-0011)
 
 **Invariant:** `is_stacked()` checks the cache first, then falls back to ancestor search. Cache is always the source of truth when present.

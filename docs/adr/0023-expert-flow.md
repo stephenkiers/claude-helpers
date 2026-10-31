@@ -1053,3 +1053,21 @@ This amendment adds the third bounded exception to the no-auto-remediation stanc
   The `flow-healer` agent's tools are exactly: `Read, Edit, Grep, Glob, Bash(git diff:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git add:*), Bash(git commit:*), Bash(git checkout HEAD -- *)`. It has no `Write`, push, fetch, WebFetch, WebSearch, Task, or generic Bash.
 
 **Consequences.** `flow-healer` is a capability-restricted agent, narrower than the ADR-0008 standing exception for general-purpose step agents. Its `Edit` is not path-scoped, and `git commit:*` admits `--amend`; the prompt forbids both misuses, and the orchestrator mechanically checks only the commit count, single parent, trailer, clean worktree, the three script hashes, `.claude/repo-cache.json` hash, and resolved check command hash after the healer returns (an edit outside the worktree is not detected, nor can the orchestrator verify that the healer did not maliciously edit `.claude/repo-cache.json`). These are residual risks, not eliminated ones. A healed run never auto-merges: the human merge gate always fires.
+
+## Amendment 2026-10-30: Issue comments through Ask-based "new comment since plan" relay
+
+**Overview:** With the `/expert-flow` helper that fetches and filters GitHub issue comments (#401, ticket #370), the flow now reads live comments at plan time and post-plan steps, and relays new comments through the Ask block.
+
+**Relay mechanism:** Every post-plan consumer (implement, fix, review, ship, pre-merge check) that runs inside a flow:
+
+1. Fetches comments with `--flow-dir "$FLOW_DIR"` to use the plan step's fetch time as the lower bound (deterministic relative-age drop, not wall-clock).
+2. For each unacknowledged trusted comment posted after the plan fetch time:
+   - Raises an Ask-block question with the comment id in the question entry's `comment_id` field
+   - Shows the comment fenced in `summary`/`brief`, with the body section it touches
+   - Offers two options: **Continue — the plan stands** (exact text) or **Stop for re-plan**
+3. Records the answer in the flow's human ledger (background only); only a Continue answer acknowledges the comment
+4. A Stop answer is a hard stop; the comment stays unacknowledged so a later Retry or `--resume` re-asks it
+
+**Lower bound and acknowledgement:** The plan step records its fetch time and the set of comment ids it showed the planner in `${FLOW_DIR}/plan-comment-ids.json` and `${FLOW_DIR}/plan-issue-snapshot.json`. Post-plan steps treat every later comment not acknowledged (answered Continue) as "new since plan" and raise it once, so each comment is raised at most once per flow unless a Stop answer unacknowledges it.
+
+**See also:** ADR-0008 amendment 2026-10-30 for the standing exception on which general-purpose steps read issue comments (plan receives unverified comments unfiltered; implement, fix, review, ship and pre-merge receive trusted-only).
