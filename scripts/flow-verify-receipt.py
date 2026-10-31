@@ -245,7 +245,7 @@ def load_ledger(flow_dir: Path) -> LedgerLoad:
         # Call read_records which raises LedgerReadError on problems
         # Use type: ignore to skip mypy checking on the dynamic call
         read_records_fn = getattr(flow_ledger, "read_records")  # type: ignore
-        records_list = cast(List[Dict], read_records_fn(str(ledger_file)))
+        records_list = cast(List[Dict], read_records_fn(ledger_file))
         # Convert to LedgerRecord tuples
         ledger_records: List[LedgerRecord] = []
         for r in records_list:

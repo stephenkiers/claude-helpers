@@ -224,7 +224,7 @@ def test_tables_and_summary(h, doc):
     print()
     print("[Section 2] Redo table, exit table, done line, ship, layout, Keep previous")
     h.test_result("the redo-lineage table has the Accept row",
-                  any("Hard stop: Accept and continue" in line and "addressed" in line
+                  any("Hard stop: Accept and continue" in line and "closed at the ship close-out" in line
                       and "redo attempt NOT counted" in line for line in doc.splitlines()),
                   "row missing")
     h.test_result("the Every Exit Path table has the Accept row",

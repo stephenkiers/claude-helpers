@@ -43,6 +43,8 @@ if __name__ == "__main__":
     # longest-first and case-sensitively, so any other "ledger" wording still fails the check.
     HUMAN_LEDGER_EXEMPT_PHRASES = [
         "Ledger block of `~/.claude/prompts/flow-reference.md`",
+        "Cross-check against human ledger and plan rulings",
+        "Human ledger and plan rulings (if present)",
         "Human ledger (from /expert-flow)",
         "HUMAN_LEDGER_BLOCK",
         "HUMAN_LEDGER",
@@ -184,6 +186,11 @@ if __name__ == "__main__":
 
     triage_file = PROMPTS_DIR / "triage.md"
     triage_content = triage_file.read_text() if triage_file.exists() else ""
+    # #288: the human-ledger cross-check (triage.md now references "Human ledger (from /expert-flow)")
+    # uses the same exempt phrases as expert-review.md.
+    triage_no_human_ledger = triage_content
+    for exempt_phrase in sorted(HUMAN_LEDGER_EXEMPT_PHRASES, key=len, reverse=True):
+        triage_no_human_ledger = triage_no_human_ledger.replace(exempt_phrase, "")
 
     test_result(
         "triage.md exists",
@@ -425,7 +432,7 @@ if __name__ == "__main__":
             elif filename == "expert-framework.md":
                 content = expert_framework_content
             elif filename == "triage.md":
-                content = triage_content
+                content = triage_no_human_ledger
             elif filename == "amalgamator.md":
                 content = amalgamator_content
             else:
