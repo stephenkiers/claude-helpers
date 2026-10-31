@@ -364,6 +364,22 @@ def main() -> None:
         help="Allow URLs for repos other than the target"
     )
 
+    issue_comments_finalize_parser = issue_comments_subparsers.add_parser(
+        "finalize", help="Apply scout verdicts and re-apply budgets"
+    )
+    issue_comments_finalize_parser.add_argument(
+        "--fetched", required=True,
+        help="Path to fetched JSON file from issue-comments fetch"
+    )
+    issue_comments_finalize_parser.add_argument(
+        "--verdicts", required=True,
+        help="Directory containing scout verdict JSON files"
+    )
+    issue_comments_finalize_parser.add_argument(
+        "--format", choices=["json", "markdown"], default="json",
+        help="Output format (default: json)"
+    )
+
     args = parser.parse_args()
 
     if args.command == "cleanup":
@@ -692,6 +708,45 @@ def main() -> None:
                         print(issue_comments.render_markdown(ic_result))
                     else:
                         print(json.dumps(ic_result.to_dict()))
+            except Exception as e:
+                output = {"error": str(e)}
+                print(json.dumps(output))
+                sys.exit(2)
+        elif args.issue_comments_action == "finalize":
+            try:
+                # Read fetched JSON file
+                fetched_path = Path(args.fetched)
+                if not fetched_path.exists():
+                    print(json.dumps({"error": f"Fetched file not found: {fetched_path}"}))
+                    sys.exit(2)
+
+                with open(fetched_path) as f:
+                    fetched_data = json.load(f)
+
+                # Call finalize
+                finalize_result, finalize_error = issue_comments.finalize_comments(
+                    fetched=fetched_data,
+                    verdicts_dir=Path(args.verdicts)
+                )
+
+                if finalize_error:
+                    output = finalize_result.to_dict() if finalize_result else {}
+                    output["error"] = str(finalize_error)
+                    print(json.dumps(output))
+                    sys.exit(2)
+                else:
+                    if finalize_result is None:
+                        output = {"error": "Unexpected: no result or error"}
+                        print(json.dumps(output))
+                        sys.exit(2)
+                    if args.format == "markdown":
+                        print(issue_comments.render_markdown(finalize_result))
+                    else:
+                        print(json.dumps(finalize_result.to_dict()))
+            except json.JSONDecodeError as e:
+                output = {"error": f"Invalid fetched JSON: {e}"}
+                print(json.dumps(output))
+                sys.exit(2)
             except Exception as e:
                 output = {"error": str(e)}
                 print(json.dumps(output))

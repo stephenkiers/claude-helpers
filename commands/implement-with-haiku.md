@@ -430,6 +430,43 @@ fi
 
 Include the comments_status and counts line in the step receipt.
 
+### Handle new comments since plan (flow only)
+
+When `FLOW_DIR` is set and an issue number was fetched, call the helper again with
+`--flow-dir` to check for unacknowledged trusted comments posted after the plan step
+fetched (the lower bound is set from the plan-issue-snapshot.json):
+
+```bash
+if [[ -n "$FLOW_DIR" && -n "$ISSUE_NUMBER" && -n "$ISSUE_BODY" ]]; then
+  CALLER_DIR=$(pwd)
+  source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
+  NEW_COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_NUMBER" --cwd "$CALLER_DIR" --trusted-only --flow-dir "$FLOW_DIR" --format json 2>/dev/null || echo "{}")
+  
+  # Extract unacknowledged trusted comments (excluding implementation_plan)
+  NEW_COMMENT_IDS=$(printf '%s' "$NEW_COMMENTS_JSON" | jq -r '.comments[] | select(.trust == "trusted" and .acknowledged == false and .kind != "implementation_plan") | .id' 2>/dev/null)
+  
+  # For each unacknowledged trusted comment, ask through the Ask block
+  for COMMENT_ID in $NEW_COMMENT_IDS; do
+    # Get the comment body and header for the Ask summary/brief
+    COMMENT_DATA=$(printf '%s' "$NEW_COMMENTS_JSON" | jq --arg cid "$COMMENT_ID" '.comments[] | select(.id == $cid)' 2>/dev/null)
+    
+    # Apply the Ask block from ~/.claude/prompts/flow-reference.md with:
+    # - STEP_NAME: implement (or fix, from the step prompt)
+    # - question: includes the fenced comment text
+    # - options: ["Continue — the plan stands", "Stop for re-plan"]
+    # - comment_id: $COMMENT_ID (added to question entry)
+    # If "Stop for re-plan" or free text → write FAILED receipt with Reason: stopped on new issue comment $COMMENT_ID
+    # If "Continue — the plan stands" → record answer in ledger and proceed
+    
+    # This is handled by the Ask block relay in flow-reference.md; see the implementation there.
+  done
+fi
+```
+
+The Ask questions must use the exact option text `"Continue — the plan stands"` (em dash)
+and `"Stop for re-plan"`. Each question entry in the Ask file must carry `"comment_id": "<id>"`.
+Reference the **Ask block** from `~/.claude/prompts/flow-reference.md` in every AskUserQuestion call site.
+
 ### Parse claude-action-plan.md into directives
 
 **Note:** This subsection's assumptions about `claude-action-plan.md`'s shape (section headings,

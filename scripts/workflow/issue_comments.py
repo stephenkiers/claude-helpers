@@ -9,7 +9,7 @@ import json
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, List, Tuple, Union, Literal
+from typing import Any, Dict, Optional, List, Tuple, Union, Literal, Set
 from datetime import datetime, timezone
 
 from .models import IssueWithComments, IssueComment, CommentCounts, CommentTrust, CommentsStatus
@@ -546,6 +546,165 @@ def fetch_issue_comments(
 
     except Exception as e:
         return None, e
+
+
+def finalize_comments(
+    fetched: Dict[str, Any],
+    verdicts_dir: Path
+) -> Tuple[IssueWithComments, Optional[Exception]]:
+    """
+    Apply scout verdicts to unverified comments and re-apply budgets.
+
+    Reads verdict files from verdicts_dir, validates them, applies drops,
+    and re-applies budgets over both trusted and unverified tiers.
+
+    Returns (updated_issue, error) tuple.
+    """
+    try:
+        # Parse the fetched issue from dict
+        issue = IssueWithComments.from_dict(fetched)
+
+        # Collect all verdict files from verdicts directory
+        verdict_files = sorted(verdicts_dir.glob("*.json")) if verdicts_dir.exists() else []
+
+        # Track unverified ids and which ones were ruled on
+        unverified_ids: Set[str] = {
+            c.id for c in issue.comments
+            if c.trust == "unverified"
+        }
+        ruled_ids: Set[str] = set()
+
+        # Process each verdict file
+        for verdict_file in verdict_files:
+            try:
+                with open(verdict_file) as f:
+                    verdict_data = json.load(f)
+
+                # Validate schema
+                if not isinstance(verdict_data, dict) or "verdicts" not in verdict_data:
+                    # Invalid report drops the whole batch
+                    for cid in unverified_ids:
+                        if cid not in ruled_ids:
+                            issue.counts.dropped_scout_invalid += 1
+                    continue
+
+                verdicts_list = verdict_data.get("verdicts", [])
+                if not isinstance(verdicts_list, list):
+                    # Invalid report drops the whole batch
+                    for cid in unverified_ids:
+                        if cid not in ruled_ids:
+                            issue.counts.dropped_scout_invalid += 1
+                    continue
+
+                # Process each verdict in the batch
+                batch_ids: Set[str] = set()
+                for verdict_entry in verdicts_list:
+                    if not isinstance(verdict_entry, dict):
+                        continue
+
+                    comment_id: Any = verdict_entry.get("comment_id")
+                    verdict = verdict_entry.get("verdict")
+
+                    # Validate comment_id and verdict
+                    if not isinstance(comment_id, str) or comment_id not in unverified_ids:
+                        # Invalid id
+                        issue.counts.dropped_scout_invalid += 1
+                        continue
+
+                    if comment_id in ruled_ids:
+                        # Duplicate id in batch
+                        issue.counts.dropped_scout_invalid += 1
+                        continue
+
+                    if verdict not in ("include", "drop"):
+                        # Invalid verdict
+                        issue.counts.dropped_scout_invalid += 1
+                        continue
+
+                    batch_ids.add(comment_id)
+                    ruled_ids.add(comment_id)
+
+                    # Check if verdict names a trusted comment (violation)
+                    comment = next(
+                        (c for c in issue.comments if c.id == comment_id),
+                        None
+                    )
+                    if comment and comment.trust == "trusted":
+                        # Trusted comment cannot be dropped by scouts
+                        continue
+
+                    # Apply the verdict
+                    if verdict == "drop":
+                        issue.counts.dropped_relevance += 1
+
+                # Check for missing ids in batch (if verdicts don't cover all unverified)
+                # This is handled by the validator - a partial report drops the batch
+                if batch_ids != (unverified_ids & batch_ids):
+                    # Batch is incomplete, mark remaining as invalid
+                    for cid in unverified_ids - batch_ids:
+                        if cid not in ruled_ids:
+                            issue.counts.dropped_scout_invalid += 1
+
+            except (json.JSONDecodeError, OSError):
+                # Malformed or missing file drops the whole batch
+                for cid in unverified_ids:
+                    if cid not in ruled_ids:
+                        issue.counts.dropped_scout_invalid += 1
+                continue
+
+        # Remove dropped comments based on verdicts
+        if verdict_files:
+            # Re-filter comments to remove dropped ones
+            filtered_comments = []
+            for comment in issue.comments:
+                if comment.trust == "trusted":
+                    filtered_comments.append(comment)
+                elif comment.id not in ruled_ids:
+                    filtered_comments.append(comment)
+                else:
+                    # Check if this comment was dropped by a verdict
+                    # (We already counted it in dropped_relevance during verdict processing)
+                    pass
+            issue.comments = filtered_comments
+
+        # Re-apply budgets over both tiers
+        comments, budget_stats = apply_budgets(
+            issue.comments,
+            issue.created_at,
+            issue.lower_bound_source
+        )
+
+        # Update counts and comments
+        issue.comments = comments
+        issue.counts.truncated_trusted = budget_stats.get("truncated_trusted", 0)
+        issue.counts.truncated_unverified = budget_stats.get("truncated_unverified", 0)
+        issue.truncated = (
+            issue.counts.truncated_trusted > 0 or
+            issue.counts.truncated_unverified > 0
+        )
+
+        return issue, None
+
+    except Exception as e:
+        return IssueWithComments(
+            number=0,
+            title="",
+            url="",
+            state="",
+            labels=[],
+            body="",
+            created_at="",
+            fetched_at="",
+            comments=[],
+            comments_status="unavailable",
+            watermark=None,
+            lower_bound_source="marker_watermark",
+            counts=CommentCounts(),
+            truncated=False,
+            withheld_unverified_authors=[],
+            relevance_filter={},
+            schema_version=1
+        ), e
 
 
 def render_markdown(issue: IssueWithComments) -> str:

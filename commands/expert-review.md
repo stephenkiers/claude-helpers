@@ -346,11 +346,12 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
    modifiers to every reviewer prompt.
 
 6. **Gather plan/ticket context** (cache-first, non-PR mode only, excludes the prior-review check which now runs in sub-step 1):
-   - Read `.claude/github-cache.json`. If `issue.body` exists → fetch the issue with the helper (`issue-comments fetch --issue <number> --cwd <cwd> --trusted-only`). Trusted, post-lower-bound comments go only where `issue.body` already goes: the summarizer (Step 4) and Sam System's "Known Integration Concerns" (Step 6). They never reach a separate Pass 1 channel. Unverified comments are excluded by `--trusted-only`, so an outsider's comment cannot reach the blind panel.
+   - Read `.claude/github-cache.json`. If `issue.body` exists → fetch the issue with the helper. When `FLOW_DIR` is set, call with `--flow-dir` to get post-lower-bound comments; otherwise call without `--flow-dir`. Command: `issue-comments fetch --issue <number> --cwd <cwd> --trusted-only [--flow-dir <flow_dir>]`. Trusted, post-lower-bound comments go only where `issue.body` already goes: the summarizer (Step 4) and Sam System's "Known Integration Concerns" (Step 6). They never reach a separate Pass 1 channel. Unverified comments are excluded by `--trusted-only`, so an outsider's comment cannot reach the blind panel.
    - **Fallback (no cache):** search `~/.claude/plans/*.md` for mentions of this branch/project;
      also check for kanban files (`*-kanban.md`) in project root or docs/.
    - Plan context found → give it to the summarizer (Step 4) and to Sam System; cross-reference in the final report.
    - **PR mode:** unchanged — PR mode never reads the cache and does not fetch comments (ADR-0009).
+   - **New comments since plan:** trusted comments posted after the plan step fetched are not asked about in `/expert-review` (only in implement and fix steps); they appear in the comment counts.
 
 Emit `stage-end --stage setup --outcome success`:
 ```bash
