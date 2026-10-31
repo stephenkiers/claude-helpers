@@ -19,16 +19,14 @@ Run with: python3 tests/test_issue_comments.py
 """
 
 import sys
-import json
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from _test_harness import REPO_ROOT, Harness
+from _test_harness import Harness
 from workflow.models import (
-    IssueWithComments, IssueComment, CommentCounts, CommentsStatus,
-    CommentTrust, CommentKind, CommentSource, DropReason, ScoutVerdict
+    IssueWithComments
 )
 from workflow import issue_comments
 

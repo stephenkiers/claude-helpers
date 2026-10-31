@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from _test_harness import REPO_ROOT, Harness
+from workflow import issue_comments
 
 h = Harness("ISSUE COMMENTS CALL SITES TEST")
 
@@ -183,8 +184,6 @@ for doc_path, reason_list in MECHANICAL_READER_DOCS.items():
 # ==============================================================================
 print("\n[Marker Literals Match Constants]")
 
-from workflow import issue_comments
-
 SUPERSEDED_MARKER = issue_comments.SUPERSEDED_PLAN_MARKER
 IMPLEMENTATION_MARKER = issue_comments.IMPLEMENTATION_PLAN_MARKER
 
@@ -194,12 +193,12 @@ if track_start_doc.exists():
     text = track_start_doc.read_text()
     if SUPERSEDED_MARKER in text:
         h.test_result(
-            f"track-and-start.md Step 4d uses exact SUPERSEDED_PLAN_MARKER literal",
+            "track-and-start.md Step 4d uses exact SUPERSEDED_PLAN_MARKER literal",
             True
         )
     else:
         h.test_result(
-            f"track-and-start.md mentions superseded plan",
+            "track-and-start.md mentions superseded plan",
             "superseded plan" in text.lower(),
             "marker literal not found" if "superseded" not in text.lower() else ""
         )
@@ -210,12 +209,12 @@ if track_doc.exists():
     text = track_doc.read_text()
     if IMPLEMENTATION_MARKER in text:
         h.test_result(
-            f"track.md uses exact IMPLEMENTATION_PLAN_MARKER literal",
+            "track.md uses exact IMPLEMENTATION_PLAN_MARKER literal",
             True
         )
     else:
         h.test_result(
-            f"track.md mentions implementation plan",
+            "track.md mentions implementation plan",
             "implementation plan" in text.lower(),
             "marker literal not found" if "implementation" not in text.lower() else ""
         )
@@ -231,7 +230,7 @@ if issue_comments_ref.exists():
     continue_label = issue_comments.CONTINUE_LABEL
     has_continue_label = continue_label in text
     h.test_result(
-        f"issue-comments-reference.md contains exact CONTINUE_LABEL",
+        "issue-comments-reference.md contains exact CONTINUE_LABEL",
         has_continue_label,
         f"literal '{continue_label}' not found" if not has_continue_label else ""
     )
@@ -246,7 +245,7 @@ if flow_ref.exists():
     text = flow_ref.read_text()
     has_comment_id_in_schema = "comment_id" in text and ("question" in text.lower() or "questions" in text.lower())
     h.test_result(
-        f"flow-reference.md schema mentions comment_id for questions",
+        "flow-reference.md schema mentions comment_id for questions",
         has_comment_id_in_schema,
         "comment_id not mentioned in question schema" if not has_comment_id_in_schema else ""
     )
@@ -264,9 +263,9 @@ if expert_flow_doc.exists():
     matches = list(re.finditer(relay_pattern, text, re.IGNORECASE | re.DOTALL))
     has_relay_comment_id = any("comment_id" in match.group(0) for match in matches)
     h.test_result(
-        f"expert-flow.md relay sentence mentions comment_id",
+        "expert-flow.md relay sentence mentions comment_id",
         has_relay_comment_id or "comment_id" in text,
-        "comment_id not found in relay context" if not ("comment_id" in text) else ""
+        "comment_id not found in relay context" if "comment_id" not in text else ""
     )
 
 # ==============================================================================
@@ -282,7 +281,7 @@ if impl_haiku_doc.exists():
     # Should NOT have separate `gh issue view <number> --json body`
     has_separate_body_call = re.search(r'gh\s+issue\s+view.*--json.*body', text) is not None
     h.test_result(
-        f"implement-with-haiku.md gets body from helper output",
+        "implement-with-haiku.md gets body from helper output",
         has_helper_call and not has_separate_body_call,
         "either missing helper call or still has separate gh call" if not has_helper_call or has_separate_body_call else ""
     )
@@ -324,7 +323,7 @@ if flow_ref.exists():
         "comment_id" in text and "AskUserQuestion" in text
     )
     h.test_result(
-        f"flow-reference.md Ask block documents comment_id",
+        "flow-reference.md Ask block documents comment_id",
         has_comment_id_doc,
     )
 
@@ -336,7 +335,7 @@ print("\n[Shell Conventions - No Bare Positional Arguments]")
 # This is checked by test_command_doc_shell_conventions.py, so we just verify
 # that test exists and passes basic checks
 h.test_result(
-    f"tests/test_command_doc_shell_conventions.py exists",
+    "tests/test_command_doc_shell_conventions.py exists",
     (REPO_ROOT / "tests" / "test_command_doc_shell_conventions.py").exists(),
 )
 

@@ -9,7 +9,7 @@ validate against the same contract.
 """
 
 from typing import Optional, Tuple, Protocol, Union, List, Any, Dict
-from ..models import IssueInfo, IssueWithComments
+from ..models import IssueInfo
 
 
 class Provider(Protocol):

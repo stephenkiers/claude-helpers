@@ -9,12 +9,12 @@ import json
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, List, Tuple, Union, Literal, Set
+from typing import Any, Dict, Optional, List, Tuple, Literal, Set
 from datetime import datetime, timezone
 
 from .models import IssueWithComments, IssueComment, CommentCounts, CommentTrust, CommentsStatus
 from . import project
-from .providers import GithubProvider, LocalProvider
+from .providers import GithubProvider
 
 # Trust constants
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "COLLABORATOR"})
@@ -739,10 +739,10 @@ def render_markdown(issue: IssueWithComments) -> str:
     # Status line
     status_parts = []
     if issue.comments_status == "unavailable":
-        lines.append(f"COMMENTS UNAVAILABLE: unavailable — body only")
+        lines.append("COMMENTS UNAVAILABLE: unavailable — body only")
         lines.append("")
     elif issue.comments_status == "unsupported":
-        lines.append(f"COMMENTS UNAVAILABLE: unsupported (local mode) — body only")
+        lines.append("COMMENTS UNAVAILABLE: unsupported (local mode) — body only")
         lines.append("")
     else:
         # Build counts summary
@@ -808,10 +808,10 @@ def render_markdown(issue: IssueWithComments) -> str:
                 lines.append(f"  id: {comment.id}")
 
             if comment.acknowledged:
-                lines.append(f"  acknowledged: true")
+                lines.append("  acknowledged: true")
 
             if comment.kind == "implementation_plan":
-                lines.append(f"  kind: implementation_plan")
+                lines.append("  kind: implementation_plan")
 
             lines.append("")
 
