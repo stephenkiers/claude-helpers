@@ -541,4 +541,35 @@ h.test_result(
     isinstance(issue_comments.TRUSTED_ASSOCIATIONS, frozenset),
 )
 
+# ==============================================================================
+# TEST: Per-Comment Char Cap Boundary [WEAK_ASSERTION FIX]
+# ==============================================================================
+print("\n[Per-Comment Char Cap Boundary]")
+
+# Comment with body length exactly at PER_COMMENT_CHAR_CAP should NOT be clipped
+body_at_cap = "x" * issue_comments.PER_COMMENT_CHAR_CAP
+raw = build_issue_json(comments_list=[
+    build_raw_comment("c1", body_at_cap, "alice", "OWNER"),
+])
+parsed = issue_comments.parse_gh_issue_json(raw[0])
+filtered = issue_comments.filter_comments(parsed)
+h.test_result(
+    "comment with body length exactly at PER_COMMENT_CHAR_CAP is NOT clipped",
+    len(filtered.comments) == 1 and len(filtered.comments[0].body) == issue_comments.PER_COMMENT_CHAR_CAP,
+    f"got length {len(filtered.comments[0].body) if filtered.comments else 'no comments'}"
+)
+
+# Comment with body length one over PER_COMMENT_CHAR_CAP should BE clipped
+body_over_cap = "x" * (issue_comments.PER_COMMENT_CHAR_CAP + 1)
+raw = build_issue_json(comments_list=[
+    build_raw_comment("c1", body_over_cap, "alice", "OWNER"),
+])
+parsed = issue_comments.parse_gh_issue_json(raw[0])
+filtered = issue_comments.filter_comments(parsed)
+h.test_result(
+    "comment with body length over PER_COMMENT_CHAR_CAP is clipped",
+    len(filtered.comments) == 1 and "[clipped" in filtered.comments[0].body,
+    f"got body length {len(filtered.comments[0].body) if filtered.comments else 'no comments'}, clipped: {'[clipped' in (filtered.comments[0].body if filtered.comments else '')}"
+)
+
 h.summarize_and_exit()

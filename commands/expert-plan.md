@@ -373,7 +373,7 @@ if [ -z "$FLOW_DIR" ] && [ -n "$ISSUE_REF" ] && [[ "$ISSUE_REF" == "https://gith
   ALLOW_OTHER_REPO_FLAG="--allow-other-repo"
 fi
 FLOW_DIR_FLAG=""
-[ -n "$FLOW_DIR" ] && FLOW_DIR_FLAG="--flow-dir \"$FLOW_DIR\""
+[ -n "$FLOW_DIR" ] && FLOW_DIR_FLAG="--flow-dir $FLOW_DIR"
 COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" $FLOW_DIR_FLAG $ALLOW_OTHER_REPO_FLAG --format json 2>/dev/null) || COMMENTS_JSON=""
 if [ -z "$COMMENTS_JSON" ]; then
   # If fetching fails, continue on description or ask
@@ -444,8 +444,8 @@ Inside a flow, write `${FLOW_DIR}/plan-comment-ids.json` (union on redo) and `${
 
 ```bash
 if [ -n "$FLOW_DIR" ] && [ -n "$COMMENTS_JSON" ]; then
-  COMMENT_IDS=$(printf '%s' "$COMMENTS_JSON" | jq -r '[.comments[]? | select(.acknowledged != true) | .id] | @json')
-  printf '%s\n' "$COMMENT_IDS" > "$SESSION_DIR/plan-comment-ids.json"
+  COMMENT_IDS=$(printf '%s' "$COMMENTS_JSON" | jq -r '[.comments[]? | .id] | @json')
+  printf '%s\n' "$COMMENT_IDS" > "${FLOW_DIR}/plan-comment-ids.json"
   
   if [ ! -f "${FLOW_DIR}/plan-issue-snapshot.json" ]; then
     SNAPSHOT='{"schema_version":1,"fetched_at":"'$(printf '%s' "$COMMENTS_JSON" | jq -r '.fetched_at')'","title":"'$(printf '%s' "$ISSUE_TITLE" | jq -R -s '@json')'","body":"'$(printf '%s' "$ISSUE_BODY" | jq -R -s '@json')'","labels":'$(printf '%s' "$ISSUE_LABELS" | jq -R 'split(" ") | map(select(length > 0))')'}'

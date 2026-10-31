@@ -389,6 +389,7 @@ class IssueComment:
 class CommentCounts:
     """Counters for comment drops and truncation."""
     dropped_minimized: int = 0
+    dropped_malformed: int = 0
     dropped_superseded: int = 0
     dropped_pre_watermark: int = 0
     dropped_pre_plan: int = 0

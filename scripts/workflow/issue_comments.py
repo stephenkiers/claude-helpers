@@ -82,13 +82,13 @@ def parse_gh_issue_json(raw_json: Dict[str, Any]) -> IssueWithComments:
             # Parse id
             comment_id = raw_comment.get("id")
             if not isinstance(comment_id, str):
-                counts.dropped_minimized += 1  # Will be adjusted if actually a parse error
+                counts.dropped_malformed += 1
                 continue
 
             # Parse createdAt
             created_at_str = raw_comment.get("createdAt")
             if not isinstance(created_at_str, str):
-                counts.dropped_minimized += 1
+                counts.dropped_malformed += 1
                 continue
 
             # Check minimized
@@ -403,16 +403,19 @@ def load_acknowledged_ids(flow_dir: Optional[Path]) -> List[str]:
 
     acknowledged = []
 
-    # Load plan-comment-ids.json
+    # Load plan-comment-ids.json (accepts both {"ids": [...]} and [...] formats)
     plan_comment_ids_file = flow_dir / "plan-comment-ids.json"
     if plan_comment_ids_file.exists():
         try:
             with open(plan_comment_ids_file) as f:
                 data = json.load(f)
+                # Accept both dict with "ids" key and bare array
                 if isinstance(data, dict) and "ids" in data:
                     ids = data["ids"]
                     if isinstance(ids, list):
                         acknowledged.extend(ids)
+                elif isinstance(data, list):
+                    acknowledged.extend(data)
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -723,7 +726,7 @@ def render_markdown(issue: IssueWithComments) -> str:
         fence_marker = f"<<<COMMENT-{nonce}"
 
     fence_start = f"<<<COMMENT-{nonce}"
-    fence_end = f"COMMENT-{nonce}>>>>"
+    fence_end = f"<<<COMMENT-{nonce}>>>>"
 
     # Start fence
     lines.append(fence_start)
