@@ -345,13 +345,12 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
    These are defined in the expert framework (Project Modifiers section) — pass any detected
    modifiers to every reviewer prompt.
 
-6. **Gather plan/ticket context** (cache-first, excludes the prior-review check which now runs in sub-step 1):
-   - Read `.claude/github-cache.json`. If `issue.body` exists → business context; `issue.title`
-     → summarizer prompt; `issue.url` → report.
+6. **Gather plan/ticket context** (cache-first, non-PR mode only, excludes the prior-review check which now runs in sub-step 1):
+   - Read `.claude/github-cache.json`. If `issue.body` exists → fetch the issue with the helper (`issue-comments fetch --issue <number> --cwd <cwd> --trusted-only`). Trusted, post-lower-bound comments go only where `issue.body` already goes: the summarizer (Step 4) and Sam System's "Known Integration Concerns" (Step 6). They never reach a separate Pass 1 channel. Unverified comments are excluded by `--trusted-only`, so an outsider's comment cannot reach the blind panel.
    - **Fallback (no cache):** search `~/.claude/plans/*.md` for mentions of this branch/project;
      also check for kanban files (`*-kanban.md`) in project root or docs/.
-   - Plan context found → give it to the summarizer (Step 4) and to Sam System as "Known
-     Integration Concerns" (Step 6); cross-reference in the final report.
+   - Plan context found → give it to the summarizer (Step 4) and to Sam System; cross-reference in the final report.
+   - **PR mode:** unchanged — PR mode never reads the cache and does not fetch comments (ADR-0009).
 
 Emit `stage-end --stage setup --outcome success`:
 ```bash

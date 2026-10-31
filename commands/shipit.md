@@ -477,8 +477,7 @@ runs on the same PR. Gather:
 - **Title**: a concise (<70 char), imperative summary of the whole branch's diff — same register as
   a commit subject (`add X`, `fix Y`, `rewrite Z`), not a restatement of the last commit alone.
   Assign it to `$TITLE`.
-- **Why this PR exists**: if `$ISSUE_NUM` is set, run `gh issue view "$ISSUE_NUM" --json
-  title,body` directly. If `$ISSUE_NUM` is not set, derive the
+- **Why this PR exists**: if `$ISSUE_NUM` is set, read the linked issue through the helper (`issue-comments fetch --issue "$ISSUE_NUM" --cwd "$CALLER_DIR" --trusted-only --format json`, parsed to extract the issue title and body). If `$ISSUE_NUM` is not set, derive the
   problem from the user's original request earlier in this conversation. 1-3 sentences on the problem/need being addressed.
 - **What it does**: a bulleted list of concrete behavior/code changes, derived from the `git log`
   / `git diff --stat` output above.

@@ -2,7 +2,7 @@
 name: expert-is-it-done
 description: Post-merge definition-of-done audit — run after an epic/issue's PRs have already merged to main. Checks for E2E coverage gaps, overdue feature flags, a lightweight second-look quality pass, and loose ends (TODOs, stale caches). Read-only and advisory: never edits code, never mutates GitHub state, never creates issues without explicit confirmation.
 argument-hint: [issue number | issue URL]
-allowed-tools: Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(grep:*), Bash(rg:*), Bash(date:*), Bash(jq:*), Read, Glob, Skill, Write, AskUserQuestion
+allowed-tools: Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(grep:*), Bash(rg:*), Bash(date:*), Bash(jq:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(cd:*), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*), Read, Glob, Skill, Write, AskUserQuestion
 ---
 
 # Is It Done?
@@ -48,10 +48,13 @@ if ! [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-ISSUE_JSON=$(gh issue view "$ISSUE_NUM" --json number,title,url,body,state,updatedAt) || {
-  echo "ERROR: gh issue view failed for #$ISSUE_NUM (check auth / number / access)." >&2
+CALLER_DIR=$(pwd)
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
+COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_NUM" --cwd "$CALLER_DIR" --trusted-only --format json) || {
+  echo "ERROR: helper fetch failed for #$ISSUE_NUM (check auth / number / access)." >&2
   exit 1
 }
+ISSUE_JSON=$(printf '%s' "$COMMENTS_JSON" | jq '{number: .number, title: .title, url: .url, body: .body, state: .state, created_at: .created_at}')
 ISSUE_TITLE=$(echo "$ISSUE_JSON" | jq -r '.title')
 ISSUE_STATE=$(echo "$ISSUE_JSON" | jq -r '.state')
 ISSUE_URL=$(echo "$ISSUE_JSON" | jq -r '.url')
