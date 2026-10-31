@@ -1,7 +1,7 @@
 ---
 description: "Deprecated: superseded by /expert-plan (formerly v3) — see ADR-0020. Parallel expert planning with isolated contributions (v2) — A-B baseline alongside /expert-plan-deprecated (v1). Scales better on large tickets — subagents write checkpoints instead of accumulating in orchestrator context."
 argument-hint: [--effort 1|2|3|4|5] [--model haiku|sonnet|opus|fable]
-allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(gh repo view:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(python3:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
+allowed-tools: Bash(ls:*), Bash(find:*), Bash(cd:*), Bash(gh api:*), Bash(gh repo view:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
 model: sonnet
 ---
 
@@ -250,7 +250,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage gather-contex
 Collect the input to plan against:
 
 1. **Ticket/requirement**: One of:
-   - GitHub issue URL → fetch with `gh issue view <url> --json title,body,labels,comments`
+   - GitHub issue URL → fetch through the issue-comments helper (see `~/.claude/prompts/issue-comments-reference.md` for the invocation contract)
    - User-provided description in the conversation
    - Ask user if neither is available
 
@@ -268,6 +268,22 @@ Collect the input to plan against:
    - **Goal**: What the ticket wants achieved (1-2 sentences)
    - **Constraints**: What ADRs, invariants, or project rules apply
    - **Unknowns**: What the ticket leaves ambiguous or unspecified
+
+**Fetch issue and comments** (if a GitHub issue was provided):
+
+```bash
+CALLER_DIR=$(pwd)
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
+COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --allow-other-repo --format json 2>/dev/null) || COMMENTS_JSON=""
+
+if [ -n "$COMMENTS_JSON" ]; then
+  COMMENTS_MARKDOWN=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --allow-other-repo --format markdown 2>/dev/null) || COMMENTS_MARKDOWN=""
+  if [ -n "$COMMENTS_MARKDOWN" ]; then
+    # Include the ## Issue comments section in your gathered context
+    printf '\n%s\n' "$COMMENTS_MARKDOWN"
+  fi
+fi
+```
 
 On failure: `stage-end --stage gather-context --outcome failure --failure-class context-load-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class context-load-failed 2>/dev/null || true`, then stop.
 

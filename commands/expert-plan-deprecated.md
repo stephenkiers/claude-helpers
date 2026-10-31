@@ -1,6 +1,6 @@
 ---
 description: "Deprecated: superseded by /expert-plan (formerly v3) — see ADR-0020. Use expert personas to collaboratively build an implementation plan from a ticket or requirement. Enters plan mode, gathers expert input, checkpoints ambiguities with the user, then synthesizes a complete plan."
-allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Read, Glob, Grep, EnterPlanMode, ExitPlanMode, AskUserQuestion
+allowed-tools: Bash(ls:*), Bash(find:*), Bash(cd:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, EnterPlanMode, ExitPlanMode, AskUserQuestion
 model: opus
 ---
 
@@ -33,7 +33,7 @@ See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full m
 Collect the input to plan against:
 
 1. **Ticket/requirement**: One of:
-   - GitHub issue URL → fetch with `gh issue view <url> --json title,body,labels,comments`
+   - GitHub issue URL → fetch through the issue-comments helper (see `~/.claude/prompts/issue-comments-reference.md` for the invocation contract)
    - User-provided description in the conversation
    - Ask user if neither is available
 
@@ -46,6 +46,22 @@ Collect the input to plan against:
    - **Goal**: What the ticket wants achieved (1-2 sentences)
    - **Constraints**: What ADRs, invariants, or project rules apply
    - **Unknowns**: What the ticket leaves ambiguous or unspecified
+
+**Fetch issue and comments** (if a GitHub issue was provided):
+
+```bash
+CALLER_DIR=$(pwd)
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
+COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --allow-other-repo --format json 2>/dev/null) || COMMENTS_JSON=""
+
+if [ -n "$COMMENTS_JSON" ]; then
+  COMMENTS_MARKDOWN=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --allow-other-repo --format markdown 2>/dev/null) || COMMENTS_MARKDOWN=""
+  if [ -n "$COMMENTS_MARKDOWN" ]; then
+    # Include the ## Issue comments section in your gathered context
+    printf '\n%s\n' "$COMMENTS_MARKDOWN"
+  fi
+fi
+```
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gather-context --outcome success 2>/dev/null || true
