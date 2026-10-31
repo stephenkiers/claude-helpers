@@ -251,7 +251,7 @@ def load_ledger(flow_dir: Path) -> LedgerLoad:
         for r in records_list:
             rec = LedgerRecord(
                 seq=cast(int, r.get("seq", 0)),
-                ts=cast(float, r.get("ts", 0.0)),
+                ts=flow_log.parse_iso8601(cast(str, r.get("ts", ""))),
                 kind=cast(str, r.get("kind", "")),
                 step=cast(str, r.get("step", "")),
                 status=cast(str, r.get("status", "")),

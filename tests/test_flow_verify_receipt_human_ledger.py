@@ -127,6 +127,12 @@ def main():
     h.test_result("emphasis markers are stripped before matching",
                   result == True, f"result: {result}")
 
+    # Test boundary: exactly 20-character quote (mutation boundary)
+    exact_20_decisions = "## Decisions\n## Decided\n- seq 5: \"12345678901234567890\"\n"
+    result = references_seq(exact_20_decisions, make_record(5, "12345678901234567890"))
+    h.test_result("exactly 20-char quote matches (boundary between whole and substring rule)",
+                  result == True, f"result: {result}")
+
     print()
     h.summarize_and_exit()
 
