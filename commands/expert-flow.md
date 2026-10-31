@@ -1240,13 +1240,13 @@ plan: Rule 8's verifier (`flow-verify-receipt.py --flow-dir`) has already enforc
 [For plan only when state.json has ledger_format, include fenced block:]
 <<<OWE
 Owed human directions (from /expert-flow):
-<one line per direction from flow-ledger.py list --status pending --json, formatted as "seq N: <text>">
+<one line per pending direction, formatted as seq N followed by a colon and the direction text>
 <<<
 implement, fix: the implement-ledger output below, and the coverage table below that. Expect no NOT RUN on a required row. A `done` row whose detail text contains `DECISION: ask` (for example `usage-check-final … state=over-threshold-unreported`) is not `NOT RUN` and does not by itself make the run reduced. The coverage table is computed; do not re-enumerate the plan. For each `uncovered` unit, judge from `git log`/the diff whether it was substantively built. If any unit is neither built nor declared, write `FIDELITY: reduced plan coverage: <ids>`. Declared units are not a failure. Unknown rows are listed but never alone trigger FIDELITY verdict (F1 cluster ruling: non-blocking). Also run `git log --oneline origin/<default branch>..<BRANCH>` (cwd is <WORKTREE>) and expect commits. For each seq in `Addressed:`, judge from the diff whether it was honoured; listed but not honoured is `FIDELITY: reduced human direction not honoured (seq N)`. If `PLAN_PATH` is provided, compare the plan's `## Decisions Made` rulings against the diff; a contradicted ruling is `FIDELITY: reduced plan ruling contradicted (<ref>)`.
 [For implement and fix when state.json has ledger_format, include fenced block:]
 <<<OWE
 Owed human directions (from /expert-flow):
-<one line per direction from flow-ledger.py list --status pending --json, formatted as "seq N: <text>">
+<one line per pending direction, formatted as seq N followed by a colon and the direction text>
 <<<
 [For implement and fix when state.json has ledger_format, include plan rulings:]
 <<<PLAN
@@ -2079,7 +2079,7 @@ Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in shi
 1. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --ledger-close --flow-dir "${FLOW_DIR}"`. Exit 1 is a ship hard stop with its reason (an unanswered question or an unreadable ledger); `/shipit` is never spawned. On exit 0, iterate over each `CLOSE:` line printed.
 2. For each line, parse the status and seq. If the status is `addressed`, run:
    ```bash
-   python3 "$HOME/.claude/scripts/flow-ledger.py" mark --flow-dir "$FLOW_DIR" --seq <seq> --status addressed --by <relpath>
+   python3 "$HOME/.claude/scripts/flow-ledger.py" mark --flow-dir "$FLOW_DIR" --seq <seq> --status addressed --by "$FLOW_DIR/steps/<NN>-<STEP>.md"
    ```
    If the status is `parked`, run:
    ```bash
