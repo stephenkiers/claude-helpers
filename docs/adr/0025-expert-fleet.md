@@ -48,7 +48,7 @@ The table below lists gaps fixed elsewhere (in numbered sibling issues or the ca
 | Gap | Issue | Qualifies |
 |-----|-------|-----------|
 | Accept-and-continue at hard-stop gates | #365 | "Not exercised end to end" if untested — resolved by ADR-0023 amendment (2026-10-29) |
-| Ledger enforcement | #288 | hard-stop and merge-gate answers via prose |
+| Ledger enforcement | #288 | ADR-0023 amendment (2026-10-30) |
 | Non-code plan obligations | #366 | `depends-on` linking (ordering obligations as dependency edges) |
 | Post-review commits and test budget | #367 | #367 covers post-review commits, test budget, and fails-at-base proof. Answer replay testing and answer-path audit are untracked gaps in #381 (comment). |
 | Shared test DB / cross-ticket safety / sibling cross-checks; external merges and dynamic dependency edges | #368 | cross-ticket consistency; #368 covers both |
