@@ -1947,7 +1947,7 @@ Artifact check: ≥1 new commit since `bases.implement` (script).
 **Model note:** The `flow-implement` agent pins the coordinator's model (Sonnet). `--implementer-model` still governs the Haiku units and the #315 escalation; see the escalation telemetry section.
 
 **review.** Args: `--force` always (so a prior review of the same tree is re-run instead of asking)
-plus `--effort <REVIEW_EFFORT>` when set. On `OK`, record `REVIEW_DIR` and the four `CONFIRMED`
+plus `--effort <REVIEW_EFFORT>` when set. Pass `PLAN_PATH=<plan_path>` from the plan step's receipt (the synthesizer uses it to show the Triage Chief the plan's Decisions Made as plan rulings). On `OK`, record `REVIEW_DIR` and the four `CONFIRMED`
 counts, parsed from the receipt file on disk (the last `CONFIRMED:` line). Rulings ("needs you") are
 relayed in batches of up to four; needs-measurement items are never relayed — they wait in the
 action plan for `/verify-queue` after merge.

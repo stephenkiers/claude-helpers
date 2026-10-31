@@ -93,45 +93,45 @@ def main():
 
     result = references_seq(decisions_text, make_record(1, "a direction"))
     h.test_result("'seq 1' in decisions matches seq 1 record (word boundary)",
-                  result == True, f"result: {result}")
+                  result is True, f"result: {result}")
 
     result = references_seq(decisions_text, make_record(3, "something"))
     h.test_result("'seq 1' does not match seq 3",
-                  result == False, f"result: {result}")
+                  result is False, f"result: {result}")
 
     result = references_seq(decisions_text, make_record(13, "another"))
     h.test_result("'seq 13' in decisions matches seq 13 record (word boundary)",
-                  result == True, f"result: {result}")
+                  result is True, f"result: {result}")
 
     # Test quote matching - short quote
     decisions_with_quote = "## Decisions\n## Decided\n- seq 1: \"exact match\"\n"
     result = references_seq(decisions_with_quote, make_record(1, "exact match"))
     h.test_result("short quote (under 20 chars) matches exactly",
-                  result == True, f"result: {result}")
+                  result is True, f"result: {result}")
 
     # Test quote matching - long quote
     decisions_with_long = "## Decisions\n## Decided\n- seq 2: \"this is a very long quote with more text\"\n"
     result = references_seq(decisions_with_long, make_record(2, "this is a very long quote with more text and extra"))
     h.test_result("long quote (20+ chars) matches on 20-char substring",
-                  result == True, f"result: {result}")
+                  result is True, f"result: {result}")
 
     # Test that quote outside a decision entry doesn't match
     no_decisions = "Some random text\nthis is a quote that is longer than 20 chars\n"
     result = references_seq(no_decisions, make_record(1, "this is a quote that is longer than 20 chars"))
     h.test_result("quote outside ## Decided section does not match",
-                  result == False, f"result: {result}")
+                  result is False, f"result: {result}")
 
     # Test emphasis normalization
     emphasis_decisions = "## Decisions\n## Decided\n- seq 4: **bold text** _italic_\n"
     result = references_seq(emphasis_decisions, make_record(4, "bold text italic"))
     h.test_result("emphasis markers are stripped before matching",
-                  result == True, f"result: {result}")
+                  result is True, f"result: {result}")
 
     # Test boundary: exactly 20-character quote (mutation boundary)
     exact_20_decisions = "## Decisions\n## Decided\n- seq 5: \"12345678901234567890\"\n"
     result = references_seq(exact_20_decisions, make_record(5, "12345678901234567890"))
     h.test_result("exactly 20-char quote matches (boundary between whole and substring rule)",
-                  result == True, f"result: {result}")
+                  result is True, f"result: {result}")
 
     print()
     h.summarize_and_exit()
