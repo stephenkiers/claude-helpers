@@ -8,7 +8,7 @@ Written from the plan's behaviour statements alone. Every case runs the real pro
 as a subprocess (no imports of guard internals). The only in-process import is precedent-digest.py's
 parse_review, which the plan names as the consumer that must read the ruling output back.
 
-Run with: python3 tests/test_spec_blind_418.py
+Run with: python3 tests/test_flow_guard_review_ruling_blackbox.py
 """
 
 import importlib.util
