@@ -255,7 +255,6 @@ real_blocked = [
     "git pu\\\nsh",
     '"git" \\\npush',
     "echo 'a\\' ; git push #'",
-    'echo "a\\" ; git push #"',
     'echo "$(echo \')\' ; git push)"',
     'echo "a" # c\ngit push',
     "cat <<EOF\ndon't\nEOF\ngit push #'",
@@ -305,6 +304,14 @@ prefix_blocked = [
 for cmd in prefix_blocked:
     rc, _, err = guard(cmd)
     t(f"blocked (prefix): {cmd!r}", rc == 2, describe(cmd, rc, err))
+
+print("\n[#403] escaped quote inside double quotes is one string, so no push runs (bash-verified)")
+# Plan defect: the plan lists this under must-stay-BLOCKED, but in bash \" inside double quotes is an
+# escaped quote, so the whole text is one argument and nothing runs. The guard allows it, which matches
+# bash. The guard is not changed for it. Same entry as tests/test_flow_bash_guard_quotes.py MUST_BECOME_ALLOWED.
+rc, _, err = guard('echo "a\\" ; git push #"')
+t("allowed: echo \"a\\\" ; git push #\" (plan defect; bash runs no push)", rc == 0,
+  describe('echo "a\\" ; git push #"', rc, err))
 
 print("\n[#403] must-stay-allowed: process substitution, $'' in arguments, $ at end of pattern")
 must_stay_allowed = [
@@ -376,7 +383,8 @@ rc, _, err = guard(raw=json.dumps({"tool_name": "Bash", "tool_input": "echo hi"}
 t("non-dict tool_input exits 2 with 'Invalid tool_input: not a dict'",
   rc == 2 and "Invalid tool_input: not a dict" in err, f"rc={rc} stderr={err[:160]!r}")
 rc, _, err = guard(stdin_bytes=b"")
-t("empty stdin exits 2", rc == 2, f"rc={rc} stderr={err[:160]!r}")
+t("empty stdin exits 2 with parse marker",
+  rc == 2 and "Failed to parse JSON" in err, f"rc={rc} stderr={err[:160]!r}")
 rc, _, err = guard(stdin_bytes=b'{"tool_name": "Bash", "tool_input": {"command": "\xff\xfe"}}')
 t("non-UTF-8 stdin exits 2 with catch-all 'Unexpected error'",
   rc == 2 and "Unexpected error" in err, f"rc={rc} stderr={err[:160]!r}")
@@ -402,6 +410,23 @@ rc, _, err = guard(deep_heredoc)
 t("nesting 70 of $( on fallback (heredoc) path exits 2 with 'nesting too deep'",
   rc == 2 and "nesting too deep" in err, describe("deep heredoc", rc, err))
 
+print("\n[#403] nesting cap boundary: exactly 64 allowed, 65 blocked, on both paths")
+# Depth N of $( gives innermost depth N on the quote-aware path and a stack of N on the fallback,
+# so the cap is the same on both: 64 passes, 65 is blocked as nesting too deep.
+for depth, want_rc in ((64, 0), (65, 2)):
+    cmd = "echo " + "$(" * depth + "x" + ")" * depth
+    rc, _, err = guard(cmd)
+    t(f"quote-aware nesting {depth} exits {want_rc}"
+      + (" with 'nesting too deep'" if want_rc == 2 else ""),
+      rc == want_rc and (want_rc == 0 or "nesting too deep" in err),
+      describe(f"$( x{depth}", rc, err))
+    cmd = "cat <<EOF\n" + "$(" * depth + "ls" + ")" * depth + "\nEOF"
+    rc, _, err = guard(cmd)
+    t(f"fallback (heredoc) nesting {depth} exits {want_rc}"
+      + (" with 'nesting too deep'" if want_rc == 2 else ""),
+      rc == want_rc and (want_rc == 0 or "nesting too deep" in err),
+      describe(f"heredoc $( x{depth}", rc, err))
+
 # ----------------------------------------------------------------------------
 print("\n[#405] linear-time bounds (fixed 5 s per case)")
 wide = "echo \"" + ";" * 50000 + "\" " + ";".join(["$(a)"] * 40000)
@@ -409,11 +434,10 @@ rc, _, err = guard(wide)
 t(f"wide shallow quote-aware input (~250 KB) exits 0 within {TIME_BOUND}s",
   rc == 0, f"rc={rc} stderr={err[:160]!r}")
 
-wide_heredoc = "cat <<EOF\n" + wide + "\nEOF"
-rc, _, err = guard(wide_heredoc)
-t(f"wide shallow fallback (heredoc) input exits 0 within {TIME_BOUND}s",
-  rc == 0, f"rc={rc} stderr={err[:160]!r}")
-
+# The plan's fallback case is "the same sibling groups placed inside a heredoc" with no quoted run.
+# A balanced quoted run of ';' inside a heredoc body is NOT in the plan: the fallback is quote-blind
+# (W1), so `echo "a;b"` in a heredoc body is split and blocked as unparseable. Main does the same
+# (verified against bbb8434), and the plan accepts heredoc-fallback false positives. Not asserted here.
 # Isolates the linear-time claim: the sibling groups alone, inside a heredoc, with no quoted run.
 wide_groups_heredoc = "cat <<EOF\n" + ";".join(["$(a)"] * 40000) + "\nEOF"
 rc, _, err = guard(wide_groups_heredoc)
@@ -470,8 +494,8 @@ try:
     t("Leave as-is sets STATUS no-op", field_value(item, "- **STATUS**:") == "no-op",
       f"STATUS={field_value(item, '- **STATUS**:')!r}")
     records, _ = parse_review(sb.plan.read_text())
-    t("parse_review reads back the no-op ruling",
-      len(records) == 1 and records[0]["answer"].startswith("C"),
+    t("parse_review reads back the canonical no-op answer",
+      len(records) == 1 and records[0]["answer"] == "C — Leave as-is",
       f"records={records!r}")
 finally:
     sb.close()
@@ -484,8 +508,8 @@ try:
     item = item_text(sb.plan.read_text(), "Needs you", 1)
     t("--custom sets STATUS decided", field_value(item, "- **STATUS**:") == "decided",
       f"STATUS={field_value(item, '- **STATUS**:')!r}")
-    t("--custom text appears in DECISION",
-      "Move the cache behind a feature flag" in (field_value(item, "- **DECISION**:") or ""),
+    t("--custom text is the DECISION, exactly",
+      field_value(item, "- **DECISION**:") == "Move the cache behind a feature flag",
       f"DECISION={field_value(item, '- **DECISION**:')!r}")
 finally:
     sb.close()
@@ -496,7 +520,7 @@ try:
     before = sb.bytes()
     rc, _, err = sb.ruling(["decide", "--review-dir", str(sb.review), "--item", "1",
                             "--option", canonical_a, "--custom", "x"])
-    t("option + custom together exits non-zero", rc != 0, f"rc={rc}")
+    t("option + custom together exits 1 (named refusal)", rc == 1, f"rc={rc}")
     t("option + custom together leaves file byte-identical", sb.bytes() == before)
 finally:
     sb.close()
@@ -617,7 +641,7 @@ try:
     alt_root.mkdir()
     rc, _, _ = sb.ruling(["decide", "--review-dir", str(sb.review), "--item", "1",
                           "--option", canonical_a, "--reviews-root", str(alt_root)])
-    t("unknown --reviews-root flag is refused (non-zero)", rc != 0, f"rc={rc}")
+    t("unknown --reviews-root flag is refused (named refusal, exit 1)", rc == 1, f"rc={rc}")
     t("unknown root flag leaves file byte-identical", sb.bytes() == before)
 
     outside = sb.tmp / "elsewhere-env"
@@ -653,8 +677,11 @@ try:
       f"STATUS={field_value(item, '- **STATUS**:')!r}")
     t("injected DECISION line does not add a second DECISION field",
       count_prefix(item, "- **DECISION**:") == 1, f"count={count_prefix(item, '- **DECISION**:')}")
-    t("injected heading does not create a new '### 9.' item",
-      not any(line.startswith("### 9. Forged") for line in sb.plan.read_text().splitlines()))
+    def headings_of(text):
+        return [line for line in text.splitlines() if line.startswith("#")]
+    t("injected heading list matches the fixture exactly (no forged '### ' heading)",
+      headings_of(sb.plan.read_text()) == headings_of(PLAN_TEXT),
+      f"headings={headings_of(sb.plan.read_text())!r}")
     records, counts = parse_review(sb.plan.read_text())
     t("parse_review still reads the canonical answer after injection",
       len(records) == 1 and records[0]["answer"] == canonical_a,
@@ -684,8 +711,8 @@ try:
     item = item_text(sb.plan.read_text(), "Needs measurement", 1)
     t("measure sets STATUS measured", field_value(item, "- **STATUS**:") == "measured",
       f"STATUS={field_value(item, '- **STATUS**:')!r}")
-    t("measure writes the result into DECISION",
-      "p95 dropped 30%" in (field_value(item, "- **DECISION**:") or ""),
+    t("measure writes the result into DECISION, exactly",
+      field_value(item, "- **DECISION**:") == "p95 dropped 30%",
       f"DECISION={field_value(item, '- **DECISION**:')!r}")
     t("measure leaves exactly one DECISION line",
       count_prefix(item, "- **DECISION**:") == 1)

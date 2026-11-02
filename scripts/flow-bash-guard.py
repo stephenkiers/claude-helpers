@@ -92,9 +92,13 @@ TRANSPARENT_PREFIXES = (
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _INTERPRETER_RE = re.compile(r"^(python3(\.\d+)?|python|node|perl|ruby)$")
 # A short flag that takes a program: -c (python), -e (node, perl, ruby), -E (perl), -p (node).
-# Combined forms such as -Ic are included.
-_SHORT_EVAL_FLAG_RE = re.compile(r"^-[A-Za-z]*[ceEp]$")
+# Combined forms such as -Ic are included, and so is a program glued to the flag (-c"...", which
+# reaches the guard as one token such as -cimport os; ...).
+_SHORT_EVAL_FLAG_RE = re.compile(r"^-[A-Za-z]*[ceEp]")
 _PROGRAM_WORD_RE = re.compile(r"[\w./=-]+")
+# String escapes that Python, Node and Perl decode: \xNN, \uNNNN, octal, and the simple ones.
+_ESCAPE_RE = re.compile(r"\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|[0-7]{1,3}|.)", re.DOTALL)
+_SIMPLE_ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
 
 
 class UnparseableCommand(Exception):
@@ -624,12 +628,48 @@ def _program_words(tokens):
     return words
 
 
+def _decode_program_escapes(text):
+    """Decode the string escapes a program may spell a verb with (git\\x20push, git\\040push, git\\npush).
+
+    An unknown escape keeps its character and drops the backslash.
+    """
+    def repl(match):
+        body = match.group(1)
+        if body[0] in "xu" and len(body) > 1:
+            return chr(int(body[1:], 16))
+        if body[0] in "01234567":
+            return chr(int(body, 8))
+        return _SIMPLE_ESCAPES.get(body, body)
+
+    return _ESCAPE_RE.sub(repl, text)
+
+
+def _drop_git_config(words):
+    """Drop git's `-c <key=value>` pair (and a glued `-c<key=value>`) from program words.
+
+    Interpreter path only: git's -c takes a value, so without this the subcommand after it is not seen.
+    """
+    kept = []
+    skip_value = False
+    for i, word in enumerate(words):
+        if skip_value:
+            skip_value = False
+            continue
+        if word == "-c" and i + 1 < len(words):
+            skip_value = True
+            continue
+        if word.startswith("-c") and len(word) > 2:
+            continue
+        kept.append(word)
+    return kept
+
+
 def is_interpreter_verb_pair(tokens):
     """Check whether a python/node/perl/ruby -c/-e program contains a git or gh verb pair.
 
-    The program text is split into words. At each word that is git or gh, the words that
-    follow are checked with is_publishing_verb(). Only programs after an eval flag are
-    checked; a script file is not read.
+    The program text is split into words, both as written and with string escapes decoded. At
+    each word that is git or gh, the words that follow (with git -c pairs removed) are checked
+    with is_publishing_verb(). Only programs after an eval flag are checked; a script file is not read.
     """
     if not tokens:
         return False
@@ -646,10 +686,14 @@ def is_interpreter_verb_pair(tokens):
         )
         if not is_eval_flag:
             continue
-        words = _program_words(tokens[k:])
-        for j, word in enumerate(words):
-            if word.lower() in ("git", "gh") and is_publishing_verb([word] + words[j + 1:]):
-                return True
+        tail = tokens[k:]
+        for variant in (tail, [_decode_program_escapes(part) for part in tail]):
+            words = _program_words(variant)
+            for j, word in enumerate(words):
+                if word.lower() in ("git", "gh") and is_publishing_verb(
+                    [word] + _drop_git_config(words[j + 1:])
+                ):
+                    return True
     return False
 
 

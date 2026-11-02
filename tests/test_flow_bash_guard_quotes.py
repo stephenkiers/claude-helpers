@@ -80,6 +80,15 @@ MUST_STAY_BLOCKED = [
     ("echo hi # it's\ngit push #'", "comment fallback; unterminated #' is unparseable"),
     ("cat <<EOF\ngit push\nEOF", "heredoc body line inspected line by line, as on main"),
     ("python3 -c 'import os; os.system(\"git push\")'", "interpreter verb pair (git push); main blocks it only by its quote-blind split"),
+    # Glued flag: the program is part of the -c token (finding 1). Main blocks it by its quote-blind split.
+    ("python3 -c\"import os; os.system('git push')\"", "glued -c: the program is in the same token; interpreter verb pair"),
+    # Escape-encoded verb pairs in the program text (finding 2). Python and Node decode these
+    # escapes, so the program runs git push. Main blocks them by its quote-blind split.
+    ("python3 -c \"import os; os.system('git\\x20push')\"", "escape-encoded \\x20 between git and push; decoded before the verb scan"),
+    ("python3 -c \"import os; os.system('git\\040push')\"", "octal-encoded space between git and push; decoded before the verb scan"),
+    ("python3 -c \"import os; os.system('git\\npush')\"", "escaped newline between git and push; decoded before the verb scan"),
+    # git -c takes a value: the verb after it must still be seen (finding 4). Main blocks it by its quote-blind split.
+    ('python3 -c \'x=["git","-c","a=b","push"]\'', "interpreter verb pair with git -c <key=value> skipped before the subcommand"),
 ]
 
 MUST_BECOME_BLOCKED = [
@@ -117,7 +126,6 @@ FALSE_NEGATIVE_LEDGER = [
     ("timeout -s KILL 5 git push", "timeout with an option; only timeout <duration> is stripped"),
     ("nice -5 git push", "nice with a numeric option; only nice -n N and bare nice are stripped"),
     ("*(e:'git push':)", "zsh glob qualifier; the quoted text is one token that is not git"),
-    ('python3 -c \'x=["git","-c","a=b","push"]\'', "git -c inside an interpreter program; the verb-pair check does not skip git's -c value"),
 ]
 
 

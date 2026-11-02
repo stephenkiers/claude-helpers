@@ -76,6 +76,7 @@ LEAVE_AS_IS = "leave as-is"
 MAX_TEXT = 1000
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 ITEM_NUMBER_RE = re.compile(r"^(\d+)\.(?:\s|$)")
 OPTIONS_LINE_RE = re.compile(r"^- \*\*Options\*\*\s*:")
 COMMAND_LINE_RE = re.compile(r"^\s*[-*]\s+\*\*Command\*\*\s*:")
@@ -204,9 +205,15 @@ def _plan_path(review: str) -> str:
 
 
 def _read_plan(path: str) -> str:
+    """Read the plan. O_NOFOLLOW makes the open refuse a symlink swapped in after _plan_path's lstat."""
     try:
-        with open(path, "rb") as handle:
-            return handle.read().decode("utf-8")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        raise Refusal("%s cannot be opened without following a symlink" % ACTION_PLAN)
+    with os.fdopen(fd, "rb") as handle:
+        data = handle.read()
+    try:
+        return data.decode("utf-8")
     except UnicodeDecodeError:
         raise Refusal("%s is not valid UTF-8" % ACTION_PLAN)
 
@@ -261,14 +268,19 @@ def _answer_matches(existing: str, answer: str) -> bool:
 
 
 def _headings(lines: List[str]) -> List[Tuple[int, int, str]]:
-    """(index, level, title) for every heading outside a fenced code block."""
+    """(index, level, title) for every heading outside a fenced code block (``` or ~~~, CommonMark-style)."""
     found: List[Tuple[int, int, str]] = []
-    in_fence = False
+    fence = ""  # the opening fence run while inside a fenced block, else ""
     for index, line in enumerate(lines):
-        if line.strip().startswith("```"):
-            in_fence = not in_fence
+        stripped = line.strip()
+        if fence:
+            # A closing fence uses the same character, is at least as long, and has no info string.
+            if stripped and set(stripped) == {fence[0]} and len(stripped) >= len(fence):
+                fence = ""
             continue
-        if in_fence:
+        opened = FENCE_OPEN_RE.match(line)
+        if opened is not None:
+            fence = opened.group(1)
             continue
         match = HEADING_RE.match(line)
         if match is not None:
