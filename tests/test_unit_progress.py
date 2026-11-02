@@ -70,6 +70,8 @@ def create_unit_list(basis: str, count: int) -> list:
 
 def main() -> None:
     h = Harness("unit-progress.py")
+    # Use valid 40-character hex SHA for tests
+    VALID_SHA = "abcdef1234567890abcdef1234567890abcdef12"
 
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp) / "scratch"
@@ -80,7 +82,7 @@ def main() -> None:
         sizing = create_minimal_sizing_result()  # min_units = 2
         sizing["min_units"] = 2
         flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "parallel", "single_reason": None})
-        code, out, err = run_progress_cmd(["init", "--anchor", "abc123def", "--base", "abc123def"], stdin_data=flow_input, scratch=str(scratch))
+        code, out, err = run_progress_cmd(["init", "--anchor", VALID_SHA, "--base", VALID_SHA], stdin_data=flow_input, scratch=str(scratch))
         h.test_result("init refuses (exit non-zero)", code != 0, f"exit {code}")
         h.test_result("reason in stderr", "min_units" in err or "below" in err.lower(), err)
 
@@ -89,15 +91,15 @@ def main() -> None:
         sizing = create_minimal_sizing_result()
         sizing["min_units"] = 2
         flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "single", "single_reason": "testing"})
-        code, out, err = run_progress_cmd(["init", "--anchor", "abc123", "--base", "abc123"], stdin_data=flow_input, scratch=str(scratch))
-        h.test_result("init refuses", code != 0, f"exit {code}")
+        code, out, err = run_progress_cmd(["init", "--anchor", VALID_SHA, "--base", VALID_SHA], stdin_data=flow_input, scratch=str(scratch))
+        h.test_result("init refuses single with min_units > 1", code != 0 and ("single" in err.lower() or "min_units" in err.lower()), f"exit {code}: {err}")
 
         print("\n[Test 3] init refuses single with empty reason")
         units = create_unit_list("single", 1)
         sizing = create_minimal_sizing_result()
         sizing["min_units"] = "unknown"
         flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "single", "single_reason": ""})
-        code, out, err = run_progress_cmd(["init", "--anchor", "abc123", "--base", "abc123"], stdin_data=flow_input, scratch=str(scratch))
+        code, out, err = run_progress_cmd(["init", "--anchor", VALID_SHA, "--base", VALID_SHA], stdin_data=flow_input, scratch=str(scratch))
         h.test_result("init refuses empty reason", code != 0, f"exit {code}")
 
         print("\n[Test 4] init refuses sequential with 1 unit")
@@ -105,7 +107,7 @@ def main() -> None:
         sizing = create_minimal_sizing_result()
         sizing["min_units"] = 1
         flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "sequential", "single_reason": None})
-        code, out, err = run_progress_cmd(["init", "--anchor", "abc123", "--base", "abc123"], stdin_data=flow_input, scratch=str(scratch))
+        code, out, err = run_progress_cmd(["init", "--anchor", VALID_SHA, "--base", VALID_SHA], stdin_data=flow_input, scratch=str(scratch))
         h.test_result("init refuses sequential with 1 unit", code != 0, f"exit {code}")
 
         print("\n[Test 5] init accepts sequential with overlapping owned_files (audit F4)")
@@ -162,20 +164,31 @@ def main() -> None:
         h.test_result("pending lists u2", code == 0 and "u2" in out, f"exit {code}, output: {out}")
 
         print("\n[Test 11] check detects schema_version mismatch")
-        # Corrupt the units.json file
+        # Create a real plan file
         git = GitFixture(Path(tmp) / "git2")
         sha2 = git.create_initial_commit("second")
+        plan_file = Path(tmp) / "plan_test11.md"
+        plan_file.write_text("# Test Plan\n")
 
-        units_json = scratch / "units" / "implement"
-        if units_json.exists():
-            for f in units_json.glob("*.json"):
-                if "units" in f.name:
-                    content = json.loads(f.read_text())
-                    content["schema_version"] = 99
-                    f.write_text(json.dumps(content))
+        # Create units with a real plan
+        units = create_unit_list("parallel", 2)
+        sizing = create_minimal_sizing_result()
+        flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "parallel", "single_reason": None})
+        scratch11 = Path(tmp) / "scratch11"
+        scratch11.mkdir()
+        code, _, _ = run_progress_cmd(["init", "--anchor", sha2, "--base", sha2, "--plan", str(plan_file)], stdin_data=flow_input, scratch=str(scratch11))
+        h.test_result("init succeeds for test 11", code == 0)
 
-        code, out, err = run_progress_cmd(["check", "--plan", "/tmp/dummy.md", "--anchor", sha2, "--head", sha2], scratch=str(scratch))
-        h.test_result("check detects schema mismatch", code != 0, f"exit {code}")
+        # Corrupt the units.json file
+        units_json_file = scratch11 / "units" / "implement" / "units.json"
+        if units_json_file.exists():
+            content = json.loads(units_json_file.read_text())
+            content["schema_version"] = 99
+            units_json_file.write_text(json.dumps(content))
+
+        code, out, err = run_progress_cmd(["check", "--plan", str(plan_file), "--anchor", sha2, "--head", sha2], scratch=str(scratch11))
+        h.test_result("check detects schema mismatch", code != 0 and "schema" in err.lower(), f"exit {code}: {err}")
+        h.test_result("units.json exists after check", units_json_file.exists())
 
         print("\n[Test 12] tip prints chain tip SHA")
         # Create fresh record with known SHA

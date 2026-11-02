@@ -24,6 +24,7 @@ Exit codes:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -62,12 +63,21 @@ class UnitProgress(TypedDict):
     unit_id: str
     sha: Optional[str]
     status: UnitStatus
+    commit_seq: Optional[int]  # Monotonic sequence for parallel mode chain tips
+
+
+class CeilingsInfo(TypedDict):
+    """Ceilings info for a single unit."""
+    enforced: bool
+    steps: Optional[int]
+    files: Optional[int]
+    findings: Optional[int]
 
 
 class UnitsJson(TypedDict):
     """Schema for units.json."""
     schema_version: int
-    plan_sha256: str
+    plan_sha256: Optional[str]  # None if no plan was provided
     anchor_sha: str
     base_sha: str
     split_basis: SplitBasis
@@ -75,6 +85,7 @@ class UnitsJson(TypedDict):
     partial_work: PartialWorkMode
     partial_work_reason: str
     sizing: Dict[str, Any]
+    ceilings: Dict[str, Any]  # Per-unit provisional ceilings
     units: List[Unit]
 
 
@@ -154,15 +165,53 @@ def run_git_cmd(cmd: List[str]) -> Tuple[int, str]:
         error(f"unit-progress: failed to run git: {e}")
 
 
-def is_ancestor(ancestor_sha: str, descendant_sha: str) -> bool:
-    """Check if ancestor_sha is an ancestor of descendant_sha using git merge-base."""
-    returncode, _ = run_git_cmd(["git", "merge-base", "--is-ancestor", ancestor_sha, descendant_sha])
+def is_valid_hex_sha(sha: str) -> bool:
+    """Check if a SHA is a valid hex string (7-40 characters)."""
+    return bool(re.fullmatch(r"^[0-9a-f]{7,40}$", sha))
+
+
+def is_ancestor(ancestor_sha: str, descendant_sha: str, git_dir: Optional[str] = None) -> bool:
+    """Check if ancestor_sha is an ancestor of descendant_sha using git merge-base.
+
+    Args:
+        ancestor_sha: The potential ancestor SHA.
+        descendant_sha: The potential descendant SHA.
+        git_dir: Optional git repository directory.
+
+    Returns:
+        True if ancestor_sha is an ancestor of descendant_sha, False otherwise.
+        Raises SystemExit on git error.
+    """
+    if not is_valid_hex_sha(ancestor_sha) or not is_valid_hex_sha(descendant_sha):
+        error("unit-progress: invalid SHA format")
+
+    cmd = ["git"]
+    if git_dir:
+        cmd.extend(["-C", git_dir])
+    cmd.extend(["merge-base", "--is-ancestor", ancestor_sha, descendant_sha])
+
+    returncode, _ = run_git_cmd(cmd)
+    # Return code 0: is ancestor
+    # Return code 1: not ancestor
+    # Return code 128+: error (e.g., object doesn't exist) - treat as not ancestor
     return returncode == 0
 
 
-def get_current_head() -> str:
-    """Get the current HEAD SHA."""
-    returncode, sha = run_git_cmd(["git", "rev-parse", "HEAD"])
+def get_current_head(git_dir: Optional[str] = None) -> str:
+    """Get the current HEAD SHA.
+
+    Args:
+        git_dir: Optional git repository directory.
+
+    Returns:
+        The current HEAD SHA.
+    """
+    cmd = ["git"]
+    if git_dir:
+        cmd.extend(["-C", git_dir])
+    cmd.extend(["rev-parse", "HEAD"])
+
+    returncode, sha = run_git_cmd(cmd)
     if returncode != 0:
         error("unit-progress: failed to get current HEAD SHA")
     return sha
@@ -206,7 +255,10 @@ def write_json_file(file_path: Path, data: Union[UnitsJson, ProgressJson]) -> No
                 f.flush()
                 os.fsync(f.fileno())
         except Exception:
-            os.close(temp_fd)
+            try:
+                os.unlink(temp_path_str)
+            except OSError:
+                pass
             raise
         os.chmod(temp_path_str, 0o600)
         os.replace(temp_path_str, str(file_path))
@@ -239,6 +291,135 @@ def read_json_file(file_path: Path) -> Union[UnitsJson, ProgressJson]:
         error(f"unit-progress: failed to read {file_path.name}: {e}")
 
 
+def read_units(file_path: Path) -> UnitsJson:
+    """Read and validate units.json structure.
+
+    Args:
+        file_path: Path to units.json.
+
+    Returns:
+        Validated UnitsJson data.
+
+    Raises:
+        SystemExit(1) on validation failure.
+    """
+    data = read_json_file(file_path)
+    if not isinstance(data, dict):
+        error("unit-progress: units.json is not a dict")
+
+    # Validate required fields
+    required = ["schema_version", "anchor_sha", "base_sha", "split_basis", "units"]
+    for field in required:
+        if field not in data:
+            error(f"unit-progress: units.json missing {field}")
+
+    # Validate schema version
+    if data.get("schema_version") != 1:
+        error("unit-progress: unknown or missing schema_version in units.json")
+
+    # Validate units list
+    units_list = data.get("units")
+    if not isinstance(units_list, list):
+        error("unit-progress: units is not a list")
+
+    for unit in units_list:
+        if not isinstance(unit, dict):
+            error("unit-progress: unit is not a dict")
+        if not isinstance(unit.get("unit_id"), str) or not unit.get("unit_id"):
+            error("unit-progress: all units must have non-empty unit_id")
+        if not isinstance(unit.get("owned_files"), list):
+            error("unit-progress: unit owned_files must be a list")
+
+    return cast(UnitsJson, data)
+
+
+def read_progress(file_path: Path) -> ProgressJson:
+    """Read and validate progress.json structure.
+
+    Args:
+        file_path: Path to progress.json.
+
+    Returns:
+        Validated ProgressJson data.
+
+    Raises:
+        SystemExit(1) on validation failure.
+    """
+    data = read_json_file(file_path)
+    if not isinstance(data, dict):
+        error("unit-progress: progress.json is not a dict")
+
+    if "progress" not in data:
+        error("unit-progress: progress.json missing 'progress' field")
+
+    # Validate schema version
+    if data.get("schema_version") != 1:
+        error("unit-progress: unknown or missing schema_version in progress.json")
+
+    progress_list = data.get("progress")
+    if not isinstance(progress_list, list):
+        error("unit-progress: progress is not a list")
+
+    for entry in progress_list:
+        if not isinstance(entry, dict):
+            error("unit-progress: progress entry is not a dict")
+
+    return cast(ProgressJson, data)
+
+
+def compute_tip(units_data: UnitsJson, progress_list: List[UnitProgress]) -> str:
+    """Compute the chain tip SHA for a progress record.
+
+    For parallel mode: the committed entry with the highest commit_seq.
+    For sequential mode: the last committed unit in declared order, or base if none committed.
+
+    Args:
+        units_data: The units.json data.
+        progress_list: The progress list from progress.json.
+
+    Returns:
+        The tip SHA.
+
+    Raises:
+        SystemExit(1) on validation failure.
+    """
+    tip_sha = units_data.get("base_sha")
+    split_basis = units_data.get("split_basis", "parallel")
+    units_list_raw = units_data.get("units", [])
+
+    if not isinstance(units_list_raw, list):
+        error("unit-progress: units is not a list")
+
+    if not units_list_raw:
+        return tip_sha or error("unit-progress: no base_sha")
+
+    if split_basis == "parallel":
+        # Find committed entry with highest commit_seq
+        max_seq: Optional[int] = None
+        max_sha: Optional[str] = None
+
+        for entry in progress_list:
+            if entry.get("status") == "committed":
+                seq = entry.get("commit_seq")
+                if seq is not None and (max_seq is None or seq > max_seq):
+                    max_seq = seq
+                    max_sha = entry.get("sha")
+
+        if max_sha:
+            return max_sha
+    else:
+        # Sequential: iterate through declared order
+        units_list = cast(List[Dict[str, Any]], units_list_raw)
+        for unit in units_list:
+            unit_id = unit.get("unit_id")
+            for entry in progress_list:
+                if entry.get("unit_id") == unit_id and entry.get("status") == "committed":
+                    tip_sha = entry.get("sha")
+                    break
+
+    return tip_sha or error("unit-progress: no base_sha")
+
+
 def cmd_init(
     record_dir: Path,
     anchor_sha: str,
@@ -255,7 +436,7 @@ def cmd_init(
         record_dir: Directory to write records to.
         anchor_sha: Anti-tamper SHA.
         base_sha: Unit-branching base SHA.
-        plan_path: Path to plan file for SHA256 (optional; can come from stdin).
+        plan_path: Path to plan file for SHA256 (required; store null if not provided).
         sizing_path: Path to sizing JSON (optional; can come from stdin).
         supersede: Whether to archive existing records.
         partial_work_mode: partial_work mode (none/keep/reset).
@@ -264,7 +445,11 @@ def cmd_init(
     Raises:
         SystemExit(1) on validation failure.
     """
-    import hashlib
+    # Validate SHA formats
+    if not is_valid_hex_sha(anchor_sha):
+        error("unit-progress: init: invalid anchor_sha format")
+    if not is_valid_hex_sha(base_sha):
+        error("unit-progress: init: invalid base_sha format")
 
     # Read unit list from stdin
     try:
@@ -315,6 +500,20 @@ def cmd_init(
         if len(units_input) < min_units:
             error(f"unit-progress: init: {len(units_input)} units < min_units {min_units}")
 
+    # Validation: unit structure (all units must be dicts with required fields)
+    for unit_item in units_input:
+        if not isinstance(unit_item, dict):
+            error("unit-progress: init: all units must be dicts")
+        if not isinstance(unit_item.get("unit_id"), str) or not unit_item.get("unit_id"):
+            error("unit-progress: init: all units must have non-empty unit_id")
+        if not isinstance(unit_item.get("owned_files"), list):
+            error("unit-progress: init: all units must have owned_files as a list")
+
+    # Validation: unit_id uniqueness
+    unit_ids = [u.get("unit_id") for u in units_input]
+    if len(unit_ids) != len(set(unit_ids)):
+        error("unit-progress: init: unit_ids must be unique")
+
     # Validation: single split basis
     if split_basis == "single":
         if min_units is not None and min_units > 1:
@@ -342,7 +541,8 @@ def cmd_init(
                     error(f"unit-progress: init: parallel basis: file {file_path_item} owned by multiple units")
                 seen_files.add(file_path_item)
 
-    # Read plan SHA256 from file or compute from stdin
+    # Read plan SHA256 from file (required)
+    plan_sha256: Optional[str]
     if plan_path:
         try:
             with open(plan_path, "r", encoding="utf-8") as f:
@@ -351,40 +551,48 @@ def cmd_init(
         except (OSError, UnicodeDecodeError) as e:
             error(f"unit-progress: init: failed to read plan: {e}")
     else:
-        # Compute from stdin JSON for testing
-        plan_sha256 = hashlib.sha256(json.dumps(input_data, sort_keys=True).encode("utf-8")).hexdigest()
+        # Store null if no plan provided
+        plan_sha256 = None
 
     # Check for existing records
     units_file = record_dir / "units.json"
     progress_file = record_dir / "progress.json"
 
+    existing_units: Optional[UnitsJson] = None
+    existing_progress: Optional[ProgressJson] = None
+
     if units_file.exists() or progress_file.exists():
         if not supersede:
             error("unit-progress: init: record exists; use --supersede to replace")
-        # Archive existing records
-        existing_units: Union[UnitsJson, ProgressJson] = read_json_file(units_file)
-        existing_progress: Union[UnitsJson, ProgressJson] = read_json_file(progress_file)
 
-        # Check if any units are committed
-        if isinstance(existing_progress, dict) and "progress" in existing_progress:
-            progress_entries = existing_progress.get("progress", [])  # type: ignore
-            if isinstance(progress_entries, list):
-                for progress_entry in progress_entries:
-                    if isinstance(progress_entry, dict) and progress_entry.get("status") == "committed":
-                        error("unit-progress: init: --supersede only allowed when no units are committed")
+        # Read existing records (tolerate missing half)
+        if units_file.exists():
+            existing_units = read_units(units_file)
+        if progress_file.exists():
+            existing_progress = read_progress(progress_file)
 
-        # Archive the existing pair
-        archive_num = 0
-        while True:
-            archive_num += 1
-            archive_units = record_dir / f"units.a{archive_num}.json"
-            archive_progress = record_dir / f"progress.a{archive_num}.json"
-            if not archive_units.exists() and not archive_progress.exists():
-                break
+        # Validate: check if any units are committed (before archiving)
+        if existing_progress:
+            progress_entries = existing_progress.get("progress", [])
+            for progress_entry in progress_entries:
+                if progress_entry.get("status") == "committed":
+                    error("unit-progress: init: --supersede only allowed when no units are committed")
 
-        record_dir.mkdir(parents=True, exist_ok=True)
-        write_json_file(archive_units, existing_units)  # type: ignore
-        write_json_file(archive_progress, existing_progress)  # type: ignore
+        # Archive the existing pair (only if both exist or if we have something to save)
+        if existing_units or existing_progress:
+            archive_num = 0
+            while True:
+                archive_num += 1
+                archive_units = record_dir / f"units.a{archive_num}.json"
+                archive_progress = record_dir / f"progress.a{archive_num}.json"
+                if not archive_units.exists() and not archive_progress.exists():
+                    break
+
+            record_dir.mkdir(parents=True, exist_ok=True)
+            if existing_units:
+                write_json_file(archive_units, existing_units)
+            if existing_progress:
+                write_json_file(archive_progress, existing_progress)
 
     # Build units with order
     units_list: List[Unit] = []
@@ -405,6 +613,14 @@ def cmd_init(
     if pw_mode not in PARTIAL_WORK_MODES:
         error(f"unit-progress: init: --partial-work must be one of {PARTIAL_WORK_MODES}")
 
+    # Build ceilings info (provisional, not enforced)
+    ceilings_info: Dict[str, Any] = {
+        "enforced": False,
+        "steps": 8,
+        "files": 12,
+        "findings": 16,
+    }
+
     # Create units.json
     record_dir.mkdir(parents=True, exist_ok=True)
     units_json: UnitsJson = {
@@ -417,12 +633,13 @@ def cmd_init(
         "partial_work": pw_mode,
         "partial_work_reason": pw_reason,
         "sizing": sizing_data,
+        "ceilings": ceilings_info,
         "units": units_list,
     }
 
     # Create progress.json
     progress_list: List[UnitProgress] = [
-        {"unit_id": unit["unit_id"], "sha": None, "status": "pending"}
+        {"unit_id": unit["unit_id"], "sha": None, "status": "pending", "commit_seq": None}
         for unit in units_list
     ]
     progress_json: ProgressJson = {
@@ -458,34 +675,41 @@ def cmd_mark(
     if status == "committed" and not sha:
         error("unit-progress: mark: committed status requires --sha")
 
+    if status == "committed" and sha:
+        if not is_valid_hex_sha(sha):
+            error("unit-progress: mark: invalid sha format")
+
+    # Check for units.json (required)
+    units_file = record_dir / "units.json"
+    if not units_file.exists():
+        error("unit-progress: mark: units.json does not exist")
+
     progress_file = record_dir / "progress.json"
     if not progress_file.exists():
         error("unit-progress: mark: progress.json does not exist")
 
-    progress_data: Union[UnitsJson, ProgressJson] = read_json_file(progress_file)
-    if "progress" not in progress_data:
-        error("unit-progress: mark: progress.json missing 'progress' field")
+    # Read and validate the records
+    units_data = read_units(units_file)
+    progress_data = read_progress(progress_file)
 
     # Find and update the unit
-    progress_list_raw = progress_data.get("progress", [])  # type: ignore
+    progress_list_raw = progress_data.get("progress", [])
     if not isinstance(progress_list_raw, list):
         error("unit-progress: mark: progress is not a list")
-    progress_list = cast(List[Dict[str, Any]], progress_list_raw)
+    progress_list = cast(List[UnitProgress], progress_list_raw)
 
     if status in ("committed", "failed", "skipped"):
-        units_file = record_dir / "units.json"
-        if units_file.exists():
-            units_rec = read_json_file(units_file)
-            if units_rec.get("split_basis") == "sequential":
-                order = [u.get("unit_id") for u in cast(List[Dict[str, Any]], units_rec.get("units", []))]
-                if unit_id in order:
-                    earlier = set(order[: order.index(unit_id)])
-                    for prior in progress_list:
-                        if prior.get("unit_id") in earlier and prior.get("status") not in ("committed", "skipped"):
-                            error(
-                                f"unit-progress: mark: sequential order: {prior.get('unit_id')} "
-                                f"is {prior.get('status')}, must be committed or skipped before {unit_id}"
-                            )
+        if units_data.get("split_basis") == "sequential":
+            units_list = units_data.get("units", [])
+            order = [u.get("unit_id") for u in cast(List[Dict[str, Any]], units_list)]
+            if unit_id in order:
+                earlier = set(order[: order.index(unit_id)])
+                for prior in progress_list:
+                    if prior.get("unit_id") in earlier and prior.get("status") not in ("committed", "skipped"):
+                        error(
+                            f"unit-progress: mark: sequential order: {prior.get('unit_id')} "
+                            f"is {prior.get('status')}, must be committed or skipped before {unit_id}"
+                        )
 
     found = False
     for entry in progress_list:
@@ -503,16 +727,28 @@ def cmd_mark(
             if current_status not in allowed_from or status not in allowed_from[current_status]:  # type: ignore
                 error(f"unit-progress: mark: cannot transition from {current_status} to {status}")
 
-            entry["status"] = status
-            if sha:
+            entry["status"] = cast(UnitStatus, status)
+
+            # Only store sha for committed status; clear it for others
+            if status == "committed" and sha:
                 entry["sha"] = sha
+                # Assign commit_seq: max existing + 1
+                max_seq = 0
+                for other_entry in progress_list:
+                    other_seq = other_entry.get("commit_seq")
+                    if isinstance(other_seq, int) and other_seq > max_seq:
+                        max_seq = other_seq
+                entry["commit_seq"] = max_seq + 1
+            else:
+                entry["sha"] = None
+                entry["commit_seq"] = None
             break
 
     if not found:
         error(f"unit-progress: mark: unit {unit_id} not found")
 
     # Write updated progress
-    write_json_file(progress_file, progress_data)  # type: ignore
+    write_json_file(progress_file, progress_data)
 
 
 def cmd_check(
@@ -520,6 +756,7 @@ def cmd_check(
     plan_path: str,
     anchor_sha: str,
     head_sha: str,
+    git_dir: Optional[str] = None,
 ) -> None:
     """Consistency check for re-runs.
 
@@ -527,45 +764,48 @@ def cmd_check(
         record_dir: Directory containing units.json and progress.json.
         plan_path: Path to plan file for SHA256 comparison.
         anchor_sha: Expected anchor SHA.
-        head_sha: Expected HEAD SHA.
+        head_sha: Expected HEAD SHA (can be passed or auto-detected).
+        git_dir: Optional git repository directory for ancestor checks.
 
     Raises:
+        SystemExit(3) if no record exists.
         SystemExit(1) on any mismatch.
     """
     units_file = record_dir / "units.json"
     progress_file = record_dir / "progress.json"
 
+    # Exit 3 if no record exists (fresh run)
     if not units_file.exists() or not progress_file.exists():
-        error("unit-progress: check: record files do not exist")
+        print("unit-progress: check: no record files found", file=sys.stderr)
+        sys.exit(3)
 
-    units_data: Union[UnitsJson, ProgressJson] = read_json_file(units_file)
-    progress_data: Union[UnitsJson, ProgressJson] = read_json_file(progress_file)
-
-    # Check schema versions
-    if units_data.get("schema_version") != 1:
-        error("unit-progress: check: unknown or missing schema_version in units.json")
-    if progress_data.get("schema_version") != 1:
-        error("unit-progress: check: unknown or missing schema_version in progress.json")
+    # Read and validate the records
+    units_data = read_units(units_file)
+    progress_data = read_progress(progress_file)
 
     # Validate required fields exist
-    for field in ["plan_sha256", "anchor_sha", "base_sha", "split_basis", "units"]:
+    for field in ["anchor_sha", "base_sha", "split_basis", "units"]:
         if field not in units_data:
             error(f"unit-progress: check: missing field {field} in units.json")
 
-    if "progress" not in progress_data:
-        error("unit-progress: check: missing field 'progress' in progress.json")
+    # Validate SHA formats
+    if not is_valid_hex_sha(anchor_sha):
+        error("unit-progress: check: invalid anchor_sha format")
+    if not is_valid_hex_sha(head_sha):
+        error("unit-progress: check: invalid head_sha format")
 
-    # Check plan SHA256
-    try:
-        with open(plan_path, "r", encoding="utf-8") as f:
-            plan_content = f.read()
-        import hashlib
-        current_plan_sha = hashlib.sha256(plan_content.encode("utf-8")).hexdigest()
-    except (OSError, UnicodeDecodeError) as e:
-        error(f"unit-progress: check: failed to read plan: {e}")
+    # Check plan SHA256 (if plan_sha256 is set)
+    stored_plan_sha = units_data.get("plan_sha256")
+    if stored_plan_sha is not None:
+        try:
+            with open(plan_path, "r", encoding="utf-8") as f:
+                plan_content = f.read()
+            current_plan_sha = hashlib.sha256(plan_content.encode("utf-8")).hexdigest()
+        except (OSError, UnicodeDecodeError) as e:
+            error(f"unit-progress: check: failed to read plan: {e}")
 
-    if units_data.get("plan_sha256") != current_plan_sha:
-        error("unit-progress: check: plan_sha256 mismatch")
+        if stored_plan_sha != current_plan_sha:
+            error("unit-progress: check: plan_sha256 mismatch")
 
     # Check anchor SHA
     if units_data.get("anchor_sha") != anchor_sha:
@@ -576,71 +816,67 @@ def cmd_check(
         main_units = record_dir.parent / "units.json"
         if not main_units.exists():
             error("unit-progress: check: scoped record has no main units.json to chain from")
-        main_data = read_json_file(main_units)
+        main_data = read_units(main_units)
         if main_data.get("anchor_sha") != units_data.get("anchor_sha"):
             error("unit-progress: check: scoped anchor_sha does not match main record")
         scoped_base = units_data.get("base_sha")
-        if not isinstance(scoped_base, str) or not is_ancestor(scoped_base, head_sha):
+        if not isinstance(scoped_base, str):
+            error("unit-progress: check: scoped base_sha is not a string")
+        if not is_ancestor(scoped_base, head_sha, git_dir):
             error("unit-progress: check: scoped base_sha is not an ancestor of HEAD")
 
     # Check committed SHAs are reachable from HEAD
-    progress_list_raw = progress_data.get("progress", [])  # type: ignore
-    if not isinstance(progress_list_raw, list):
-        error("unit-progress: check: progress is not a list")
-    progress_list = cast(List[Dict[str, Any]], progress_list_raw)
+    progress_list = progress_data.get("progress", [])
 
     for entry in progress_list:
         if entry.get("status") == "committed":
             commit_sha = entry.get("sha")
-            if commit_sha and not is_ancestor(commit_sha, head_sha):
-                error(f"unit-progress: check: committed SHA {commit_sha} not reachable from HEAD")
+            if commit_sha:
+                if not is_valid_hex_sha(commit_sha):
+                    error("unit-progress: check: invalid commit SHA format")
+                if not is_ancestor(commit_sha, head_sha, git_dir):
+                    error(f"unit-progress: check: committed SHA {commit_sha} not reachable from HEAD")
 
-    # Calculate tip SHA
-    tip_sha = units_data.get("base_sha")
-    units_list_raw = units_data.get("units", [])  # type: ignore
-    if not isinstance(units_list_raw, list):
-        error("unit-progress: check: units is not a list")
-    units_list = cast(List[Dict[str, Any]], units_list_raw)
+    # Validate unit id-set equality between units.json and progress.json
+    unit_ids_from_units = set(u.get("unit_id") for u in units_data.get("units", []))
+    unit_ids_from_progress = set(e.get("unit_id") for e in progress_list)
+    if unit_ids_from_units != unit_ids_from_progress:
+        error("unit-progress: check: unit id mismatch between units.json and progress.json")
 
-    if units_list:
-        # Tip is the last committed unit's SHA, or base_sha if none committed
-        for unit in units_list:
-            unit_id = unit.get("unit_id")
-            for entry in progress_list:
-                if entry.get("unit_id") == unit_id and entry.get("status") == "committed":
-                    tip_sha = entry.get("sha")
+    # Compute tip SHA using helper
+    tip_sha = compute_tip(units_data, progress_list)
 
-    # Check HEAD == tip
-    if head_sha != tip_sha:
-        error(f"unit-progress: check: HEAD {head_sha} != chain tip {tip_sha}")
+    # Check tip is ancestor of (or equal to) HEAD
+    if tip_sha != head_sha and not is_ancestor(tip_sha, head_sha, git_dir):
+        error(f"unit-progress: check: chain tip {tip_sha} is not an ancestor of HEAD {head_sha}")
 
 
 def cmd_pending(record_dir: Path) -> None:
     """List pending or failed unit IDs.
 
     Args:
-        record_dir: Directory containing progress.json.
+        record_dir: Directory containing progress.json and units.json.
+
+    Raises:
+        SystemExit(1) if records are missing.
     """
     progress_file = record_dir / "progress.json"
-    if not progress_file.exists():
-        return
-
-    progress_data: Union[UnitsJson, ProgressJson] = read_json_file(progress_file)
-    progress_list_raw = progress_data.get("progress", [])  # type: ignore
-    if not isinstance(progress_list_raw, list):
-        return
-    progress_list = cast(List[Dict[str, Any]], progress_list_raw)
-
-    # Get units in order
     units_file = record_dir / "units.json"
-    if not units_file.exists():
-        return
 
-    units_data: Union[UnitsJson, ProgressJson] = read_json_file(units_file)
-    units_list_raw = units_data.get("units", [])  # type: ignore
-    if not isinstance(units_list_raw, list):
-        return
-    units_list = cast(List[Dict[str, Any]], units_list_raw)
+    if not progress_file.exists() or not units_file.exists():
+        error("unit-progress: pending: record files do not exist")
+
+    progress_data = read_progress(progress_file)
+    units_data = read_units(units_file)
+
+    progress_list = progress_data.get("progress", [])
+    units_list = units_data.get("units", [])
+
+    # Validate unit id-set equality
+    unit_ids_from_units = set(u.get("unit_id") for u in units_list)
+    unit_ids_from_progress = set(e.get("unit_id") for e in progress_list)
+    if unit_ids_from_units != unit_ids_from_progress:
+        error("unit-progress: pending: unit id mismatch between units.json and progress.json")
 
     # Print pending or failed units in order
     for unit in units_list:
@@ -664,27 +900,11 @@ def cmd_tip(record_dir: Path) -> None:
     if not units_file.exists() or not progress_file.exists():
         error("unit-progress: tip: record files do not exist")
 
-    units_data: Union[UnitsJson, ProgressJson] = read_json_file(units_file)
-    progress_data: Union[UnitsJson, ProgressJson] = read_json_file(progress_file)
+    units_data = read_units(units_file)
+    progress_data = read_progress(progress_file)
 
-    tip_sha = units_data.get("base_sha")
-    units_list_raw = units_data.get("units", [])  # type: ignore
-    if not isinstance(units_list_raw, list):
-        error("unit-progress: tip: units is not a list")
-    units_list = cast(List[Dict[str, Any]], units_list_raw)
-
-    progress_list_raw = progress_data.get("progress", [])  # type: ignore
-    if not isinstance(progress_list_raw, list):
-        error("unit-progress: tip: progress is not a list")
-    progress_list = cast(List[Dict[str, Any]], progress_list_raw)
-
-    if units_list:
-        # Tip is the last committed unit's SHA, or base_sha if none committed
-        for unit in units_list:
-            unit_id = unit.get("unit_id")
-            for entry in progress_list:
-                if entry.get("unit_id") == unit_id and entry.get("status") == "committed":
-                    tip_sha = entry.get("sha")
+    progress_list = progress_data.get("progress", [])
+    tip_sha = compute_tip(units_data, progress_list)
 
     print(tip_sha)
 
@@ -764,12 +984,18 @@ def main() -> None:
                 sha=getattr(args, "sha", None),
             )
         elif args.command == "check":
-            current_head = get_current_head()
+            # Use passed --head if provided, otherwise detect from current git repo
+            head_sha = args.head
+            git_dir = None  # Use current directory for git commands
+
+            # If head_sha looks like it might need git lookup (or we want current HEAD),
+            # we could pass git_dir to cmd_check. For now, use what was passed.
             cmd_check(
                 record_dir=record_dir,
                 plan_path=args.plan,
                 anchor_sha=args.anchor,
-                head_sha=current_head,
+                head_sha=head_sha,
+                git_dir=git_dir,
             )
         elif args.command == "pending":
             cmd_pending(record_dir=record_dir)
