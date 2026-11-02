@@ -402,7 +402,7 @@ ISSUE_NUMBER=""
 COMMENTS_STATUS="unavailable"
 
 # Only fetch if PLAN_REF is an issue number or URL
-if [[ "$PLAN_REF" =~ ^[0-9]+$ ]] || [[ "$PLAN_REF" == *"github.com"* ]] && [[ "$PLAN_REF" == *"/issues/"* ]]; then
+if [[ "$PLAN_REF" =~ ^[0-9]+$ ]] || { [[ "$PLAN_REF" == *"github.com"* ]] && [[ "$PLAN_REF" == *"/issues/"* ]]; }; then
   ISSUE_NUMBER=$(echo "$PLAN_REF" | sed 's/.*issues\///' | sed 's/[^0-9].*//')
   
   if [[ -n "$ISSUE_NUMBER" && "$ISSUE_NUMBER" =~ ^[0-9]+$ ]]; then
@@ -464,8 +464,7 @@ fi
 ```
 
 The Ask questions must use the exact option text `"Continue — the plan stands"` (em dash)
-and `"Stop for re-plan"`. Each question entry in the Ask file must carry `"comment_id": "<id>"`.
-Reference the **Ask block** from `~/.claude/prompts/flow-reference.md` in every AskUserQuestion call site.
+and `"Stop for re-plan"`. Each question entry in the Ask file must carry `"comment_id": "<id>"` (a required field that the orchestrator strips before passing to `AskUserQuestion`). The question file shape is as defined in the Ask block of `~/.claude/prompts/flow-reference.md`, with the `comment_id` field added to each question entry. Reference the **Ask block** from `~/.claude/prompts/flow-reference.md` in every AskUserQuestion call site.
 
 ### Parse claude-action-plan.md into directives
 

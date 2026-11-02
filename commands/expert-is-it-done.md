@@ -50,8 +50,8 @@ fi
 
 CALLER_DIR=$(pwd)
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
-COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_NUM" --cwd "$CALLER_DIR" --trusted-only --format json) || {
-  echo "ERROR: helper fetch failed for #$ISSUE_NUM (check auth / number / access)." >&2
+COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --trusted-only --format json) || {
+  echo "ERROR: helper fetch failed for #$ISSUE_REF (check auth / number / access)." >&2
   exit 1
 }
 ISSUE_JSON=$(printf '%s' "$COMMENTS_JSON" | jq '{number: .number, title: .title, url: .url, body: .body, state: .state, created_at: .created_at}')
@@ -59,7 +59,7 @@ ISSUE_TITLE=$(echo "$ISSUE_JSON" | jq -r '.title')
 ISSUE_STATE=$(echo "$ISSUE_JSON" | jq -r '.state')
 ISSUE_URL=$(echo "$ISSUE_JSON" | jq -r '.url')
 
-echo "Issue #$ISSUE_NUM: $ISSUE_TITLE ($ISSUE_STATE)"
+echo "Issue #$ISSUE_REF: $ISSUE_TITLE ($ISSUE_STATE)"
 ```
 
 **Aggregate every merged PR that references this issue.** An epic can span multiple PRs — never
@@ -69,7 +69,7 @@ to catch PRs linked via GitHub's structural close-reference mechanism:
 
 ```bash
 # Body-text search
-if PR_LIST_JSON=$(gh pr list --search "$ISSUE_NUM in:body" --state merged \
+if PR_LIST_JSON=$(gh pr list --search "$ISSUE_REF in:body" --state merged \
   --json number,title,url,baseRefName,headRefName,mergedAt,files 2>/dev/null); then
   AGGREGATION_FAILED=false
 else

@@ -48,19 +48,19 @@ After the plan step, post-plan consumers (implement, fix, review, ship, pre-merg
 
 | Consumer | Role | Where it sits |
 |---|---|---|
-| `/expert-plan` Step 1 (`expert-plan.md:310`) and deprecated variants | reasoning reader (planning) | Helper, all tiers; scouts filter long unverified threads; output goes into `context.md` `## Issue comments`; conflicts become open questions; body is the plan of record; in a flow, records the fetch time and original ticket in `plan-issue-snapshot.json` and reads them back on a redo |
-| `/implement-with-haiku` (implement, fix) | reasoning reader (code-writing) | Helper `--trusted-only`; coordinator only; body from the helper's output; new comments raise an Ask, once |
-| `/expert-review` Step "Gather plan/ticket context" | reasoning reader (review) | Helper `--trusted-only`; summarizer + Sam only; never a separate blind-Pass-1 channel; PR mode unaffected |
-| `/shipit` "Why" | reasoning reader (ship) | Helper `--trusted-only` on the linked issue |
+| `/expert-plan` Step 1 (in-flow; `expert-plan.md:310`) | reasoning reader (planning) | Helper, all tiers, no `--trusted-only`; scouts filter long unverified threads via batched `comment-relevance-scout.md`; output goes into `context.md` `## Issue comments`; conflicts become open questions; body is the plan of record; records the fetch time and original ticket in `plan-issue-snapshot.json` and reads them back on a redo |
+| `/implement-with-haiku` (implement, fix; in-flow) | reasoning reader (code-writing); "new comment since plan" Ask | Helper `--trusted-only` + `--flow-dir`; coordinator only; body from the helper's output; new comments raise an Ask-block question once per flow step |
+| `/expert-review` (in-flow; post-plan) | "new comment since plan" Ask | Helper `--trusted-only` + `--flow-dir`; raises an Ask-block question for each unacknowledged trusted comment posted after plan |
+| `/shipit` (in-flow; post-plan) | "new comment since plan" Ask + reasoning reader ("Why this PR exists") | Helper `--trusted-only` + `--flow-dir` for Ask questions; body-only fetch for PR body synthesis |
 | `/expert-is-it-done` | reasoning reader + human report | Helper `--trusted-only` to agents; unverified shown to the human as counts and authors |
-| `/expert-flow` orchestrator | metadata reader + pre-merge check | Metadata reads stay as they are; pre-merge helper check; relay strips `comment_id` (Step 7 of plan) |
+| `/expert-flow` orchestrator (pre-merge check) | metadata reader + pre-merge check | Metadata reads stay as they are; pre-merge helper check with `--trusted-only` + `--flow-dir`; relay strips `comment_id` |
+| `/expert-plan-deprecated`, `/expert-plan-deprecated-v2` | (none) | Deprecated planners do not use the issue-comments helper; not in-flow |
 | `/track-and-start` `:463` (worktree-only), `:1230` (pivot body fetch), `:981`, `:1024`, `:1258` | mechanical reader (branch name, verbatim archival, state and URL validation) | Body/metadata only, deliberately. These reads never feed reasoning, and archiving must copy the body verbatim |
 | `/track-and-start` Step 4d (`:1060-1120`) | plan-comment **writer** (`## Superseded Plan`) | Unchanged; keeps writing. The marker literal must equal `SUPERSEDED_PLAN_MARKER` (test-pinned). Its comments set the watermark outside a flow and are dropped read-side; inside a flow, post-plan steps use the plan fetch time instead |
 | `/track` `:24-25`, `:170-177` | plan-comment **writer** (`## Implementation Plan`) | Unchanged. The literal must equal `IMPLEMENTATION_PLAN_MARKER` (test-pinned); only the newest trusted post-lower-bound one is read, and it is never raised as "new since plan" |
 | `/track` `:101-146`, `:210` | mechanical reader (cache, duplicate detection) | Body/metadata only; cache stays body-only |
 | `/cleanup` `:611` | retro summary input, 8k cap | Deliberately body-only (its own comment: "comment threads can be huge"); not a flow input; listed so the exclusion is explicit |
-| `/expert-fleet` `:70-114` | reasoning reader | Deferred to #370; body-only until then; pointer comment on #370 |
 | `.claude/github-cache.json` / `scripts/workflow/cache.py` | cache | Unchanged, body-only; no schema bump |
 | Flow ledger `human.jsonl` (`scripts/flow-ledger.py`) | human-input record | Comments are never ledger records. Only the human's answer to a "new comment since plan" question is written, as an `answer` (background only) |
-| ADR-0008 standing exception | governance | Amended in this ticket to cover only general-purpose agents, narrowed by the 2026-10-26 amendment |
-| ADR-0023 | governance | Pointer to the ADR-0008 amendment; restates that comments are source data with provenance |
+| ADR-0008 standing exception | governance | Amended in this ticket to cover only general-purpose steps (plan, implement, fix, ship) in flows; scouts present for planning |
+| ADR-0023 2026-10-30 amendment | governance | Specifies which steps raise the "new comment since plan" Ask and under what conditions |

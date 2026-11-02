@@ -432,9 +432,9 @@ Then also run the **"Detect layout"** block from `~/.claude/prompts/worktree-ref
 # The early plan is the only cache reader here; it ignores a cache that does not describe this branch.
 BRANCH=$(git branch --show-current)
 [ -s "$EARLY_PLAN_FILE" ] || { printf '%s\n' "ERROR: EARLY_PLAN_FILE lost before reading issue_number" >&2; exit 1; }
-ISSUE_NUM=$(jq -r '.issue_number // empty' < "$EARLY_PLAN_FILE" 2>/dev/null)
-if [ -z "$ISSUE_NUM" ]; then
-  ISSUE_NUM=$(echo "$BRANCH" | grep -oE '^[0-9]+' || echo "")
+ISSUE_REF=$(jq -r '.issue_number // empty' < "$EARLY_PLAN_FILE" 2>/dev/null)
+if [ -z "$ISSUE_REF" ]; then
+  ISSUE_REF=$(echo "$BRANCH" | grep -oE '^[0-9]+' || echo "")
 fi
 
 if [ "$STACK_IS_STACKED" != "true" ]; then
@@ -477,7 +477,7 @@ runs on the same PR. Gather:
 - **Title**: a concise (<70 char), imperative summary of the whole branch's diff — same register as
   a commit subject (`add X`, `fix Y`, `rewrite Z`), not a restatement of the last commit alone.
   Assign it to `$TITLE`.
-- **Why this PR exists**: if `$ISSUE_NUM` is set, read the linked issue through the helper (`issue-comments fetch --issue "$ISSUE_NUM" --cwd "$CALLER_DIR" --trusted-only --format json`, parsed to extract the issue title and body). If `$ISSUE_NUM` is not set, derive the
+- **Why this PR exists**: if `$ISSUE_REF` is set, read the linked issue through the helper (`issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --trusted-only --format json`, parsed to extract the issue title and body). If `$ISSUE_REF` is not set, derive the
   problem from the user's original request earlier in this conversation. 1-3 sentences on the problem/need being addressed.
 - **What it does**: a bulleted list of concrete behavior/code changes, derived from the `git log`
   / `git diff --stat` output above.
@@ -493,6 +493,39 @@ runs on the same PR. Gather:
 **Guardrail:** you are synthesizing this body from conversation context, which may contain
 internal-only detail (credentials, other people's names, private ticket notes). Write PR-body prose
 as if it will be public — don't restate secrets or non-public context.
+
+### Handle new comments since plan (flow only)
+
+When `FLOW_DIR` is set and an issue number is available (`$ISSUE_REF`), call the helper with `--flow-dir` to check for unacknowledged trusted comments posted after the plan step fetched:
+
+```bash
+if [[ -n "$FLOW_DIR" && -n "$ISSUE_REF" ]]; then
+  CALLER_DIR=$(pwd)
+  source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
+  NEW_COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --trusted-only --flow-dir "$FLOW_DIR" --format json 2>/dev/null || echo "{}")
+  
+  # Extract unacknowledged trusted comments
+  NEW_COMMENT_IDS=$(printf '%s' "$NEW_COMMENTS_JSON" | jq -r '.comments[] | select(.trust == "trusted" and .acknowledged == false) | .id' 2>/dev/null)
+  
+  # For each unacknowledged trusted comment, ask through the Ask block
+  for COMMENT_ID in $NEW_COMMENT_IDS; do
+    # Get the comment body for the Ask summary/brief
+    COMMENT_DATA=$(printf '%s' "$NEW_COMMENTS_JSON" | jq --arg cid "$COMMENT_ID" '.comments[] | select(.id == $cid)' 2>/dev/null)
+    
+    # Apply the Ask block from ~/.claude/prompts/flow-reference.md with:
+    # - STEP_NAME: ship (from the step prompt)
+    # - question: includes the fenced comment text
+    # - options: ["Continue — the plan stands", "Stop for re-plan"]
+    # - comment_id: $COMMENT_ID (added to question entry)
+    # If "Stop for re-plan" or free text → write FAILED receipt with Reason: stopped on new issue comment $COMMENT_ID
+    # If "Continue — the plan stands" → record answer in ledger and proceed
+    
+    # This is handled by the Ask block relay in flow-reference.md; see the implementation there.
+  done
+fi
+```
+
+The Ask questions must use the exact option text `"Continue — the plan stands"` (em dash) and `"Stop for re-plan"`. Each question entry in the Ask file must carry `"comment_id": "<id>"` (a required field that the orchestrator strips before passing to `AskUserQuestion`). The question file shape is as defined in the Ask block of `~/.claude/prompts/flow-reference.md`, with the `comment_id` field added to each question entry. Reference the **Ask block** from `~/.claude/prompts/flow-reference.md` in every AskUserQuestion call site.
 
 ```bash
 # Prepare temp file for PR body (multi-line content too risky to inline)
@@ -532,9 +565,9 @@ Once you've written that real content to `$TMP_BODY`, continue:
 
 ```bash
 # Prepend "Closes #N" if issue is set
-if [ -n "$ISSUE_NUM" ]; then
+if [ -n "$ISSUE_REF" ]; then
   {
-    echo "Closes #$ISSUE_NUM"
+    echo "Closes #$ISSUE_REF"
     echo ""
     cat "$TMP_BODY"
   } > "${TMP_BODY}.with-issue"

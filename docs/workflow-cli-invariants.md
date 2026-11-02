@@ -191,6 +191,8 @@ run, since `build_check_order` records a `null_command` skip entry for null-valu
 - `2`: Usage or validation error (malformed reference, bad `--cwd`, foreign repo without `--allow-other-repo`).
 - `3`: The issue itself could not be fetched.
 
+**Relevance filter and scout batching:** When more than 5 unverified comments survive filtering, the `fetch` output carries `relevance_filter: {required: true, threshold: 5, batches: [[id1, id2, ...], ...]}` with comment ids split into at most 6 batches. Otherwise `relevance_filter: {required: false}`. The calling command dispatches one Haiku scout per batch (prompts/comment-relevance-scout.md) and passes the scout reports to `finalize`.
+
 **Fixed behavior:**
 - Trust tier: `TRUSTED_ASSOCIATIONS = {"OWNER", "COLLABORATOR"}` (code constant, not config).
 - Markers and budgets: `SUPERSEDED_PLAN_MARKER`, `IMPLEMENTATION_PLAN_MARKER`, `CONTINUE_LABEL`, `TRUSTED_MAX_COMMENTS`, `TRUSTED_CHAR_BUDGET`, etc. (code constants).

@@ -1056,7 +1056,7 @@ This amendment adds the third bounded exception to the no-auto-remediation stanc
 
 ## Amendment 2026-10-30: Issue comments through Ask-based "new comment since plan" relay
 
-**Overview:** With the `/expert-flow` helper that fetches and filters GitHub issue comments (#401, ticket #370), the flow now reads live comments at plan time and post-plan steps, and relays new comments through the Ask block.
+**Overview:** With the `/expert-flow` helper that fetches and filters GitHub issue comments (#401, which implements ticket #370), the flow now reads live comments at plan time and post-plan steps, and relays new comments through the Ask block. Under `--fleet`, the Ask becomes a park (`fleet-ask.json`), and fleet processing resumes each parked ticket once the human has answered the fleet batch. Ticket #421 tracks the missing parts of the relevance-scout path (validators for scout reports, unverified-comment budget expansion).
 
 **Relay mechanism:** Every post-plan consumer (implement, fix, review, ship, pre-merge check) that runs inside a flow:
 

@@ -379,13 +379,15 @@ a real `/expert-flow` run). "Machine-enforced" is evidenced for the hook-denied 
 
 ## Amendment 2026-10-30: Issue comments read by general-purpose steps
 
-With the `/expert-flow` helper for reading GitHub issue comments (ticket #401), premise (b) of the standing exception ("not reading arbitrary diff content as untrusted data") no longer holds for two general-purpose steps that now read issue comments:
+With the `/expert-flow` helper for reading GitHub issue comments (ticket #401), premise (b) of the standing exception ("not reading arbitrary diff content as untrusted data") no longer holds for general-purpose steps that read issue comments:
 
-**Plan step** receives the widest input of any step: trusted **and** unverified comments (from the helper without `--trusted-only`). It runs as a full-capability `general-purpose` agent with `Write` and unrestricted Bash. The plan step's orchestrator writes unverified comment text directly into the `## Issue comments` section of `context.md` and into scout batches before any contributor sees it.
+**In-flow plan step** (`/expert-plan`) receives the widest input of any step: trusted **and** unverified comments (from the helper without `--trusted-only`). It runs as a full-capability `general-purpose` agent with `Write` and unrestricted Bash. The plan step's orchestrator writes unverified comment text directly into the `## Issue comments` section of `context.md` and into scout batches before any contributor sees it.
 
-**Ship step** reads trusted comments on the linked issue (`--trusted-only`, unverified excluded). It runs as a `general-purpose` agent.
+**In-flow implement and fix steps** (`/implement-with-haiku`) read trusted comments on the linked issue (`--trusted-only`, unverified excluded). They run as `general-purpose` agents.
 
-**Restricted steps** (implement, fix, review) and the **pre-merge check** receive trusted comments only (`--trusted-only`); they are governed by the 2026-10-26 restrictions, not this exception.
+**In-flow ship step** (`/shipit`) reads trusted comments on the linked issue (`--trusted-only`, unverified excluded). It runs as a `general-purpose` agent.
+
+**Restricted steps** (in-flow review step and the pre-merge check) and the **deprecated planners** (not in flow) receive trusted comments only (`--trusted-only`) or no comments at all; they are governed by the 2026-10-26 restrictions, not this exception. The deprecated planners `/expert-plan-deprecated` and `/expert-plan-deprecated-v2` do not use the issue-comments helper.
 
 **Mitigations** (what they do and do not do):
 - Trust tier boundaries (OWNER/COLLABORATOR vs. unverified)

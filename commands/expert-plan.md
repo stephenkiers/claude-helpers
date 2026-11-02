@@ -378,9 +378,11 @@ COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" pyt
 if [ -z "$COMMENTS_JSON" ]; then
   # If fetching fails, continue on description or ask
   COMMENTS_STATUS="unavailable"
+  FETCHED_AT=""
 else
   cp /dev/stdin "$SESSION_DIR/issue-comments.json" <<<"$COMMENTS_JSON"
   COMMENTS_STATUS=$(printf '%s' "$COMMENTS_JSON" | jq -r '.comments_status // "ok"')
+  FETCHED_AT=$(printf '%s' "$COMMENTS_JSON" | jq -r '.fetched_at // ""')
 fi
 ```
 
@@ -429,10 +431,11 @@ if [ -n "$COMMENTS_JSON" ]; then
 fi
 ```
 
-Write the `## Issue comments` section to context.md. Render the comments as markdown:
+Write the `## Issue comments` section to context.md. Render the comments as markdown from the saved JSON (single fetch, not two diverging fetches):
 
 ```bash
 if [ -n "$COMMENTS_JSON" ]; then
+  # Render markdown from the already-fetched JSON saved to disk
   COMMENTS_MARKDOWN=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" $FLOW_DIR_FLAG $ALLOW_OTHER_REPO_FLAG --format markdown 2>/dev/null) || COMMENTS_MARKDOWN=""
   if [ -n "$COMMENTS_MARKDOWN" ]; then
     printf '\n%s\n' "$COMMENTS_MARKDOWN" >> "$SESSION_DIR/context.md"
@@ -440,7 +443,7 @@ if [ -n "$COMMENTS_JSON" ]; then
 fi
 ```
 
-Inside a flow, write `${FLOW_DIR}/plan-comment-ids.json` (union on redo) and `${FLOW_DIR}/plan-issue-snapshot.json` (only if absent):
+Inside a flow, write `${FLOW_DIR}/plan-comment-ids.json` (union on redo) and `${FLOW_DIR}/plan-issue-snapshot.json` (only if absent). Build the snapshot with one `jq -n --arg/--argjson` call per variable so invalid JSON fails loudly (a corrupt snapshot will cause the helper's `load_plan_fetch` to treat it as an error on resume):
 
 ```bash
 if [ -n "$FLOW_DIR" ] && [ -n "$COMMENTS_JSON" ]; then
@@ -448,7 +451,15 @@ if [ -n "$FLOW_DIR" ] && [ -n "$COMMENTS_JSON" ]; then
   printf '%s\n' "$COMMENT_IDS" > "${FLOW_DIR}/plan-comment-ids.json"
   
   if [ ! -f "${FLOW_DIR}/plan-issue-snapshot.json" ]; then
-    SNAPSHOT='{"schema_version":1,"fetched_at":"'$(printf '%s' "$COMMENTS_JSON" | jq -r '.fetched_at')'","title":"'$(printf '%s' "$ISSUE_TITLE" | jq -R -s '@json')'","body":"'$(printf '%s' "$ISSUE_BODY" | jq -R -s '@json')'","labels":'$(printf '%s' "$ISSUE_LABELS" | jq -R 'split(" ") | map(select(length > 0))')'}'
+    FETCHED_AT=$(printf '%s' "$COMMENTS_JSON" | jq -r '.fetched_at')
+    LABELS=$(printf '%s' "$COMMENTS_JSON" | jq -r '[.labels[]? // ""]')
+    SNAPSHOT=$(jq -n \
+      --arg schema_version "1" \
+      --arg fetched_at "$FETCHED_AT" \
+      --arg title "$ISSUE_TITLE" \
+      --arg body "$ISSUE_BODY" \
+      --argjson labels "$LABELS" \
+      '{schema_version: ($schema_version | tonumber), fetched_at: $fetched_at, title: $title, body: $body, labels: $labels}')
     printf '%s' "$SNAPSHOT" > "${FLOW_DIR}/plan-issue-snapshot.json.tmp" && mv "${FLOW_DIR}/plan-issue-snapshot.json.tmp" "${FLOW_DIR}/plan-issue-snapshot.json"
   fi
 fi
