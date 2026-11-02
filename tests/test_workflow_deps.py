@@ -23,6 +23,9 @@ from workflow import deps
 from _test_harness import Harness
 
 
+# The fixtures in this file (GIT_PREFIX, FAKE_NPM, fake_npm, make_layout) are duplicated on purpose in
+# test_workflow_deps_cli.py and test_workflow_deps_spec_blind.py. Each suite runs standalone with its own
+# fake package manager and layout, so one shared helper would couple three independent suites.
 GIT_PREFIX = ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
 
 FAKE_NPM = (
@@ -120,6 +123,17 @@ if __name__ == "__main__":
         for argv in deps.MANAGER_INSTALL_ARGV.values()
     )
     test_result("every table install argv is frozen or immutable", frozen)
+    per_major = (
+        deps.yarn_install_argv("1.22.19") == ("yarn", "install", "--frozen-lockfile")
+        and deps.yarn_install_argv("4.1.0") == ("yarn", "install", "--immutable")
+        and deps.yarn_install_argv("2.4.3") == ("yarn", "install", "--immutable")
+        and deps.yarn_install_argv(None) is None
+        and deps.yarn_install_argv("latest") is None
+    )
+    test_result(
+        "yarn argv is --frozen-lockfile for 1.x, --immutable for 2+, and None when the version is unreadable",
+        per_major,
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -247,7 +261,7 @@ if __name__ == "__main__":
             result = deps.ensure_deps(feat, main)
             test_result(
                 "an unreadable main project.yaml fails closed instead of falling back to the lockfile default",
-                result.status == "failed" and marker_lines(marker) == [],
+                result.status == "failed" and marker_lines(marker) == [] and "unreadable" in (result.detail or ""),
                 f"status={result.status} detail={result.detail}",
             )
 
@@ -255,12 +269,14 @@ if __name__ == "__main__":
         root = Path(tmp)
         main, feat = make_layout(root, {"package-lock.json": NPM_LOCK, "package.json": BASE_PACKAGE})
         (main / ".claude").mkdir()
-        (main / ".claude" / "project.yaml").write_text("commands:\n  install: 'npm ci\n")
+        # Parseable YAML whose value is not shell-splittable (unclosed single quote), so the failure is the shell split.
+        (main / ".claude" / "project.yaml").write_text("commands:\n  install: \"npm ci 'unclosed\"\n")
         with fake_npm(root) as marker:
             result = deps.ensure_deps(feat, main)
             test_result(
-                "a commands.install that does not shell-split is failed without running anything",
-                result.status == "failed" and marker_lines(marker) == [],
+                "a commands.install that does not shell-split is failed (not a valid command) without running anything",
+                result.status == "failed" and marker_lines(marker) == []
+                and "not a valid command" in (result.detail or ""),
                 f"status={result.status} detail={result.detail}",
             )
 
@@ -272,10 +288,10 @@ if __name__ == "__main__":
         joined = "\n".join(failed.output_lines())
         test_result(
             "a failing install is failed (exit 1) with a redacted tail",
-            failed.status == "failed" and failed.exit_code == 1
+            failed.status == "failed" and failed.exit_code == 1 and "exit 1" in (failed.detail or "")
             and "secret123" not in joined and "topsecret" not in joined
             and "_authToken=***" in joined and "Authorization: ***" in joined,
-            f"status={failed.status} out={joined!r}",
+            f"status={failed.status} detail={failed.detail} out={joined!r}",
         )
         with fake_npm(root) as marker:
             retry = deps.ensure_deps(feat, main)
@@ -284,6 +300,126 @@ if __name__ == "__main__":
                 retry.status == "installed" and len(marker_lines(marker)) == 2,
                 f"status={retry.status} marker={marker_lines(marker)}",
             )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main, feat = make_layout(root, {"package-lock.json": NPM_LOCK, "package.json": BASE_PACKAGE})
+        pid_file = root / "npm.pid"
+        sleeper_dir = root / "sleepbin"
+        sleeper_dir.mkdir()
+        sleeper = sleeper_dir / "npm"
+        sleeper.write_text("#!/bin/sh\necho \"$$\" > \"$PIDFILE\"\nsleep 30\nexit 0\n")
+        sleeper.chmod(0o755)
+        saved = {key: os.environ.get(key) for key in ("PATH", "PIDFILE")}
+        os.environ["PATH"] = str(sleeper_dir) + os.pathsep + (saved["PATH"] or "")
+        os.environ["PIDFILE"] = str(pid_file)
+        try:
+            timed = deps.ensure_deps(feat, main, timeout=1)
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        child_pid = int(pid_file.read_text().strip())
+        try:
+            os.kill(child_pid, 0)
+            child_alive = True
+        except ProcessLookupError:
+            child_alive = False
+        test_result(
+            "a sleeping install is killed at the timeout and reported as failed: timeout",
+            timed.status == "failed" and timed.detail == "timeout" and timed.exit_code == 1,
+            f"status={timed.status} detail={timed.detail}",
+        )
+        test_result(
+            "the timed-out installer process is gone once deps ensure returns",
+            not child_alive,
+            f"pid={child_pid} alive={child_alive}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main, feat = make_layout(root, {"package-lock.json": NPM_LOCK, "package.json": BASE_PACKAGE})
+        changed = json.loads(BASE_PACKAGE)
+        changed["dependencies"] = {"left-pad": "1.3.0"}
+        (feat / "package.json").write_text(json.dumps(changed))
+        with fake_npm(root, fail=True):
+            approved_failed = deps.ensure_deps(feat, main, base="main", approve_manifest=True)
+        test_result(
+            "an approval given with a failing install is reported as the install failure",
+            approved_failed.status == "failed" and "exit 1" in (approved_failed.detail or ""),
+            f"status={approved_failed.status} detail={approved_failed.detail}",
+        )
+        with fake_npm(root) as marker:
+            retry = deps.ensure_deps(feat, main, base="main")
+            test_result(
+                "approval survives a failed install: the retry installs without a new approval",
+                retry.status == "installed" and marker_lines(marker) == ["ci", "ci"],
+                f"status={retry.status} detail={retry.detail} marker={marker_lines(marker)}",
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main, feat = make_layout(root, {"yarn.lock": "", "package.json": BASE_PACKAGE})
+        with fake_npm(root) as marker:
+            unknown = deps.ensure_deps(feat, main)
+            test_result(
+                "a yarn lockfile with no usable yarn version fails closed and runs nothing",
+                unknown.status == "failed" and "yarn version is unknown" in (unknown.detail or "")
+                and marker_lines(marker) == [],
+                f"status={unknown.status} detail={unknown.detail}",
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main, _feat = make_layout(root, {"package-lock.json": NPM_LOCK})
+        missing = root / "worktrees" / "ghost"
+        result = deps.ensure_deps(missing, main)
+        test_result(
+            "a worktree path that is not a directory fails before any git or install work",
+            result.status == "failed" and "is not a directory" in (result.detail or ""),
+            f"status={result.status} detail={result.detail}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main, feat = make_layout(root, {"package-lock.json": NPM_LOCK, "package.json": BASE_PACKAGE})
+        (main / ".claude").mkdir()
+        (main / ".claude" / "project.yaml").write_text("commands:\n  install: ''\n")
+        with fake_npm(root) as marker:
+            result = deps.ensure_deps(feat, main)
+            test_result(
+                "an empty commands.install is failed (must be a non-empty string) and runs nothing",
+                result.status == "failed" and "non-empty string" in (result.detail or "")
+                and marker_lines(marker) == [],
+                f"status={result.status} detail={result.detail}",
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main, feat = make_layout(root, {"package-lock.json": NPM_LOCK, "package.json": BASE_PACKAGE})
+        (main / ".claude").mkdir()
+        (main / ".claude" / "project.yaml").write_text(
+            "commands:\n  install: definitely-not-a-real-binary-xyz --flag\n"
+        )
+        result = deps.ensure_deps(feat, main)
+        test_result(
+            "a commands.install whose program cannot start is failed (could not start)",
+            result.status == "failed" and "could not start" in (result.detail or ""),
+            f"status={result.status} detail={result.detail}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main, feat = make_layout(root, {"package-lock.json": NPM_LOCK, "package.json": BASE_PACKAGE})
+        (feat / "package.json").write_text("[]\n")
+        result = deps.ensure_deps(feat, main, base="main")
+        test_result(
+            "a worktree package.json that is not a JSON object fails the manifest gate closed",
+            result.status == "failed" and "is not a JSON object" in (result.detail or ""),
+            f"status={result.status} detail={result.detail}",
+        )
 
     print("[Section 4] Manifest gate")
 

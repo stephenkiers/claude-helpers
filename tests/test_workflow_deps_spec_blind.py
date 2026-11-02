@@ -54,6 +54,8 @@ from typing import Dict, Iterator, List, Optional
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
 
+# Fixtures (git, make_layout, make_fake_bin) are duplicated on purpose from test_workflow_deps.py and
+# test_workflow_deps_cli.py: each suite runs standalone, and this one is written from the plan alone.
 FAKE_NAMES = ["npm", "pnpm", "yarn", "bun", "fakeinstall"]
 
 # lockfile -> (manager name, frozen argv after the manager name)
@@ -266,7 +268,11 @@ def commit_in(wt: Path, message: str) -> None:
 
 def section_table(t):
     for lockfile, name, args in TABLE:
-        with case({lockfile: "lock-v1\n"}) as c:
+        tracked = {lockfile: "lock-v1\n"}
+        if name == "yarn":
+            # Yarn needs a readable version (packageManager) to pick its argv; 4.x is the Berry --immutable case.
+            tracked["package.json"] = package_json(package_manager="yarn@4.1.0")
+        with case(tracked) as c:
             r = c.run()
             calls = c.calls()
             t(f"{lockfile}: prints DEPS: installed and exits 0",
@@ -394,7 +400,7 @@ def section_stamp(t):
           r.first_line == "DEPS: installed" and len(c.calls()) == 2,
           f"line={r.first_line!r} calls={len(c.calls())}")
 
-    with case({"yarn.lock": "y1\n"}) as c:
+    with case({"yarn.lock": "y1\n", "package.json": package_json(package_manager="yarn@4.1.0")}) as c:
         first = c.run()
         precondition = (c.wt / ".pnp.cjs").exists() and not (c.wt / "node_modules").exists()
         second = c.run()
@@ -440,7 +446,7 @@ def section_failure(t):
         t("after the failure is gone, the next run installs again",
           retry.first_line == "DEPS: installed", f"line={retry.first_line!r}")
 
-    with case({"yarn.lock": "y1\n"}) as c:
+    with case({"yarn.lock": "y1\n", "package.json": package_json(package_manager="yarn@4.1.0")}) as c:
         write(c.fail, "fresh failure\n")
         r = c.run()
         t("failed fresh install leaves no stamp",

@@ -21,6 +21,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 from _test_harness import Harness
 
 
+# Fixtures (GIT_PREFIX, FAKE_NPM, make_layout, write_fake_npm) are duplicated on purpose from
+# test_workflow_deps.py and test_workflow_deps_spec_blind.py: each suite runs standalone, so one shared
+# helper would couple three independent suites' fixtures.
 REPO_ROOT = Path(__file__).parent.parent
 GIT_PREFIX = ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
 

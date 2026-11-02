@@ -9,6 +9,19 @@ project.yaml. The worktree's own copy is ignored, because a flow agent can write
 
 Result categories and exit codes (distinct per category; argparse keeps 2 for usage errors):
   current 0, installed 0, failed 1, ambiguous 3, manifest-changed 4, skipped 5
+
+Operational notes:
+  - Timeout: an install is killed after DEPS_TIMEOUT_SECS (900s). A caller that runs `deps ensure`
+    in the background must allow more than that before it kills the process, or the install may be
+    cut short by the caller instead. A SIGKILL to this process cannot run the cleanup, so the
+    installer's process group keeps running in that case. SIGINT and SIGTERM do run the cleanup:
+    the group is killed, and SIGTERM exits 143.
+  - Environment: the install inherits the full environment on purpose (see _run_install).
+  - Stamp: a successful install records the command, lockfile hash, manifest hash and any manifest
+    approval in <git dir>/claude-helpers/deps-stamp.json. An install that leaves neither node_modules
+    nor .pnp.cjs cannot pass the artifact check, so it is reinstalled on every run.
+  - Manifest gate: covers package.json, the table lockfiles, INSTALL_CONFIG_FILES and .yarn/releases.
+    Its residual gaps are listed beside INSTALL_CONFIG_FILES.
 """
 
 import hashlib
@@ -21,15 +34,19 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Any, Dict, List, Optional, Tuple
+from typing import IO, Any, Dict, List, Literal, Optional, Tuple
 
 from . import worktrees
+from .fsutil import atomic_write_text, read_json_object
 
 try:
     import yaml  # type: ignore[import-untyped]
 except ImportError:
     yaml = None  # type: ignore[assignment]
 
+# atomic_write_text and read_json_object live in fsutil.py; checks.py imports them from this module.
+
+Status = Literal["current", "installed", "failed", "ambiguous", "manifest-changed", "skipped"]
 
 # Closed lockfile -> package manager table. Any lockfile not listed here is ignored.
 LOCKFILE_MANAGERS: Dict[str, str] = {
@@ -44,18 +61,29 @@ LOCKFILE_MANAGERS: Dict[str, str] = {
 MANAGER_INSTALL_ARGV: Dict[str, Tuple[str, ...]] = {
     "npm": ("npm", "ci"),
     "pnpm": ("pnpm", "install", "--frozen-lockfile"),
+    # Yarn 2 and later (Berry). Yarn 1 uses YARN1_INSTALL_ARGV; see yarn_install_argv.
     "yarn": ("yarn", "install", "--immutable"),
     "bun": ("bun", "install", "--frozen-lockfile"),
 }
+YARN1_INSTALL_ARGV: Tuple[str, ...] = ("yarn", "install", "--frozen-lockfile")
+
+# Install-config files whose bytes change what an install does. They are hashed into manifest_sha and
+# diffed by the manifest gate with package.json and the lockfiles; .yarn/releases/* is covered the same way.
+# Residual, not covered by the gate: workspace package.json files in subdirectories, pnpm-workspace.yaml,
+# a Yarn 1 .yarnrc, user and global config (~/.npmrc, ~/.yarnrc.yml), environment variables and the Node
+# engine version. A change to any of those does not stop at manifest-changed.
+INSTALL_CONFIG_FILES: Tuple[str, ...] = (".npmrc", ".yarnrc.yml", ".pnpmfile.cjs", "bunfig.toml")
+YARN_RELEASES_DIR = ".yarn/releases"
 
 DEPS_TIMEOUT_SECS = 900
 TAIL_LINE_LIMIT = 40
+OUTPUT_TAIL_BYTES = 64 * 1024
 STAMP_DIR_NAME = "claude-helpers"
 STAMP_FILE_NAME = "deps-stamp.json"
 APPROVAL_KEY = "approved-manifest-sha"
 DEP_FIELDS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
 
-EXIT_CODES: Dict[str, int] = {
+EXIT_CODES: Dict[Status, int] = {
     "current": 0,
     "installed": 0,
     "failed": 1,
@@ -68,17 +96,18 @@ _ABSENT = "\0absent"
 
 # Redactions applied to install output before any receipt, state file or park file sees it.
 _REDACTIONS: List[Tuple[Any, str]] = [
-    (re.compile(r"(_authToken\s*=\s*)\S+"), r"\1***"),
+    (re.compile(r"(?i)((?:_authtoken|_password|password|token)\s*=\s*)\S+"), r"\1***"),
     (re.compile(r"(?i)(authorization:)[^\r\n]*"), r"\1 ***"),
-    (re.compile(r"(_password\s*=\s*)\S+"), r"\1***"),
     (re.compile(r"(?i)([a-z][a-z0-9+.\-]*://)[^\s/@]+@"), r"\1***@"),
+    # Token prefixes: GitHub (ghp_, gho_, ghu_, ghs_, ghr_, github_pat_), npm (npm_), Slack (xoxb-, xoxp-, ...).
+    (re.compile(r"(\b(?:gh[pousr]_|github_pat_|npm_|xox[abposr]-))[A-Za-z0-9_\-]{16,}"), r"\1***"),
 ]
 
 
 @dataclass
 class DepsResult:
     """One deps ensure outcome: a status category, its detail, and a redacted tail on failure."""
-    status: str
+    status: Status
     detail: Optional[str] = None
     tail: List[str] = field(default_factory=list)
 
@@ -107,23 +136,80 @@ class _ManifestChange:
     error: Optional[str] = None
 
 
-def read_json_object(path: Path) -> Optional[Dict[str, Any]]:
-    """The parsed JSON object at path, or None when absent, unreadable, unparseable or not an object."""
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+@dataclass
+class InstallOutcome:
+    """
+    What one install run produced.
+
+    returncode is None when the run never exited (timed out) or never started (launch_error set).
+    """
+    returncode: Optional[int]
+    output_tail: str
+    launch_error: Optional[str] = None
+    timed_out: bool = False
+
+
+@dataclass(frozen=True)
+class _InstallPlan:
+    argv: List[str]
+    command_key: str
+
+
+@dataclass(frozen=True)
+class _Fingerprint:
+    """What a stamp must record for an install to count as current."""
+    command: str
+    lockfile: Optional[str]
+    lockfile_sha: Optional[str]
+    manifest: str
+
+    def record(self) -> Dict[str, Any]:
+        return {
+            "command": self.command,
+            "lockfile": self.lockfile,
+            "lockfile_sha256": self.lockfile_sha,
+            "manifest_sha256": self.manifest,
+        }
+
+    def matches(self, stamp: Dict[str, Any]) -> bool:
+        return (
+            stamp.get("command") == self.command
+            and stamp.get("lockfile_sha256") == self.lockfile_sha
+            and stamp.get("manifest_sha256") == self.manifest
+        )
+
+
+def _declared_package_manager_parts(worktree: Path) -> Tuple[Optional[str], Optional[str]]:
+    """(name, version) from package.json packageManager, e.g. ("yarn", "4.1.0"); a missing part is None."""
+    data = read_json_object(worktree / "package.json")
+    if data is None:
+        return None, None
+    value = data.get("packageManager")
+    if not isinstance(value, str) or not value.strip():
+        return None, None
+    name, _, rest = value.strip().partition("@")
+    version = rest.split("+", 1)[0].strip() or None
+    return name.strip() or None, version
 
 
 def _declared_package_manager(worktree: Path) -> Optional[str]:
-    data = read_json_object(worktree / "package.json")
-    if data is None:
+    return _declared_package_manager_parts(worktree)[0]
+
+
+def yarn_install_argv(version: Optional[str]) -> Optional[Tuple[str, ...]]:
+    """
+    The frozen install argv for a Yarn version from packageManager: --frozen-lockfile for 1.x and
+    --immutable for 2 and later. None when the version cannot be read, so the caller fails closed.
+    """
+    match = re.match(r"(\d+)(?:\.|$)", (version or "").strip())
+    if match is None:
         return None
-    value = data.get("packageManager")
-    if not isinstance(value, str) or not value.strip():
-        return None
-    return value.strip().split("@", 1)[0] or None
+    major = int(match.group(1))
+    if major == 1:
+        return YARN1_INSTALL_ARGV
+    if major >= 2:
+        return MANAGER_INSTALL_ARGV["yarn"]
+    return None
 
 
 def find_lockfile(worktree: Path) -> Tuple[Optional[Lockfile], Optional[str]]:
@@ -131,11 +217,13 @@ def find_lockfile(worktree: Path) -> Tuple[Optional[Lockfile], Optional[str]]:
     Select the root lockfile of a worktree from the closed table.
 
     Returns (lockfile, ambiguous). ambiguous is a human-readable list of the conflicting files when
-    more than one table lockfile is present, or when package.json packageManager names a different
-    manager than the lockfile (D3). Both return None for the lockfile.
+    the table lockfiles name more than one manager, or when package.json packageManager names a
+    different manager than the lockfile (D3). Both return None for the lockfile. Two lockfiles of the
+    same manager (bun.lock and bun.lockb) are one manager, so they select the first name in sorted order.
     """
     present = [name for name in sorted(LOCKFILE_MANAGERS) if (worktree / name).is_file()]
-    if len(present) > 1:
+    managers = {LOCKFILE_MANAGERS[name] for name in present}
+    if len(managers) > 1:
         return None, ", ".join(present)
     if not present:
         return None, None
@@ -147,10 +235,24 @@ def find_lockfile(worktree: Path) -> Tuple[Optional[Lockfile], Optional[str]]:
     return Lockfile(name, manager), None
 
 
+def _manifest_files(worktree: Path) -> List[str]:
+    """Relative names hashed into manifest_sha, in a fixed order; a file's absence is part of the hash."""
+    names = ["package.json"] + sorted(LOCKFILE_MANAGERS) + list(INSTALL_CONFIG_FILES)
+    releases = worktree / YARN_RELEASES_DIR
+    if releases.is_dir():
+        names += sorted(f"{YARN_RELEASES_DIR}/{p.name}" for p in releases.iterdir() if p.is_file())
+    return names
+
+
+def _manifest_pathspecs() -> List[str]:
+    """The git pathspecs the manifest gate diffs: the same files as _manifest_files, with the releases directory whole."""
+    return ["package.json"] + sorted(LOCKFILE_MANAGERS) + list(INSTALL_CONFIG_FILES) + [YARN_RELEASES_DIR]
+
+
 def manifest_sha(worktree: Path) -> str:
-    """sha256 over package.json and every table lockfile's bytes (absence is part of the hash)."""
+    """sha256 over package.json, every table lockfile, INSTALL_CONFIG_FILES and .yarn/releases (absence is part of the hash)."""
     digest = hashlib.sha256()
-    for name in ["package.json"] + sorted(LOCKFILE_MANAGERS):
+    for name in _manifest_files(worktree):
         digest.update(name.encode() + b"\0")
         path = worktree / name
         if path.is_file():
@@ -160,46 +262,21 @@ def manifest_sha(worktree: Path) -> str:
 
 
 def _lockfile_sha(worktree: Path, lockfile: Optional[Lockfile]) -> Optional[str]:
+    """sha256 over every table lockfile that belongs to the selected manager (bun.lock and bun.lockb both count)."""
     if lockfile is None:
         return None
-    return hashlib.sha256((worktree / lockfile.name).read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    for name in sorted(LOCKFILE_MANAGERS):
+        if LOCKFILE_MANAGERS[name] == lockfile.manager and (worktree / name).is_file():
+            digest.update(name.encode() + b"\0")
+            digest.update((worktree / name).read_bytes())
+            digest.update(b"\0")
+    return digest.hexdigest()
 
 
-def _has_install_artifact(worktree: Path, lockfile: Lockfile) -> bool:
-    """node_modules, or for yarn the Plug'n'Play .pnp.cjs (which creates no node_modules)."""
-    if (worktree / "node_modules").is_dir():
-        return True
-    return lockfile.manager == "yarn" and (worktree / ".pnp.cjs").is_file()
-
-
-def _target_mode(path: Path) -> int:
-    """
-    Permission bits for a rewritten file: the existing file's bits, or the umask default for a new file.
-
-    mkstemp creates 0600 files, so without this a rewrite would silently tighten a 0644 project.yaml.
-    """
-    if path.exists():
-        return path.stat().st_mode & 0o7777
-    umask = os.umask(0)
-    os.umask(umask)
-    return 0o666 & ~umask
-
-
-def atomic_write_text(path: Path, text: str) -> None:
-    """Write text to path via a temp file in the same directory and os.replace. Raises OSError."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as handle:
-            handle.write(text)
-        os.chmod(temp_name, _target_mode(path))
-        os.replace(temp_name, str(path))
-    except BaseException:
-        try:
-            os.unlink(temp_name)
-        except OSError:
-            pass
-        raise
+def _has_install_artifact(worktree: Path) -> bool:
+    """node_modules, or the Yarn Plug'n'Play .pnp.cjs (which creates no node_modules). Required for every install."""
+    return (worktree / "node_modules").is_dir() or (worktree / ".pnp.cjs").is_file()
 
 
 def redact_output(text: str) -> List[str]:
@@ -331,16 +408,19 @@ def _changed_dependency_names(old: Dict[str, Any], new: Dict[str, Any]) -> List[
 
 def _manifest_change(worktree: Path, base: str) -> _ManifestChange:
     """
-    Whether package.json or a table lockfile differs between merge-base(base, HEAD) and the working tree.
+    Whether the manifest files differ between merge-base(base, HEAD) and the working tree.
 
     Covers committed and uncommitted changes (git diff against the merge-base commit) and untracked
-    manifests. The changed dependency names come from parsing both package.json versions as JSON.
+    manifest files. The changed dependency names come from parsing both package.json versions as JSON.
+    A base that starts with "-" is refused, so it can never be read by git as an option.
     """
+    if base.startswith("-"):
+        return _ManifestChange(False, [], "base ref must not start with '-'")
     merge_base = _git(["merge-base", base, "HEAD"], worktree)
     base_sha = merge_base.stdout.strip()
     if merge_base.returncode != 0 or not base_sha:
         return _ManifestChange(False, [], f"cannot compute the merge-base of {base} and HEAD")
-    paths = ["package.json"] + sorted(LOCKFILE_MANAGERS)
+    paths = _manifest_pathspecs()
     diff = _git(["diff", "--quiet", base_sha, "--"] + paths, worktree)
     if diff.returncode not in (0, 1):
         return _ManifestChange(False, [], "git diff failed while checking the manifest")
@@ -375,17 +455,22 @@ def _manifest_change(worktree: Path, base: str) -> _ManifestChange:
 def _describe_change(names: List[str]) -> str:
     if names:
         return ", ".join(names)
-    return "lockfile or package.json metadata (no dependency names changed)"
+    return "lockfile, install config or package.json metadata (no dependency names changed)"
 
 
-def _kill_group(proc: "subprocess.Popen[bytes]") -> None:
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except OSError:
-        pass
+def _stop_group(proc: "subprocess.Popen[bytes]") -> None:
+    """
+    Kill the install's process group if the install is still running, then reap the leader.
 
-
-OUTPUT_TAIL_BYTES = 64 * 1024
+    Runs on every exit path of an install, so an interrupt cannot leave the installer running. A
+    finished install is not signalled, so a normal exit keeps its current behaviour.
+    """
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    proc.wait()
 
 
 def _read_output_tail(sink: IO[bytes]) -> str:
@@ -404,35 +489,208 @@ def _read_output_tail(sink: IO[bytes]) -> str:
     return text
 
 
-def _run_install(argv: List[str], worktree: Path, timeout: int) -> Tuple[Optional[int], str, Optional[str]]:
+def _exit_on_term(signum: int, frame: Any) -> None:
+    """SIGTERM handler: raise SystemExit so the install's cleanup runs before the process exits."""
+    raise SystemExit(128 + signum)
+
+
+def _execute_install(
+    argv: List[str], worktree: Path, env: Dict[str, str], timeout: int, sink: IO[bytes]
+) -> InstallOutcome:
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=str(worktree),
+            stdin=subprocess.DEVNULL,
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+        )
+    except OSError as e:
+        return InstallOutcome(None, "", launch_error=f"could not start {argv[0]}: {e}")
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    finally:
+        _stop_group(proc)
+    tail = _read_output_tail(sink)
+    if timed_out:
+        return InstallOutcome(None, tail, timed_out=True)
+    return InstallOutcome(proc.returncode, tail)
+
+
+def _run_install(argv: List[str], worktree: Path, timeout: int) -> InstallOutcome:
     """
     Run one install with shell=False, stdin from DEVNULL, a hard timeout and Corepack prompts off.
 
-    Returns (returncode, output_tail, error). error is "timeout" or a launch failure, else None.
+    The install runs in its own session, so its process group can be killed as a whole. The group is
+    killed on timeout, on KeyboardInterrupt, and on SIGTERM (which is turned into SystemExit first).
+    A SIGKILL to this process cannot run that cleanup.
+
+    Deliberate residual (human decision B): the full environment is passed, not a scrubbed one, so
+    lifecycle scripts see tokens such as GH_TOKEN and NPM_TOKEN. Installs already run branch-controlled
+    scripts, and scrubbing the environment would break private-registry auth.
     """
     env = dict(os.environ)
     env["COREPACK_ENABLE_DOWNLOAD_PROMPT"] = "0"
     env["CI"] = "1"
-    with tempfile.TemporaryFile() as sink:
+    previous: Any = signal.SIG_DFL
+    guarded = False
+    try:
+        previous = signal.signal(signal.SIGTERM, _exit_on_term)
+        guarded = True
+    except ValueError:
+        pass  # Not the main thread: signal handlers cannot be installed, so the default applies.
+    try:
+        with tempfile.TemporaryFile() as sink:
+            return _execute_install(argv, worktree, env, timeout, sink)
+    finally:
+        if guarded:
+            signal.signal(signal.SIGTERM, previous)
+
+
+def _manifest_gate(
+    worktree: Path, base: str, stamp: Dict[str, Any], current_manifest: str
+) -> Optional[DepsResult]:
+    """manifest-changed or failed when the manifest differs from base and is not approved; None to proceed."""
+    change = _manifest_change(worktree, base)
+    if change.error is not None:
+        return DepsResult("failed", change.error)
+    if change.changed and stamp.get(APPROVAL_KEY) != current_manifest:
+        return DepsResult("manifest-changed", _describe_change(change.names))
+    return None
+
+
+def _lockfile_install_argv(
+    worktree: Path, lockfile: Lockfile
+) -> Tuple[Optional[Tuple[str, ...]], Optional[str]]:
+    """The frozen argv for the selected manager. Yarn is chosen by its packageManager major, or fails closed."""
+    if lockfile.manager != "yarn":
+        return MANAGER_INSTALL_ARGV[lockfile.manager], None
+    _name, version = _declared_package_manager_parts(worktree)
+    argv = yarn_install_argv(version)
+    if argv is None:
+        return None, (
+            "yarn version is unknown (package.json packageManager has no usable yarn version); "
+            "set commands.install in the main project.yaml"
+        )
+    return argv, None
+
+
+def _install_plan(
+    worktree: Path, lockfile: Optional[Lockfile], install_command: Optional[str]
+) -> Tuple[Optional[_InstallPlan], Optional[str]]:
+    """The argv to run and the command string recorded in the stamp. An explicit commands.install wins."""
+    if install_command is not None:
         try:
-            proc = subprocess.Popen(
-                argv,
-                cwd=str(worktree),
-                stdin=subprocess.DEVNULL,
-                stdout=sink,
-                stderr=subprocess.STDOUT,
-                env=env,
-                start_new_session=True,
-            )
-        except OSError as e:
-            return None, "", f"could not start {argv[0]}: {e}"
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _kill_group(proc)
-            proc.wait()
-            return None, _read_output_tail(sink), "timeout"
-        return proc.returncode, _read_output_tail(sink), None
+            argv = shlex.split(install_command)
+        except ValueError as e:
+            return None, f"commands.install is not a valid command ({e})"
+        if not argv:
+            return None, "commands.install is empty"
+        return _InstallPlan(argv, install_command), None
+    if lockfile is None:
+        return None, "no lockfile and no commands.install"
+    argv_tuple, error = _lockfile_install_argv(worktree, lockfile)
+    if argv_tuple is None:
+        return None, error or "no install argv"
+    return _InstallPlan(list(argv_tuple), " ".join(argv_tuple)), None
+
+
+def _install_and_record(
+    worktree: Path,
+    plan: _InstallPlan,
+    fingerprint: _Fingerprint,
+    stamp_file: Path,
+    stamp: Dict[str, Any],
+    timeout: int,
+) -> DepsResult:
+    # The stamp goes before the install starts; a failed or killed install never looks installed.
+    # A manifest approval survives in an approval-only stamp so a failed install does not force a new one.
+    prior_approval = stamp.get(APPROVAL_KEY)
+    remove_error = _remove_file(stamp_file)
+    if remove_error is not None:
+        return DepsResult("failed", remove_error)
+    if prior_approval is not None:
+        write_error = _write_stamp(stamp_file, {APPROVAL_KEY: prior_approval})
+        if write_error is not None:
+            return DepsResult("failed", write_error)
+
+    outcome = _run_install(plan.argv, worktree, timeout)
+    if outcome.timed_out:
+        return DepsResult("failed", "timeout", redact_output(outcome.output_tail))
+    if outcome.launch_error is not None:
+        return DepsResult("failed", outcome.launch_error)
+    if outcome.returncode != 0:
+        return DepsResult("failed", f"exit {outcome.returncode}", redact_output(outcome.output_tail))
+
+    record = fingerprint.record()
+    if prior_approval is not None:
+        record[APPROVAL_KEY] = prior_approval
+    write_error = _write_stamp(stamp_file, record)
+    if write_error is not None:
+        return DepsResult("failed", write_error)
+    return DepsResult("installed")
+
+
+def _ensure(
+    worktree: Path,
+    main_worktree: Path,
+    base: Optional[str],
+    approve_manifest: bool,
+    timeout: int,
+) -> DepsResult:
+    real_worktree, error = _validated_worktree(worktree, main_worktree)
+    if error is not None or real_worktree is None:
+        return DepsResult("failed", error or "invalid worktree")
+
+    install_command, error = _main_install_command(main_worktree)
+    if error is not None:
+        return DepsResult("failed", error)
+
+    lockfile, ambiguous = find_lockfile(real_worktree)
+    if ambiguous is not None:
+        return DepsResult("ambiguous", ambiguous)
+    if lockfile is None and install_command is None:
+        return DepsResult("skipped", "no lockfile")
+
+    plan, error = _install_plan(real_worktree, lockfile, install_command)
+    if plan is None:
+        return DepsResult("failed", error or "no install plan")
+
+    stamp_file, error = _stamp_path(real_worktree)
+    if error is not None or stamp_file is None:
+        return DepsResult("failed", error or "no stamp location")
+
+    current_manifest = manifest_sha(real_worktree)
+    fingerprint = _Fingerprint(
+        command=plan.command_key,
+        lockfile=lockfile.name if lockfile is not None else None,
+        lockfile_sha=_lockfile_sha(real_worktree, lockfile),
+        manifest=current_manifest,
+    )
+
+    stamp = _read_stamp(stamp_file)
+    if approve_manifest:
+        # Merged into the existing stamp, so an approval never erases the record of the current install.
+        stamp = dict(stamp)
+        stamp[APPROVAL_KEY] = current_manifest
+        write_error = _write_stamp(stamp_file, stamp)
+        if write_error is not None:
+            return DepsResult("failed", write_error)
+
+    if base is not None:
+        gated = _manifest_gate(real_worktree, base, stamp, current_manifest)
+        if gated is not None:
+            return gated
+
+    if fingerprint.matches(stamp) and _has_install_artifact(real_worktree):
+        return DepsResult("current")
+
+    return _install_and_record(real_worktree, plan, fingerprint, stamp_file, stamp, timeout)
 
 
 def ensure_deps(
@@ -453,84 +711,13 @@ def ensure_deps(
         approve_manifest: Record approval of the current manifest hash in the stamp, so the gate
             clears. Only the orchestrator passes this, at a manifest-changed stop the human chose to retry.
         timeout: Hard limit on the install, in seconds.
+
+    Returns:
+        A DepsResult whose status is one of the Status categories. Every failure is returned, not raised:
+        an OSError from reading or writing the worktree, its stamp or the install output comes back as
+        status "failed" with a detail.
     """
-    real_worktree, error = _validated_worktree(worktree, main_worktree)
-    if error is not None or real_worktree is None:
-        return DepsResult("failed", error or "invalid worktree")
-
-    install_command, error = _main_install_command(main_worktree)
-    if error is not None:
-        return DepsResult("failed", error)
-
-    lockfile, ambiguous = find_lockfile(real_worktree)
-    if ambiguous is not None:
-        return DepsResult("ambiguous", ambiguous)
-    if lockfile is None and install_command is None:
-        return DepsResult("skipped", "no lockfile")
-
-    if install_command is not None:
-        try:
-            argv = shlex.split(install_command)
-        except ValueError as e:
-            return DepsResult("failed", f"commands.install is not a valid command ({e})")
-        command_key = install_command
-    else:
-        assert lockfile is not None
-        argv = list(MANAGER_INSTALL_ARGV[lockfile.manager])
-        command_key = " ".join(argv)
-    if not argv:
-        return DepsResult("failed", "commands.install is empty")
-
-    stamp_file, error = _stamp_path(real_worktree)
-    if error is not None or stamp_file is None:
-        return DepsResult("failed", error or "no stamp location")
-
-    stamp = _read_stamp(stamp_file)
-    if approve_manifest:
-        stamp = {APPROVAL_KEY: manifest_sha(real_worktree)}
-        write_error = _write_stamp(stamp_file, stamp)
-        if write_error is not None:
-            return DepsResult("failed", write_error)
-
-    if base is not None:
-        change = _manifest_change(real_worktree, base)
-        if change.error is not None:
-            return DepsResult("failed", change.error)
-        if change.changed and stamp.get(APPROVAL_KEY) != manifest_sha(real_worktree):
-            return DepsResult("manifest-changed", _describe_change(change.names))
-
-    lock_sha = _lockfile_sha(real_worktree, lockfile)
-    artifact_ok = lockfile is None or _has_install_artifact(real_worktree, lockfile)
-    if stamp.get("command") == command_key and stamp.get("lockfile_sha256") == lock_sha and artifact_ok:
-        return DepsResult("current")
-
-    # The stamp goes before the install starts; a failed or killed install never looks installed.
-    # A manifest approval survives in an approval-only stamp so a failed install does not force a new one.
-    prior_approval = stamp.get(APPROVAL_KEY)
-    remove_error = _remove_file(stamp_file)
-    if remove_error is not None:
-        return DepsResult("failed", remove_error)
-    if prior_approval is not None:
-        write_error = _write_stamp(stamp_file, {APPROVAL_KEY: prior_approval})
-        if write_error is not None:
-            return DepsResult("failed", write_error)
-
-    code, output, run_error = _run_install(argv, real_worktree, timeout)
-    if run_error == "timeout":
-        return DepsResult("failed", "timeout", redact_output(output))
-    if run_error is not None:
-        return DepsResult("failed", run_error)
-    if code != 0:
-        return DepsResult("failed", f"exit {code}", redact_output(output))
-
-    record: Dict[str, Any] = {
-        "command": command_key,
-        "lockfile": lockfile.name if lockfile is not None else None,
-        "lockfile_sha256": lock_sha,
-    }
-    if prior_approval is not None:
-        record[APPROVAL_KEY] = prior_approval
-    write_error = _write_stamp(stamp_file, record)
-    if write_error is not None:
-        return DepsResult("failed", write_error)
-    return DepsResult("installed")
+    try:
+        return _ensure(worktree, main_worktree, base, approve_manifest, timeout)
+    except OSError as e:
+        return DepsResult("failed", f"filesystem error: {e}")
