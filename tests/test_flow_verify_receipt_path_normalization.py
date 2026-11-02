@@ -131,8 +131,8 @@ def main():
         # Verify that ./src/step1.py was classified correctly
         # Extract classification rows (lines with pipe delimiters and status keywords)
         lines = stdout.split("\n")
-        classification_lines = [l for l in lines if "|" in l and any(s in l for s in ["covered", "declared", "uncovered"])]
-        has_correct_classification = any("step1" in l and ("declared" in l or "covered" in l) for l in classification_lines)
+        classification_lines = [line for line in lines if "|" in line and any(s in line for s in ["covered", "declared", "uncovered"])]
+        has_correct_classification = any("step1" in line and ("declared" in line or "covered" in line) for line in classification_lines)
 
         h.test_result(
             "coverage output classifies file with ./ prefix correctly",
@@ -207,7 +207,7 @@ def main():
         # (covered, declared, uncovered are the expected literals from the plan)
         valid_statuses = ["covered", "declared", "uncovered"]
         lines = stdout.split("\n")
-        classification_lines = [l for l in lines if "|" in l and any(s in l for s in valid_statuses)]
+        classification_lines = [line for line in lines if "|" in line and any(s in line for s in valid_statuses)]
 
         h.test_result(
             "at least one classification line is produced",
@@ -216,7 +216,7 @@ def main():
         )
 
         # Verify each classification line uses exactly one valid status
-        valid_status_count = sum(1 for l in classification_lines if sum(1 for s in valid_statuses if f"| {s} |" in l) == 1)
+        valid_status_count = sum(1 for line in classification_lines if sum(1 for s in valid_statuses if f"| {s} |" in line) == 1)
         h.test_result(
             "all classification lines use exactly one expected status literal",
             valid_status_count == len(classification_lines),

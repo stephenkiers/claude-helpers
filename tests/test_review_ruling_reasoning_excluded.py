@@ -162,7 +162,7 @@ def main():
         h.test_result(
             "conflicting option leaves file byte-identical",
             sb.bytes() == after_first,
-            f"file changed"
+            "file changed"
         )
 
     finally:
