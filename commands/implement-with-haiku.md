@@ -781,7 +781,8 @@ third refusal, or on any exit other than 0 or 1, write the FAILED receipt (when 
 **6. Handle `--only-units` with a record (plan-coverage retry).** When `--only-units` is given but a record already exists:
 - Run `check` first (failure: unit-record-mismatch).
 - Do a fresh scoped split of only the named plan ids, sized by `unit-sizing.py --only-units`.
-- Call `init --scope scoped-a<ATTEMPT>` for a scoped record; main record untouched; commits marked in scoped record; next `check` follows the chain.
+- Call `init --scope scoped-a<ATTEMPT>` for a scoped record; main record untouched; commits marked in scoped record; next `check` follows the chain. The scope name is used verbatim and must match `scoped-a<digits>`. `check` on a scoped record also verifies the main record exists, the anchors agree, and the scoped base is an ancestor of HEAD.
+- In sequential mode `mark` refuses to record a unit as committed, failed or skipped while an earlier unit is still pending or failed. Status changes are otherwise permissive on purpose: Retry needs failed→pending.
 
 **7. Write the planned-paths file.** After finalization, collect all owned files from the persisted units (the union, for overlapping sequential ownership) plus any files changed in the ticket branch since `START_SHA`:
 

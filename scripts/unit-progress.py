@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import subprocess
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -120,7 +121,11 @@ def validate_record_dir(path: str, step: str, scope: Optional[str] = None, is_fl
     # Build the record directory path
     record_dir = base / "units" / step
     if scope:
-        record_dir = record_dir / f"scoped-a{scope}"
+        # The scope is the full directory name (e.g. "scoped-a2"); never prefix it,
+        # and refuse anything that could escape units/<step>/ or alias the main record.
+        if not re.fullmatch(r"scoped-a[0-9]+", scope):
+            error(f"unit-progress: --scope must look like 'scoped-a<N>', got {scope!r}")
+        record_dir = record_dir / scope
 
     # Create directory if it doesn't exist (only for actual writes)
     return record_dir
@@ -467,6 +472,21 @@ def cmd_mark(
         error("unit-progress: mark: progress is not a list")
     progress_list = cast(List[Dict[str, Any]], progress_list_raw)
 
+    if status in ("committed", "failed", "skipped"):
+        units_file = record_dir / "units.json"
+        if units_file.exists():
+            units_rec = read_json_file(units_file)
+            if units_rec.get("split_basis") == "sequential":
+                order = [u.get("unit_id") for u in cast(List[Dict[str, Any]], units_rec.get("units", []))]
+                if unit_id in order:
+                    earlier = set(order[: order.index(unit_id)])
+                    for prior in progress_list:
+                        if prior.get("unit_id") in earlier and prior.get("status") not in ("committed", "skipped"):
+                            error(
+                                f"unit-progress: mark: sequential order: {prior.get('unit_id')} "
+                                f"is {prior.get('status')}, must be committed or skipped before {unit_id}"
+                            )
+
     found = False
     for entry in progress_list:
         if entry.get("unit_id") == unit_id:
@@ -550,6 +570,18 @@ def cmd_check(
     # Check anchor SHA
     if units_data.get("anchor_sha") != anchor_sha:
         error("unit-progress: check: anchor_sha mismatch")
+
+    # A scoped record must chain from the main record: same anchor, and its base is on HEAD's history.
+    if re.fullmatch(r"scoped-a[0-9]+", record_dir.name):
+        main_units = record_dir.parent / "units.json"
+        if not main_units.exists():
+            error("unit-progress: check: scoped record has no main units.json to chain from")
+        main_data = read_json_file(main_units)
+        if main_data.get("anchor_sha") != units_data.get("anchor_sha"):
+            error("unit-progress: check: scoped anchor_sha does not match main record")
+        scoped_base = units_data.get("base_sha")
+        if not isinstance(scoped_base, str) or not is_ancestor(scoped_base, head_sha):
+            error("unit-progress: check: scoped base_sha is not an ancestor of HEAD")
 
     # Check committed SHAs are reachable from HEAD
     progress_list_raw = progress_data.get("progress", [])  # type: ignore
