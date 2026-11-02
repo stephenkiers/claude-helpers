@@ -31,7 +31,7 @@ from typing import Callable, Any, Tuple
 from . import cleanup, merge, shipit, checks, track, verify_queue, issue_comments
 from .models import RepoCacheData
 from .providers import GithubProvider, LocalProvider
-from .providers.base import Provider
+from .providers.base import Provider, ProviderError
 from . import worktrees
 
 
@@ -337,7 +337,9 @@ def main() -> None:
     issue_comments_subparsers = issue_comments_parser.add_subparsers(dest="issue_comments_action")
 
     issue_comments_fetch_parser = issue_comments_subparsers.add_parser(
-        "fetch", help="Fetch issue comments with filtering"
+        "fetch",
+        help="Fetch issue comments with filtering",
+        description="Fetch issue comments with filtering. Exit codes: 0 ok (comments_status ok/unavailable/unsupported with no error), 2 usage/parse/unexpected error, 3 provider error."
     )
     issue_comments_fetch_parser.add_argument(
         "--issue", required=True,
@@ -365,7 +367,9 @@ def main() -> None:
     )
 
     issue_comments_finalize_parser = issue_comments_subparsers.add_parser(
-        "finalize", help="Apply scout verdicts and re-apply budgets"
+        "finalize",
+        help="Apply scout verdicts and re-apply budgets",
+        description="Apply scout verdicts and re-apply budgets. Exit codes: 0 ok, 2 error."
     )
     issue_comments_finalize_parser.add_argument(
         "--fetched", required=True,
@@ -696,9 +700,14 @@ def main() -> None:
                 )
                 if ic_error:
                     output = ic_result.to_dict() if ic_result else {}
+                    # Determine comments_status from result or default to unavailable
+                    if ic_result and hasattr(ic_result, 'comments_status'):
+                        output["comments_status"] = ic_result.comments_status
+                    else:
+                        output["comments_status"] = "unavailable"
                     output["error"] = str(ic_error)
                     print(json.dumps(output))
-                    sys.exit(3 if "fetch" in str(ic_error) or "issue" in str(ic_error).lower() else 0)
+                    sys.exit(3 if isinstance(ic_error, ProviderError) else 2)
                 else:
                     if ic_result is None:
                         output = {"error": "Unexpected: no result or error"}
@@ -709,7 +718,7 @@ def main() -> None:
                     else:
                         print(json.dumps(ic_result.to_dict()))
             except Exception as e:
-                output = {"error": str(e)}
+                output = {"comments_status": "unavailable", "error": str(e)}
                 print(json.dumps(output))
                 sys.exit(2)
         elif args.issue_comments_action == "finalize":
