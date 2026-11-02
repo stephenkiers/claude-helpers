@@ -10,11 +10,16 @@ Covers the documentation requirements from the expert-review action plan for the
   - The main.lock guarantee is described as fresh-vs-fresh only, in both the ADR and the command doc.
   - Free-text answers are framed with a fixed header, and the `--` argv question is recorded.
   - scripts/fleet.py is byte-identical to the POC base 8e97cbf (commit 982a75e on this branch).
+  - Section 6 (#421): the fleet's 4(a)/4(b) relay slices, green on the current doc and red on the
+    frozen pre-#421 fixture for the new-wording checks.
+  - Section 7 (#421): both commands use the shared question renderer (flow-render-questions.py).
 
 Bare `$1`-`$9` tokens in commands/*.md are enforced by tests/test_command_doc_shell_conventions.py
 and are deliberately not repeated here.
 
-Every check reads the real production file at run time. Run with:
+Every check reads the real production file at run time, except the Section 6 red half, which reads
+the frozen fixture tests/fixtures/expert-fleet-pre-421.md (`git show bbb84340:commands/expert-fleet.md`).
+Run with:
   python3 tests/test_fleet_docs_contract.py
 """
 
@@ -22,6 +27,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Dict
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -31,8 +37,33 @@ ADR_PATH = REPO_ROOT / "docs" / "adr" / "0025-expert-fleet.md"
 FLEET_CMD_PATH = REPO_ROOT / "commands" / "expert-fleet.md"
 FLOW_CMD_PATH = REPO_ROOT / "commands" / "expert-flow.md"
 FLEET_PY_PATH = REPO_ROOT / "scripts" / "fleet.py"
+PRE_421_FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "expert-fleet-pre-421.md"
+RENDERER_PATH = REPO_ROOT / "scripts" / "flow-render-questions.py"
 
 POC_SHA = "982a75e"
+
+RENDER_SCRIPT = "flow-render-questions.py"
+RENDER_GRANT = 'Bash(python3 "$HOME/.claude/scripts/flow-render-questions.py":*)'
+BASH_SENTENCE = "A Bash result is not shown to the human"
+
+# Section 6 slice markers in commands/expert-fleet.md Step 4.4.
+SEC_A_START = "**(a) Forms and gates.**"
+SEC_B_START = "**(b) Deliver answers.**"
+SEC_C_START = "**(c) Reports last.**"
+
+# Section 6 checks whose new wording must be absent from the frozen pre-#421 fixture (D2, Q3).
+RED_ON_FIXTURE = [
+    "renderer_call",
+    "same_turn",
+    "bash_sentence",
+    "skip_before_render",
+    "echo",
+    "no_id_label",
+    "slim_inbox",
+    "status_slim",
+    "skipped_counts_running",
+    "render_in_writes",
+]
 
 # Gaps the ADR-0025 gaps table must name (deferred findings, plus the "Doing it" findings recorded for
 # follow-up). Each entry is (description, distinctive prose term). The term must appear in a markdown
@@ -58,6 +89,86 @@ GAP_TERMS = [
     ("lock handle never closed", "lock handle"),
     ("wait and run exit codes undocumented", "exit codes"),
 ]
+
+
+def _between(text, start, end):
+    """Text from start up to (not including) end; "" if either marker is missing or out of order."""
+    i = text.find(start)
+    if i < 0:
+        return ""
+    j = text.find(end, i + len(start))
+    if j < 0:
+        return ""
+    return text[i:j]
+
+
+def _sentence_block(text, marker):
+    """Text from marker up to the next bullet or heading line; "" if the marker is missing."""
+    i = text.find(marker)
+    if i < 0:
+        return ""
+    tail = text[i:]
+    ends = [m.start() for m in re.finditer(r"\n(?:- |## )", tail)]
+    return tail[: ends[0]] if ends else tail
+
+
+def _section(text, marker):
+    """Text from a heading marker up to the next heading line (any level); "" if missing."""
+    i = text.find(marker)
+    if i < 0:
+        return ""
+    tail = text[i:]
+    m = re.search(r"\n#", tail)
+    return tail[: m.start()] if m else tail
+
+
+def _flat(text):
+    """Collapse all whitespace (including the prose line wraps) so phrases match across a wrap."""
+    return " ".join(text.split())
+
+
+def section6_checks(text: str) -> Dict[str, bool]:
+    """One named boolean per #421 4(a)/4(b) check, read from the full text of expert-fleet.md.
+
+    Slices are whitespace-flattened before phrase matching, because the command doc wraps prose
+    across lines (e.g. "previous\\n   turn"). Never raises: a missing slice marker makes every check
+    that needs that slice False.
+    """
+    a = _flat(_between(text, SEC_A_START, SEC_B_START))
+    b_raw = _between(text, SEC_B_START, SEC_C_START)
+    b = _flat("\n".join(line for line in b_raw.splitlines() if "FLEET-REPLY" not in line))
+    step41 = _flat(_between(text, "## Step 4: Dispatch loop", "2. **Launch**"))
+    status = _flat(_between(text, "`--status` / `--resume`: list", "Otherwise, a new fleet:"))
+    item4 = _flat(_between(text, "4. **Inbox.**", "   - **(a) Forms and gates.**"))
+    step45 = _flat(_between(text, "## Step 4: Dispatch loop", "## What this command deliberately does not do"))
+    writes = _flat(_sentence_block(text, "Its own writes are under"))
+
+    renderer_i = a.find(RENDER_SCRIPT)
+    skip_i = a.find("**Skip delivered tickets first.**")
+    relay_i = a.find("**Relay items")
+    skip_clause = a[skip_i:relay_i] if 0 <= skip_i < relay_i else ""
+
+    return {
+        "renderer_call": all(s in a for s in (RENDER_SCRIPT, "--out", "--prefix", "Read")),
+        "assistant_message": "assistant message" in a and "before" in a,
+        "same_turn": "same turn" in a,
+        "mandatory": all(s in a for s in ("mandatory", "never folded", "summarised")),
+        "bash_sentence": BASH_SENTENCE in a,
+        "one_ticket": "another ticket" in a,
+        "skip_before_render": bool(skip_clause) and "running" in skip_clause
+        and "previous turn" in skip_clause and renderer_i > skip_i,
+        "failure_rule": "left parked" in a and "Run /setup-local" in a,
+        "no_id_label": "carries no `<id>:` label" in a,
+        "gate_prefix": "Gate items" in a and "header prefixed `#N`" in a,
+        "copied_unchanged": "copied unchanged" in a,
+        "echo": "delivering #N: <header>: <label>" in b,
+        "slim_inbox": "del(.question_data)" in step41,
+        "status_slim": "del(.question_data)" in status,
+        "reported_not_idle_block": "does not count as open inbox" in step45
+        and "reaches `fleet: idle`" in step45,
+        "skipped_counts_running": "previous turn" in item4 and "running" in item4 and "Step 5" in item4,
+        "render_in_writes": "FLEET/render/" in writes,
+    }
 
 
 def table_rows(text):
@@ -290,6 +401,88 @@ def main():
         "deliberate-not-do bullet carves out checks record-check-answer",
         "checks record-check-answer" in fleet_cmd[fleet_cmd.find("## What this command deliberately does not do"):],
     )
+
+    print("[Section 6] Fleet 4(a)/4(b) rewrite (#421): green on the current doc")
+
+    current_checks = section6_checks(fleet_cmd)
+    for name, passed in current_checks.items():
+        h.test_result(f"expert-fleet.md section 6 check: {name}", passed)
+
+    print()
+    print("[Section 6b] Fleet 4(a)/4(b) rewrite (#421): red on the frozen pre-#421 fixture")
+
+    fixture_ok = PRE_421_FIXTURE_PATH.is_file()
+    h.test_result(
+        "frozen fixture tests/fixtures/expert-fleet-pre-421.md exists",
+        fixture_ok,
+        f"missing: {PRE_421_FIXTURE_PATH}" if not fixture_ok else "",
+    )
+    if fixture_ok:
+        fixture_checks = section6_checks(PRE_421_FIXTURE_PATH.read_text())
+        for name in RED_ON_FIXTURE:
+            got = fixture_checks[name]
+            h.test_result(
+                f"pre-#421 fixture: new-wording check '{name}' is False",
+                not got,
+                "check is True on the pre-change text, so it does not discriminate" if got else "",
+            )
+
+    print()
+    print("[Section 7] Both commands use the shared question renderer (#421)")
+
+    fleet_tools = re.search(r"^allowed-tools:(.*)$", fleet_cmd, re.MULTILINE)
+    flow_tools = re.search(r"^allowed-tools:(.*)$", flow_cmd, re.MULTILINE)
+    h.test_result(
+        "commands/expert-fleet.md frontmatter grants the renderer",
+        bool(fleet_tools) and RENDER_GRANT in fleet_tools.group(1),
+    )
+    h.test_result(
+        "commands/expert-flow.md frontmatter grants the renderer",
+        bool(flow_tools) and RENDER_GRANT in flow_tools.group(1),
+    )
+
+    report_sec = _between(flow_cmd, "#### Report-kind questions", "#### Form-kind questions")
+    form_sec = _section(flow_cmd, "#### Form-kind questions")
+    h.test_result(
+        "expert-flow 'Report-kind questions' section names the renderer",
+        RENDER_SCRIPT in report_sec,
+        "section missing or no renderer call" if RENDER_SCRIPT not in report_sec else "",
+    )
+    h.test_result(
+        "expert-flow 'Form-kind questions' section names the renderer",
+        RENDER_SCRIPT in form_sec,
+        "section missing or no renderer call" if RENDER_SCRIPT not in form_sec else "",
+    )
+
+    # The Park bullet says "by running the renderer" (the script is named in the relay bullet above
+    # it), so the check is on the word "renderer", as the plan's "names the renderer" reads.
+    park_report = _flat(_between(flow_cmd, "`report` — a plan checkpoint report", "`gate` — one of this"))
+    h.test_result(
+        "expert-flow fleet Park 'report' bullet names the renderer and fleet-report-<SEQ>.md",
+        "renderer" in park_report and "fleet-report-<SEQ>.md" in park_report,
+        "Park report bullet missing" if not park_report else "",
+    )
+
+    for label, sec in (("Report-kind questions", report_sec), ("Form-kind questions", form_sec)):
+        flat_sec = _flat(sec)
+        h.test_result(
+            f"expert-flow '{label}' maps renderer exit 3 or 4 to 'question file unreadable'",
+            "exit 3 or 4" in flat_sec and "question file unreadable" in flat_sec,
+        )
+        h.test_result(
+            f"expert-flow '{label}' does not claim the invalid-file case 'cannot occur'",
+            bool(flat_sec) and "cannot occur" not in flat_sec,
+        )
+
+    render_calls = [line for line in form_sec.splitlines() if RENDER_SCRIPT in line]
+    h.test_result(
+        "expert-flow form-kind renderer call passes no --prefix",
+        bool(render_calls) and all("--prefix" not in line for line in render_calls),
+        f"calls: {render_calls}",
+    )
+    h.test_result("scripts/flow-render-questions.py exists", RENDERER_PATH.is_file())
+    h.test_result("expert-flow.md says 'Six added script grants'",
+                  "Six added script grants" in flow_cmd)
 
     print()
     h.summarize_and_exit()
