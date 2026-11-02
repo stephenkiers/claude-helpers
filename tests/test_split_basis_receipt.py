@@ -282,8 +282,59 @@ def main() -> None:
                 "Decision: OK\n<!-- step-end -->"
             )
             err = split_error(rcpt)
-            msg_ok = (err is None) if ok else (err is not None and "non-negative" in err)
+            msg_ok = (err is None) if ok else (err is not None and ">=" in err)
             h.test_result(f"MIN_UNITS {val} boundary", msg_ok, f"err={err!r}")
+
+        print("\n[Test 16] Bare 'single' without reason is rejected")
+        receipt_path = f"{tmp}/receipt16.md"
+        Path(receipt_path).write_text(
+            "Decision: FAILED\nReason: error\n"
+            "FAILURE_CLASS: other\nSPLIT_BASIS: single\nMIN_UNITS: unknown\nPRIOR_SPLIT_BASIS: none\n"
+            "IMPLEMENTER_MODEL: haiku\nUNITS: 1\nTURNS_USED: unknown\n"
+            "<!-- step-end -->"
+        )
+        err = split_error(receipt_path)
+        h.test_result("bare single rejected", err is not None and "single(<reason>)" in (err or ""), f"err={err!r}")
+
+        print("\n[Test 17] Non-integer UNITS is rejected")
+        receipt_path = f"{tmp}/receipt17.md"
+        Path(receipt_path).write_text(
+            "ROUND 1\n"
+            "CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\n"
+            "CHECK_SHA: " + head_sha + "\n"
+            "SPLIT_BASIS: parallel\nMIN_UNITS: 2\nPRIOR_SPLIT_BASIS: none\nUNITS: abc\n"
+            "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->"
+        )
+        code, out, err = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp, repo=repo_path, branch="HEAD", base=base_sha)
+        h.test_result("non-int UNITS rejected", code != 0 and ("invalid" in out.lower() or "invalid" in err.lower()), f"exit {code}: {err}")
+
+        print("\n[Test 18] Receipt with UNIT_CEILINGS header line passes")
+        receipt_path = f"{tmp}/receipt18.md"
+        Path(receipt_path).write_text(
+            "ROUND 1\n"
+            "CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\n"
+            "CHECK_SHA: " + head_sha + "\n"
+            "SPLIT_BASIS: parallel\nMIN_UNITS: 2\nPRIOR_SPLIT_BASIS: none\nUNITS: 2\n"
+            "UNIT_CEILINGS: steps=8 files=12 findings=16 (provisional; MIN_UNITS is a lower bound only)\n"
+            "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->"
+        )
+        code, _, err = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp, repo=repo_path, branch="HEAD", base=base_sha)
+        h.test_result("UNIT_CEILINGS accepted", code == 0, f"exit {code}: {err}")
+
+        print("\n[Test 19] Missing split-basis fields message uses separators")
+        receipt_path = f"{tmp}/receipt19.md"
+        # Only missing MIN_UNITS and PRIOR_SPLIT_BASIS (SPLIT_BASIS is present)
+        Path(receipt_path).write_text(
+            "ROUND 1\n"
+            "CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\n"
+            "CHECK_SHA: " + head_sha + "\n"
+            "SPLIT_BASIS: parallel\nUNITS: 1\n"
+            "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->"
+        )
+        code, out, err = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp, repo=repo_path, branch="HEAD", base=base_sha)
+        # The error should have commas separating field names (not concatenated)
+        has_separator = ", " in (out or "") or ", " in (err or "")
+        h.test_result("missing fields message formatted", code != 0 and has_separator, f"exit {code}, has_sep={has_separator}: {out or err}")
 
     h.summarize_and_exit()
 

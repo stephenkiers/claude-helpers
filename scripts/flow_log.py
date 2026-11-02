@@ -257,8 +257,14 @@ def parse_split_attempt_lines(log_path: Union[str, Path]) -> ParseSplitAttemptRe
             malformed_lines.append("missing schema_version")
             continue
 
-        # Extract all required fields with defaults
+        # Extract all required fields with validation
         try:
+            # turns_exhausted must be a boolean in JSON
+            turns_exhausted_val = data.get("turns_exhausted", False)
+            if not isinstance(turns_exhausted_val, bool):
+                malformed_lines.append(f"turns_exhausted is not a boolean: {type(turns_exhausted_val).__name__}")
+                continue
+
             record = SplitAttemptRecord(
                 schema_version=int(data.get("schema_version", 0)),
                 step=str(data.get("step", "")),
@@ -271,7 +277,7 @@ def parse_split_attempt_lines(log_path: Union[str, Path]) -> ParseSplitAttemptRe
                 partial_work=str(data.get("partial_work", "")),
                 decision=str(data.get("decision", "")),
                 failure_class=(None if data.get("failure_class") is None else str(data["failure_class"])),
-                turns_exhausted=bool(data.get("turns_exhausted", False)),
+                turns_exhausted=turns_exhausted_val,
                 committed_units=list(data.get("committed_units", [])),
                 pending_units=list(data.get("pending_units", [])),
             )

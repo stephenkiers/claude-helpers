@@ -105,10 +105,11 @@ DIRECTION_SCOPE: Tuple[str, ...] = ("plan", "implement", "review", "fix")
 QUOTE_MIN_LENGTH = 20
 
 # Step 3 receipt split-basis grammar and field names (unit sizing #319)
-SPLIT_BASIS_VALUES = ("parallel", "sequential", "single", "none")
+SPLIT_BASIS_VALUES = ("parallel", "sequential", "none")  # "single" must be in form single(<reason>)
 MIN_UNITS_FIELD = "MIN_UNITS"
 SPLIT_BASIS_FIELD = "SPLIT_BASIS"
 PRIOR_SPLIT_BASIS_FIELD = "PRIOR_SPLIT_BASIS"
+MIN_UNITS_LOWER_BOUND = 0  # minimum valid value for MIN_UNITS integer field
 
 
 class RelayCount(NamedTuple):
@@ -3019,6 +3020,12 @@ def validate_split_basis_fields(receipt: str, decision: Optional[str]) -> Option
     min_units_val = parse_receipt_field(receipt, MIN_UNITS_FIELD)
     prior_basis_val = parse_receipt_field(receipt, PRIOR_SPLIT_BASIS_FIELD)
 
+    # Early check: bare 'single' is invalid (must be single(<reason>))
+    if split_basis_val == "single":
+        return f"invalid {SPLIT_BASIS_FIELD}: single must be in form single(<reason>)"
+    if prior_basis_val == "single":
+        return f"invalid {PRIOR_SPLIT_BASIS_FIELD}: single must be in form single(<reason>)"
+
     # Count which fields are present
     fields_present = sum([split_basis_val is not None, min_units_val is not None, prior_basis_val is not None])
 
@@ -3027,7 +3034,14 @@ def validate_split_basis_fields(receipt: str, decision: Optional[str]) -> Option
         if fields_present != 3:
             if fields_present == 0:
                 return "OK receipt missing all three split-basis fields"
-            return f"OK receipt missing split-basis field(s): {SPLIT_BASIS_FIELD if split_basis_val is None else ''}{MIN_UNITS_FIELD if min_units_val is None else ''}{PRIOR_SPLIT_BASIS_FIELD if prior_basis_val is None else ''}".replace("  ", " ").strip()
+            missing_field_names: List[str] = []
+            if split_basis_val is None:
+                missing_field_names.append(SPLIT_BASIS_FIELD)
+            if min_units_val is None:
+                missing_field_names.append(MIN_UNITS_FIELD)
+            if prior_basis_val is None:
+                missing_field_names.append(PRIOR_SPLIT_BASIS_FIELD)
+            return f"OK receipt missing split-basis field(s): {', '.join(missing_field_names)}"
         # Reject 'none' on OK receipt
         if split_basis_val == "none":
             return f"OK receipt has {SPLIT_BASIS_FIELD}: none (must be parallel, sequential, or single)"
@@ -3066,8 +3080,8 @@ def validate_split_basis_fields(receipt: str, decision: Optional[str]) -> Option
         if min_units_val != "unknown":
             try:
                 min_units = int(min_units_val)
-                if min_units < 0:
-                    return f"{MIN_UNITS_FIELD} must be non-negative or 'unknown', got {min_units_val!r}"
+                if min_units < MIN_UNITS_LOWER_BOUND:
+                    return f"{MIN_UNITS_FIELD} must be >= {MIN_UNITS_LOWER_BOUND} or 'unknown', got {min_units_val!r}"
             except ValueError:
                 return f"invalid {MIN_UNITS_FIELD}: {min_units_val!r} (must be integer or 'unknown')"
 
@@ -3087,10 +3101,18 @@ def validate_split_basis_fields(receipt: str, decision: Optional[str]) -> Option
 
     # Cross-field validations (only when basis is not 'none')
     if split_basis_val and split_basis_val != "none":
+        # UNITS field must be a valid integer
+        units_val = parse_receipt_field(receipt, "UNITS")
+        units_int = None
+        if units_val:
+            try:
+                units_int = int(units_val)
+            except ValueError:
+                return f"invalid UNITS: {units_val!r} (must be integer)"
+
         # 'sequential' with UNITS: 1 is rejected (sequential run is multi-unit)
         if split_basis_val == "sequential":
-            units_val = parse_receipt_field(receipt, "UNITS")
-            if units_val and units_val == "1":
+            if units_int is not None and units_int == 1:
                 return "sequential split basis cannot have UNITS: 1 (sequential implies multi-unit)"
 
         # 'single' with integer MIN_UNITS > 1 is rejected
@@ -3104,13 +3126,11 @@ def validate_split_basis_fields(receipt: str, decision: Optional[str]) -> Option
                     pass
 
         # UNITS < MIN_UNITS (only when basis is not 'none')
-        units_val = parse_receipt_field(receipt, "UNITS")
-        if units_val and min_units_val and min_units_val != "unknown":
+        if units_int is not None and min_units_val and min_units_val != "unknown":
             try:
-                units = int(units_val)
                 min_units = int(min_units_val)
-                if units < min_units:
-                    return f"UNITS ({units}) cannot be less than {MIN_UNITS_FIELD} ({min_units})"
+                if units_int < min_units:
+                    return f"UNITS ({units_int}) cannot be less than {MIN_UNITS_FIELD} ({min_units})"
             except ValueError:
                 pass
 

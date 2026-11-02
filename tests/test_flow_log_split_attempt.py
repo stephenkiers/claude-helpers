@@ -167,6 +167,54 @@ Some prose with JSON that looks like {json.dumps({"key": "value"})}
         except FileNotFoundError:
             h.test_result("nonexistent log raises", True, "Raised as expected")
 
+        print("\n[Test 9] SPLIT_ATTEMPT with string boolean for turns_exhausted is rejected")
+        attempt_string_bool = {
+            "schema_version": 1,
+            "step": "implement",
+            "attempt": 1,
+            "trigger": "first",
+            "prior_split_basis": "none",
+            "split_basis": "parallel",
+            "min_units": "2",
+            "units": 2,
+            "partial_work": "none",
+            "decision": "OK",
+            "failure_class": None,
+            "turns_exhausted": "true",  # String instead of boolean
+            "committed_units": [],
+            "pending_units": []
+        }
+        log_content = f"""# Flow Log
+
+{ts} implement SPLIT_ATTEMPT {json.dumps(attempt_string_bool)}
+"""
+        log_path.write_text(log_content)
+
+        result = flow_log.parse_split_attempt_lines(str(log_path))
+        h.test_result("string boolean rejected", len(result.records) == 0 and len(result.malformed_lines) > 0, f"records={len(result.records)}, malformed={len(result.malformed_lines)}")
+
+        print("\n[Test 10] SPLIT_ATTEMPT with real boolean for turns_exhausted is accepted")
+        attempt_real_bool = dict(attempt_string_bool, turns_exhausted=False)  # Real boolean
+        log_content = f"""# Flow Log
+
+{ts} implement SPLIT_ATTEMPT {json.dumps(attempt_real_bool)}
+"""
+        log_path.write_text(log_content)
+
+        result = flow_log.parse_split_attempt_lines(str(log_path))
+        h.test_result("real boolean accepted", len(result.records) == 1 and result.records[0].turns_exhausted is False, f"records={len(result.records)}")
+
+        print("\n[Test 11] SPLIT_ATTEMPT with true boolean for turns_exhausted is accepted")
+        attempt_true_bool = dict(attempt_string_bool, turns_exhausted=True)
+        log_content = f"""# Flow Log
+
+{ts} implement SPLIT_ATTEMPT {json.dumps(attempt_true_bool)}
+"""
+        log_path.write_text(log_content)
+
+        result = flow_log.parse_split_attempt_lines(str(log_path))
+        h.test_result("true boolean accepted", len(result.records) == 1 and result.records[0].turns_exhausted is True, f"records={len(result.records)}")
+
     h.summarize_and_exit()
 
 
