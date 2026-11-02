@@ -2062,8 +2062,9 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
     if attempt_err or attempt is None:
         return f"{REASON_PLAN_INCOMPLETE} ({attempt_err})"
 
-    # Count relayed questions, scoped by attempt
-    relay_count = count_relayed_questions(flow_dir, "plan", receipt, attempt)
+    # Count relayed questions, scoped by attempt. The plan-time check-command question (command:
+    # expert-flow) is not a plan brief and must not inflate asked.
+    relay_count = count_relayed_questions(flow_dir, "plan", receipt, attempt, exclude_command="expert-flow")
 
     # Check for report-kind checkpoint: any questions/plan-NN.json with kind: "report" and attempt == ATTEMPT
     is_report_checkpoint = False
@@ -2235,7 +2236,11 @@ def count_needs_you_items(action_plan: str) -> int:
 
 
 def count_relayed_questions(
-    flow_dir: Optional[Path], step: str, receipt_text: str, attempt: int
+    flow_dir: Optional[Path],
+    step: str,
+    receipt_text: str,
+    attempt: int,
+    exclude_command: Optional[str] = None,
 ) -> RelayCount:
     r"""Count relayed questions from disk, scoped by attempt.
 
@@ -2243,6 +2248,10 @@ def count_relayed_questions(
     `attempt` equals the receipt's `ATTEMPT` (or a `reused-answers` marker names it) and its
     `answers/<step>-NN.json` exists; a question file without `attempt` does not count, and an
     `awaiting-answers` marker whose answers file is missing is reduced.
+
+    `exclude_command`, when given, keeps question files whose `command` equals it out of `asked`
+    (they are still selected, and an unanswered one is still reported). The plan step passes
+    `expert-flow` so the orchestrator's plan-time check-command question is not counted as a plan brief.
 
     Selection rule. Candidates are the `questions/<step>-NN.json` files. A file is selected when:
     - it is non-report, passes the schema check, and its `attempt` equals the receipt's `ATTEMPT`; or
@@ -2382,7 +2391,8 @@ def count_relayed_questions(
         if answers_file is not None and answers_file.is_file():
             # Has answers: count questions
             questions = data.get("questions", [])
-            if isinstance(questions, list):
+            excluded = exclude_command is not None and data.get("command") == exclude_command
+            if isinstance(questions, list) and not excluded:
                 total += len(questions)
         else:
             # No answers file
