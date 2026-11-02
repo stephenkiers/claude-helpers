@@ -17,6 +17,15 @@ class ProviderError(Exception):
     pass
 
 
+class ProviderUnsupportedError(ProviderError):
+    """
+    The provider has no channel for this operation (e.g. issue comments in local mode).
+
+    Callers branch on this type with isinstance, never on the message text.
+    """
+    pass
+
+
 class Provider(Protocol):
     """
     Provider contract for repository operations.
@@ -122,10 +131,10 @@ class Provider(Protocol):
 
         Returns (json_dict, error) tuple per ADR-0013 convention.
         - json_dict: raw gh issue view --json output (dict with number, title, body, labels, state, url, createdAt, comments)
-        - error: None on success, or an Unknown object if fetch failed
+        - error: None on success, or an error object if fetch failed
 
         GitHub: runs gh issue view <number> --repo <owner/name> --json number,title,body,labels,state,url,createdAt,comments
-        Local: returns (None, Unknown) with status unavailable (no comments for local mode)
+        Local: returns (None, ProviderUnsupportedError) (local mode has no comment channel)
         External: depends on tracker API
 
         Args:

@@ -365,6 +365,10 @@ def main() -> None:
         "--allow-other-repo", action="store_true",
         help="Allow URLs for repos other than the target"
     )
+    issue_comments_fetch_parser.add_argument(
+        "--mode", choices=["github", "local"], default="github",
+        help="Provider to fetch through: github (default) or local (no comment channel: comments_status unsupported)"
+    )
 
     issue_comments_finalize_parser = issue_comments_subparsers.add_parser(
         "finalize",
@@ -696,15 +700,13 @@ def main() -> None:
                     cwd=Path(args.cwd).resolve(),
                     trusted_only=args.trusted_only,
                     flow_dir=Path(args.flow_dir).resolve() if args.flow_dir else None,
-                    allow_other_repo=args.allow_other_repo
+                    allow_other_repo=args.allow_other_repo,
+                    mode=args.mode
                 )
                 if ic_error:
+                    # Every error exit carries comments_status (unavailable when there is no result)
                     output = ic_result.to_dict() if ic_result else {}
-                    # Determine comments_status from result or default to unavailable
-                    if ic_result and hasattr(ic_result, 'comments_status'):
-                        output["comments_status"] = ic_result.comments_status
-                    else:
-                        output["comments_status"] = "unavailable"
+                    output["comments_status"] = ic_result.comments_status if ic_result else "unavailable"
                     output["error"] = str(ic_error)
                     print(json.dumps(output))
                     sys.exit(3 if isinstance(ic_error, ProviderError) else 2)
@@ -753,11 +755,11 @@ def main() -> None:
                     else:
                         print(json.dumps(finalize_result.to_dict()))
             except json.JSONDecodeError as e:
-                output = {"error": f"Invalid fetched JSON: {e}"}
+                output = {"comments_status": "unavailable", "error": f"Invalid fetched JSON: {e}"}
                 print(json.dumps(output))
                 sys.exit(2)
             except Exception as e:
-                output = {"error": str(e)}
+                output = {"comments_status": "unavailable", "error": str(e)}
                 print(json.dumps(output))
                 sys.exit(2)
         else:

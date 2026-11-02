@@ -368,6 +368,33 @@ class RelevanceFilterDict(TypedDict, total=False):
     batches: List[List[str]]
 
 
+def validate_relevance_filter(data: Any) -> RelevanceFilterDict:
+    """Validate a relevance_filter mapping. Ignores unknown keys (same policy as the other from_dict methods).
+
+    Raises ValueError if a known key has the wrong type.
+    """
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid relevance_filter: {data!r}")
+    result: RelevanceFilterDict = {}
+    if "required" in data:
+        if not isinstance(data["required"], bool):
+            raise ValueError(f"Invalid relevance_filter.required: {data['required']!r}")
+        result["required"] = data["required"]
+    if "threshold" in data:
+        threshold = data["threshold"]
+        if not isinstance(threshold, int) or isinstance(threshold, bool):
+            raise ValueError(f"Invalid relevance_filter.threshold: {threshold!r}")
+        result["threshold"] = threshold
+    if "batches" in data:
+        batches = data["batches"]
+        if not isinstance(batches, list) or not all(
+            isinstance(batch, list) and all(isinstance(i, str) for i in batch) for batch in batches
+        ):
+            raise ValueError("Invalid relevance_filter.batches: must be a list of lists of strings")
+        result["batches"] = [list(batch) for batch in batches]
+    return result
+
+
 @dataclass
 class IssueComment:
     """A single issue comment with trust, kind, and acknowledged status."""
@@ -450,7 +477,7 @@ class IssueWithComments:
     counts: CommentCounts
     truncated: bool
     withheld_unverified_authors: List[str]
-    relevance_filter: Dict[str, Any]  # {"required": bool} or similar
+    relevance_filter: RelevanceFilterDict  # {"required": bool, "threshold": int, "batches": [[id, ...], ...]}
     schema_version: int = 1
 
     def to_dict(self) -> Dict[str, Any]:
@@ -461,11 +488,16 @@ class IssueWithComments:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "IssueWithComments":
-        """Construct from parsed JSON dict. Validates Literal fields and schema_version."""
-        # Validate schema_version if present
+        """Construct from parsed JSON dict. Validates Literal fields, schema_version and relevance_filter.
+
+        Unknown keys are ignored, matching IssueComment, CommentCounts and ScoutVerdict.
+        """
+        # Validate schema_version: exactly the version this code writes (bool is not an int here)
         schema_version = data.get("schema_version", 1)
-        if not isinstance(schema_version, int) or schema_version < 1:
-            raise ValueError(f"Invalid schema_version: {schema_version}")
+        if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != 1:
+            raise ValueError(f"Invalid schema_version: {schema_version!r}")
+
+        relevance_filter = validate_relevance_filter(data.get("relevance_filter", {}))
 
         # Validate comments_status Literal
         comments_status = data.get("comments_status", "unavailable")
@@ -497,7 +529,7 @@ class IssueWithComments:
             counts=counts,
             truncated=data.get("truncated", False),
             withheld_unverified_authors=data.get("withheld_unverified_authors", []),
-            relevance_filter=data.get("relevance_filter", {}),
+            relevance_filter=relevance_filter,
             schema_version=schema_version
         )
 
@@ -516,5 +548,18 @@ class ScoutVerdict:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScoutVerdict":
-        """Construct from parsed JSON dict."""
-        return cls(**data)
+        """Construct from parsed JSON dict. Ignores unknown keys; validates verdict and reason."""
+        if not isinstance(data, dict):
+            raise ValueError(f"Invalid scout verdict: {data!r}")
+        comment_id = data.get("comment_id")
+        if not isinstance(comment_id, str):
+            raise ValueError(f"Invalid scout verdict comment_id: {comment_id!r}")
+        verdict = data.get("verdict")
+        if verdict not in ("include", "drop"):
+            raise ValueError(f"Invalid scout verdict value: {verdict!r}")
+        reason = data.get("reason")
+        if reason is not None and reason not in (
+            "outdated", "superseded_plan_content", "off_topic", "duplicate", "low_signal", "instruction_like"
+        ):
+            raise ValueError(f"Invalid scout verdict reason: {reason!r}")
+        return cls(comment_id=comment_id, verdict=verdict, reason=reason)
