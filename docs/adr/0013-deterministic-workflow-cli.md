@@ -310,3 +310,16 @@ This two-stage approach (seed-then-fallback) ensures:
 **Snapshot semantics:** Seeded files represent a snapshot of the main worktree's configuration at worktree-creation time. If the main worktree's configuration changes later (e.g., `/shipit` is run in the main worktree and updates `repo-cache.json`), the new worktree's seeded copy is NOT automatically updated. This is intentional: the new worktree's seeded snapshot is stable and independent from later changes in the main worktree. Downstream commands' fallback resolution (step 2 and 4 above) bridges this gap by consulting the main worktree's current files when needed.
 
 **Failure modes:** If seeding fails completely (e.g., permission denied), worktrees can still be created and used — downstream commands fall back to the main worktree's current configuration. If fallback sources are also absent, the command fails with a clear message ("no check command configured"). This design ensures robustness: the absence of seeded files is never a blocker.
+
+### Amendment 9: package.json check detection with provenance (2026-11-01, #417)
+
+**Problem:** A repo whose only check command is `package.json` `scripts.check` resolves to nothing in the chain above. `/expert-flow` needs that command before implement, and the chain must not gain a live `package.json` source.
+
+**Decision:**
+- `checks.detect_package_json_check` is a deterministic file read of `package.json` `scripts.check`, prefixed by the package manager named by the root lockfile (`npm`, `pnpm`, `yarn`, or `bun`, from the same closed table `commands/shipit.md` documents). It is not a guess: no package manager is probed, and an ambiguous lockfile yields no command.
+- `checks ensure-check` writes the detected command into the **main** `repo-cache.json` `commands.check`, with a top-level sidecar `commandSources: {"check": "package-json"}`. Resolution reports the source as `repo-cache (package-json)`. The write is a raw JSON update that preserves every other key. It does not round-trip through `RepoCacheData`, which drops unknown keys.
+- **Chain order is unchanged.** `resolve_check_detail` keeps the six-step order above. The detector writes into the cache rather than adding a live `package.json` source, so the step and the verifier resolve the same value.
+- **Human answers go to `project.yaml`, not the cache.** `checks record-check-answer` text-appends a human's answer to the main `.claude/project.yaml`. A `CLAUDE.md`-derived candidate is suggest-only and is never persisted by the CLI.
+- **D4, #387:** the `/merge-and-cleanup` chain unification (#387) should reuse the shared resolver (`resolve_check_detail`) and this detector, not add its own `package.json` read. This amendment does not change #387's behavior and does not pin its design.
+
+The mapping between the detector and `commands/shipit.md`'s lockfile table is pinned by a test, so the repo has one rule rather than two. See `docs/workflow-cli-invariants.md`, Decision 3 and Decision 8.

@@ -100,3 +100,14 @@ This ADR documents the implementation landing on main at a known state:
 - ADR-0023 pointer at §4 item 3 (sequential epic execution is a separate layer; `/expert-fleet` is parallel; `--epic` itself stays sequential).
 - ADR-0019 pointer after the "no headless invocation" amendment (a headless caller now exists; questions park to `fleet-ask.json`).
 - Two follow-up issues: #381 (catch-all for unticketed gaps) and #382 (`bypassPermissions` risk).
+
+## Amendment (2026-11-01) — launch preflight: check resolution and deps (#417)
+
+Before launch, `/expert-fleet` runs a check-resolution preflight against the main worktree: `checks ensure-check --worktree <MAIN> --main-worktree <MAIN>`. The preflight lives in `commands/expert-fleet.md`; `fleet.py` is not the gate. ADR-0023's 2026-11-01 amendment defines the chores and the ask-once rules this relies on.
+
+- **Resolved:** nothing is asked and the launch proceeds. A `package.json` `scripts.check` resolves automatically and is written to the main `repo-cache.json` with provenance.
+- **Unresolved:** the question is asked once per epic. With `--prepass`, it joins the pre-pass `AskUserQuestion` batch under the header `epic`. On an interactive launch without `--prepass`, it is asked alone. Its options are the `CLAUDE.md` suggestion (labelled unverified, pre-filled only), typing a command, or setting `checkOptOut` with a reason. The answer is persisted with `checks record-check-answer`.
+- **Still unresolved after the answer** (no answer, or persistence refused): the fleet refuses to launch and prints the exact line to add to the main `.claude/project.yaml`. A ticket never parks on this question, because tickets resolve the check from main.
+- **Single writer.** The preflight is the only writer of the main check configuration for an epic, so no two tickets race on `project.yaml`.
+- **Deps chore in each ticket.** Each `/expert-flow --fleet` ticket runs the deps precondition unattended. A `DEPS: current` or `installed` result never parks. A `failed` or `manifest-changed` result parks the ticket (fail closed), and the human answers through the usual fleet relay. Fleet install inherits the outcome of #382.
+- When #370's Validate phase lands, this preflight moves there.

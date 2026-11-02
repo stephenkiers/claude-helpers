@@ -14,6 +14,8 @@ This document specifies the safety invariants and contracts that every `scripts/
 - `cache.read_github_cache()` returns `(None, Unknown(...))` on read failure.
 - `project.detect_repo_identity()` returns `None` for local-plan mode (intentional, not a failure).
 
+**Note (2026-11-01, ADR-0013 Amendment 9):** `checks.detect_package_json_check` is a deterministic file read of `package.json` `scripts.check`, not a guess. It names a command only when the root lockfile resolves to a single package manager, and it never probes a package manager. When the lockfile is ambiguous it names nothing and the ambiguity is reported, not guessed around. `checks.suggest_from_claude_md` extracts a candidate from `CLAUDE.md` text for display only. `CLAUDE.md` text is suggest-only: it is never resolved, executed, or persisted without a human's answer. A command `/shipit` persisted from `CLAUDE.md` prose earlier is kept by `/shipit` until a human changes it (a documented residual; see ADR-0023, 2026-11-01 amendment).
+
 ## Fail-Closed Layout Detection (ADR-0011)
 
 **Invariant:** Stack layout detection never guesses. When in doubt, return `"unknown"`.
@@ -172,7 +174,13 @@ run, since `build_check_order` records a `null_command` skip entry for null-valu
 
 ## No Per-Project Configuration (Decision 3)
 
-**Invariant:** The CLI has no per-project runtime configuration or extension points. Behavior is fixed by the code.
+**Invariant:** The CLI has no per-project runtime configuration or extension points beyond the trusted, per-machine settings it reads. Behavior is fixed by the code.
+
+**Amendment (2026-11-01, #417, ADR-0013 Decision 3 / D5):** The CLI may read the main worktree's `.claude/project.yaml` (the trusted, per-machine file, read for `commands.check`, `checkOptOut` and `commands.install`). It may write exactly two things, each an atomic temp-file-and-`os.replace` write:
+1. `checks ensure-check` writes a `package.json`-detected check command into the main `repo-cache.json` `commands.check`, with `commandSources` provenance.
+2. `checks record-check-answer` text-appends a human's answer (`commands.check` or `checkOptOut`) to the main `.claude/project.yaml`. It never round-trips the file through a YAML writer.
+
+The CLI never executes a command derived from prose. `deps ensure` runs only a frozen install from a closed lockfile table, or an explicit `commands.install` from the main `project.yaml`. A `CLAUDE.md`-derived command is never executed or persisted by the CLI.
 
 **Consequence:** Forks that need different behavior must edit `scripts/workflow/` directly in their own copy. This is intentional — the repo is designed to be forked and adapted at the source level, not via a runtime config layer.
 
