@@ -687,7 +687,6 @@ def worktree_tree(worktree: Path) -> Optional[str]:
     file on exit. Returns the tree SHA (40-hex), or None on any error.
     """
     import tempfile
-    from . import git
 
     try:
         # Create temp index file

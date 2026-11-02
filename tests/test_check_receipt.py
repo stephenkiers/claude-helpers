@@ -8,12 +8,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from workflow import checks
-from workflow.merge import _run_merge_gate_checks
 from _test_harness import Harness
 
 CMDS = {"check": "true", "test": None}
