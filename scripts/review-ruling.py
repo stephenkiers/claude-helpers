@@ -63,7 +63,7 @@ import sys
 import tempfile
 import unicodedata
 from pathlib import Path
-from typing import Callable, List, Literal, NoReturn, Optional, Protocol, Sequence, Tuple
+from typing import Callable, List, Literal, NoReturn, Optional, Protocol, Sequence, Tuple, cast
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -391,7 +391,7 @@ def _locate(
         anchor=anchor,
         status=status,
         decision=decision,
-        status_value=status_match.group(1).strip().lower(),
+        status_value=cast(ItemStatus, status_match.group(1).strip().lower()),
         decision_value=decision_match.group(1),
     )
 
