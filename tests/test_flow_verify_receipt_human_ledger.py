@@ -10,7 +10,6 @@ Run with: python3 tests/test_flow_verify_receipt_human_ledger.py
 
 import importlib.util
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
