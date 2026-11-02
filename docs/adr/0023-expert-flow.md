@@ -1185,7 +1185,7 @@ Pre-run size checks and sequential split are in scope. Both are deterministic or
 
 ### 2. Ownership: script-provisional vs. model-judged
 
-- **Script owns:** `scripts/unit-sizing.py` computes `min_units`, a provisional and uncalibrated enforced ceiling on unit size (defaults: 8 steps / 12 files / 16 findings per unit). This is a mechanical minimum and does not guarantee optimality. A reliable calibration requires `TURNS_USED` measurement; issue #325 tracks the unblock for calibration. The script never split-attempts on its own.
+- **Script owns:** `scripts/unit-sizing.py` computes `MIN_UNITS`, a lower bound on unit count. The per-unit ceilings (defaults: 8 steps / 12 files / 16 findings) are provisional upper bounds only; enforcement is deferred pending calibration via `TURNS_USED` measurement (issue #325 tracks the unblock). This is a mechanical minimum that does not guarantee optimality. The receipt records the ceilings via `UNIT_CEILINGS:`. The script never split-attempts on its own.
 - **Model owns:** Boundaries and basis (ADR-0012's bounded judgment). The model reads the plan, sizing metadata, and coupling hints, and decides whether to split, on which plan steps, and (for sequential mode) in which order. A single-unit run is never split; a multi-unit run where the model does not detect coupling proceeds in parallel on Haiku (unit-per-worktree, independent trees). Coupling (cross-unit dependencies) is detected heuristically from the plan prose and triggers sequential mode.
 
 ### 3. Sequential mode on multi-unit path
@@ -1204,7 +1204,7 @@ Every implement or fix step maintains a typed unit record, written by `scripts/u
 
 ### 5. Relabelled Retry for single-unit plus turns-exhausted
 
-For a receipt with `UNITS: 1` and `TURNS_EXHAUSTED: yes`, the hard-stop Retry option is relabelled **"Retry, split finer"** to signal that the human may choose to apply the partial-work contract (keep or reset) and re-run the unit split at a finer granularity. This is user-chosen, receipt-dependent, not automatic, and subject to the existing two-attempt cap per step. No fifth option is added; the "Retry, split finer" label is the only change to the menu. The relabelling is ruled out by Decision 1's "nothing else" for multi-unit runs: ADR-0004's "never automatic for multi-unit runs" still holds. The relabelled option is also offered on the post-escalation menu when the receipt still has `UNITS: 1` and `TURNS_EXHAUSTED: yes`: it changes the unit granularity, not the model, so the escalation-once limit does not apply, and the two-attempt cap bounds it. A split-finer re-run uses `implementer_model[STEP]` when set, otherwise Haiku.
+For a receipt with `UNITS: 1` and `TURNS_EXHAUSTED: yes`, the hard-stop Retry option is relabelled **"Retry, split finer"** to signal that the human may choose to apply the partial-work contract (keep or reset) and re-run the unit split at a finer granularity. This is user-chosen, receipt-dependent, not automatic, and subject to the existing two-attempt cap per step. No fifth option is added; the "Retry, split finer" label is the only change to the menu. The relabelling is ruled out by Decision 1's "nothing else" for multi-unit runs: ADR-0004's "never automatic for multi-unit runs" still holds. This option is only offered before an escalation. A split-finer re-run uses `implementer_model[STEP]` when set, otherwise Haiku.
 
 ### 6. Every implement/fix re-run passes `--partial-base`
 
