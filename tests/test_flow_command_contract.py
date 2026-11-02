@@ -61,6 +61,7 @@ PLACEHOLDERS = {
     "<ATTEMPT>": "1",
     "<attempts[STEP]>": "1",
     "<KIND>": "answer",
+    "<receipt-path>": "steps/01-plan.md",
 }
 # A documented call ends at a heredoc, a stdin or stdout redirection, a pipe, or a chain operator.
 CALL = re.compile(r'flow-(redo|ledger)\.py"?[ \t]+([a-z]+)([^\n`]*)')
