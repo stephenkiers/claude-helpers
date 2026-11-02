@@ -40,6 +40,7 @@ You may spawn only `expert-reviewer` and `expert-scout` subagents, and invoke on
 
 ## Edit retention
 
-The `Edit` tool is retained solely to record rulings in the `claude-action-plan.md` file produced by the
-triage step. Do not use `Edit` on source files. The scripted, field-scoped rulings writer is pending in a
-follow-up issue.
+Rulings in the `claude-action-plan.md` file produced by triage are written script-first by
+`scripts/review-ruling.py` (the Step 12 mechanism). The `Edit` tool is retained solely as a **fallback**
+for that file only when the script is missing or exits 126/127; do not retry with `Edit` on exit codes
+1 or 3 (refusal or conflict). Do not use `Edit` on source files.

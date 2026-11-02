@@ -306,6 +306,7 @@ invoking it, (b) `python3 -c "..."` (verb-pair blocked; concatenation still bypa
 - `plan-implementer` keeps `Edit` and `bypassPermissions` (unchanged from ADR-0008 design).
 - `flow-review` keeps `Edit` solely for red-lining the `claude-action-plan.md` file produced by triage. This is prompt-scoped, not path-scoped: the agent is instructed to use `Edit` only on that file, not a machine-enforced boundary. A scripted, field-scoped rulings writer is now the Step 12 mechanism (`scripts/review-ruling.py`, #408), and `flow-review` keeps `Edit` as a mechanically defined fallback used only when that script is missing or exits 126/127. This is still not a technical control while `flow-review` keeps `Write` and Bash that the Bash guard does not cover. `/verify-queue` (`commands/verify-queue.md` write-back) remains a second, unvalidated STATUS/DECISION writer and is a follow-up.
 - Nested `general-purpose` agent spawning from a restricted step gets `Edit` and no hook.
+- `Bash(python3:*)` in `commands/expert-review.md`'s `allowed-tools` is a blanket grant covering multiple script invocations (metrics, precedent handling, north-star preflight, review-ruling); scoping it to review-ruling.py alone would break other legitimate script calls, so it remains broad.
 
 ### Wrapper set and publishing verbs (drift guard targets)
 
@@ -456,7 +457,7 @@ the table at call time:
 - `bare` `command`, `exec`, `nohup`, `time`: dropped when followed by a non-option token (no arguments);
 - `one-positional` `timeout`: drops `timeout <duration>` only when exactly one non-option token follows;
 - `nice`: drops bare `nice` or `nice -n <N>`;
-- `zsh-equals`: one leading `=` is stripped from the command word (zsh `=cmd`).
+- `zsh-equals`: one leading `=` is stripped from the command word (zsh `=cmd` expansion, e.g., `=ls` → `ls` for pathname lookup).
 
 Only `timeout` and `nice` take arguments, each in the one shape stated. Any other option after a prefix
 (`exec -a x`, `command -p`, `timeout -s KILL 5`, `nice -5`) stops normalisation, and the command is judged as
@@ -475,7 +476,7 @@ deliberate obfuscation still bypass the check.
 `flow-skill-guard.py` each exit 2 on malformed or empty stdin, a non-dict payload, a non-dict `tool_input`,
 and bad argv, and each exit-2 path has a path-specific stderr marker that the test asserts (an exit code alone
 is not enough). The catch-all `except Exception` is covered by its own tests (`Unexpected error`). The Bash
-guard exits 2 with `Unknown --agent value` for any `--agent` value other than `flow-implement`,
+guard exits 2 with `Unknown --agent value: {agent}` for any `--agent` value other than `flow-implement`,
 `flow-review` or `auto`; `flow-review` keeps its exit-0 pass-through. Auto mode with a missing or non-flow
 `agent_type`, and non-matching `tool_name` values, exit 0 and are pinned by tests.
 

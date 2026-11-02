@@ -960,7 +960,7 @@ do not fabricate a ruling for it — **record it with the ruling writer below**.
 
 The exit code decides what happens next:
 - **0** — recorded, or already recorded with the same answer (idempotent). Continue.
-- **1** — a named refusal; the reason is on stderr (non-unique anchor, unknown label, path outside the reviews root, symlinked file, PR mode). The item is **unrecorded**. Report it in the closing message with that reason. Do not retry it with `Edit`.
+- **1** — a named refusal; the reason is on stderr (such as non-unique anchor, unknown label, path outside the reviews root, symlinked file, PR mode). The item is **unrecorded**. Report it in the closing message with that reason. Do not retry it with `Edit`.
 - **3** — a conflicting prior ruling; the existing `DECISION` is on stderr. Report the item to the human as a conflicting prior ruling. Never overwrite a recorded answer.
 - **126 or 127** — the script or `python3` cannot run. The fallback below applies.
 

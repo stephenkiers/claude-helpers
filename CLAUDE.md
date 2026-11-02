@@ -392,10 +392,10 @@ avoidable, so this relies on self-report rather than a lint rule.
   2026-10-26 amendment.
 - `flow-review` — agent for the `review` step of `/expert-flow` (used by `/expert-review` when invoked
   as a step agent). Model pinned to `sonnet` (restores the documented `/expert-review` panel default);
-  `Edit` kept solely for red-lining `claude-action-plan.md` (prompt-scoped, not path-scoped). Agent/Task
-  and Skill guards apply (as `flow-implement`); **Bash guard does not apply** (flow-review's Skill-only role
-  invoking `/expert-review` does not require Bash restrictions; see ADR-0008 2026-10-26 and ADR-0023
-  2026-10-26 amendments).
+  rulings in `claude-action-plan.md` are written script-first by `scripts/review-ruling.py` with `Edit`
+  kept as a fallback (prompt-scoped, not path-scoped). Agent/Task and Skill guards apply (as
+  `flow-implement`); **Bash guard does not apply** (flow-review's Skill-only role invoking `/expert-review`
+  does not require Bash restrictions; see ADR-0008 2026-10-26 and ADR-0023 2026-10-26 amendments).
 - `flow-assessor` — restricted, no-Write, no-Edit agent for the `/expert-flow` assess stage (runs on Sonnet).
   It reads outstanding items and verifies each is really unfinished, then assesses them and returns the body
   as its reply; the orchestrator validates the receipt and writes `steps/07-assess.md`.
