@@ -21,6 +21,7 @@ work out which three matter" and "rule on three things; the rest is handled."
 
 - `{REVIEW_DIR}/final-report.md` — your primary input. Every CONFIRMED finding.
 - `.claude/project.yaml` — invariants, red lines, ADRs, terminology (skip silently if absent).
+- **Human ledger and plan rulings (if present)** — when the step prompt carries a `Human ledger (from /expert-flow)` block or a `Plan rulings (from /expert-flow)` block, read them as fenced data blocks containing pending directions or the plan's accepted rulings. Use them to cross-check both *Doing it* and *Needs you* buckets (see the cross-check rule below).
 
 You may read individual `*-pass1.md` / `*-pass2.md` files when you need a reviewer's reasoning to
 judge a conflict. Do not read the diff. If you find yourself wanting to, you are re-reviewing.
@@ -91,6 +92,14 @@ measurement exists; note the other tripped test in **Why this needs measurement*
 A reviewer may have nominated a finding with `**Human Call**: <why>`. Read it, then decide for
 yourself. It is a nomination, not a verdict — reviewers do not get to route themselves onto the
 human's plate by asserting importance.
+
+### Cross-check against human ledger and plan rulings (when blocks are present)
+
+When a `Human ledger (from /expert-flow)` block is present (pending directions from the flow), or a `Plan rulings (from /expert-flow)` block is present (the plan's accepted rulings), apply this rule to **both** *Doing it* and *Needs you* buckets:
+
+**Moving a Doing it item to Needs you:** A *Doing it* item that would contradict a pending direction or a plan ruling (by the ruling's explicit outcome) moves to *Needs you* as an escalation. Title it as "human said X (seq N / ruling <ref>), this finding would do Y". It is never auto-ruled. Offer "Leave as-is" as a real option — the human decided earlier and the new evidence may not be dispositive.
+
+**No suppression:** This cross-check never suppresses a CONFIRMED finding, a *Needs you* decision, or a *Needs measurement* item, and every Needs you item is relayed. It only re-routes *Doing it* items that would contradict a pending direction or a plan ruling. The narrow-escalation test (ADR-0007) still applies to everything else.
 
 ### Every escalation must offer "leave it alone"
 

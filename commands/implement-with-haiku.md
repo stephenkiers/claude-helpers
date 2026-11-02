@@ -2410,6 +2410,7 @@ CHECK_SHA: <full 40-hex SHA the check ran on>
 RUN_KEY: <RUN_KEY>
 RECEIPT_CONTRACT: 1
 OUTSTANDING: <line>
+Addressed: <line>
 <!-- step-end -->
 ```
 

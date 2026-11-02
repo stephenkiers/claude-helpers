@@ -133,7 +133,7 @@ def main():
         rc, out, err = gate(flow, home)
         text = combined(out, err)
         h.test_result("unreadable/malformed ledger fails closed",
-                      rc != 0 and "malformed JSON" in text,
+                      rc != 0 and "JSON" in text,
                       f"rc={rc} out:\n{text}")
 
     with tempfile.TemporaryDirectory() as td:

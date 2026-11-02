@@ -70,6 +70,11 @@ class Record(TypedDict):
     supersedes: Optional[int]
 
 
+class LedgerReadError(Exception):
+    """Raised when reading or validating the ledger fails."""
+    pass
+
+
 def error(msg: str) -> NoReturn:
     """Print error to stderr and exit with code 1."""
     print(msg, file=sys.stderr)
@@ -116,10 +121,10 @@ def parse_record(obj: Any, label: str) -> Record:
         A validated Record.
 
     Raises:
-        SystemExit(1) on any validation error.
+        LedgerReadError: On any validation error.
     """
     if not isinstance(obj, dict):
-        error(f"flow-ledger: {label}: not a dict")
+        raise LedgerReadError(f"{label}: not a dict")
 
     # Check exact keys
     expected_keys = set(Record.__annotations__)
@@ -127,110 +132,168 @@ def parse_record(obj: Any, label: str) -> Record:
     if actual_keys != expected_keys:
         missing = expected_keys - actual_keys
         extra = actual_keys - expected_keys
-        msg = f"flow-ledger: {label}: key mismatch"
+        msg = f"{label}: key mismatch"
         if missing:
             msg += f" (missing: {', '.join(sorted(missing))})"
         if extra:
             msg += f" (extra: {', '.join(sorted(extra))})"
-        error(msg)
+        raise LedgerReadError(msg)
 
     # Validate seq: int >= 1 (reject bool)
     if type(obj["seq"]) is bool or not isinstance(obj["seq"], int):
-        error(f"flow-ledger: {label}: seq must be int, not {type(obj['seq']).__name__}")
+        raise LedgerReadError(f"{label}: seq must be int, not {type(obj['seq']).__name__}")
     if obj["seq"] < 1:
-        error(f"flow-ledger: {label}: seq must be >= 1")
+        raise LedgerReadError(f"{label}: seq must be >= 1")
 
     # Validate ts: ISO-8601 UTC format with Z suffix
     ts_val = obj.get("ts")
     if not isinstance(ts_val, str) or not validate_ts(ts_val):
-        error(f"flow-ledger: {label}: ts must be ISO-8601 UTC with Z suffix")
+        raise LedgerReadError(f"{label}: ts must be ISO-8601 UTC with Z suffix")
 
     # Validate step: matches ^[a-z0-9-]+$
     if not isinstance(obj["step"], str) or not re.fullmatch(r"[a-z0-9-]+", obj["step"]):
-        error(f"flow-ledger: {label}: step must match ^[a-z0-9-]+$")
+        raise LedgerReadError(f"{label}: step must match ^[a-z0-9-]+$")
 
     # Validate attempt: int >= 1 (reject bool)
     if type(obj["attempt"]) is bool or not isinstance(obj["attempt"], int):
-        error(f"flow-ledger: {label}: attempt must be int, not {type(obj['attempt']).__name__}")
+        raise LedgerReadError(f"{label}: attempt must be int, not {type(obj['attempt']).__name__}")
     if obj["attempt"] < 1:
-        error(f"flow-ledger: {label}: attempt must be >= 1")
+        raise LedgerReadError(f"{label}: attempt must be >= 1")
 
     # Validate kind
     if obj["kind"] not in KINDS:
-        error(f"flow-ledger: {label}: kind must be one of {KINDS}")
+        raise LedgerReadError(f"{label}: kind must be one of {KINDS}")
 
     # Validate text: non-empty string
     if not isinstance(obj["text"], str) or not obj["text"]:
-        error(f"flow-ledger: {label}: text must be non-empty string")
+        raise LedgerReadError(f"{label}: text must be non-empty string")
 
     # Validate transcript: null or valid relative path
     if not validate_relative_path(obj.get("transcript")):
-        error(f"flow-ledger: {label}: transcript must be null or relative path with no ..")
+        raise LedgerReadError(f"{label}: transcript must be null or relative path with no ..")
 
     # Validate addressed_by: null or valid relative path
     if not validate_relative_path(obj.get("addressed_by")):
-        error(f"flow-ledger: {label}: addressed_by must be null or relative path with no ..")
+        raise LedgerReadError(f"{label}: addressed_by must be null or relative path with no ..")
 
     # Validate status
     if obj["status"] not in STATUSES:
-        error(f"flow-ledger: {label}: status must be one of {STATUSES}")
+        raise LedgerReadError(f"{label}: status must be one of {STATUSES}")
 
     # Validate addressed_by invariant
     if obj["status"] == "addressed" and obj["addressed_by"] is None:
-        error(f"flow-ledger: {label}: status addressed requires addressed_by to be set")
+        raise LedgerReadError(f"{label}: status addressed requires addressed_by to be set")
     if obj["addressed_by"] is not None and obj["status"] not in ("addressed", "superseded"):
-        error(f"flow-ledger: {label}: non-null addressed_by requires status addressed or superseded")
+        raise LedgerReadError(f"{label}: non-null addressed_by requires status addressed or superseded")
 
     # Validate supersedes: only for kind=correction
     supersedes = obj.get("supersedes")
     if obj["kind"] == "correction":
         if supersedes is None:
-            error(f"flow-ledger: {label}: kind correction requires supersedes")
+            raise LedgerReadError(f"{label}: kind correction requires supersedes")
         if type(supersedes) is bool or not isinstance(supersedes, int):
-            error(f"flow-ledger: {label}: supersedes must be int")
+            raise LedgerReadError(f"{label}: supersedes must be int")
         if supersedes < 1:
-            error(f"flow-ledger: {label}: supersedes must be >= 1")
+            raise LedgerReadError(f"{label}: supersedes must be >= 1")
         if supersedes >= obj["seq"]:
-            error(f"flow-ledger: {label}: supersedes must be < seq")
+            raise LedgerReadError(f"{label}: supersedes must be < seq")
     else:
         if supersedes is not None:
-            error(f"flow-ledger: {label}: supersedes only allowed for kind correction")
+            raise LedgerReadError(f"{label}: supersedes only allowed for kind correction")
 
     return cast(Record, obj)
+
+
+def read_records(ledger_file: Path) -> List[Record]:
+    """Read and validate all records from ledger file. Return empty list if file missing.
+
+    Raises LedgerReadError on any error reading or validating the ledger.
+    Takes no lock and creates no lock file. Retries once on read/parse failure to handle
+    transient issues (e.g., concurrent writes).
+
+    Args:
+        ledger_file: Path to the human.jsonl file.
+
+    Returns:
+        A list of validated Record objects. Empty list if file is absent.
+
+    Raises:
+        LedgerReadError: On torn write, blank line, JSON error, schema error, or seq continuity error.
+                         Includes note that failure may be transient if retry also failed.
+    """
+    if not ledger_file.exists():
+        return []
+
+    def _do_read() -> List[Record]:
+        """Inner read function, raises LedgerReadError on any failure."""
+        records: List[Record] = []
+        try:
+            with open(ledger_file, "r", encoding="utf-8") as f:
+                for line_no, line in enumerate(f, 1):
+                    if not line.endswith("\n"):
+                        raise LedgerReadError(f"human.jsonl line {line_no}: missing trailing newline (torn write; delete the partial last line to repair)")
+                    if not line.rstrip("\n"):
+                        raise LedgerReadError(f"human.jsonl line {line_no}: blank line")
+                    try:
+                        obj = json.loads(line.rstrip("\n"))
+                    except json.JSONDecodeError as e:
+                        raise LedgerReadError(f"human.jsonl line {line_no}: JSON parse error: {e}") from e
+                    # parse_record will raise LedgerReadError for schema violations
+                    rec = parse_record(obj, f"human.jsonl line {line_no}")
+                    records.append(rec)
+        except LedgerReadError:
+            raise
+        except (OSError, UnicodeDecodeError) as e:
+            raise LedgerReadError(f"human.jsonl: read error: {e}") from e
+
+        # Check seq continuity
+        if records:
+            for i, rec in enumerate(records, 1):
+                if rec["seq"] != i:
+                    raise LedgerReadError(f"human.jsonl line {i}: seq must be exactly 1..n in order, got {rec['seq']}")
+
+        return records
+
+    # Try once; on failure, retry once to handle transient issues
+    try:
+        return _do_read()
+    except LedgerReadError:
+        try:
+            return _do_read()
+        except LedgerReadError as retry_e:
+            # Append note that failure may be transient
+            raise LedgerReadError(f"{retry_e} (may be transient; retry)") from retry_e
 
 
 def load_records(ledger_file: Path) -> List[Record]:
     """Load and validate all records from ledger file. Return empty list if file missing.
 
+    Wraps read_records() and converts LedgerReadError to error() exit.
     On any error reading or validating the ledger, calls error() which exits with code 1.
     """
-    if not ledger_file.exists():
-        return []
-
-    records: List[Record] = []
     try:
-        with open(ledger_file, "r", encoding="utf-8") as f:
-            for line_no, line in enumerate(f, 1):
-                if not line.endswith("\n"):
-                    error(f"flow-ledger: human.jsonl line {line_no}: missing trailing newline (torn write; delete the partial last line to repair)")
-                if not line.rstrip("\n"):
-                    error(f"flow-ledger: human.jsonl line {line_no}: blank line")
-                try:
-                    obj = json.loads(line.rstrip("\n"))
-                except json.JSONDecodeError as e:
-                    error(f"flow-ledger: human.jsonl line {line_no}: JSON parse error: {e}")
-                rec = parse_record(obj, f"human.jsonl line {line_no}")
-                records.append(rec)
-    except (OSError, UnicodeDecodeError) as e:
-        error(f"flow-ledger: human.jsonl: read error: {e}")
+        return read_records(ledger_file)
+    except LedgerReadError as e:
+        error(f"flow-ledger: {e}")
 
-    # Check seq continuity
-    if records:
-        for i, rec in enumerate(records, 1):
-            if rec["seq"] != i:
-                error(f"flow-ledger: human.jsonl line {i}: seq must be exactly 1..n in order, got {rec['seq']}")
 
-    return records
+def parse_record_or_exit(obj: Any, label: str) -> Record:
+    """Parse and validate a record, calling error() on failure.
+
+    Wraps parse_record() and converts LedgerReadError to error() exit.
+    On any validation error, calls error() which exits with code 1.
+
+    Args:
+        obj: The object to parse (should be dict).
+        label: A description for error messages (e.g. "append: new record").
+
+    Returns:
+        A validated Record on success; never returns on error (exits with code 1).
+    """
+    try:
+        return parse_record(obj, label)
+    except LedgerReadError as e:
+        error(f"flow-ledger: {e}")
 
 
 def transition_allowed(current_status: Status, new_status: Status) -> bool:
@@ -423,7 +486,7 @@ def cmd_append(
         }
 
         # Validate the new record
-        parse_record(new_record, "append: new record")
+        parse_record_or_exit(new_record, "append: new record")
 
         # Append or rewrite depending on supersedes
         if supersedes is None:
@@ -499,7 +562,7 @@ def cmd_mark(flow_dir: Path, seq: int, status: MarkStatus, by: Optional[str]) ->
             record["addressed_by"] = by
 
         # Re-validate the modified record
-        parse_record(record, f"mark: record {seq}")
+        parse_record_or_exit(record, f"mark: record {seq}")
 
         # Rewrite file
         write_records(ledger_file, records, "mark")

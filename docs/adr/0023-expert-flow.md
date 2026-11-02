@@ -1103,3 +1103,51 @@ A shared file is not evidence that a particular row was finished, so it stays `u
 - Rows whose File cell names a path not in the diff are now `uncovered`. A fix receipt that declares no outstanding item for them can now produce `FIDELITY: reduced plan coverage`. This is the intended effect of the fix, and it can change the verdict of a flow that previously passed.
 - Coverage files written by a run before this amendment keep their all-`unknown` content. They are not recomputed, so an in-flight flow resumed after this change still asks about those rows.
 - Downstream, #380 (the planned relay of fix coverage to later steps) reads these classifications and should be checked against this contract.
+
+## Amendment (2026-10-30): the human ledger is binding (#288)
+
+The human's written directions during a flow are now mechanically enforced: every later step that can act on a direction carries it to ship, and a direction that is not carried is an explicit stop. This amendment documents the design, the closed set of reason strings, and the scope table that make the enforcement work.
+
+**Decision.**
+
+1. **Q1 = C: the verifier stays read-only, and the orchestrator marks once, at the ship close-out.** The flow is carrying a direction when a receipt lists its seq in `Addressed:` and carries no hard stop. `addressed` means "the flow carried it to ship"; `addressed_by` names the last receipt that listed the seq. The verifier does not mark; it only validates that `Addressed:` lines exist and cover every owed seq. The orchestrator is the only marker and marks once, idempotently, at ship via `flow-ledger.py mark` calls derived from the verifier's live `--ledger-close` output.
+
+2. **The scope table and the D1 binding rule.** An owing step is one of `plan`, `implement`, `review`, or `fix` in that order. A `direction` record with origin step O is owed by every owing step at or after O. A pending direction binds each later owing step: plan, implement and fix all owe a direction given at plan; review and fix owe a direction given at review. Track, verify, ship and merge owe nothing but still carry `Addressed: none` in their receipts. A pending `question` record is owed by the step whose receipt answers it. Redo step 8 and Accept-and-continue item 4 no longer mark `addressed`; they defer to ship close-out. The lineage end is keyed on `redo_archive`, not status. `parked` marks are unchanged.
+
+3. **The Redo change and the absolute-`--by` defect.** Step 8 deleted the `mark … addressed` call; it keeps `redo_archive: null`. Accept-and-continue item 4 (in the hard-stop menu) deleted the `addressed` mark; it keeps `redo_archive: null`. The redo-lineage definition is rewritten: the condition "that record is not closed (`parked`/`addressed`)" is replaced with "`redo_archive` is non-null and the record is not `parked`". The three `addressed` rows in the "Ledger status on every exit" table are rewritten as "stays `pending` (closed at the ship close-out)". This removes the defect: both sites today pass `--by "$FLOW_DIR/steps/<NN>-<STEP>.md"`, an absolute path that `flow-ledger.py`'s `validate_relative_path` rejects, causing non-zero exit and a hard failure. With close-out deferred, Step 8 and the Accept item no longer call `mark`.
+
+4. **`Addressed:` grammar and the versioning gate.** A required `Addressed:` line on OK receipts of flows created after a receipt-format version (`ledger_format: 1` in `state.json`; pre-version flows exempt; one-time resume print; ledger read error is a hard failure). Grammar: exactly one line `Addressed: none` or `Addressed: <n>[, <n>…]`, outside fenced code. On `--resume` of a pre-version flow whose ledger holds pending `direction` records, those seqs are printed once, with no hard stop. That is Carl's pushback, accepted on continue.
+
+5. **The D2 match rule, with Carl's limit sentence.** A plan step references each owed seq in `decisions.md`'s three entry forms — decided (D), worth-a-look (W), question (Q) — via a word-bounded `seq #?N` token (regex `(?<!\w)seq\s+#?N(?!\d)`, case-insensitive), or a quote at least 20 characters when the record is longer, or the whole record when it is shorter. Carl's limit: a reference shows the direction was considered, not that it was honoured. The auditor's call is whether it was.
+
+6. **D3 sentence.** Checkpoint option picks and free-text answers are not mechanically enforced at implement or fix; the fidelity auditor compares the plan's accepted rulings against the diff.
+
+7. **D4: Redo is the only `direction` producer until #277 and #391.** A structural test pins the Redo procedure as the only `--kind direction` site. Other human text goes in as `answer` or `gate_note`.
+
+8. **Q4 = B: parked records join the assess relay with fixed choices, bypass the assessor, and inherit the `--auto-merge` block.** Parked records are persisted in the assess relay with their own fixed layout: `Open an issue` / `Drop` / `Keep parked`, and they always go to the human ask (item 10, Step 6.6 onwards), never to the assessor. Their disposition is recorded, and drop reasons must be at least 15 characters. The `--auto-merge` block applies: the gate runs even under `--auto-merge`, so a drop still needs a human answer. That is Carl's improvement, accepted on continue.
+
+9. **Dormant checks, each named with its producer ticket.** The `question` stop (#277), parked items (#277), and #289 dictated replies — marked as dormant in the amendment and activated by their producer tickets. No speculative implementation.
+
+10. **The triage cross-check.** When a `Human ledger (from /expert-flow)` block or a `Plan rulings (from /expert-flow)` block is present, *Doing it* items that would contradict a pending direction or a plan ruling move to *Needs you*. Every *Needs you* item is relayed; a human ruling already on record may be quoted as context, but never resolves the escalation. Ticket comment 2.
+
+11. **Who makes the honoured-checks.** The fidelity auditor is the existing `expert-scout` (Haiku, `agents/expert-scout.md`), as for its current coverage judgment. The "listed but not honoured", "declined without ruling" and "plan ruling contradicted" items are judgments made by a Haiku scout, a weaker backstop than the mechanical checks. This is a residual and is recorded here.
+
+12. **The Accept-and-continue asymmetry.** The new mechanical verifier reasons (`human direction unaddressed`, `receipt: Addressed line missing`, the `ledger:` and `unanswered question` reasons) are not Accept-eligible; they stay default-deny. But the new `FIDELITY: reduced …` verdicts (`… human direction declined without ruling`, `… not honoured`, `… plan ruling contradicted`) are Accept-eligible through the existing `reduced run (audit): ` prefix entry. This is intended: a missing claim is a hard omission that only Take over clears; a judgment that the human can read and overrule is exactly what Accept and continue exists for.
+
+**Hand-offs closed.**
+
+- **:561** ("until #288 adds a `mark` caller") — satisfied: steps no longer call `mark`; only ship close-out does (Q1 = C).
+- **:587** (enforcement out of scope) — satisfied: Steps 4 (per-step checks) and 6 (orchestrator ship close-out).
+- **:661** ("#288 will tighten that meaning") — satisfied: `addressed` now means "the flow carried it to ship" (item 1).
+- **:777/:781** ("#288 reads `OUTSTANDING:` and the relay set") — satisfied: Q4 = B reuses the assess relay (item 8).
+
+**Stale text fixed.**
+
+- **:545** (mention of the verifier calling `mark`) — fixed: the verifier is read-only; only the orchestrator marks.
+- **:547** (the orchestrator grant already includes `mark`) — confirmed: the grant is unchanged.
+
+**ADR-0025 table row updated.** The ADR-0025 table row for "Ledger enforcement | #288" is updated to point at this amendment.
+
+**Sequencing paragraph.**
+
+This amendment is the final enforcement layer for #358 (restricted steps), #346/#380/#399 (Outstanding relay), #277/#289/#391 (new record producers and question stops), and #359/#360 (general-purpose step agents). It is separate from and lands after #287 (which carried the ledger to review via the Triage Chief). It depends on the assess stage from #383 (slice 1), which hands off the parked-items disposition to the orchestrator. Item 10 (the triage cross-check) runs as part of the review step's Triage Chief. Item 11 (the fidelity auditor) runs on a Haiku scout (the existing `expert-scout` agent, per ADR-0004) and is the only judgment backstop beyond the mechanical verifier; an escalation to Sonnet is an Open Item. The named dormant checks (item 9) are inert until their producer tickets ship code that writes those records.

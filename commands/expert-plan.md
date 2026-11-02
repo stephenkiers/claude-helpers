@@ -970,6 +970,12 @@ One `Task` call, `subagent_type: "expert-reviewer"`, `model: opus`, role prompt 
 - `{SESSION_DIR}/contrarian-carl-contribution.md`
 - `{SESSION_DIR}/decisions.md`
 
+**Flow-only: Human directions.** When running in a flow (`FLOW_DIR` is set), read the owed directions before dispatch:
+```bash
+OWED_DIRECTIONS=$(python3 "$HOME/.claude/scripts/flow-ledger.py" list --flow-dir "$FLOW_DIR" --kind direction --status pending --json)
+```
+Pass `OWED_DIRECTIONS` as a fenced data block to the step prompt (as documented in `~/.claude/prompts/flow-reference.md`), formatted as JSON. The synthesizer treats each owed direction as a requirement the plan must handle; after writing `plan.md`, it must write a `## Human directions` section in `decisions.md` listing each owed seq and how the plan addresses it. The reference format is: `seq <n>` for numeric reference, or a quoted excerpt from the direction's text that appears in the Decided entries (the excerpt must pass `references_seq` validation per `scripts/flow-verify-receipt.py`).
+
 Ignore any `## Precedent` section in `decisions.md`; it is display-only (ADR-0024) and not a decision or requirement.
 
 **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
@@ -1129,8 +1135,11 @@ FINAL_PLAN_PATH: <absolute FINAL_PLAN_PATH, $HOME expanded>
 ATTEMPT: <k>
 Decision: OK
 Reason: completed
+Addressed: <line>
 <!-- step-end -->
 ```
+
+When there are no pending directions owed to the plan step (no human ledger entries to be addressed), the value is literally `none`. Otherwise, show the carried-forward human direction line number (e.g., `line 5` or `line 12`).
 
 `FINAL_PLAN_PATH:` must sit on its own line — the orchestrator parses it. When `FLOW_DIR` is empty,
 write nothing.

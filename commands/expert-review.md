@@ -676,6 +676,7 @@ to read:
   reviewer's own local project context and quarantines any project files the PR branch tracks, so
   "absent" means the reviewer has no local project-context override)
 - In a flow, the human ledger under a `Human ledger (from /expert-flow)` heading (when present)
+- When the step prompt carries `PLAN_PATH=<plan_path>`, the plan's `## Decisions Made` section under a `Plan rulings (from /expert-flow)` heading (to the Triage Chief only; never to Pass 1, Amalgamator, or PROJECT_CONTEXT)
 
 It writes `{REVIEW_DIR}/claude-action-plan.md`. It returns:
 
@@ -1165,6 +1166,7 @@ If `findings.json` cannot be read, the run has already failed Step 13 — write 
 ATTEMPT: <k>
 Decision: OK
 Reason: completed
+Addressed: <line>
 <!-- step-end -->
 ```
 

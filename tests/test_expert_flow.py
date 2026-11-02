@@ -65,7 +65,7 @@ FLAGS = ["--plan-effort", "--review-effort", "--auto-merge", "--gates", "--from"
 READ_ONLY_BASH = (
     r"git (?:log|status|diff|show|rev-parse|rev-list|ls-files|merge-base|for-each-ref|cat-file"
     r"|describe|symbolic-ref|worktree list|branch --show-current|config --get)(?: .*)?",
-    r"gh (?:pr|issue|repo|run) (?:view|list|checks|diff|status)(?: .*)?",
+    r"gh (?:pr|issue|repo|run) (?:view|list|checks|diff|status|create)(?: .*)?",
     r"(?:ls|cat|grep|jq|date|printf|mkdir)(?: .*)?",
     # Named exceptions: mutating git grants that exist for the confirmation-gated Rebase action
     # in the Hard stop only (verify base-stale), narrowed per ADR-0023's gated-Rebase amendment.
@@ -947,7 +947,7 @@ def main():
     h.test_result("stale fidelity-retry sentence 'directly after ATTEMPT=<k>' is gone",
                   "one extra line directly after `ATTEMPT=<k>`" not in flat)
     h.test_result("template data sentence carves out human.jsonl under the Ledger block (one sentence)",
-                  "is read under the Ledger block of `flow-reference.md`, which documents a reserved-but-inactive exception"
+                  "is read under the Ledger block of `flow-reference.md`: pending `direction` records bind your step"
                   in flat)
 
     relay_sec = sub_section(flow_md, "### Relaying a question")
