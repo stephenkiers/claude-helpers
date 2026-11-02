@@ -39,7 +39,7 @@ a literal and substituted into later blocks and into the step prompts. Angle-bra
 files under `FLOW_DIR` and the one marker file), `Task` (to spawn a step), `SendMessage` (to resume
 a step with answers), and `AskUserQuestion`. Three `scripts.workflow.cli` grants serve the worktree stage and the Check command question: `deps ensure` (installs run inside the CLI, never through a package-manager command, so no `npm`, `pnpm`, `yarn`, or `bun` grant exists), `checks ensure-check`, and `checks record-check-answer` (the one writer of the main `project.yaml` answer). Five added script grants: `Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*)` runs the read-only receipt verifier before an OK receipt advances, `Bash(python3 "$HOME/.claude/scripts/flow-ledger.py":*)` appends human-input records (`human.jsonl`) only through the script, `Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*)` archives, restores, and checks redo attempts, and `Bash(python3 "$HOME/.claude/scripts/flow-accept.py" eligible:*)` and `... record:*` check and record the human-only **Accept and continue** (Hard stop item 3c and the Accept procedure; the orchestrator never chooses it). A fifth grant `Bash(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*)` is the read-only issue-comments helper; the widening of this grant from the step agents to the orchestrator is sequenced with the guard work #418 and tests/test_expert_flow.py must be re-run once #418 lands. Shell writes are limited to: `printf >` receipt stubs and
 `printf >>` log lines under `FLOW_DIR`, and the one marker-exclude line described in the worktree step.
-The `printf >` writes overwrite the receipt stubs and the audit-file stubs (`steps/<NN>-<STEP>.audit.md`).
+The `printf >` writes overwrite the receipt stubs and the audit-file stubs (`steps/<NN>-<STEP>.audit.md`). The CLI, not the shell, owns the bounded writes made through `deps ensure` and `checks record-check-answer` (the main `project.yaml` answer, the main `repo-cache.json` check, the deps stamp, and the install subprocesses); see ADR-0013 Amendment 10.
 There is no `Edit`, no write-capable git beyond the exact Rebase grants, no `gh` mutation. The one destructive action is the
 **Start fresh** deletion of the old flow's worktree through the `/cleanup` helper: the orchestrator's
 only sanctioned destructive action, run only after the human chose Start fresh (see "Existing flow"). (`Bash(sed -n:*)` and similar read-only
@@ -1173,7 +1173,7 @@ Then branch on the validated `Decision`:
 ### Orchestrator-written receipts
 
 Four steps write their receipt in the orchestrator, not the subagent: **worktree** and **track**
-(`WORKTREE`, `BRANCH`), **verify** (`CHECK`, `CHECK_EXIT`), and **ship** when reusing an open PR (`PR_URL`). This
+(`WORKTREE`, `BRANCH`; the worktree receipt also carries `DEPS` and `CHECK_SOURCE`), **verify** (`CHECK`, `CHECK_EXIT`), and **ship** when reusing an open PR (`PR_URL`). This
 is the one procedure for all four:
 
 - The subagent (when one is spawned) does not write the receipt. Its reply carries the raw values.
@@ -1892,7 +1892,7 @@ source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: c
 PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli deps ensure --worktree "<WORKTREE>" --main-worktree "<MAIN_WORKTREE>" --base "origin/<DEFAULT_BRANCH>"
 ```
 
-`<DEFAULT_BRANCH>` is the default branch from Project detection. Handling by the first token of the result:
+`<DEFAULT_BRANCH>` is the default branch from Project detection. Handling by the status token on the printed `DEPS:` line. Exits 3, 4, and 5 are expected outcomes of `deps ensure`, not failures of the command; each maps to the status its printed line names, and that status decides the handling below:
 
 - `current` and `installed`: print one line (`deps: <result>`), append the `deps` entry, and spawn the
   step. The action is never silent.
@@ -1902,7 +1902,7 @@ PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli deps ensure --w
   (this records the human's approval of the current manifest hash, so the gate clears and the frozen
   install runs), then re-runs the precondition; **Take over**; **Abort**. In `--fleet` it parks as a
   `gate`.
-- `failed` (non-zero exit or timeout): stop before the spawn. The stop prints the redacted failure tail
+- `failed`: stop before the spawn. The stop prints the redacted failure tail
   the command printed. Hard-stop menu: **Retry** re-runs the precondition, without `--approve-manifest`;
   **Take over**; **Abort**. In `--fleet` it parks as a `gate`.
 
@@ -1948,9 +1948,9 @@ hand-off. Plan, and every step that runs the check, comes after all of it.
    PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli deps ensure --worktree "<WORKTREE>" --main-worktree "<MAIN_WORKTREE>"
    ```
 
-   The result is the first token of the printed line. `installed` and `current` print one line and
+   The result is the status token on the printed `DEPS:` line. Exits 3, 4, and 5 are expected outcomes of `deps ensure`, not failures of the command; each maps to the status its printed line names, and that status alone decides what happens next. `installed` and `current` print one line and
    continue. `skipped` and `ambiguous` print a warning and continue (no lockfile, or mixed lockfiles so
-   nothing runs). `failed` (non-zero exit or timeout) with a detected lockfile or an explicit
+   nothing runs). `failed` (the printed `DEPS: failed: <reason>` line) with a detected lockfile or an explicit
    `commands.install` is a hard stop through the Hard stop menu (Retry re-runs this `deps ensure`;
    Take over and Abort as for any worktree-stage stop). It is not counted in `failures.worktree`, and in
    `--fleet` it parks. Every result is appended to `state.json` `deps` (see "Flow state").

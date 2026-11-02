@@ -34,7 +34,7 @@ The approach preserves the current semantics:
 
 6. **Provider protocol** (Sam System, ADR-0005): `providers/base.py` defines a `Provider` Protocol; both `github.py` and `local.py` implement the same contract so `cli.py` never special-cases them (stub implementations Phase 1; full implementations Phases 2-3).
 
-7. **No per-project extension point** (Decision 3): The CLI is not designed for runtime configuration. Forks that need different behavior edit `scripts/workflow/` directly — that IS the extension mechanism, consistent with the repo's fork-and-adapt philosophy.
+7. **No per-project extension point** (Decision 3): The CLI is not designed for runtime configuration. Forks that need different behavior edit `scripts/workflow/` directly — that IS the extension mechanism, consistent with the repo's fork-and-adapt philosophy. *Amended by Amendment 10 (2026-11-01): the CLI now reads and writes the main worktree's config and runs bounded install subprocesses.*
 
 ## Consequences
 
@@ -45,7 +45,7 @@ The approach preserves the current semantics:
 - `worktrees.py`: Worktree parent detection (ADR-0010), main/second worktree discovery.
 - `project.py`: Repository identity (gh repo view), local-plan-mode detection, current user.
 - `cache.py`: Read and validate cache files (phase 1); write/locking stubs citing Decision 1.
-- `checks.py`: Toolchain and check detection (read-only; execution in Phase 2+).
+- `checks.py`: Toolchain and check detection (read-only; execution in Phase 2+). The read-only scope of Decision 3 is amended by Amendment 10 (2026-11-01) for the check-answer write and the deps chore.
 - `stack.py`: Stack detection (ADR-0011): `is_stacked()` (cache-first, ancestor fallback), `detect_layout()` (single-driver | per-branch | unknown).
 - `safety.py`: Shared `Unknown(reason: str)` type for fail-closed behavior.
 - `providers/base.py`: Read-only provider contract (`Provider` Protocol).
@@ -323,3 +323,23 @@ This two-stage approach (seed-then-fallback) ensures:
 - **D4, #387:** the `/merge-and-cleanup` chain unification (#387) should reuse the shared resolver (`resolve_check_detail`) and this detector, not add its own `package.json` read. This amendment does not change #387's behavior and does not pin its design.
 
 The mapping between the detector and `commands/shipit.md`'s lockfile table is pinned by a test, so the repo has one rule rather than two. See `docs/workflow-cli-invariants.md`, Decision 3 and Decision 8.
+
+### Amendment 10: CLI-owned writes and install subprocesses for the environment chores (2026-11-01, #417)
+
+**Problem:** Decision 3 keeps the CLI free of runtime configuration, and Phase 1 is read-only. The `/expert-flow` environment chores (ADR-0023, 2026-11-01 amendment) need the CLI to do more: read the main worktree's `.claude/project.yaml`, append a human's check answer to it, write `repo-cache.json` and the deps stamp, and run package-manager install subprocesses through `scripts/workflow/deps.py`. None of these is a step-agent write under the flow-directory prefix (ADR-0018, 2026-10-13 amendment), so each needs an explicit rule.
+
+**Decision:** The CLI is permitted these behaviors, and only these, within the bounds below.
+
+- **Reads:** the main worktree's `.claude/project.yaml` (`commands.install`, `commands.check`, `checkOptOut`).
+- **Writes:**
+  - `checks record-check-answer` text-appends a human's answer to the main `.claude/project.yaml`. Only a human's answer is written there; a `CLAUDE.md`-derived candidate is never persisted by the CLI (Amendment 9).
+  - `checks ensure-check` writes a `package.json`-detected command into the main `repo-cache.json`, with the `commandSources` sidecar (Amendment 9).
+  - `deps ensure` writes the lockfile-hash deps stamp. The stamp is deleted before an install starts and written only after exit 0.
+- **Install subprocesses (`scripts/workflow/deps.py`):**
+  - Frozen or immutable installs only: `npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable`, or `bun install --frozen-lockfile`, selected from the root lockfile; or the main worktree's explicit `commands.install`. A non-frozen install is never run.
+  - Fixed argv, `shell=False`, stdin closed, Corepack prompts disabled, a hard timeout, and the process group killed on timeout.
+  - Manifest-change approval gate: if `package.json` or the selected lockfile differs between the merge-base of the base ref and `HEAD` (committed or uncommitted changes count), nothing installs and the result is `manifest-changed`. `deps ensure --approve-manifest` records the human's approval of the current manifest hash; a later manifest edit re-arms the gate. The gate does not apply at worktree time, because the branch equals its base.
+  - Output is redacted and bounded to a tail before it reaches a receipt, `state.json`, or a park file.
+- **Environment (accepted residual):** installs run with the full environment (`dict(os.environ)`), so lifecycle scripts can see credentials such as `GH_TOKEN` and `NPM_TOKEN`. This exposure is accepted, not mitigated. Installs already execute branch-controlled lifecycle scripts by design, so scrubbing the environment would not close the exposure to those scripts, and it would break private-registry authentication, which installs need.
+
+**Consequences:** The CLI's writes outside the flow-directory prefix are CLI-owned, not step-agent `Write`, and their paths are limited to the files listed above. The orchestrator and step agents still hold no package-manager grant; install execution happens only inside the CLI. This rule does not extend to any other CLI write or subprocess. A new one needs its own amendment.
