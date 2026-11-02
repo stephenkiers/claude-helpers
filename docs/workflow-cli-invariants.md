@@ -176,9 +176,12 @@ run, since `build_check_order` records a `null_command` skip entry for null-valu
 
 **Invariant:** The CLI has no per-project runtime configuration or extension points beyond the trusted, per-machine settings it reads. Behavior is fixed by the code.
 
-**Amendment (2026-11-01, #417, ADR-0013 Decision 3 / D5):** The CLI may read the main worktree's `.claude/project.yaml` (the trusted, per-machine file, read for `commands.check`, `checkOptOut` and `commands.install`). It may write exactly two things, each an atomic temp-file-and-`os.replace` write:
+**Amendment (2026-11-01, #417, ADR-0013 Decision 3 / D5):** The CLI may read the main worktree's `.claude/project.yaml` (the trusted, per-machine file, read for `commands.check`, `checkOptOut` and `commands.install`). Its writes are the following, each an atomic temp-file-and-`os.replace` write:
 1. `checks ensure-check` writes a `package.json`-detected check command into the main `repo-cache.json` `commands.check`, with `commandSources` provenance.
-2. `checks record-check-answer` text-appends a human's answer (`commands.check` or `checkOptOut`) to the main `.claude/project.yaml`. It never round-trips the file through a YAML writer.
+2. `checks record-check-answer` text-appends a human's answer (`commands.check` or `checkOptOut`) to the main `.claude/project.yaml`. It never round-trips the file through a YAML writer. If the answer does not resolve against main after the write, the file is restored to its original bytes (or removed if it did not exist) and the command reports failure with the YAML line to add by hand.
+3. `deps ensure` writes a per-worktree stamp, `deps-stamp.json`, under the worktree's git dir (`<git dir>/claude-helpers/`). It is never in the committed tree. The stamp holds the install command and a lockfile hash, and it is deleted before each install and rewritten only after exit 0. `deps ensure --approve-manifest` also records the `approved-manifest-sha` approval key in that same stamp.
+
+Installs run only through the fixed-argv helper in `scripts/workflow/deps.py` (`shell=False`, `stdin` closed, a hard timeout, a redacted output tail). No step runs a package manager directly.
 
 The CLI never executes a command derived from prose. `deps ensure` runs only a frozen install from a closed lockfile table, or an explicit `commands.install` from the main `project.yaml`. A `CLAUDE.md`-derived command is never executed or persisted by the CLI.
 

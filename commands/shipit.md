@@ -242,8 +242,8 @@ After detection, write `.claude/repo-cache.json` with all discovered commands. S
 
 **Keep an existing `commands.check`.** Before writing, read the existing `.claude/repo-cache.json` if it
 exists. If its `commands.check` is non-empty, keep that value even when this run detects a different
-command (or none). Also preserve the existing `commandSources` map (command key → provenance, such as
-`package-json` or `human`, written by the workflow CLI) exactly as found. One exception: when
+command (or none). Also preserve the existing `commandSources` map (command key → provenance; the workflow CLI
+writes only `package-json`) exactly as found. One exception: when
 `commandSources.check` is `package-json` (written by the detector) and this run detects a different
 non-null `check`, replace it, so a package-manager migration corrects it. Hand-set values, values with any
 other provenance, and values `/shipit` itself wrote on an earlier run are kept. That last group includes a

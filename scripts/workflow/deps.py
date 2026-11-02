@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import IO, Any, Dict, List, Optional, Tuple
 
 from . import worktrees
 
@@ -172,6 +172,19 @@ def _has_install_artifact(worktree: Path, lockfile: Lockfile) -> bool:
     return lockfile.manager == "yarn" and (worktree / ".pnp.cjs").is_file()
 
 
+def _target_mode(path: Path) -> int:
+    """
+    Permission bits for a rewritten file: the existing file's bits, or the umask default for a new file.
+
+    mkstemp creates 0600 files, so without this a rewrite would silently tighten a 0644 project.yaml.
+    """
+    if path.exists():
+        return path.stat().st_mode & 0o7777
+    umask = os.umask(0)
+    os.umask(umask)
+    return 0o666 & ~umask
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     """Write text to path via a temp file in the same directory and os.replace. Raises OSError."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -179,6 +192,7 @@ def atomic_write_text(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w") as handle:
             handle.write(text)
+        os.chmod(temp_name, _target_mode(path))
         os.replace(temp_name, str(path))
     except BaseException:
         try:
@@ -282,11 +296,15 @@ def _write_stamp(path: Path, data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _remove_file(path: Path) -> None:
+def _remove_file(path: Path) -> Optional[str]:
+    """Delete path. A missing file is fine; any other failure is returned so the caller can stop."""
     try:
         path.unlink()
-    except OSError:
-        pass
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        return f"could not remove {path.name}: {e}"
+    return None
 
 
 def _dependency_map(manifest: Dict[str, Any]) -> Dict[Tuple[str, str], Any]:
@@ -360,44 +378,61 @@ def _describe_change(names: List[str]) -> str:
     return "lockfile or package.json metadata (no dependency names changed)"
 
 
-def _kill_group(proc: "subprocess.Popen[str]") -> None:
+def _kill_group(proc: "subprocess.Popen[bytes]") -> None:
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except OSError:
         pass
 
 
+OUTPUT_TAIL_BYTES = 64 * 1024
+
+
+def _read_output_tail(sink: IO[bytes]) -> str:
+    """
+    The last OUTPUT_TAIL_BYTES of captured install output, starting at a whole line.
+
+    Output goes to a temp file and only this tail is read back, so a noisy install cannot grow the
+    process without bound. A line cut by the window is dropped, so a credential is never shown half-masked.
+    """
+    sink.flush()
+    size = sink.seek(0, os.SEEK_END)
+    sink.seek(max(0, size - OUTPUT_TAIL_BYTES))
+    text = sink.read().decode("utf-8", errors="replace")
+    if size > OUTPUT_TAIL_BYTES and "\n" in text:
+        text = text.split("\n", 1)[1]
+    return text
+
+
 def _run_install(argv: List[str], worktree: Path, timeout: int) -> Tuple[Optional[int], str, Optional[str]]:
     """
     Run one install with shell=False, stdin from DEVNULL, a hard timeout and Corepack prompts off.
 
-    Returns (returncode, combined_output, error). error is "timeout" or a launch failure, else None.
+    Returns (returncode, output_tail, error). error is "timeout" or a launch failure, else None.
     """
     env = dict(os.environ)
     env["COREPACK_ENABLE_DOWNLOAD_PROMPT"] = "0"
     env["CI"] = "1"
-    try:
-        proc = subprocess.Popen(
-            argv,
-            cwd=str(worktree),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except OSError as e:
-        return None, "", f"could not start {argv[0]}: {e}"
-    try:
-        output, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_group(proc)
-        output, _ = proc.communicate()
-        return None, output or "", "timeout"
-    return proc.returncode, output or "", None
+    with tempfile.TemporaryFile() as sink:
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=str(worktree),
+                stdin=subprocess.DEVNULL,
+                stdout=sink,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=True,
+            )
+        except OSError as e:
+            return None, "", f"could not start {argv[0]}: {e}"
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            proc.wait()
+            return None, _read_output_tail(sink), "timeout"
+        return proc.returncode, _read_output_tail(sink), None
 
 
 def ensure_deps(
@@ -472,7 +507,9 @@ def ensure_deps(
     # The stamp goes before the install starts; a failed or killed install never looks installed.
     # A manifest approval survives in an approval-only stamp so a failed install does not force a new one.
     prior_approval = stamp.get(APPROVAL_KEY)
-    _remove_file(stamp_file)
+    remove_error = _remove_file(stamp_file)
+    if remove_error is not None:
+        return DepsResult("failed", remove_error)
     if prior_approval is not None:
         write_error = _write_stamp(stamp_file, {APPROVAL_KEY: prior_approval})
         if write_error is not None:

@@ -1955,7 +1955,7 @@ hand-off. Plan, and every step that runs the check, comes after all of it.
    Take over and Abort as for any worktree-stage stop). It is not counted in `failures.worktree`, and in
    `--fleet` it parks. Every result is appended to `state.json` `deps` (see "Flow state").
 2. **Check detection.** Run `checks ensure-check --worktree "<WORKTREE>" --main-worktree "<MAIN_WORKTREE>"`
-   (same `PYTHONPATH` form as above). It prints the resolved command and its `source`, or `unresolved`.
+   (same `PYTHONPATH` form as above). It prints `CHECK_SOURCE:` and `CHECK_ACTION:` lines, plus `CHECK_COMMAND:` when a command resolved, or `CHECK_SOURCE: unresolved` with `CHECK_ACTION: unresolved`. Exit 1 with `CHECK_ACTION: error` and an `ERROR:` line is a write failure: stop and surface the `ERROR:` line; record no answer.
    `unresolved` never stops this step: the receipt records it and the plan-time question
    ("Check command question", before the plan spawn) asks once.
 3. **Marker and receipt.** Only now record the receipt and the marker. The receipt carries the required
@@ -1995,16 +1995,19 @@ Running bare `/expert-flow` inside the worktree resumes this flow at `plan` with
 **Check command question (before plan, and before implement while unresolved).** Runs after the
 hand-off on a fresh run, on every `--resume` that reaches `plan`, and before the `implement` spawn
 whenever the check is still unresolved. Run `checks ensure-check --worktree "<WORKTREE>"
---main-worktree "<MAIN_WORKTREE>"` (the `PYTHONPATH` form from the worktree step). If it prints a
-resolved command, print `check: <command> (<source>)` and continue. If it prints `unresolved`, ask once:
+--main-worktree "<MAIN_WORKTREE>"` (the `PYTHONPATH` form from the worktree step). If it prints
+`CHECK_ACTION: resolved`, `detected` or `opt-out`, print its `CHECK_SOURCE:` and `CHECK_COMMAND:` (or `OPT_OUT:`) lines and continue. If it prints `CHECK_ACTION: unresolved`, ask once. If it exits 1 with `CHECK_ACTION: error`, stop and surface the `ERROR:` line; record no answer.
 
 1. **Question file.** Pick `SEQ` and write `${FLOW_DIR}/questions/plan-<SEQ>.json` through the Ask
    block (`step: "plan"`, `command: "expert-flow"`, `attempt: <ATTEMPT>`, `context_path: null`). The
-   `summary` lists each source the resolver tried and why it missed, and states that verify and ship
-   need a check (a `checkOptOut` only skips the implement and fix gate). One question, header
+   `summary` quotes the `sources tried:` line from `checks resolve-check --worktree "<WORKTREE>"
+   --main-worktree "<MAIN_WORKTREE>"` (its `failure_reason`; `ensure-check` does not list sources), and
+   states that verify and ship need a check (a `checkOptOut` only skips the implement and fix gate).
+   One question, header
    `Check command`, text "No check command is configured for this repo. Which command should verify
-   and ship run?" Options, in order: when the resolver printed a CLAUDE.md suggestion, its command
-   labelled `<command> (from CLAUDE.md, unverified)` with the description "Nothing is saved unless you
+   and ship run?" Options, in order: when `ensure-check` printed a `SUGGESTION:` line, its command with
+   the ` (from CLAUDE.md, unverified)` suffix removed by the orchestrator, shown as
+   `<command> (from CLAUDE.md, unverified)` with the description "Nothing is saved unless you
    choose it"; then `Type a command` ("Answer in your own words: the exact command, run from the
    worktree root"); then `Set checkOptOut` ("Record a reason. Skips the implement and fix check gate
    only; verify and ship still need a command."). Each entry has an `id` and `brief: null`.
@@ -2021,8 +2024,7 @@ resolved command, print `check: <command> (<source>)` and continue. If it prints
    `python3 "$HOME/.claude/scripts/flow-ledger.py" append --flow-dir "$FLOW_DIR" --kind answer --step plan --attempt <k> --text-stdin <<'HUMAN_TEXT_<8 random hex>'`
    with the text `check command: <command>` or `check opt-out: <reason>`. Non-zero exit is
    `STOP human ledger error: <first stderr line>`.
-5. **Refusal.** Print the exact line to add to the main `.claude/project.yaml`: `commands:` with
-   `  check: "<command>"` under it, or a top-level `checkOptOut: "<reason>"`. Do not guess a command.
+5. **Refusal.** A refused `record-check-answer` prints the exact line to add to the main `.claude/project.yaml` (`check: "<command>"` under a block-style `commands:`, or a top-level `checkOptOut: "<reason>"`); relay that line. Do not guess a command.
    Then continue to plan, which needs no check. The `implement` spawn re-runs this block first; while it
    is still unresolved the flow stops there with the same line.
 

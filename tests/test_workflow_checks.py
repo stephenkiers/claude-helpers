@@ -8,6 +8,7 @@ Run with: python3 tests/test_workflow_checks.py
 import contextlib
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -19,6 +20,7 @@ from workflow.checks import (
     resolve_check_detail, detect_package_json_check, suggest_from_claude_md,
     ensure_check, record_check_answer,
 )
+from workflow.deps import LOCKFILE_MANAGERS
 from _test_harness import Harness
 
 
@@ -514,6 +516,35 @@ if __name__ == "__main__":
             "no lockfile yields None",
             detect_package_json_check(base / "nolock") is None,
         )
+
+    print("[Section 11b] commands/shipit.md lockfile table equals the detector mapping (#417 Step 3)")
+
+    shipit_text = (Path(__file__).parent.parent / "commands" / "shipit.md").read_text(encoding="utf-8")
+    table_rows = {}
+    table_found = False
+    in_table = False
+    for line in shipit_text.splitlines():
+        if "Lockfile → package manager" in line:
+            in_table = True
+            continue
+        if not in_table:
+            continue
+        row = re.match(r"^\|\s*`([^`]+)`\s*\|\s*(\w+)\s*\|\s*$", line)
+        if row:
+            table_found = True
+            table_rows[row.group(1)] = row.group(2)
+        elif table_found:
+            break
+    test_result(
+        "commands/shipit.md has a lockfile-to-manager table (rows like | `package-lock.json` | npm |)",
+        table_found,
+        "heading 'Lockfile → package manager' missing or no rows parsed from commands/shipit.md",
+    )
+    test_result(
+        "the shipit.md lockfile table equals the detector's LOCKFILE_MANAGERS mapping (one rule, not two)",
+        table_rows == LOCKFILE_MANAGERS,
+        f"doc={table_rows} detector={LOCKFILE_MANAGERS}",
+    )
 
     print("[Section 12] suggest_from_claude_md (display only)")
 

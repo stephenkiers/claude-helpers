@@ -724,6 +724,13 @@ def ensure_check(worktree: Path, main_worktree: Path) -> EnsureCheckResult:
     error = _write_detected_check(main_worktree, detected)
     if error is not None:
         return EnsureCheckResult("error", None, error=error)
+    after = resolve_check_detail(worktree, main_worktree)
+    if after.command != detected:
+        return EnsureCheckResult(
+            "error", None,
+            error=f"wrote {detected} to repo-cache.json but resolution reports {after.command!r} "
+                  f"from {after.source}; check the cache and resolve by hand",
+        )
     return EnsureCheckResult("detected", PACKAGE_JSON_LABEL, command=detected)
 
 
@@ -738,7 +745,10 @@ def _with_check_line(text: str, command: str) -> Tuple[str, str, Optional[str]]:
     lines = text.splitlines()
     commands_idx = [i for i, line in enumerate(lines) if _TOP_LEVEL_COMMANDS_RE.match(line)]
     if len(commands_idx) > 1:
-        return text, "", "refusing: project.yaml has more than one top-level commands key"
+        return text, "", (
+            "refusing: project.yaml has more than one top-level commands key; add this line by hand "
+            f"under the one you mean: {value_line}"
+        )
     base = text if (text == "" or text.endswith("\n")) else text + "\n"
     if not commands_idx:
         snippet = f"commands:\n  {value_line}"
@@ -748,7 +758,10 @@ def _with_check_line(text: str, command: str) -> Tuple[str, str, Optional[str]]:
     match = _TOP_LEVEL_COMMANDS_RE.match(lines[idx])
     rest = match.group(1).strip() if match else ""
     if rest and not rest.startswith("#"):
-        return text, "", "refusing: commands is in flow style; add the check key by hand"
+        return text, "", (
+            "refusing: commands is in flow style; add this line by hand as an indented child of "
+            f"commands: {value_line}"
+        )
     indent: Optional[str] = None
     for line in lines[idx + 1:]:
         if line.strip() == "" or line.lstrip().startswith("#"):
@@ -758,7 +771,10 @@ def _with_check_line(text: str, command: str) -> Tuple[str, str, Optional[str]]:
         if indent is None:
             indent = line[: len(line) - len(line.lstrip())]
         if _CHILD_CHECK_RE.match(line):
-            return text, "", "refusing: commands.check already exists in project.yaml"
+            return text, "", (
+                "refusing: commands.check already exists in project.yaml; replace that line by hand with: "
+                f"{indent or '  '}{value_line}"
+            )
     child_indent = indent if indent is not None else "  "
     lines.insert(idx + 1, f"{child_indent}{value_line}")
     snippet = f"{child_indent}{value_line}"
