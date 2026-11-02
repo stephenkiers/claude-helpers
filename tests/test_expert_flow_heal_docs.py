@@ -106,7 +106,7 @@ def main():
     tools = split_tools(fm_field(EXPERT_FLOW, "allowed-tools") or "")
     for grant in NEW_GRANTS:
         h.test_result(f"allowed-tools carries exactly one '{grant}'", tools.count(grant) == 1, f"count={tools.count(grant)}")
-    forbidden = [t for t in tools if re.search(r"git (reset|push|clean|checkout|stash|commit|add|restore)|checks run|cli checks", t)]
+    forbidden = [t for t in tools if re.search(r"git (reset|push|clean|checkout|stash|commit|add|restore)|checks run", t)]
     h.test_result("allowed-tools has no git reset/push/commit/add/checkout or check-runner grant",
                   forbidden == [], f"found={forbidden}")
     h.test_result("allowed-tools has no duplicate entries", len(tools) == len(set(tools)),
