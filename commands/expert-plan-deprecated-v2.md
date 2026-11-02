@@ -1,7 +1,7 @@
 ---
 description: "Deprecated: superseded by /expert-plan (formerly v3) — see ADR-0020. Parallel expert planning with isolated contributions (v2) — A-B baseline alongside /expert-plan-deprecated (v1). Scales better on large tickets — subagents write checkpoints instead of accumulating in orchestrator context."
 argument-hint: [--effort 1|2|3|4|5] [--model haiku|sonnet|opus|fable]
-allowed-tools: Bash(ls:*), Bash(find:*), Bash(cd:*), Bash(gh api:*), Bash(gh repo view:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
+allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(gh repo view:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(python3:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
 model: sonnet
 ---
 
@@ -250,7 +250,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage gather-contex
 Collect the input to plan against:
 
 1. **Ticket/requirement**: One of:
-   - GitHub issue URL → fetch the issue body and title
+   - GitHub issue URL → fetch with `gh issue view <url> --json title,body,labels` (title, body and labels only; this planner has no comment wiring)
    - User-provided description in the conversation
    - Ask user if neither is available
 
@@ -269,6 +269,7 @@ Collect the input to plan against:
    - **Constraints**: What ADRs, invariants, or project rules apply
    - **Unknowns**: What the ticket leaves ambiguous or unspecified
 
+On failure: `stage-end --stage gather-context --outcome failure --failure-class context-load-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class context-load-failed 2>/dev/null || true`, then stop.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gather-context --outcome success 2>/dev/null || true

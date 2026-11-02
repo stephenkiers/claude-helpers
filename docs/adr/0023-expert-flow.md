@@ -1056,18 +1056,27 @@ This amendment adds the third bounded exception to the no-auto-remediation stanc
 
 ## Amendment 2026-10-30: Issue comments through Ask-based "new comment since plan" relay
 
-**Overview:** With the `/expert-flow` helper that fetches and filters GitHub issue comments (#401, which implements ticket #370), the flow now reads live comments at plan time and post-plan steps, and relays new comments through the Ask block. Under `--fleet`, the Ask becomes a park (`fleet-ask.json`), and fleet processing resumes each parked ticket once the human has answered the fleet batch. Ticket #421 tracks the missing parts of the relevance-scout path (validators for scout reports, unverified-comment budget expansion).
+**Overview:** With the `/expert-flow` helper that fetches and filters GitHub issue comments (ticket #401 implements ticket #370), the flow reads live comments at plan time and in post-plan steps, and relays new comments through the Ask block. Under `--fleet`, the Ask becomes a park (`fleet-ask.json`), and fleet processing resumes each parked ticket once the human has answered the fleet batch. Ticket #421 tracks the missing parts of the relevance-scout path (validators for scout reports, unverified-comment budget expansion). Ticket #418 (the `/expert-flow` allowlist guard work) is sequenced with this change: the issue-comments allowlist widening lands with, or after, #418's guard, and `tests/test_expert_flow.py` is re-run once #418 lands.
 
-**Relay mechanism:** Every post-plan consumer (implement, fix, review, ship, pre-merge check) that runs inside a flow:
+**Consumers that raise the Ask:** implement and fix (`/implement-with-haiku` in flow), review (`/expert-review`), ship (`/shipit`), and the orchestrator's pre-merge check. Each runs the helper with `--trusted-only --flow-dir "$FLOW_DIR"`. Deprecated planners do not consume comments. The in-flow plan step does not raise the Ask; it reads comments as planning input.
 
-1. Fetches comments with `--flow-dir "$FLOW_DIR"` to use the plan step's fetch time as the lower bound (deterministic relative-age drop, not wall-clock).
-2. For each unacknowledged trusted comment posted after the plan fetch time:
-   - Raises an Ask-block question with the comment id in the question entry's `comment_id` field
-   - Shows the comment fenced in `summary`/`brief`, with the body section it touches
-   - Offers two options: **Continue — the plan stands** (exact text) or **Stop for re-plan**
-3. Records the answer in the flow's human ledger (background only); only a Continue answer acknowledges the comment
-4. A Stop answer is a hard stop; the comment stays unacknowledged so a later Retry or `--resume` re-asks it
+**Relay mechanism:** Every post-plan consumer that runs inside a flow, one comment per turn:
 
-**Lower bound and acknowledgement:** The plan step records its fetch time and the set of comment ids it showed the planner in `${FLOW_DIR}/plan-comment-ids.json` and `${FLOW_DIR}/plan-issue-snapshot.json`. Post-plan steps treat every later comment not acknowledged (answered Continue) as "new since plan" and raise it once, so each comment is raised at most once per flow unless a Stop answer unacknowledges it.
+1. Fetches comments with `--trusted-only --flow-dir "$FLOW_DIR"`. The plan step's fetch time is the lower bound (deterministic, not wall-clock), and the helper marks each comment `acknowledged`.
+2. Takes the first trusted comment that is not acknowledged and is not an implementation-plan comment, and raises one Ask-block question for it:
+   - The question entry carries the GitHub comment id in its `comment_id` field
+   - The comment is fenced in `summary`/`brief`, with the body section it touches
+   - Two options, exact labels: **Continue — the plan stands** or **Stop for re-plan**. A free-text answer or any other label is a Stop.
+3. Waits for the answer (END TURN). The orchestrator records the human's answer in the flow's human ledger (background `answer`, the only ledger entry this relay writes). Comments are never ledger records.
+4. Re-runs the procedure on resume; the next comment is raised, or the step continues.
+5. A Stop answer is a hard stop: the step writes `Decision: FAILED` with `Reason: stopped on new issue comment <id>`. Under `--auto-merge`, a Stop halts the merge. The comment stays unacknowledged, so a later Retry or `--resume` raises it again.
 
-**See also:** ADR-0008 amendment 2026-10-30 for the standing exception on which general-purpose steps read issue comments (plan receives unverified comments unfiltered; implement, fix, review, ship and pre-merge receive trusted-only).
+**Acknowledgement is resolved from existing artifacts.** The helper treats a comment as acknowledged when some `${FLOW_DIR}/questions/<STEP>-<SEQ>.json` entry carries that `comment_id` and the matching `${FLOW_DIR}/answers/<STEP>-<SEQ>.json` answer is Continue. There is no `answers.jsonl` and no separate acknowledgement file. Because the answers are the flow's own artifacts, a comment answered Continue is raised once per flow, including across Retry, `--resume` and `--fleet`.
+
+**Fleet.** Under `--fleet` the Ask parks as `fleet-ask.json` instead of asking. A repeated ask under `--fleet` parks again only when the previous answer was not Continue; ack-from-artifacts is what makes a Continue answer raise-once.
+
+**Lower bound:** The plan step records its fetch time and the comment ids it showed the planner in `${FLOW_DIR}/plan-issue-snapshot.json` and `${FLOW_DIR}/plan-comment-ids.json`. Post-plan steps treat later, unacknowledged comments as "new since plan".
+
+**Scout policy (fail closed).** Unverified comments reach the plan step only by an explicit, valid `include` verdict for their id. A missing, malformed or unrecognised verdict drops the comment, and finalize re-applies the budgets after dropping. Scout report validators and budget expansion are tracked by #421.
+
+**See also:** ADR-0008 amendment 2026-10-30 for the standing exception on which general-purpose steps read issue comments, and for the statement that deprecated planners do not consume comments.

@@ -496,36 +496,22 @@ as if it will be public — don't restate secrets or non-public context.
 
 ### Handle new comments since plan (flow only)
 
-When `FLOW_DIR` is set and an issue number is available (`$ISSUE_REF`), call the helper with `--flow-dir` to check for unacknowledged trusted comments posted after the plan step fetched:
+When `FLOW_DIR` is set and an issue number is available (`$ISSUE_REF`), call the helper with `--flow-dir` to check for unacknowledged trusted comments posted after the plan step fetched. The helper marks a comment `acknowledged` from the flow's `questions/*.json` and `answers/*.json` artifacts, so nothing else is tracked here:
 
 ```bash
+NEW_COMMENT_ID=""
 if [[ -n "$FLOW_DIR" && -n "$ISSUE_REF" ]]; then
   CALLER_DIR=$(pwd)
   source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
-  NEW_COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --trusted-only --flow-dir "$FLOW_DIR" --format json 2>/dev/null || echo "{}")
-  
-  # Extract unacknowledged trusted comments
-  NEW_COMMENT_IDS=$(printf '%s' "$NEW_COMMENTS_JSON" | jq -r '.comments[] | select(.trust == "trusted" and .acknowledged == false) | .id' 2>/dev/null)
-  
-  # For each unacknowledged trusted comment, ask through the Ask block
-  for COMMENT_ID in $NEW_COMMENT_IDS; do
-    # Get the comment body for the Ask summary/brief
-    COMMENT_DATA=$(printf '%s' "$NEW_COMMENTS_JSON" | jq --arg cid "$COMMENT_ID" '.comments[] | select(.id == $cid)' 2>/dev/null)
-    
-    # Apply the Ask block from ~/.claude/prompts/flow-reference.md with:
-    # - STEP_NAME: ship (from the step prompt)
-    # - question: includes the fenced comment text
-    # - options: ["Continue — the plan stands", "Stop for re-plan"]
-    # - comment_id: $COMMENT_ID (added to question entry)
-    # If "Stop for re-plan" or free text → write FAILED receipt with Reason: stopped on new issue comment $COMMENT_ID
-    # If "Continue — the plan stands" → record answer in ledger and proceed
-    
-    # This is handled by the Ask block relay in flow-reference.md; see the implementation there.
-  done
+  NEW_COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --trusted-only --flow-dir "$FLOW_DIR" --format json 2>/dev/null) || NEW_COMMENTS_JSON=""
+  # The first unacknowledged trusted comment
+  if [[ -n "$NEW_COMMENTS_JSON" ]]; then
+    NEW_COMMENT_ID=$(printf '%s' "$NEW_COMMENTS_JSON" | jq -r '[.comments[] | select(.trust == "trusted" and .acknowledged == false) | .id] | .[0] // empty')
+  fi
 fi
 ```
 
-The Ask questions must use the exact option text `"Continue — the plan stands"` (em dash) and `"Stop for re-plan"`. Each question entry in the Ask file must carry `"comment_id": "<id>"` (a required field that the orchestrator strips before passing to `AskUserQuestion`). The question file shape is as defined in the Ask block of `~/.claude/prompts/flow-reference.md`, with the `comment_id` field added to each question entry. Reference the **Ask block** from `~/.claude/prompts/flow-reference.md` in every AskUserQuestion call site.
+If `NEW_COMMENT_ID` is non-empty, raise **one** Ask for it, then end the turn, before any PR is created or merged. Use the "New comment since plan" Ask procedure in `~/.claude/prompts/issue-comments-reference.md`, with `STEP_NAME` = `ship` and `COMMENT_ID` = `$NEW_COMMENT_ID`. It writes `questions/ship-<SEQ>.json` with `comment_id` set on the question entry, offers exactly `"Continue — the plan stands"` and `"Stop for re-plan"`, and puts the fenced comment in `summary`/`brief`. On resume, re-run this section from the fetch: the next unacknowledged comment is raised, or the step continues when none remain. A `Stop for re-plan` answer or a free-text answer writes a `Decision: FAILED` receipt with `Reason: stopped on new issue comment <id>` and stops; the comment stays unacknowledged. Under `--auto-merge` the Ask still applies and a Stop halts the run before merge. Under `--fleet` the Ask parks as `fleet-ask.json` (see ADR-0023).
 
 ```bash
 # Prepare temp file for PR body (multi-line content too risky to inline)

@@ -1,6 +1,6 @@
 ---
 description: "Deprecated: superseded by /expert-plan (formerly v3) — see ADR-0020. Use expert personas to collaboratively build an implementation plan from a ticket or requirement. Enters plan mode, gathers expert input, checkpoints ambiguities with the user, then synthesizes a complete plan."
-allowed-tools: Bash(ls:*), Bash(find:*), Bash(cd:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, EnterPlanMode, ExitPlanMode, AskUserQuestion
+allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Read, Glob, Grep, EnterPlanMode, ExitPlanMode, AskUserQuestion
 model: opus
 ---
 
@@ -33,7 +33,7 @@ See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full m
 Collect the input to plan against:
 
 1. **Ticket/requirement**: One of:
-   - GitHub issue URL → fetch the issue body and title
+   - GitHub issue URL → fetch with `gh issue view <url> --json title,body,labels` (title, body and labels only; this planner has no comment wiring)
    - User-provided description in the conversation
    - Ask user if neither is available
 
@@ -46,7 +46,6 @@ Collect the input to plan against:
    - **Goal**: What the ticket wants achieved (1-2 sentences)
    - **Constraints**: What ADRs, invariants, or project rules apply
    - **Unknowns**: What the ticket leaves ambiguous or unspecified
-
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gather-context --outcome success 2>/dev/null || true

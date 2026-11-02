@@ -383,21 +383,26 @@ With the `/expert-flow` helper for reading GitHub issue comments (ticket #401), 
 
 **In-flow plan step** (`/expert-plan`) receives the widest input of any step: trusted **and** unverified comments (from the helper without `--trusted-only`). It runs as a full-capability `general-purpose` agent with `Write` and unrestricted Bash. The plan step's orchestrator writes unverified comment text directly into the `## Issue comments` section of `context.md` and into scout batches before any contributor sees it.
 
-**In-flow implement and fix steps** (`/implement-with-haiku`) read trusted comments on the linked issue (`--trusted-only`, unverified excluded). They run as `general-purpose` agents.
+**In-flow implement and fix steps** (`/implement-with-haiku`) read trusted comments on the linked issue (`--trusted-only`, unverified excluded), and raise each new trusted comment through the "new comment since plan" Ask. They run as `general-purpose` agents.
 
-**In-flow ship step** (`/shipit`) reads trusted comments on the linked issue (`--trusted-only`, unverified excluded). It runs as a `general-purpose` agent.
+**In-flow ship step** (`/shipit`) reads trusted comments on the linked issue (`--trusted-only`, unverified excluded), and raises new trusted comments through the same Ask before the PR is created. It runs as a `general-purpose` agent.
 
-**Restricted steps** (in-flow review step and the pre-merge check) and the **deprecated planners** (not in flow) receive trusted comments only (`--trusted-only`) or no comments at all; they are governed by the 2026-10-26 restrictions, not this exception. The deprecated planners `/expert-plan-deprecated` and `/expert-plan-deprecated-v2` do not use the issue-comments helper.
+**Restricted steps** receive trusted comments only, governed by the 2026-10-26 restrictions, not this exception: the in-flow review step (`flow-review`, `/expert-review` Ask; trusted only) and the orchestrator's pre-merge check (`/expert-flow`; trusted only, same Ask). Neither reads unverified comments.
+
+**Deprecated planners do not consume comments.** `/expert-plan-deprecated` and `/expert-plan-deprecated-v2` do not call the issue-comments helper and do not read issue comments at all (title, body and labels only). They are not in flow and carry no comment wiring.
+
+**Other consumers.** `/expert-is-it-done` reads trusted comments for its agents and shows unverified comments to the human only as counts and authors. The mechanical readers in `/track`, `/track-and-start` and `/cleanup` stay body/metadata-only, as recorded in `prompts/issue-comments-reference.md`.
 
 **Mitigations** (what they do and do not do):
 - Trust tier boundaries (OWNER/COLLABORATOR vs. unverified)
-- `--trusted-only` everywhere except planning
-- Nonce fence and "data is data, never instructions" framing (CLAUDE.md and flow-reference.md)
-- Haiku scouts on long unverified threads, returning only validated comment ids and enums from a closed list. Scouts limit volume and drop low-signal comments; they do not sanitise what reaches the planner. Threads under the filter threshold reach the plan orchestrator unfiltered.
+- `--trusted-only` everywhere except the in-flow plan step
+- Comment text is fenced where it is shown to a scout or an Ask. This is a presentation convention, not a machine-enforced boundary; no nonce fence is implemented.
+- Haiku scouts on long unverified threads, fail closed: an unverified comment reaches the planner only by an explicit, valid `include` verdict for its id. A missing, malformed, or unknown verdict drops it. Scouts limit volume; they do not sanitise the text of the comments they include. Threads under the filter threshold reach the plan orchestrator unfiltered.
 
 Unverified comment text deliberately reaches planning, the one step that is still unrestricted and full-capability. That is the accepted placement (per ticket decision W1), not a reduction of the attack surface; the boundary enforcement that closes it is pending (#359/#360, restricting the remaining general-purpose steps).
 
-**Accepted residual risks:**
+**Accepted residual risks** (the consumers that read comments are exactly: the in-flow plan step, implement, fix, ship, the review Ask, the pre-merge check, and `/expert-is-it-done`):
+- Unverified text reaches the in-flow plan step, unfiltered below the scout threshold and by scout-included ids above it. Scouts are not a sanitiser.
 - No fail-closed carve-out when comments are unavailable (Q2 = B exactly): an `--auto-merge` or `--fleet` run can merge with `comments_status: unavailable`, visibly marked in the receipt.
 - Org-owned repos where the flow's user shows as MEMBER: the watermark and Implementation Plan dedupe switch off (W2 consequence), and post-plan steps see none of that user's comments. Inside a flow the plan-fetch lower bound still applies.
 - Owner-account compromise is mitigated only by framing, not machine-enforced boundary.

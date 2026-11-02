@@ -4,12 +4,15 @@ Doc-level tests for issue_comments helper call sites.
 
 Verifies:
 - No bare `gh issue view ... comments` or `--comments` in command/prompt docs
-- All helper consumer docs call `issue-comments fetch` via explicit-cwd form
-- Trusted-only consumers pass `--trusted-only`
-- flow-reference.md schema includes `comment_id` field
-- flow-verify-receipt.py does not report `comment_id` as malformed
-- Marker literals in track docs match constants
-- Test that scripts/flow-verify-receipt.py permits comment_id in questions
+- Every command doc that calls `issue-comments fetch` is a rostered consumer
+- Consumers call the helper in the explicit-cwd form and pass the flags their role needs
+- Consumer frontmatter `allowed-tools` authorises the helper call (parsed, not grepped)
+- Deprecated planners have NO issue-comments wiring
+- Mechanical readers do NOT call the helper
+- Marker literals in track docs match the helper constants (unconditional)
+- The "new comment since plan" Ask is wired in every post-plan consumer
+- Acknowledgement is resolved from questions/answers artifacts (no answers.jsonl, no ack file)
+- The relevance scout prompt fails closed
 
 Run with: python3 tests/test_issue_comments_call_sites.py
 """
@@ -28,19 +31,31 @@ h = Harness("ISSUE COMMENTS CALL SITES TEST")
 
 COMMANDS_DIR = REPO_ROOT / "commands"
 PROMPTS_DIR = REPO_ROOT / "prompts"
-WORKFLOW_DIR = REPO_ROOT / "scripts" / "workflow"
+DOCS_DIR = REPO_ROOT / "docs"
 
-# Consumers that must call the helper (from plan Step 11 Consumer table)
+# Rostered helper consumers: command doc -> the flags its role requires.
 HELPER_CONSUMER_DOCS = {
     "commands/expert-plan.md": {"trusted_only": False, "flow_dir": True},
-    "commands/expert-plan-deprecated.md": {"trusted_only": False, "flow_dir": False},
-    "commands/expert-plan-deprecated-v2.md": {"trusted_only": False, "flow_dir": False},
     "commands/implement-with-haiku.md": {"trusted_only": True, "flow_dir": True},
-    "commands/expert-review.md": {"trusted_only": True, "flow_dir": False},
-    "commands/shipit.md": {"trusted_only": True, "flow_dir": False},
+    "commands/expert-review.md": {"trusted_only": True, "flow_dir": True},
+    "commands/shipit.md": {"trusted_only": True, "flow_dir": True},
     "commands/expert-is-it-done.md": {"trusted_only": True, "flow_dir": False},
     "commands/expert-flow.md": {"trusted_only": True, "flow_dir": True},  # pre-merge check
 }
+
+# Post-plan consumers that raise the "new comment since plan" Ask.
+ASK_CONSUMER_DOCS = [
+    "commands/implement-with-haiku.md",
+    "commands/expert-review.md",
+    "commands/shipit.md",
+    "commands/expert-flow.md",
+]
+
+# Deprecated planners: no issue-comments wiring at all (ADR-0008 2026-10-30 amendment).
+DEPRECATED_PLANNER_DOCS = [
+    "commands/expert-plan-deprecated.md",
+    "commands/expert-plan-deprecated-v2.md",
+]
 
 # Mechanical readers (should NOT call helper)
 MECHANICAL_READER_DOCS = {
@@ -49,115 +64,153 @@ MECHANICAL_READER_DOCS = {
     "commands/cleanup.md": ["retro summary input"],
 }
 
+FETCH_CALL = "issue-comments fetch"
+
+
+def read(rel):
+    return (REPO_ROOT / rel).read_text()
+
+
+def frontmatter_block(text):
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
+    return m.group(1) if m else ""
+
+
+def allowed_tools_line(text):
+    """Return the raw allowed-tools value from frontmatter, or None if undeclared."""
+    for line in frontmatter_block(text).splitlines():
+        if line.startswith("allowed-tools:"):
+            return line[len("allowed-tools:"):]
+    return None
+
+
 # ==============================================================================
 # TEST: No bare gh issue view ... comments
 # ==============================================================================
 print("\n[No Bare gh issue view ... comments]")
 
-# Pattern for `gh issue view` with `comments` in --json or --comments flag
 NO_COMMENTS_PATTERNS = [
     r"--json\s+[^\n]*comments",
     r"--comments",
 ]
 
-def scan_for_comments_fetch(path):
-    """Return True if path mentions 'comments' in gh issue view calls."""
-    text = path.read_text()
-    for pattern in NO_COMMENTS_PATTERNS:
-        if re.search(pattern, text):
-            return True
-    return False
-
-all_command_docs = list(COMMANDS_DIR.glob("*.md"))
-all_prompt_docs = list(PROMPTS_DIR.glob("*.md"))
+all_command_docs = sorted(COMMANDS_DIR.glob("*.md"))
+all_prompt_docs = sorted(PROMPTS_DIR.glob("*.md"))
 
 for doc in all_command_docs + all_prompt_docs:
     rel = doc.relative_to(REPO_ROOT)
-    has_bare_comments = scan_for_comments_fetch(doc)
+    text = doc.read_text()
+    has_bare_comments = any(re.search(p, text) for p in NO_COMMENTS_PATTERNS)
     h.test_result(
         f"{rel}: does not use bare gh issue view ... comments",
         not has_bare_comments,
-        "found --json with comments or --comments flag" if has_bare_comments else ""
+        "found --json with comments or --comments flag" if has_bare_comments else "",
     )
 
 # ==============================================================================
-# TEST: Helper consumer docs call issue-comments fetch
+# TEST: Only rostered consumers call the helper
+# ==============================================================================
+print("\n[Only Rostered Consumers Call issue-comments fetch]")
+
+for doc in all_command_docs:
+    rel = str(doc.relative_to(REPO_ROOT))
+    calls_fetch = FETCH_CALL in doc.read_text()
+    is_rostered = rel in HELPER_CONSUMER_DOCS
+    h.test_result(
+        f"{rel}: issue-comments fetch only in rostered consumers",
+        (not calls_fetch) or is_rostered,
+        "calls issue-comments fetch but is not in the consumer roster" if calls_fetch and not is_rostered else "",
+    )
+
+# ==============================================================================
+# TEST: Helper consumer docs call the helper correctly
 # ==============================================================================
 print("\n[Helper Consumer Docs Call issue-comments fetch]")
 
-EXPLICIT_CWD_PATTERN = r'cd\s+"\$CLAUDE_HELPERS_DIR".*issue-comments\s+fetch.*--cwd'
-
 for doc_path, config in HELPER_CONSUMER_DOCS.items():
-    doc = REPO_ROOT / doc_path
-    if not doc.exists():
-        h.test_result(f"{doc_path} exists", False, "file not found")
-        continue
+    text = read(doc_path)
 
-    text = doc.read_text()
-    has_helper_call = "issue-comments fetch" in text
     h.test_result(
         f"{doc_path}: calls issue-comments fetch",
-        has_helper_call,
-        "no issue-comments fetch call found" if not has_helper_call else ""
+        FETCH_CALL in text,
+        "no issue-comments fetch call found",
     )
 
-    # Check that --cwd is mentioned OR refers to issue-comments-reference.md for the form
-    has_cwd_flag = "--cwd" in text
-    has_reference = "issue-comments-reference.md" in text
-    if has_helper_call:
+    has_explicit_cwd = "--cwd" in text or "explicit-cwd form" in text
+    h.test_result(
+        f"{doc_path}: uses the explicit-cwd form",
+        has_explicit_cwd,
+        "missing --cwd and no reference to the explicit-cwd form" if not has_explicit_cwd else "",
+    )
+
+    uses_issue_number = '--issue "$ISSUE_NUMBER"' in text
+    h.test_result(
+        f"{doc_path}: uses $ISSUE_REF, not $ISSUE_NUMBER, for the helper",
+        not uses_issue_number,
+        'helper still called with --issue "$ISSUE_NUMBER"' if uses_issue_number else "",
+    )
+
+    if config["trusted_only"]:
         h.test_result(
-            f"{doc_path}: mentions --cwd or refers to issue-comments-reference.md",
-            has_cwd_flag or has_reference,
-            "missing --cwd or reference to issue-comments-reference.md" if not (has_cwd_flag or has_reference) else ""
+            f"{doc_path}: passes --trusted-only",
+            "--trusted-only" in text,
+            "missing --trusted-only flag",
+        )
+
+    if config["flow_dir"]:
+        h.test_result(
+            f"{doc_path}: passes --flow-dir",
+            "--flow-dir" in text,
+            "missing --flow-dir flag",
         )
 
 # ==============================================================================
-# TEST: Trusted-only consumers pass --trusted-only
+# TEST: allowed-tools authorises the helper call (parsed frontmatter)
 # ==============================================================================
-print("\n[Trusted-Only Consumers Pass --trusted-only]")
+print("\n[allowed-tools Authorises the Helper Call]")
 
-for doc_path, config in HELPER_CONSUMER_DOCS.items():
-    if not config["trusted_only"]:
-        continue  # Skip non-trusted-only consumers
-
-    doc = REPO_ROOT / doc_path
-    if not doc.exists():
+for doc_path in HELPER_CONSUMER_DOCS:
+    tools = allowed_tools_line(read(doc_path))
+    if tools is None:
+        # No allowed-tools declared: the command is not tool-gated, so nothing to authorise.
+        h.test_result(f"{doc_path}: no allowed-tools restriction declared", True)
         continue
-
-    text = doc.read_text()
-    if "issue-comments fetch" not in text:
-        continue  # Skip if no fetch call
-
-    has_trusted_only = "--trusted-only" in text
+    explicit_grant = "issue-comments fetch" in tools
+    # expert-plan grants the helper through the generic cd and python3 prefixes.
+    prefix_grant = "Bash(cd:*)" in tools and "Bash(python3:*)" in tools
     h.test_result(
-        f"{doc_path}: passes --trusted-only",
-        has_trusted_only,
-        "missing --trusted-only flag" if not has_trusted_only else ""
+        f"{doc_path}: allowed-tools authorises issue-comments fetch",
+        explicit_grant or prefix_grant,
+        "allowed-tools does not grant issue-comments fetch (explicitly or via cd and python3 prefixes)",
     )
 
 # ==============================================================================
-# TEST: Flow-dir consumers pass --flow-dir
+# TEST: Deprecated planners have NO issue-comments wiring
 # ==============================================================================
-print("\n[Flow-Dir Consumers Mention --flow-dir]")
+print("\n[Deprecated Planners Have No Issue-Comments Wiring]")
 
-for doc_path, config in HELPER_CONSUMER_DOCS.items():
-    if not config["flow_dir"]:
-        continue  # Skip non-flow-dir consumers
-
-    doc = REPO_ROOT / doc_path
-    if not doc.exists():
-        continue
-
-    text = doc.read_text()
-    if "issue-comments" not in text:
-        continue  # Skip if no helper mention
-
-    # Should mention --flow-dir (in prose or code)
-    has_flow_dir = "--flow-dir" in text
+for doc_path in DEPRECATED_PLANNER_DOCS:
+    text = read(doc_path)
+    tools = allowed_tools_line(text) or ""
     h.test_result(
-        f"{doc_path}: mentions --flow-dir",
-        has_flow_dir,
-        "missing --flow-dir" if not has_flow_dir else ""
+        f"{doc_path}: no issue-comments helper call",
+        "issue-comments" not in text,
+        "found issue-comments wiring" if "issue-comments" in text else "",
+    )
+    h.test_result(
+        f"{doc_path}: no --allow-other-repo flag",
+        "--allow-other-repo" not in text,
+        "found --allow-other-repo" if "--allow-other-repo" in text else "",
+    )
+    h.test_result(
+        f"{doc_path}: no ## Issue comments section",
+        "## Issue comments" not in text,
+        "found ## Issue comments section" if "## Issue comments" in text else "",
+    )
+    h.test_result(
+        f"{doc_path}: allowed-tools grants no issue-comments helper",
+        "issue-comments" not in tools,
+        "allowed-tools grants issue-comments" if "issue-comments" in tools else "",
     )
 
 # ==============================================================================
@@ -166,177 +219,150 @@ for doc_path, config in HELPER_CONSUMER_DOCS.items():
 print("\n[Mechanical Readers Do NOT Call Helper]")
 
 for doc_path, reason_list in MECHANICAL_READER_DOCS.items():
-    doc = REPO_ROOT / doc_path
-    if not doc.exists():
-        h.test_result(f"{doc_path} exists", False, "file not found")
-        continue
-
-    text = doc.read_text()
-    has_helper_call = "issue-comments fetch" in text
+    text = read(doc_path)
+    has_helper_call = FETCH_CALL in text
     h.test_result(
         f"{doc_path}: does NOT call issue-comments fetch ({', '.join(reason_list[:2])})",
         not has_helper_call,
-        "found issue-comments fetch call" if has_helper_call else ""
+        "found issue-comments fetch call" if has_helper_call else "",
     )
 
 # ==============================================================================
-# TEST: Marker literals in commands match constants
+# TEST: Marker literals in commands match constants (unconditional)
 # ==============================================================================
 print("\n[Marker Literals Match Constants]")
 
 SUPERSEDED_MARKER = issue_comments.SUPERSEDED_PLAN_MARKER
 IMPLEMENTATION_MARKER = issue_comments.IMPLEMENTATION_PLAN_MARKER
 
-# Check track-and-start.md Step 4d for SUPERSEDED_PLAN_MARKER
-track_start_doc = COMMANDS_DIR / "track-and-start.md"
-if track_start_doc.exists():
-    text = track_start_doc.read_text()
-    if SUPERSEDED_MARKER in text:
-        h.test_result(
-            "track-and-start.md Step 4d uses exact SUPERSEDED_PLAN_MARKER literal",
-            True
-        )
-    else:
-        h.test_result(
-            "track-and-start.md mentions superseded plan",
-            "superseded plan" in text.lower(),
-            "marker literal not found" if "superseded" not in text.lower() else ""
-        )
-
-# Check track.md for IMPLEMENTATION_PLAN_MARKER
-track_doc = COMMANDS_DIR / "track.md"
-if track_doc.exists():
-    text = track_doc.read_text()
-    if IMPLEMENTATION_MARKER in text:
-        h.test_result(
-            "track.md uses exact IMPLEMENTATION_PLAN_MARKER literal",
-            True
-        )
-    else:
-        h.test_result(
-            "track.md mentions implementation plan",
-            "implementation plan" in text.lower(),
-            "marker literal not found" if "implementation" not in text.lower() else ""
-        )
+h.test_result(
+    "track-and-start.md Step 4d uses exact SUPERSEDED_PLAN_MARKER literal",
+    SUPERSEDED_MARKER in read("commands/track-and-start.md"),
+    f"literal '{SUPERSEDED_MARKER}' not found",
+)
+h.test_result(
+    "track.md uses exact IMPLEMENTATION_PLAN_MARKER literal",
+    IMPLEMENTATION_MARKER in read("commands/track.md"),
+    f"literal '{IMPLEMENTATION_MARKER}' not found",
+)
 
 # ==============================================================================
-# TEST: CONTINUE_LABEL used in issue-comments-reference.md
+# TEST: CONTINUE_LABEL and the Ask procedure in issue-comments-reference.md
 # ==============================================================================
-print("\n[CONTINUE_LABEL Used in Reference Doc]")
+print("\n[Reference Doc Carries CONTINUE_LABEL and the Ask Procedure]")
 
-issue_comments_ref = PROMPTS_DIR / "issue-comments-reference.md"
-if issue_comments_ref.exists():
-    text = issue_comments_ref.read_text()
-    continue_label = issue_comments.CONTINUE_LABEL
-    has_continue_label = continue_label in text
+ref_text = read("prompts/issue-comments-reference.md")
+continue_label = issue_comments.CONTINUE_LABEL
+h.test_result(
+    "issue-comments-reference.md contains exact CONTINUE_LABEL",
+    continue_label in ref_text,
+    f"literal '{continue_label}' not found",
+)
+h.test_result(
+    "issue-comments-reference.md names the New comment since plan Ask procedure",
+    "\"New comment since plan\" Ask procedure" in ref_text or "New Comment Since Plan" in ref_text,
+    "Ask procedure heading not found",
+)
+h.test_result(
+    "issue-comments-reference.md names the Stop for re-plan option",
+    "Stop for re-plan" in ref_text,
+    "Stop for re-plan option not found",
+)
+
+# ==============================================================================
+# TEST: Every post-plan consumer wires the "new comment since plan" Ask
+# ==============================================================================
+print("\n[New Comment Since Plan Ask Wired In Post-Plan Consumers]")
+
+for doc_path in ASK_CONSUMER_DOCS:
+    text = read(doc_path)
     h.test_result(
-        "issue-comments-reference.md contains exact CONTINUE_LABEL",
-        has_continue_label,
-        f"literal '{continue_label}' not found" if not has_continue_label else ""
+        f"{doc_path}: raises the New comment since plan Ask",
+        "New comment since plan" in text and "issue-comments-reference.md" in text,
+        "Ask procedure reference missing" if "New comment since plan" not in text else "reference to issue-comments-reference.md missing",
     )
 
 # ==============================================================================
-# TEST: flow-reference.md schema mentions comment_id
+# TEST: Acknowledgement is resolved from artifacts (no answers.jsonl, no ack file)
 # ==============================================================================
-print("\n[flow-reference.md Schema Mentions comment_id]")
+print("\n[Acknowledgement From Existing Artifacts]")
 
-flow_ref = PROMPTS_DIR / "flow-reference.md"
-if flow_ref.exists():
-    text = flow_ref.read_text()
-    has_comment_id_in_schema = "comment_id" in text and ("question" in text.lower() or "questions" in text.lower())
+h.test_result(
+    "issue-comments-reference.md resolves acknowledgement from questions/ and answers/",
+    "questions/" in ref_text and "answers/" in ref_text,
+    "questions/ or answers/ artifact reference missing",
+)
+
+ADR_0023 = DOCS_DIR / "adr" / "0023-expert-flow.md"
+ADR_0008 = DOCS_DIR / "adr" / "0008-machine-enforced-agent-guardrails.md"
+for label, path in [
+    ("issue-comments-reference.md", REPO_ROOT / "prompts" / "issue-comments-reference.md"),
+    ("ADR-0023", ADR_0023),
+    ("ADR-0008", ADR_0008),
+]:
+    # answers.jsonl may appear only in a sentence that denies it exists as a store.
+    asserting_lines = [
+        line for line in path.read_text().splitlines()
+        if "answers.jsonl" in line and not re.search(r"\b(no|not)\b", line, re.IGNORECASE)
+    ]
     h.test_result(
-        "flow-reference.md schema mentions comment_id for questions",
-        has_comment_id_in_schema,
-        "comment_id not mentioned in question schema" if not has_comment_id_in_schema else ""
+        f"{label}: answers.jsonl appears only in negated form (no such store)",
+        not asserting_lines,
+        "answers.jsonl asserted as a store" if asserting_lines else "",
     )
 
 # ==============================================================================
-# TEST: expert-flow.md relay sentence names comment_id
+# TEST: Relevance scout prompt fails closed
 # ==============================================================================
-print("\n[expert-flow.md Relay Sentence Names comment_id]")
+print("\n[Relevance Scout Fails Closed]")
 
-expert_flow_doc = COMMANDS_DIR / "expert-flow.md"
-if expert_flow_doc.exists():
-    text = expert_flow_doc.read_text()
-    # Look for relay/strip sentence mentioning comment_id alongside id and brief
-    relay_pattern = r"(relay|strip).*?(id|brief|comment_id).*?(id|brief|comment_id)"
-    matches = list(re.finditer(relay_pattern, text, re.IGNORECASE | re.DOTALL))
-    has_relay_comment_id = any("comment_id" in match.group(0) for match in matches)
-    h.test_result(
-        "expert-flow.md relay sentence mentions comment_id",
-        has_relay_comment_id or "comment_id" in text,
-        "comment_id not found in relay context" if "comment_id" not in text else ""
-    )
+scout_text = read("prompts/comment-relevance-scout.md")
+h.test_result(
+    "comment-relevance-scout.md does not say 'when in doubt, include'",
+    "when in doubt, include" not in scout_text.lower(),
+    "scout prompt still says 'when in doubt, include'",
+)
+h.test_result(
+    "comment-relevance-scout.md fails closed on uncertainty",
+    "when in doubt, drop" in scout_text.lower(),
+    "scout prompt does not state the fail-closed rule",
+)
+
+# ==============================================================================
+# TEST: flow-reference.md Ask block schema carries comment_id
+# ==============================================================================
+print("\n[flow-reference.md Ask Block Carries comment_id]")
+
+flow_ref_text = read("prompts/flow-reference.md")
+h.test_result(
+    "flow-reference.md schema mentions comment_id for questions",
+    "comment_id" in flow_ref_text,
+    "comment_id not mentioned in question schema",
+)
+
+# ==============================================================================
+# TEST: expert-flow.md relay strips comment_id from AskUserQuestion
+# ==============================================================================
+print("\n[expert-flow.md Relay Mentions comment_id]")
+
+expert_flow_text = read("commands/expert-flow.md")
+h.test_result(
+    "expert-flow.md mentions comment_id",
+    "comment_id" in expert_flow_text,
+    "comment_id not found in expert-flow.md",
+)
 
 # ==============================================================================
 # TEST: implement-with-haiku.md body from helper (no separate gh call)
 # ==============================================================================
 print("\n[implement-with-haiku.md Body From Helper]")
 
-impl_haiku_doc = COMMANDS_DIR / "implement-with-haiku.md"
-if impl_haiku_doc.exists():
-    text = impl_haiku_doc.read_text()
-    # Should call issue-comments fetch and read .body from it
-    has_helper_call = "issue-comments fetch" in text
-    # Should NOT have separate `gh issue view <number> --json body`
-    has_separate_body_call = re.search(r'gh\s+issue\s+view.*--json.*body', text) is not None
-    h.test_result(
-        "implement-with-haiku.md gets body from helper output",
-        has_helper_call and not has_separate_body_call,
-        "either missing helper call or still has separate gh call" if not has_helper_call or has_separate_body_call else ""
-    )
-
-# ==============================================================================
-# TEST: allowed-tools includes issue-comments
-# ==============================================================================
-print("\n[allowed-tools Includes issue-comments]")
-
-for doc_path in ["commands/expert-plan.md", "commands/implement-with-haiku.md", "commands/expert-review.md", "commands/shipit.md", "commands/expert-is-it-done.md", "commands/expert-flow.md"]:
-    doc = REPO_ROOT / doc_path
-    if not doc.exists():
-        continue
-
-    text = doc.read_text()
-    if "issue-comments fetch" not in text:
-        continue  # Skip if no fetch call
-
-    # Check for allowed-tools mentioning issue-comments (or the CLI subcommand)
-    has_in_allowed = "issue-comments" in text and "allowed-tools" in text
-    # A simpler check: look for allowed-tools section mentioning the CLI
-    has_allowed_tools = re.search(r'allowed-tools:.*issue-comments|CLI.*issue-comments', text, re.IGNORECASE | re.DOTALL) is not None
-    h.test_result(
-        f"{doc_path}: allowed-tools includes issue-comments",
-        has_in_allowed or has_allowed_tools,
-        "issue-comments not in allowed-tools" if not has_in_allowed else ""
-    )
-
-# ==============================================================================
-# TEST: flow-reference.md Ask block documents comment_id
-# ==============================================================================
-print("\n[Ask Block Documents comment_id]")
-
-if flow_ref.exists():
-    text = flow_ref.read_text()
-    # Look for Ask block that documents comment_id not being passed to AskUserQuestion
-    ask_block_pattern = r'(?:Ask\s+block|AskUserQuestion).*?comment_id.*?(?:not|strip|does not pass)'
-    has_comment_id_doc = re.search(ask_block_pattern, text, re.IGNORECASE | re.DOTALL) is not None or (
-        "comment_id" in text and "AskUserQuestion" in text
-    )
-    h.test_result(
-        "flow-reference.md Ask block documents comment_id",
-        has_comment_id_doc,
-    )
-
-# ==============================================================================
-# TEST: No bare positional shell arguments
-# ==============================================================================
-print("\n[Shell Conventions - No Bare Positional Arguments]")
-
-# This is checked by test_command_doc_shell_conventions.py, so we just verify
-# that test exists and passes basic checks
+impl_text = read("commands/implement-with-haiku.md")
+has_separate_body_call = re.search(r'gh\s+issue\s+view.*--json.*body', impl_text) is not None
 h.test_result(
-    "tests/test_command_doc_shell_conventions.py exists",
-    (REPO_ROOT / "tests" / "test_command_doc_shell_conventions.py").exists(),
+    "implement-with-haiku.md gets body from helper output",
+    FETCH_CALL in impl_text and not has_separate_body_call,
+    "either missing helper call or still has separate gh call" if (FETCH_CALL not in impl_text or has_separate_body_call) else "",
 )
 
 h.summarize_and_exit()

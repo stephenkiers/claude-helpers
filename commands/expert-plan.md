@@ -416,32 +416,56 @@ Write ticket text for effort sizing (title, body, labels):
 } > "$SESSION_DIR/ticket-text.txt"
 ```
 
-**If `relevance_filter.required`** (long unverified comment threads), split comments into batches and run scouts:
+**If `relevance_filter.required`** (more than the threshold of unverified comments survive filtering), run the relevance scouts over the unverified comments. Trusted comments never go to a scout. The helper's fetch output carries the batches as id lists in `relevance_filter.batches`; the batch files are written under `batches/` and the verdicts under `verdicts/`, in separate directories, because `finalize` reads every `*.json` in its verdicts directory:
 
 ```bash
-if [ -n "$COMMENTS_JSON" ]; then
-  RELEVANCE_FILTER_REQ=$(printf '%s' "$COMMENTS_JSON" | jq -r '.relevance_filter.required // false')
-  if [ "$RELEVANCE_FILTER_REQ" = "true" ]; then
-    mkdir -p "$SESSION_DIR/comment-scout"
-    # Split unverified comments into batches under comment-scout/ (batching code here)
-    # Dispatch up to 6 expert-scout Task agents on prompts/comment-relevance-scout.md in parallel
-    # Run: issue-comments finalize --fetched "$SESSION_DIR/issue-comments.json" --verdicts "$SESSION_DIR/comment-scout" --format json
-    # Update COMMENTS_JSON with the finalized result
-  fi
+RELEVANCE_FILTER_REQ=$(printf '%s' "$COMMENTS_JSON" | jq -r '.relevance_filter.required // false' 2>/dev/null || echo "false")
+SCOUT_DIR="$SESSION_DIR/comment-scout"
+if [ -n "$COMMENTS_JSON" ] && [ "$RELEVANCE_FILTER_REQ" = "true" ]; then
+  mkdir -p "$SCOUT_DIR/batches" "$SCOUT_DIR/verdicts"
+  N=0
+  printf '%s' "$COMMENTS_JSON" | jq -c '.relevance_filter.batches[]' | while IFS= read -r IDS; do
+    N=$((N + 1))
+    printf '%s' "$COMMENTS_JSON" | jq --argjson ids "$IDS" '{
+      schema_version: 1,
+      issue_title: (.title // ""),
+      issue_body: (.body // ""),
+      comments: [.comments[] | select(.trust == "unverified") | select(.id as $i | any($ids[]; . == $i)) | {id, author_login, created_at, body}]
+    }' > "$SCOUT_DIR/batches/batch-$N.json"
+  done
 fi
 ```
 
-Write the `## Issue comments` section to context.md. Render the comments as markdown from the saved JSON (single fetch, not two diverging fetches):
+Dispatch one `expert-scout` Task per `batches/batch-<N>.json` file, at most 6 in parallel (`MAX_SCOUTS`). Each Task prompt is the full text of `~/.claude/prompts/comment-relevance-scout.md` followed by the absolute path of that batch file. The scout's reply is its verdict JSON object only. Write each reply verbatim (no reformatting) with the `Write` tool to `$SCOUT_DIR/verdicts/verdict-<N>.json`. A reply that is not valid JSON is still written as-is: `finalize` treats it as an invalid report and drops that batch's unverified comments. A batch with no verdict file is dropped the same way. Then apply the verdicts (fail closed: an unverified comment is kept only by an explicit valid `include`):
+
+```bash
+FINAL_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments finalize --fetched "$SESSION_DIR/issue-comments.json" --verdicts "$SCOUT_DIR/verdicts" --format json 2>/dev/null) || FINAL_JSON=""
+if [ -n "$FINAL_JSON" ]; then
+  COMMENTS_JSON="$FINAL_JSON"
+  printf '%s' "$COMMENTS_JSON" > "$SESSION_DIR/issue-comments-final.json"
+else
+  # finalize failed: no unverified comment text may reach the planner
+  COMMENTS_JSON=""
+  COMMENTS_STATUS="unavailable"
+fi
+```
+
+Write the `## Issue comments` section to context.md. When the scout filter ran, render the markdown from the finalized result so the planner sees exactly the kept comments; `finalize --format markdown` takes the same inputs, so it matches the JSON above. Otherwise render from the fetch:
 
 ```bash
 if [ -n "$COMMENTS_JSON" ]; then
-  # Render markdown from the already-fetched JSON saved to disk
-  COMMENTS_MARKDOWN=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" $FLOW_DIR_FLAG $ALLOW_OTHER_REPO_FLAG --format markdown 2>/dev/null) || COMMENTS_MARKDOWN=""
+  if [ "$RELEVANCE_FILTER_REQ" = "true" ]; then
+    COMMENTS_MARKDOWN=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments finalize --fetched "$SESSION_DIR/issue-comments.json" --verdicts "$SCOUT_DIR/verdicts" --format markdown 2>/dev/null) || COMMENTS_MARKDOWN=""
+  else
+    COMMENTS_MARKDOWN=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" $FLOW_DIR_FLAG $ALLOW_OTHER_REPO_FLAG --format markdown 2>/dev/null) || COMMENTS_MARKDOWN=""
+  fi
   if [ -n "$COMMENTS_MARKDOWN" ]; then
     printf '\n%s\n' "$COMMENTS_MARKDOWN" >> "$SESSION_DIR/context.md"
   fi
 fi
 ```
+
+The unfiltered branch still makes a second call (the CLI has no render-from-file subcommand), so its markdown can differ from `issue-comments.json` if a comment is posted between the two calls.
 
 Inside a flow, write `${FLOW_DIR}/plan-comment-ids.json` (union on redo) and `${FLOW_DIR}/plan-issue-snapshot.json` (only if absent). Build the snapshot with one `jq -n --arg/--argjson` call per variable so invalid JSON fails loudly (a corrupt snapshot will cause the helper's `load_plan_fetch` to treat it as an error on resume):
 

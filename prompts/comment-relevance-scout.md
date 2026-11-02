@@ -68,5 +68,5 @@ Return **only** a single JSON object with no additional text:
 ## Behavior
 
 - Assess **only on relevance to the current body**. If the body already states the same point, the comment is duplicate.
-- Be conservative: when in doubt, include. This is a high bar for *inclusion*, not a low bar for dropping.
+- Fail closed: when in doubt, drop. A comment is included only when it clearly meets the inclusion bar above. Uncertainty is a drop with the most fitting reason. The orchestrator also treats any missing, malformed, or unrecognized verdict as a drop.
 - Always return valid JSON, never any markdown or prose.

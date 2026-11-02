@@ -184,7 +184,7 @@ run, since `build_check_order` records a `null_command` skip entry for null-valu
 
 **Commands:**
 - `issue-comments fetch`: Fetches a GitHub issue and its comments, applies deterministic filtering (trusted vs. unverified, age, markers, budgets, scouts), and outputs typed JSON or markdown. No writes to any file.
-- `issue-comments finalize`: Validates scout reports (if present) and re-applies budgets; used when scouts filter unverified comments. No side effects.
+- `issue-comments finalize`: Validates scout reports (if present) and re-applies budgets; used when scouts filter unverified comments. Fail closed: an unverified comment is kept only by an explicit, valid `include` verdict for its id; a missing verdict file, invalid JSON, or an unknown verdict or reason drops it. Trusted comments are never subject to verdicts. Re-running on the same inputs gives the same output. No side effects.
 
 **Exit codes:**
 - `0`: JSON or markdown emitted. `comments_status` field or status line is one of `ok|unavailable|unsupported`.
