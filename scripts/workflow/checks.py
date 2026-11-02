@@ -693,6 +693,9 @@ def resolve_check_command(
     return resolution.command, resolution.source, resolution.failure_reason
 
 
+EnsureAction = Literal["resolved", "detected", "opt-out", "unresolved", "error"]
+
+
 @dataclass
 class EnsureCheckResult:
     """
@@ -701,7 +704,7 @@ class EnsureCheckResult:
     action is "resolved", "detected", "opt-out", "unresolved" or "error". source is the CHECK_SOURCE
     label (None for unresolved and error). error is set only for "error".
     """
-    action: str
+    action: EnsureAction
     source: Optional[str]
     command: Optional[str] = None
     opt_out_reason: Optional[str] = None
