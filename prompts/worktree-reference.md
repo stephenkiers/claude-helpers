@@ -18,8 +18,10 @@ Step 3 calls the claude-helpers CLI, so `CLAUDE_HELPERS_DIR` must be resolved fi
 # 1. Repo identity (empty in a repo with no GitHub remote — local plan mode relies on this)
 REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo "")
 
-# 2. Main worktree (first entry is always main)
-MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
+# 2. Main worktree: the worktree checked out on main/master. In a bare-clone layout the first
+#    listed entry is the bare repo (.bare), so fall back to it only when no main/master worktree exists.
+MAIN_WORKTREE=$(git worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\/(main|master)$/{print p; exit}')
+[ -n "$MAIN_WORKTREE" ] || MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
 
 # 3. Worktree parent: ONE implementation, in Python (scripts/workflow/worktrees.py::detect_worktree_parent).
 #    Fails closed (exit 1) if unsafe.
