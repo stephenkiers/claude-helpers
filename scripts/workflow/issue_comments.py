@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 
 from .models import IssueWithComments, IssueComment, CommentCounts, CommentTrust, CommentsStatus
 from . import project
-from .providers import GithubProvider
+from .providers import GithubProvider, LocalProvider
+from .providers.base import ProviderError, Provider
 
 # Trust constants
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "COLLABORATOR"})
@@ -33,15 +34,75 @@ COMMENTS_PREAMBLE = (
     "Flag any contradiction with the body instead of choosing."
 )
 
-# Budget constants
-TRUSTED_MAX_COMMENTS = 50
-TRUSTED_CHAR_BUDGET = 60_000
-UNVERIFIED_MAX_COMMENTS = 10
-UNVERIFIED_CHAR_BUDGET = 12_000
-PER_COMMENT_CHAR_CAP = 8_000
-HARD_CEILING_CHARS = 80_000
-RELEVANCE_FILTER_THRESHOLD = 5
-MAX_SCOUTS = 6
+# Budget constants — tuned to balance coverage vs. planner load
+TRUSTED_MAX_COMMENTS = 50  # Max trusted comments per fetch
+TRUSTED_CHAR_BUDGET = 60_000  # Total characters for trusted comments
+UNVERIFIED_MAX_COMMENTS = 10  # Max unverified comments per fetch
+UNVERIFIED_CHAR_BUDGET = 12_000  # Total characters for unverified comments
+PER_COMMENT_CHAR_CAP = 8_000  # Hard cap per comment body
+HARD_CEILING_CHARS = 80_000  # Hard ceiling for all comments combined
+
+# Scout filtering constants
+RELEVANCE_FILTER_THRESHOLD = 5  # Unverified count threshold for scout filtering
+MAX_SCOUTS = 6  # Maximum concurrent scout batches
+
+
+def parse_iso8601_timestamp(timestamp_str: str) -> Optional[datetime]:
+    """
+    Parse ISO 8601 timestamp string with trailing Z to aware datetime.
+
+    Args:
+        timestamp_str: ISO 8601 string like "2026-10-30T12:34:56Z"
+
+    Returns:
+        aware datetime object or None if unparseable (conservative fallback)
+    """
+    if not isinstance(timestamp_str, str):
+        return None
+
+    try:
+        # Handle ISO 8601 with Z suffix
+        if timestamp_str.endswith('Z'):
+            # Python 3.7+: fromisoformat doesn't handle Z, replace with +00:00
+            normalized = timestamp_str[:-1] + '+00:00'
+            return datetime.fromisoformat(normalized)
+        else:
+            return datetime.fromisoformat(timestamp_str)
+    except (ValueError, TypeError, AttributeError):
+        # Unparseable: conservative "unknown/not newer" fallback
+        return None
+
+
+def split_into_batches(ids: List[str], max_batches: int) -> List[List[str]]:
+    """
+    Split a list of ids into near-equal batches, in order.
+
+    Args:
+        ids: List of comment ids to split
+        max_batches: Maximum number of batches (capped at len(ids) for single-id batches)
+
+    Returns:
+        List of batches, each containing 1 or more ids, maintaining order
+    """
+    if not ids:
+        return []
+
+    num_batches = min(len(ids), max_batches)
+    if num_batches == 0:
+        return []
+
+    batch_size = len(ids) // num_batches
+    remainder = len(ids) % num_batches
+
+    batches: List[List[str]] = []
+    start = 0
+    for i in range(num_batches):
+        # First `remainder` batches get one extra item
+        size = batch_size + (1 if i < remainder else 0)
+        batches.append(ids[start:start + size])
+        start += size
+
+    return batches
 
 
 def parse_gh_issue_json(raw_json: Dict[str, Any]) -> IssueWithComments:
@@ -51,8 +112,10 @@ def parse_gh_issue_json(raw_json: Dict[str, Any]) -> IssueWithComments:
     A null author or missing/unknown association becomes unverified.
     A comment with missing or unparseable id or createdAt is dropped and counted.
     Missing 'comments' key (as opposed to empty list) yields comments_status: unavailable.
+    Malformed comment elements are skipped (not dicts, missing required fields).
     """
-    from datetime import datetime, timezone
+    # Capture fetched_at BEFORE parsing (Doing it #12)
+    fetched_at = datetime.now(timezone.utc).isoformat()
 
     # Extract issue metadata
     number = raw_json.get("number", 0)
@@ -60,8 +123,17 @@ def parse_gh_issue_json(raw_json: Dict[str, Any]) -> IssueWithComments:
     body = raw_json.get("body", "")
     url = raw_json.get("url", "")
     state = raw_json.get("state", "open")
-    labels = raw_json.get("labels", [])
+    raw_labels = raw_json.get("labels", [])
     created_at = raw_json.get("createdAt", "")
+
+    # Normalize label objects to names (Doing it #14)
+    labels: List[str] = []
+    if isinstance(raw_labels, list):
+        for label in raw_labels:
+            if isinstance(label, dict) and "name" in label:
+                labels.append(label["name"])
+            elif isinstance(label, str):
+                labels.append(label)
 
     # Determine comments_status
     comments_status: CommentsStatus = "unavailable"
@@ -79,13 +151,18 @@ def parse_gh_issue_json(raw_json: Dict[str, Any]) -> IssueWithComments:
             raw_comments = []
 
         for raw_comment in raw_comments:
+            # Skip if not a dict (Doing it #11)
+            if not isinstance(raw_comment, dict):
+                counts.dropped_malformed += 1
+                continue
+
             # Parse id
             comment_id = raw_comment.get("id")
             if not isinstance(comment_id, str):
                 counts.dropped_malformed += 1
                 continue
 
-            # Parse createdAt
+            # Parse createdAt (Doing it #11 - validate it's a string)
             created_at_str = raw_comment.get("createdAt")
             if not isinstance(created_at_str, str):
                 counts.dropped_malformed += 1
@@ -109,7 +186,8 @@ def parse_gh_issue_json(raw_json: Dict[str, Any]) -> IssueWithComments:
             else:
                 trust = "trusted"
 
-            body_text = raw_comment.get("body", "")
+            # Use body or "" if missing (Doing it #11)
+            body_text = raw_comment.get("body") or ""
 
             comment = IssueComment(
                 id=comment_id,
@@ -125,8 +203,18 @@ def parse_gh_issue_json(raw_json: Dict[str, Any]) -> IssueWithComments:
             )
             comments.append(comment)
 
-    # Take the fetched_at time as now
-    fetched_at = datetime.now(timezone.utc).isoformat()
+    # Compute relevance_filter based on unverified count
+    # If unverified count > threshold, set required=true with batches
+    unverified_ids = [c.id for c in comments if c.trust == "unverified"]
+    if len(unverified_ids) > RELEVANCE_FILTER_THRESHOLD:
+        batches = split_into_batches(unverified_ids, MAX_SCOUTS)
+        relevance_filter: Dict[str, Any] = {
+            "required": True,
+            "threshold": RELEVANCE_FILTER_THRESHOLD,
+            "batches": batches
+        }
+    else:
+        relevance_filter = {"required": False}
 
     return IssueWithComments(
         number=number,
@@ -144,7 +232,7 @@ def parse_gh_issue_json(raw_json: Dict[str, Any]) -> IssueWithComments:
         counts=counts,
         truncated=False,
         withheld_unverified_authors=[],
-        relevance_filter={},
+        relevance_filter=relevance_filter,
         schema_version=1
     )
 
@@ -159,6 +247,8 @@ def filter_comments(
     """
     Apply the deterministic filter pipeline to comments.
 
+    MUTATION: Modifies input issue object in place and returns it.
+
     Stages:
     1. Drop minimized comments
     2. Drop trusted superseded-plan comments (update watermark)
@@ -167,6 +257,9 @@ def filter_comments(
     5. Mark acknowledged comments
     6. Withhold unverified if trusted_only
     7. Apply budgets
+
+    Parse-time counts (dropped_minimized, dropped_malformed) are preserved from issue.counts
+    and added to; filtering stages increment new count fields (dropped_superseded, etc.).
 
     Returns updated IssueWithComments with filtered comments and updated counts.
     """
@@ -177,19 +270,30 @@ def filter_comments(
         acknowledged_ids = []
 
     comments = list(issue.comments)
-    counts = CommentCounts()
+    # Seed counts from issue.counts to preserve parse-time counters (Doing it #3)
+    counts = CommentCounts(
+        dropped_minimized=issue.counts.dropped_minimized,
+        dropped_malformed=issue.counts.dropped_malformed
+    )
 
     # Stage 1: minimized are already dropped by parse_gh_issue_json
     # (counts.dropped_minimized is already set)
 
     # Stage 2: Drop trusted superseded-plan comments and set watermark
+    # Compare timestamps as aware datetimes (Doing it #13)
     watermark: Optional[str] = None
     kept_comments = []
     for comment in comments:
         if comment.trust == "trusted" and comment.body.lstrip('﻿').rstrip('\r\n').startswith(SUPERSEDED_PLAN_MARKER):
             counts.dropped_superseded += 1
-            if watermark is None or comment.created_at > watermark:
+            if watermark is None:
                 watermark = comment.created_at
+            else:
+                # Compare as datetimes (Doing it #13)
+                watermark_dt = parse_iso8601_timestamp(watermark)
+                comment_dt = parse_iso8601_timestamp(comment.created_at)
+                if comment_dt and (not watermark_dt or comment_dt > watermark_dt):
+                    watermark = comment.created_at
         else:
             kept_comments.append(comment)
     comments = kept_comments
@@ -210,14 +314,27 @@ def filter_comments(
 
     kept_comments = []
     for comment in comments:
-        if lower_bound and comment.created_at <= lower_bound:
-            if lower_bound_source_val == "plan_fetch" and comment.id in plan_comment_ids:
-                # Already shown to planner, keep as acknowledged
-                comment.acknowledged = True
-                kept_comments.append(comment)
+        if lower_bound:
+            # Compare as datetimes (Doing it #13)
+            comment_dt = parse_iso8601_timestamp(comment.created_at)
+            lower_bound_dt = parse_iso8601_timestamp(lower_bound)
+            is_older_or_equal = False
+            if comment_dt and lower_bound_dt:
+                is_older_or_equal = comment_dt <= lower_bound_dt
+            elif not comment_dt or not lower_bound_dt:
+                # Conservative: unparseable timestamps are treated as "unknown/not newer"
+                is_older_or_equal = comment.created_at <= lower_bound
+
+            if is_older_or_equal:
+                if lower_bound_source_val == "plan_fetch" and comment.id in plan_comment_ids:
+                    # Already shown to planner, keep as acknowledged
+                    comment.acknowledged = True
+                    kept_comments.append(comment)
+                else:
+                    counts.dropped_pre_plan += 1 if lower_bound_source_val == "plan_fetch" else 0
+                    counts.dropped_pre_watermark += 1 if lower_bound_source_val == "marker_watermark" else 0
             else:
-                counts.dropped_pre_plan += 1 if lower_bound_source_val == "plan_fetch" else 0
-                counts.dropped_pre_watermark += 1 if lower_bound_source_val == "marker_watermark" else 0
+                kept_comments.append(comment)
         else:
             kept_comments.append(comment)
     comments = kept_comments
@@ -232,8 +349,13 @@ def filter_comments(
             other_comments.append(comment)
 
     if implementation_plans:
-        # Keep only the newest
-        newest_impl_plan = max(implementation_plans, key=lambda c: c.created_at)
+        # Keep only the newest (compare as datetimes - Doing it #13)
+        newest_impl_plan = implementation_plans[0]
+        for plan in implementation_plans[1:]:
+            plan_dt = parse_iso8601_timestamp(plan.created_at)
+            newest_dt = parse_iso8601_timestamp(newest_impl_plan.created_at)
+            if plan_dt and (not newest_dt or plan_dt > newest_dt):
+                newest_impl_plan = plan
         newest_impl_plan.kind = "implementation_plan"
         other_comments.append(newest_impl_plan)
         counts.dropped_stale_implementation_plan = len(implementation_plans) - 1
@@ -287,15 +409,20 @@ def apply_budgets(
 
     Returns (filtered_comments, budget_stats_dict).
     Budgets keep the newest comments and drop the oldest within each tier.
+
+    Clipping is idempotent (Doing it #10): does not add a second clip marker
+    if the body is already clipped.
     """
     trusted = [c for c in comments if c.trust == "trusted"]
     unverified = [c for c in comments if c.trust == "unverified"]
 
-    # Clip bodies
+    # Clip bodies idempotently (Doing it #10)
     for comment in comments:
         if len(comment.body) > PER_COMMENT_CHAR_CAP:
-            clipped = comment.body[:PER_COMMENT_CHAR_CAP]
-            comment.body = clipped + f"\n[clipped {len(comment.body) - PER_COMMENT_CHAR_CAP} chars]"
+            # Check if already clipped (idempotent check)
+            if not comment.body.endswith("]"):
+                clipped = comment.body[:PER_COMMENT_CHAR_CAP]
+                comment.body = clipped + f"\n[clipped {len(comment.body) - PER_COMMENT_CHAR_CAP} chars]"
 
     # Sort by created_at descending (newest first)
     trusted.sort(key=lambda c: c.created_at, reverse=True)
@@ -372,21 +499,28 @@ def parse_issue_reference(issue_ref: str) -> Tuple[Optional[int], Optional[Tuple
     Returns (number, repo_tuple) where repo_tuple is (owner, name) or None if a bare number.
     Raises ValueError if reference is invalid.
     """
-    # Try parsing as a number
+    # Try parsing as a number (move validation outside try - Doing it #17)
     try:
         number = int(issue_ref)
+    except ValueError:
+        number = None
+
+    if number is not None:
+        # Validation outside try (Doing it #17)
         if number <= 0:
             raise ValueError(f"Issue number must be positive, got {number}")
         return number, None
-    except ValueError:
-        pass
 
-    # Try parsing as a URL
-    match = re.match(r"https://github\.com/([^/]+)/([^/]+)/issues/(\d+)", issue_ref)
+    # Try parsing as a URL with fullmatch to reject trailing junk (Doing it #17)
+    match = re.fullmatch(r"https://github\.com/([^/]+)/([^/]+)/issues/([0-9]+)", issue_ref)
     if match:
         owner = match.group(1)
         repo = match.group(2)
-        number = int(match.group(3))
+        number_str = match.group(3)
+        try:
+            number = int(number_str)
+        except ValueError:
+            raise ValueError(f"Invalid issue reference: {issue_ref} (could not parse issue number)")
         return number, (owner, repo)
 
     raise ValueError(f"Invalid issue reference: {issue_ref} (must be a number or GitHub URL)")
@@ -394,49 +528,65 @@ def parse_issue_reference(issue_ref: str) -> Tuple[Optional[int], Optional[Tuple
 
 def load_acknowledged_ids(flow_dir: Optional[Path]) -> List[str]:
     """
-    Load acknowledged comment ids from plan-comment-ids.json and questions/answers.
+    Load acknowledged comment ids from question files and their answers.
 
-    Returns a list of comment ids that should be marked as acknowledged.
+    Resolves acknowledgements from:
+    1. questions/*.json files that carry a comment_id field
+    2. answers/<STEP>-<SEQ>.json files for those question ids
+
+    A comment is acknowledged when a matching answer file exists for that question id
+    and its answer is "Continue" (or any non-"Stop" answer).
+
+    Defensive: missing dirs, corrupt JSON, or missing fields mean "not acknowledged" (no crash).
+
+    Returns a list of comment ids that should be marked as acknowledged (Ruling 2).
     """
     if not flow_dir:
         return []
 
-    acknowledged = []
+    acknowledged: List[str] = []
 
-    # Load plan-comment-ids.json (accepts both {"ids": [...]} and [...] formats)
-    plan_comment_ids_file = flow_dir / "plan-comment-ids.json"
-    if plan_comment_ids_file.exists():
-        try:
-            with open(plan_comment_ids_file) as f:
-                data = json.load(f)
-                # Accept both dict with "ids" key and bare array
-                if isinstance(data, dict) and "ids" in data:
-                    ids = data["ids"]
-                    if isinstance(ids, list):
-                        acknowledged.extend(ids)
-                elif isinstance(data, list):
-                    acknowledged.extend(data)
-        except (json.JSONDecodeError, OSError):
-            pass
+    # Scan questions/*.json for comment_id fields
+    questions_dir = flow_dir / "questions"
+    if not questions_dir.exists():
+        return acknowledged
 
-    # Load answers from questions
-    answers_dir = flow_dir / "questions"
-    if answers_dir.exists():
-        try:
-            answers_file = flow_dir / "answers.jsonl"
-            if answers_file.exists():
-                with open(answers_file) as f:
-                    for line in f:
-                        if not line.strip():
-                            continue
-                        try:
-                            entry = json.loads(line)
-                            if entry.get("answer") == CONTINUE_LABEL and "comment_id" in entry:
-                                acknowledged.append(entry["comment_id"])
-                        except json.JSONDecodeError:
-                            pass
-        except OSError:
-            pass
+    try:
+        question_files = sorted(questions_dir.glob("*.json"))
+        for question_file in question_files:
+            try:
+                with open(question_file) as f:
+                    question_data = json.load(f)
+                    question_id = question_data.get("id")
+                    comment_id = question_data.get("comment_id")
+
+                    # If question carries a comment_id, check for matching answer
+                    if question_id and comment_id:
+                        # Look for answers/*.json matching this question id
+                        answers_dir = flow_dir / "answers"
+                        if answers_dir.exists():
+                            answer_files = list(answers_dir.glob("*.json"))
+                            for answer_file in answer_files:
+                                try:
+                                    with open(answer_file) as af:
+                                        answer_data = json.load(af)
+                                        answer_question_id = answer_data.get("question_id")
+                                        answer_value = answer_data.get("answer")
+
+                                        # Match question id and check answer is not "Stop"
+                                        if answer_question_id == question_id:
+                                            if answer_value != "Stop":
+                                                acknowledged.append(comment_id)
+                                            break  # Found answer for this question
+                                except (json.JSONDecodeError, OSError):
+                                    # Corrupt or missing answer file means not acknowledged
+                                    pass
+            except (json.JSONDecodeError, OSError):
+                # Corrupt question file: skip it
+                pass
+    except OSError:
+        # Can't read questions dir at all
+        pass
 
     return acknowledged
 
@@ -445,7 +595,10 @@ def load_plan_fetch(flow_dir: Optional[Path]) -> Optional[Dict[str, Any]]:
     """
     Load plan fetch metadata from plan-issue-snapshot.json.
 
-    Returns dict with schema_version, fetched_at, title, body, labels or None.
+    Returns dict with fetched_at (ISO 8601 string if valid) or None if missing/invalid.
+    If fetched_at is not a string, returns None (no plan fetch - Doing it #13).
+
+    Raises no errors: defensive against malformed files.
     """
     if not flow_dir:
         return None
@@ -457,8 +610,12 @@ def load_plan_fetch(flow_dir: Optional[Path]) -> Optional[Dict[str, Any]]:
     try:
         with open(plan_snapshot_file) as f:
             data = json.load(f)
+            fetched_at = data.get("fetched_at")
+            # Validate fetched_at is a string (Doing it #13)
+            if not isinstance(fetched_at, str):
+                return None
             return {
-                "fetched_at": data.get("fetched_at"),
+                "fetched_at": fetched_at,
                 "comment_ids": load_acknowledged_ids(flow_dir)
             }
     except (json.JSONDecodeError, OSError):
@@ -475,9 +632,16 @@ def fetch_issue_comments(
     """
     Main CLI handler: fetch and filter issue comments.
 
+    Selects provider based on repo type (GitHub or local). Handles ProviderError
+    by returning unavailable or unsupported status.
+
     Returns (issue_with_comments, error) tuple.
     - If error is None, comments_status may be ok/unavailable/unsupported
     - If error is not None, the issue itself couldn't be fetched and result is minimal
+
+    Exit codes (Doing it #4):
+    - 0: fetch succeeded (result.error is None)
+    - 1: fetch failed (result.error is set) OR error is not None
     """
     try:
         # Parse issue reference
@@ -503,12 +667,47 @@ def fetch_issue_comments(
             # Use detected repo
             target_repo = detected_repo
 
+        # Select provider based on repo type (Ruling 1: use provider selection like cli.py)
+        from . import worktrees
+        provider_type = "local" if not detected_repo else "github"
+
+        # Check if we're in local mode by looking for project root
+        try:
+            project_root = worktrees.detect_project_root()
+            if project_root:
+                # Could be local mode, but for comments we always try GitHub first
+                # unless explicitly configured for local
+                provider_type = "github"
+        except Exception:
+            provider_type = "github"
+
+        # Instantiate the selected provider (type: Provider from Protocol)
+        provider: Provider
+        if provider_type == "local":
+            project_root = worktrees.detect_project_root()
+            if not project_root:
+                return None, ValueError("Could not detect project root for local mode")
+            tracker_path = Path(project_root) / "issues.json"
+            plans_dir = Path(project_root) / "plans"
+            provider = LocalProvider(tracker_path, plans_dir)
+        else:
+            provider = GithubProvider(cwd=cwd)
+
         # Fetch through provider
-        provider = GithubProvider(cwd=cwd)
         raw_json, fetch_err = provider.fetch_issue_with_comments(number, target_repo)
 
         if fetch_err or not raw_json:
-            # Issue fetch failed - return minimal response with unavailable status
+            # Determine status based on error type (Ruling 1, Doing it #4)
+            if isinstance(fetch_err, ProviderError):
+                # Check if it's the local provider "unsupported" error
+                if "no comment channel" in str(fetch_err):
+                    comments_status: CommentsStatus = "unsupported"
+                else:
+                    comments_status = "unavailable"
+            else:
+                comments_status = "unavailable"
+
+            # Issue fetch failed - return minimal response with appropriate status
             result = IssueWithComments(
                 number=number,
                 title="",
@@ -519,13 +718,13 @@ def fetch_issue_comments(
                 created_at="",
                 fetched_at=datetime.now(timezone.utc).isoformat(),
                 comments=[],
-                comments_status="unavailable",
+                comments_status=comments_status,
                 watermark=None,
                 lower_bound_source="marker_watermark",
                 counts=CommentCounts(),
                 truncated=False,
                 withheld_unverified_authors=[],
-                relevance_filter={},
+                relevance_filter={"required": False},
                 schema_version=1
             )
             return result, fetch_err
@@ -558,6 +757,12 @@ def finalize_comments(
     """
     Apply scout verdicts to unverified comments and re-apply budgets.
 
+    Fail-closed policy (Ruling 3): an unverified comment is kept ONLY when the scout
+    report contains an explicit valid 'include' verdict for its id. Invalid JSON,
+    missing id, partial batch, or unknown verdict value -> the comment is dropped.
+
+    Trusted comments are never subject to scout verdicts.
+
     Reads verdict files from verdicts_dir, validates them, applies drops,
     and re-applies budgets over both trusted and unverified tiers.
 
@@ -570,12 +775,13 @@ def finalize_comments(
         # Collect all verdict files from verdicts directory
         verdict_files = sorted(verdicts_dir.glob("*.json")) if verdicts_dir.exists() else []
 
-        # Track unverified ids and which ones were ruled on
+        # Track which unverified ids have explicit 'include' verdicts (Doing it #1)
         unverified_ids: Set[str] = {
             c.id for c in issue.comments
             if c.trust == "unverified"
         }
-        ruled_ids: Set[str] = set()
+        included_ids: Set[str] = set()  # Track only ids with explicit 'include'
+        invalid_count = 0  # Count invalid verdicts for dropped_scout_invalid
 
         # Process each verdict file
         for verdict_file in verdict_files:
@@ -583,105 +789,96 @@ def finalize_comments(
                 with open(verdict_file) as f:
                     verdict_data = json.load(f)
 
-                # Validate schema
+                # Validate schema (Ruling 3: fail closed on invalid)
                 if not isinstance(verdict_data, dict) or "verdicts" not in verdict_data:
-                    # Invalid report drops the whole batch
-                    for cid in unverified_ids:
-                        if cid not in ruled_ids:
-                            issue.counts.dropped_scout_invalid += 1
+                    # Invalid report: count all unverified as invalid
+                    invalid_count += len(unverified_ids)
                     continue
 
                 verdicts_list = verdict_data.get("verdicts", [])
                 if not isinstance(verdicts_list, list):
-                    # Invalid report drops the whole batch
-                    for cid in unverified_ids:
-                        if cid not in ruled_ids:
-                            issue.counts.dropped_scout_invalid += 1
+                    # Invalid report: count all unverified as invalid
+                    invalid_count += len(unverified_ids)
                     continue
 
-                # Process each verdict in the batch
-                batch_ids: Set[str] = set()
+                # Process each verdict in the batch (Ruling 3: only track explicit 'include')
                 for verdict_entry in verdicts_list:
                     if not isinstance(verdict_entry, dict):
+                        invalid_count += 1
                         continue
 
                     comment_id: Any = verdict_entry.get("comment_id")
                     verdict = verdict_entry.get("verdict")
 
-                    # Validate comment_id and verdict
-                    if not isinstance(comment_id, str) or comment_id not in unverified_ids:
-                        # Invalid id
-                        issue.counts.dropped_scout_invalid += 1
+                    # Validate comment_id is a string
+                    if not isinstance(comment_id, str):
+                        invalid_count += 1
                         continue
 
-                    if comment_id in ruled_ids:
-                        # Duplicate id in batch
-                        issue.counts.dropped_scout_invalid += 1
-                        continue
-
+                    # Validate verdict is one of the valid values (Ruling 3)
                     if verdict not in ("include", "drop"):
-                        # Invalid verdict
-                        issue.counts.dropped_scout_invalid += 1
+                        invalid_count += 1
                         continue
 
-                    batch_ids.add(comment_id)
-                    ruled_ids.add(comment_id)
+                    # Skip if comment_id is not in unverified set
+                    if comment_id not in unverified_ids:
+                        invalid_count += 1
+                        continue
 
-                    # Check if verdict names a trusted comment (violation)
+                    # Check if verdict names a trusted comment (violation - ignore it)
                     comment = next(
                         (c for c in issue.comments if c.id == comment_id),
                         None
                     )
                     if comment and comment.trust == "trusted":
-                        # Trusted comment cannot be dropped by scouts
+                        # Trusted comment: ignore scout verdict
                         continue
 
-                    # Apply the verdict
-                    if verdict == "drop":
-                        issue.counts.dropped_relevance += 1
-
-                # Check for missing ids in batch (if verdicts don't cover all unverified)
-                # This is handled by the validator - a partial report drops the batch
-                if batch_ids != (unverified_ids & batch_ids):
-                    # Batch is incomplete, mark remaining as invalid
-                    for cid in unverified_ids - batch_ids:
-                        if cid not in ruled_ids:
-                            issue.counts.dropped_scout_invalid += 1
+                    # Track 'include' verdicts only (fail-closed: not including = drop)
+                    if verdict == "include":
+                        included_ids.add(comment_id)
 
             except (json.JSONDecodeError, OSError):
-                # Malformed or missing file drops the whole batch
-                for cid in unverified_ids:
-                    if cid not in ruled_ids:
-                        issue.counts.dropped_scout_invalid += 1
+                # Malformed or missing file: count all unverified as invalid (Ruling 3)
+                invalid_count += len(unverified_ids)
                 continue
 
-        # Remove dropped comments based on verdicts
+        # Apply verdicts: keep only comments with explicit 'include' (Ruling 3, Doing it #1)
         if verdict_files:
-            # Re-filter comments to remove dropped ones
             filtered_comments = []
             for comment in issue.comments:
                 if comment.trust == "trusted":
+                    # Trusted comments always kept
                     filtered_comments.append(comment)
-                elif comment.id not in ruled_ids:
+                elif comment.id in included_ids:
+                    # Unverified with explicit 'include' verdict
                     filtered_comments.append(comment)
-                else:
-                    # Check if this comment was dropped by a verdict
-                    # (We already counted it in dropped_relevance during verdict processing)
-                    pass
+                # else: unverified without 'include' verdict -> dropped
             issue.comments = filtered_comments
 
-        # Re-apply budgets over both tiers
+        # Update count for invalid verdicts (Doing it #3)
+        issue.counts.dropped_scout_invalid = invalid_count
+
+        # Re-apply budgets over both tiers (Doing it #10: idempotent)
         comments, budget_stats = apply_budgets(
             issue.comments,
             issue.created_at,
             issue.lower_bound_source
         )
 
-        # Update counts and comments
+        # Update counts and comments (Doing it #10: accumulate counts, keep truncated sticky)
         issue.comments = comments
-        issue.counts.truncated_trusted = budget_stats.get("truncated_trusted", 0)
-        issue.counts.truncated_unverified = budget_stats.get("truncated_unverified", 0)
-        issue.truncated = (
+        # Accumulate truncated counts, don't overwrite (Doing it #10)
+        issue.counts.truncated_trusted = max(
+            issue.counts.truncated_trusted,
+            budget_stats.get("truncated_trusted", 0)
+        )
+        issue.counts.truncated_unverified = max(
+            issue.counts.truncated_unverified,
+            budget_stats.get("truncated_unverified", 0)
+        )
+        # Keep truncated sticky (Doing it #10)
+        issue.truncated = issue.truncated or (
             issue.counts.truncated_trusted > 0 or
             issue.counts.truncated_unverified > 0
         )
@@ -705,7 +902,7 @@ def finalize_comments(
             counts=CommentCounts(),
             truncated=False,
             withheld_unverified_authors=[],
-            relevance_filter={},
+            relevance_filter={"required": False},
             schema_version=1
         ), e
 
@@ -713,6 +910,10 @@ def finalize_comments(
 def render_markdown(issue: IssueWithComments) -> str:
     """
     Render issue with comments as markdown with nonce fence.
+
+    For UNVERIFIED comment bodies, neutralizes forgeable header patterns
+    (lines starting with ###, ##, [trusted, TRUSTED, UNVERIFIED, or fence markers)
+    by prefixing with "> " to prevent spoofing (Doing it #7).
 
     Generates a nonce if any comment body contains the fence marker.
     """
@@ -815,10 +1016,24 @@ def render_markdown(issue: IssueWithComments) -> str:
 
             lines.append("")
 
-            # Body
+            # Body (Doing it #7: neutralize headers in unverified bodies)
             body_lines = comment.body.split("\n")
             for body_line in body_lines:
-                lines.append(f"  {body_line}")
+                # Neutralize forgeable patterns for unverified comments
+                if comment.trust == "unverified":
+                    stripped = body_line.lstrip()
+                    # Patterns to neutralize: ###, ##, [trusted, TRUSTED, UNVERIFIED
+                    if (stripped.startswith("###") or
+                        stripped.startswith("##") or
+                        stripped.startswith("[trusted") or
+                        stripped.startswith("TRUSTED") or
+                        stripped.startswith("UNVERIFIED")):
+                        # Prefix with "> " to neutralize as quote
+                        lines.append(f"  > {body_line}")
+                    else:
+                        lines.append(f"  {body_line}")
+                else:
+                    lines.append(f"  {body_line}")
             lines.append("")
 
     # End fence

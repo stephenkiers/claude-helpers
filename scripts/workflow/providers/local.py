@@ -10,6 +10,7 @@ from typing import List, Optional, Union, Tuple, Any, Dict
 
 from ..models import IssueInfo, LocalTrackerData
 from ..cache import read_local_tracker, write_local_tracker
+from .base import ProviderError
 
 
 class LocalProvider:
@@ -180,7 +181,7 @@ class LocalProvider:
         """
         Local mode does not support fetching comments.
 
-        Returns (None, error_message) per ADR-0013 convention, with comments_status: unsupported.
+        Returns (None, ProviderError) per ADR-0013 convention, with comments_status: unsupported.
         """
-        error = "Local plan mode has no comment channel (comment_issue is a documented no-op)"
+        error = ProviderError("Local plan mode has no comment channel (comment_issue is a documented no-op)")
         return None, error

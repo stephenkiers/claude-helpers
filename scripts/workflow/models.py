@@ -6,7 +6,7 @@ its own schema_version and content structure.
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import Optional, Dict, Any, List, Literal
+from typing import Optional, Dict, Any, List, Literal, TypedDict
 
 
 GITHUB_CACHE_SCHEMA_VERSION = "1.0"
@@ -361,6 +361,13 @@ CommentKind = Literal["ordinary", "implementation_plan"]
 DropReason = Literal["outdated", "superseded_plan_content", "off_topic", "duplicate", "low_signal", "instruction_like"]
 
 
+class RelevanceFilterDict(TypedDict, total=False):
+    """TypedDict for relevance_filter field: required (bool), threshold (int), batches (List[List[str]])."""
+    required: bool
+    threshold: int
+    batches: List[List[str]]
+
+
 @dataclass
 class IssueComment:
     """A single issue comment with trust, kind, and acknowledged status."""
@@ -381,8 +388,23 @@ class IssueComment:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "IssueComment":
-        """Construct from parsed JSON dict."""
-        return cls(**data)
+        """Construct from parsed JSON dict. Ignores unknown keys. Validates Literal fields."""
+        # Extract only known fields, ignoring unknowns
+        known_fields = {
+            "id", "author_login", "author_association", "trust", "created_at",
+            "is_minimized", "kind", "body", "acknowledged", "source"
+        }
+        filtered_data = {k: v for k, v in data.items() if k in known_fields}
+
+        # Validate Literal fields if present
+        if "trust" in filtered_data and filtered_data["trust"] not in ("trusted", "unverified"):
+            raise ValueError(f"Invalid trust value: {filtered_data['trust']}")
+        if "kind" in filtered_data and filtered_data["kind"] not in ("ordinary", "implementation_plan"):
+            raise ValueError(f"Invalid kind value: {filtered_data['kind']}")
+        if "source" in filtered_data and filtered_data["source"] not in ("issue",):
+            raise ValueError(f"Invalid source value: {filtered_data['source']}")
+
+        return cls(**filtered_data)
 
 
 @dataclass
@@ -439,7 +461,22 @@ class IssueWithComments:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "IssueWithComments":
-        """Construct from parsed JSON dict."""
+        """Construct from parsed JSON dict. Validates Literal fields and schema_version."""
+        # Validate schema_version if present
+        schema_version = data.get("schema_version", 1)
+        if not isinstance(schema_version, int) or schema_version < 1:
+            raise ValueError(f"Invalid schema_version: {schema_version}")
+
+        # Validate comments_status Literal
+        comments_status = data.get("comments_status", "unavailable")
+        if comments_status not in ("ok", "unavailable", "unsupported"):
+            raise ValueError(f"Invalid comments_status: {comments_status}")
+
+        # Validate lower_bound_source Literal
+        lower_bound_source = data.get("lower_bound_source", "marker_watermark")
+        if lower_bound_source not in ("marker_watermark", "plan_fetch"):
+            raise ValueError(f"Invalid lower_bound_source: {lower_bound_source}")
+
         comments_data = data.get("comments", [])
         comments = [IssueComment.from_dict(c) for c in comments_data]
         counts_data = data.get("counts", {})
@@ -454,14 +491,14 @@ class IssueWithComments:
             created_at=data.get("created_at", ""),
             fetched_at=data.get("fetched_at", ""),
             comments=comments,
-            comments_status=data.get("comments_status", "unavailable"),
+            comments_status=comments_status,
             watermark=data.get("watermark"),
-            lower_bound_source=data.get("lower_bound_source", "marker_watermark"),
+            lower_bound_source=lower_bound_source,
             counts=counts,
             truncated=data.get("truncated", False),
             withheld_unverified_authors=data.get("withheld_unverified_authors", []),
             relevance_filter=data.get("relevance_filter", {}),
-            schema_version=data.get("schema_version", 1)
+            schema_version=schema_version
         )
 
 

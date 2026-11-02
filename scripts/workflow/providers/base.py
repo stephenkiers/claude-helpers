@@ -12,6 +12,11 @@ from typing import Optional, Tuple, Protocol, Union, List, Any, Dict
 from ..models import IssueInfo
 
 
+class ProviderError(Exception):
+    """Typed error for provider operations (fetch, repo detect, etc.)."""
+    pass
+
+
 class Provider(Protocol):
     """
     Provider contract for repository operations.

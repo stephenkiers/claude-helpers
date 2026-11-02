@@ -11,6 +11,7 @@ from typing import List, Optional, Union, Tuple, Any, Dict
 
 from ..models import IssueInfo
 from .. import git, project
+from .base import ProviderError
 
 
 class GithubProvider:
@@ -177,4 +178,4 @@ class GithubProvider:
             result = json.loads(output)
             return result, None
         except Exception as e:
-            return None, e
+            return None, ProviderError(str(e))
