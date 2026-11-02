@@ -675,13 +675,21 @@ git worktree prune
 
 ## Step 3: Size and split the plan into work units
 
-**0. Run unit-sizing.** First, invoke unit-sizing.py to analyze the plan (or action plan) and determine the minimum viable unit count:
+**Unit sizing and ceiling overview.** `MIN_UNITS` is a lower bound only. Per-unit ceilings (8 steps / 12 files / 16 findings per unit) are provisional and enforcement is deferred — do not overclaim "capacity-aware" splitting in this file. The final receipt includes `UNIT_CEILINGS: steps=8 files=12 findings=16 (provisional; MIN_UNITS is a lower bound only)` to document the current constraint state.
+
+**0. Run unit-sizing.** First, invoke unit-sizing.py to analyze the plan (or action plan) and determine the minimum viable unit count. Derive `--kind` from `PLAN_SOURCE`: if `PLAN_SOURCE=claude-action-plan`, use `--kind action-plan`; otherwise use `--kind plan`:
 
 ```bash
-python3 "$HOME/.claude/scripts/unit-sizing.py" <PLAN_PATH> --kind plan ${ONLY_UNITS:+--only-units "${ONLY_UNITS}"} ${TICKET_WT_PATH:+--project-root "$(dirname "$TICKET_WT_PATH")"} > "<SCRATCH_PATH>/sizing.json"
+PLAN_KIND="plan"
+if [[ "${PLAN_SOURCE}" == "claude-action-plan" ]]; then
+  PLAN_KIND="action-plan"
+fi
+python3 "$HOME/.claude/scripts/unit-sizing.py" <PLAN_PATH> --kind "$PLAN_KIND" ${ONLY_UNITS:+--only-units "${ONLY_UNITS}"} ${TICKET_WT_PATH:+--project-root "$(dirname "$TICKET_WT_PATH")"} > "<SCRATCH_PATH>/sizing.json"
 SIZING_EXIT=$?
 if [[ $SIZING_EXIT -ne 0 ]]; then
   printf '%s\n' "Error: unit-sizing.py failed (exit $SIZING_EXIT)" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class other 2>/dev/null || true
+  ${FLOW_DIR:+Write the FAILED receipt with Reason "unit-sizing-failed" FAILURE_CLASS: other SPLIT_BASIS: none}
   exit 1
 fi
 ```
@@ -693,32 +701,48 @@ MIN_UNITS=$(jq -r '.min_units // "unknown"' "<SCRATCH_PATH>/sizing.json" 2>/dev/
 SIZING_STATUS=$(jq -r '.status // "unknown"' "<SCRATCH_PATH>/sizing.json" 2>/dev/null || echo "unknown")
 ```
 
-**1. Resume detection.** If a prior run exists for this step (i.e. `unit-progress.py` finds an existing main record), `--split-finer` was not passed, and `--only-units` was not passed:
+**1. Resume detection.** If a prior run exists for this step (i.e. `unit-progress.py` finds an existing main record), `--split-finer` was not passed, and `--only-units` was not passed, run `check` to verify integrity. Pass `--flow-dir "$FLOW_DIR"` in flows; use `--scratch` only when `FLOW_DIR` is empty. The exit codes: 0 = record present and consistent (resume); 1 = integrity mismatch; 3 = NO record exists (fresh run, not an error). Any other exit is treated as mismatch. Integrity means: plan hash and anchor match and every committed sha is an ancestor of HEAD (HEAD need not equal the chain tip).
 
 ```bash
-python3 "$HOME/.claude/scripts/unit-progress.py" --step implement --scratch "<SCRATCH_PATH>" check --plan "<PLAN_PATH>" --anchor "$START_SHA" --head "$(git rev-parse HEAD)"
+PROGRESS_ARG=""
+if [[ -n "${FLOW_DIR}" ]]; then
+  PROGRESS_ARG="--flow-dir \"${FLOW_DIR}\""
+else
+  PROGRESS_ARG="--scratch \"<SCRATCH_PATH>\""
+fi
+python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} check --plan "<PLAN_PATH>" --anchor "$START_SHA" --head "$(git rev-parse HEAD)"
 CHECK_EXIT=$?
 if [[ $CHECK_EXIT -eq 0 ]]; then
   # Resume: load persisted units and run only pending ids
-  PENDING_UNITS=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement --scratch "<SCRATCH_PATH>" pending)
+  PENDING_UNITS=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} pending)
   if [[ -z "$PENDING_UNITS" ]]; then
     # Nothing pending: skip Steps 4a–4d, go to Integration Gate
     printf '%s\n' "No pending units; proceeding to Integration Gate." >&2
   else
-    # Re-run pending units on persisted basis; use saved units.json
-    PERSISTED_UNITS=$(cat "<SCRATCH_PATH>/units/implement/units.json" 2>/dev/null)
-    SPLIT_BASIS=$(printf '%s' "$PERSISTED_UNITS" | jq -r '.split_basis // "unknown"' 2>/dev/null || echo "unknown")
+    # Re-run pending units on persisted basis; load SPLIT_BASIS from record
+    RECORD_DIR="<SCRATCH_PATH>/units/implement"
+    [[ -n "${FLOW_DIR}" ]] && RECORD_DIR="${FLOW_DIR}/units/implement"
+    SPLIT_BASIS=$(jq -r '.split_basis // "unknown"' "${RECORD_DIR}/units.json" 2>/dev/null || echo "unknown")
     # Continue to Steps 4a–4d with the persisted basis and PENDING_UNITS
   fi
+elif [[ $CHECK_EXIT -eq 3 ]]; then
+  # No record exists: proceed to fresh split
+  printf '%s\n' "No prior unit record found; proceeding to fresh split." >&2
 elif [[ $CHECK_EXIT -eq 1 ]]; then
   # Mismatch: write FAILED receipt and stop
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class other 2>/dev/null || true
   ${FLOW_DIR:+Write the FAILED receipt with Reason "unit-record-mismatch: <reason from check>" FAILURE_CLASS: other SPLIT_BASIS: none}
   exit 1
+else
+  # Unexpected exit code: treat as mismatch
+  printf '%s\n' "unit-progress.py check exited with unexpected code $CHECK_EXIT" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class other 2>/dev/null || true
+  ${FLOW_DIR:+Write the FAILED receipt with Reason "unit-record-mismatch: unexpected exit code $CHECK_EXIT" FAILURE_CLASS: other SPLIT_BASIS: none}
+  exit 1
 fi
 ```
 
-On success with nothing pending, skip Steps 4a–4d and proceed directly to the Integration Gate. On success with pending units, continue to the fresh split below using the persisted record's basis.
+On success with nothing pending, skip Steps 4a–4d and proceed directly to the Integration Gate. On success with pending units, continue to the fresh split below using the persisted record's basis. Exit code 3 (no record found) proceeds directly to fresh split.
 
 **2. Fresh split.** When not resuming, analyze the plan and emit **1..N work units**. Each unit must have:
 - `id` — a short slug, e.g. `auth`, `api`, `ui` (used in branch names)
@@ -738,35 +762,27 @@ On success with nothing pending, skip Steps 4a–4d and proceed directly to the 
 **3. Call `unit-progress.py init`.** Once the split is decided (basis, units, owned-files):
 
 Write the unit-list JSON to `<SCRATCH_PATH>/split-input.json` (with `Write`), then run `init` from that file.
-The refusal loop is bounded: `init` refuses with exit 1 and a one-line reason on stderr when the split is invalid
+`init` refuses with exit 1 and a one-line reason on stderr when the split is invalid
 (wrong unit count for `MIN_UNITS`, overlapping owned files on a parallel split, a bad `single` reason). Each
 refusal is a signal to repair the split, not to bypass `init`:
 
 ```bash
-INIT_TRIES=0
-INIT_REASON=""
-while :; do
-  INIT_TRIES=$((INIT_TRIES + 1))
-  INIT_REASON=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement --scratch "<SCRATCH_PATH>" \
-    init --anchor "$START_SHA" --base "$START_SHA" --plan "<PLAN_PATH>" --sizing "<SCRATCH_PATH>/sizing.json" \
-    < "<SCRATCH_PATH>/split-input.json" 2>&1 >/dev/null)
-  INIT_EXIT=$?
-  [[ $INIT_EXIT -eq 0 ]] && break
-  # exit 1 is a refusal (repair split-input.json from INIT_REASON and retry); anything else is a hard error.
-  if [[ $INIT_EXIT -ne 1 || $INIT_TRIES -ge 3 ]]; then
-    printf '%s\n' "unit-split-refused: $INIT_REASON" >&2
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class other 2>/dev/null || true
-    break
-  fi
-  # Repair <SCRATCH_PATH>/split-input.json per INIT_REASON (orchestrator edits via Write), then loop.
-  break  # the orchestrator re-enters this block after repairing; INIT_TRIES is carried forward as a literal
-done
+INIT_REASON=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} \
+  init --anchor "$START_SHA" --base "$START_SHA" --plan "<PLAN_PATH>" --sizing "<SCRATCH_PATH>/sizing.json" \
+  < "<SCRATCH_PATH>/split-input.json" 2>&1 >/dev/null)
+INIT_EXIT=$?
+if [[ $INIT_EXIT -ne 0 ]]; then
+  printf '%s\n' "unit-split-refused: $INIT_REASON" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class other 2>/dev/null || true
+  ${FLOW_DIR:+Write the FAILED receipt with Reason "unit-split-refused: $INIT_REASON" FAILURE_CLASS: other SPLIT_BASIS: none MIN_UNITS: "$MIN_UNITS" PRIOR_SPLIT_BASIS: none}
+  exit 1
+fi
 ```
 
-The orchestrator carries `INIT_TRIES` forward as a literal across repairs: at most 3 `init` calls in total. After the
-third refusal, or on any exit other than 0 or 1, write the FAILED receipt (when `FLOW_DIR` is set) with
-`Reason: unit-split-refused: <the last refusal line>`, `FAILURE_CLASS: other`, `SPLIT_BASIS: none`, the known
-`MIN_UNITS` (or `unknown`), `PRIOR_SPLIT_BASIS: none` and `UNITS: <n>`, then stop.
+On init failure, write the FAILED receipt (when `FLOW_DIR` is set) with
+`Reason: unit-split-refused: <the refusal line>`, `FAILURE_CLASS: other`, `SPLIT_BASIS: none`, the known
+`MIN_UNITS` (or `unknown`), `PRIOR_SPLIT_BASIS: none` and `UNITS: <n>`, then stop. The orchestrator may repair
+`<SCRATCH_PATH>/split-input.json` and re-run this block to retry (at most 3 times in total).
 
 **4. Handle `--split-finer`.** When `--split-finer` is set (requires `--partial-base`):
 - Force `MIN_UNITS = max(sizing min_units, 2)` and a non-single basis (parallel or sequential).
@@ -806,7 +822,7 @@ Each prompt must include:
 
 **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
-The agent stages its changes (`git add -A`, no commit); you commit them yourself in the ticket worktree once `STAGED: yes` is confirmed via `git status --porcelain`. After commit, run `unit-progress.py mark --unit-id <id> --status committed --sha <new HEAD>`. On failure, run `mark --status failed`. Proceed to the Integration Gate when it completes.
+The agent stages its changes (`git add -A`, no commit); you commit them yourself in the ticket worktree once `STAGED: yes` is confirmed via `git status --porcelain`. After commit, run `unit-progress.py mark --unit-id <id> --status committed --sha <new HEAD>` (pass `--flow-dir "$FLOW_DIR"` in flows; use `--scratch "<SCRATCH_PATH>"` otherwise). On failure, run `mark --status failed` with the same progress argument. Proceed to the Integration Gate when it completes.
 
 **Ledger row (single-unit fallback):** once the agent's report file passes the Report-file check (Step 4c), append the `round1` row for it, citing `<SCRATCH_PATH>/round1-<unit-id>-report.md` (the file named in the Step 4b prompt). If the report is missing or empty, no `round1` row is written:
 ```bash
@@ -843,9 +859,20 @@ fi
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage round1-join >/dev/null 2>&1 || true
 ```
 
-Load the persisted split basis:
+**Compose SPLIT_BASIS once (if not already loaded from resume detection).** Load it from the persisted record and reuse it in every receipt and comparison below:
 ```bash
-SPLIT_BASIS=$(jq -r '.split_basis // "unknown"' "<SCRATCH_PATH>/units/implement/units.json" 2>/dev/null || echo "unknown")
+if [[ -z "${SPLIT_BASIS}" ]]; then
+  RECORD_DIR="<SCRATCH_PATH>/units/implement"
+  [[ -n "${FLOW_DIR}" ]] && RECORD_DIR="${FLOW_DIR}/units/implement"
+  SPLIT_BASIS=$(jq -r '.split_basis // "unknown"' "${RECORD_DIR}/units.json" 2>/dev/null || echo "unknown")
+fi
+```
+
+**Extract the single reason if applicable.** When `SPLIT_BASIS` starts with `single(`, extract and preserve the reason for later use:
+```bash
+if [[ "$SPLIT_BASIS" == single\(* ]]; then
+  SINGLE_REASON=$(printf '%s' "$SPLIT_BASIS" | sed 's/^single(\(.*\))$/\1/')
+fi
 ```
 
 **Placement must be flat, never nested under the primary checkout's directory tree.** A worktree nested
@@ -981,7 +1008,7 @@ anything yet that would sweep those files in; note it and re-check at that unit'
 **If the worktree is genuinely empty** (no staged changes after the above, and primary checkout
 clean on this unit's files): Mark unit `failed`:
 ```bash
-python3 "$HOME/.claude/scripts/unit-progress.py" --step implement --scratch "<SCRATCH_PATH>" mark --unit-id "<unit-id>" --status failed
+python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} mark --unit-id "<unit-id>" --status failed
 ```
 Record `<unit-id>: no report (unit failed)` for
 use in Round 3 pass 1's input list below (same pattern as the Step 4c report-file check uses for
@@ -1123,7 +1150,7 @@ git commit -m "$(cat <<'EOF'
 Unit-Id: <unit-id>
 EOF
 )"
-python3 "$HOME/.claude/scripts/unit-progress.py" --step implement --scratch "<SCRATCH_PATH>" mark --unit-id "<unit-id>" --status committed --sha "$(git rev-parse HEAD)"
+python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} mark --unit-id "<unit-id>" --status committed --sha "$(git rev-parse HEAD)"
 ```
 The `Unit-Id: <unit-id>` trailer is recorded in the commit message for human readability and is log-only; no script reads it, and the true unit record is in the persisted `units.json` file maintained by `unit-progress.py`. Committing here — in the ticket worktree — is what lets pre-commit hooks run correctly; this is
 the fix for the nested-worktree hook-resolution failures seen historically.
@@ -2485,6 +2512,7 @@ Decision: OK
 Reason: completed
 SPLIT_BASIS: parallel|sequential|single(<non-empty reason>)|none
 MIN_UNITS: <n>|unknown
+UNIT_CEILINGS: steps=8 files=12 findings=16 (provisional; MIN_UNITS is a lower bound only)
 PRIOR_SPLIT_BASIS: <basis>|none
 UNITS: <n>
 CHECK: <resolved command verbatim | opted-out>
