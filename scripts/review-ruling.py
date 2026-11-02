@@ -30,14 +30,24 @@ leading STATUS:, DECISION: or # markers. So it cannot forge a field or heading.
 Writes are atomic: a temp file in the same directory, then os.replace.
 
 Re-runs: an item already recorded with the same answer exits 0 with no write. A
-different answer on an already-ruled item exits 3 with no write.
+different answer on an already-ruled item exits 3 with no write. Reasoning is excluded
+from the idempotency comparison; the first recorded reasoning is preserved on re-runs
+with a different --reasoning.
 
 Option matching reuses precedent-digest.py's own helpers (_norm, _fold, _option_key,
 _review_options), so an answer is matched the way parse_review reads it back.
 
+Sequential execution: this script performs an unlocked read-modify-write on the plan
+file. It is designed for sequential-only execution; concurrent calls may lose writes.
+The Step 12 orchestrator ensures sequential operation.
+
+PR mode: the --mode pr flag is refused by design; Step 12 in a coworker's PR review
+(ADR-0009) must not write to the clone. The prompt ensures --mode is not passed in
+that scenario; the flag itself is merely a documented safety layer at the script level.
+
 Exit codes:
   0: recorded, or already recorded with the same answer
-  1: named refusal (reason on stderr); the file is byte-identical
+  1: named refusal (reason on stderr) or unexpected internal failure; the file is byte-identical
   3: conflicting prior ruling (existing DECISION on stderr); the file is byte-identical
 """
 
@@ -53,12 +63,14 @@ import sys
 import tempfile
 import unicodedata
 from pathlib import Path
-from types import ModuleType
-from typing import Callable, List, NoReturn, Optional, Sequence, Tuple
+from typing import Callable, List, Literal, NoReturn, Optional, Protocol, Sequence, Tuple
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_CONFLICT = 3
+
+# Item status type, used for _Item dataclass and status value tracking
+ItemStatus = Literal["pending-decision", "pending-measurement", "decided", "no-op", "measured"]
 
 ACTION_PLAN = "claude-action-plan.md"
 NEEDS_YOU_TITLE = re.compile(r"^needs you$", re.IGNORECASE)
@@ -89,6 +101,29 @@ STATUS_RE = re.compile(r"^\s*[-*]\s+\*\*STATUS\*\*\s*:\s*(.*?)\s*$")
 DECISION_RE = re.compile(r"^\s*[-*]\s+\*\*DECISION\*\*\s*:\s*(.*?)\s*$")
 
 
+class _DigestProtocol(Protocol):
+    """Protocol for the precedent-digest.py module's helpers used by review-ruling.py.
+
+    Do not rename these methods in precedent-digest.py; review-ruling.py depends on them.
+    """
+
+    def _norm(self, text: str) -> str:
+        """Normalize option text for comparison."""
+        ...
+
+    def _fold(self, text: str) -> str:
+        """Fold option text to lowercase for case-insensitive matching."""
+        ...
+
+    def _option_key(self, label: str) -> str:
+        """Extract the canonical option key from a label."""
+        ...
+
+    def _review_options(self, lines: List[str]) -> Tuple[List[str], ...]:
+        """Parse review options from lines."""
+        ...
+
+
 class Refusal(Exception):
     """A named refusal: exit 1, one stderr line, file untouched."""
 
@@ -105,7 +140,7 @@ class _Parser(argparse.ArgumentParser):
         raise SystemExit(EXIT_REFUSED)
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class _Item:
     """Line indices (into the plan's split lines) for one located item."""
 
@@ -114,7 +149,7 @@ class _Item:
     anchor: int
     status: int
     decision: int
-    status_value: str
+    status_value: ItemStatus
     decision_value: str
 
 
@@ -147,7 +182,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _load_digest() -> ModuleType:
+def _load_digest() -> "_DigestProtocol":
     """Import precedent-digest.py from this script's own resolved directory. No silent fallback."""
     target = os.path.join(os.path.dirname(os.path.realpath(__file__)), "precedent-digest.py")
     try:
@@ -158,7 +193,7 @@ def _load_digest() -> ModuleType:
         spec.loader.exec_module(module)
     except Exception as exc:
         raise Refusal("cannot load precedent-digest.py for option matching (%s: %s)" % (type(exc).__name__, exc))
-    return module
+    return module  # type: ignore[return-value]
 
 
 def _require_local(mode: str) -> None:
@@ -361,13 +396,13 @@ def _locate(
     )
 
 
-def _resolve_option(request: str, labels: List[str], digest: ModuleType) -> str:
+def _resolve_option(request: str, labels: List[str], digest: "_DigestProtocol") -> str:
     """The canonical label for a requested option: exact after normalising, else by option key."""
-    wanted = digest._norm(request)
+    wanted = digest._norm(request)  # do not rename: pinned by test_review_ruling_wiring.py
     if not wanted:
         raise Refusal("--option is empty")
-    exact = [label for label in labels if digest._fold(label) == digest._fold(wanted)]
-    keyed = [label for label in labels if digest._option_key(label) == digest._option_key(wanted)]
+    exact = [label for label in labels if digest._fold(label) == digest._fold(wanted)]  # do not rename
+    keyed = [label for label in labels if digest._option_key(label) == digest._option_key(wanted)]  # do not rename
     pool = exact or keyed
     if not pool:
         raise Refusal("unknown option label: %s" % request)
@@ -376,14 +411,14 @@ def _resolve_option(request: str, labels: List[str], digest: ModuleType) -> str:
     return pool[0]
 
 
-def _split_groups(region: List[str], digest: ModuleType) -> Tuple[List[str], List[Tuple[str, List[str]]]]:
+def _split_groups(region: List[str], digest: "_DigestProtocol") -> Tuple[List[str], List[Tuple[str, List[str]]]]:
     """Nested option bullets (label, lines) in file order, plus any lines before the first bullet."""
     preamble: List[str] = []
     groups: List[Tuple[str, List[str]]] = []
     for line in region:
         bullet = OPTION_BULLET_RE.match(line.rstrip("\r"))
         if bullet is not None and line[:1].isspace():
-            groups.append((digest._norm(bullet.group(1)), [line]))
+            groups.append((digest._norm(bullet.group(1)), [line]))  # do not rename: pinned by test_review_ruling_wiring.py
         elif groups:
             groups[-1][1].append(line)
         else:
@@ -401,7 +436,7 @@ def _trim(lines: List[str]) -> List[str]:
 
 
 def _partition(
-    lines: List[str], item: _Item, chosen: Optional[str], digest: ModuleType
+    lines: List[str], item: _Item, chosen: Optional[str], digest: "_DigestProtocol"
 ) -> Tuple[List[str], List[str], List[str]]:
     """(chosen option lines, Recommendation lines, rejected lines) from the Options region."""
     region = lines[item.anchor + 1 : item.status]
@@ -460,17 +495,27 @@ def _rewrite_decision(
     )
 
 
-def _decide(args: argparse.Namespace) -> int:
+def _load_plan_data(args: argparse.Namespace) -> Tuple[int, str, List[str], List[Tuple[int, int, str]]]:
+    """Shared preamble for both decide and measure: load and parse the plan file.
+
+    Returns (number, path, lines, headings).
+    Raises Refusal on any containment or format error.
+    """
     _require_local(args.mode)
     number = _item_number(args.item)
     review = _resolve_review_dir(args.review_dir)
     path = _plan_path(review)
     lines = _read_plan(path).split("\n")
     headings = _headings(lines)
+    return number, path, lines, headings
+
+
+def _decide(args: argparse.Namespace) -> int:
+    number, path, lines, headings = _load_plan_data(args)
     span = _section_span(lines, headings, NEEDS_YOU_TITLE, "Needs you")
     item = _locate(lines, headings, span, number, OPTIONS_LINE_RE, "Options", "Needs you")
     digest = _load_digest()
-    labels = digest._review_options(lines[item.heading + 1 : item.end])[0]
+    labels = digest._review_options(lines[item.heading + 1 : item.end])[0]  # do not rename: pinned by test_review_ruling_wiring.py
 
     if args.custom is not None:
         answer = _clean(args.custom)
@@ -511,12 +556,7 @@ def _decide(args: argparse.Namespace) -> int:
 
 
 def _measure(args: argparse.Namespace) -> int:
-    _require_local(args.mode)
-    number = _item_number(args.item)
-    review = _resolve_review_dir(args.review_dir)
-    path = _plan_path(review)
-    lines = _read_plan(path).split("\n")
-    headings = _headings(lines)
+    number, path, lines, headings = _load_plan_data(args)
     span = _section_span(lines, headings, NEEDS_MEASUREMENT_TITLE, "Needs measurement")
     item = _locate(lines, headings, span, number, COMMAND_LINE_RE, "Command", "Needs measurement")
     result = _clean(args.result)

@@ -409,8 +409,25 @@ def test_injection(h: Harness, base: Path) -> None:
     )
 
 
+def test_digest_module_pinning(h: Harness) -> None:
+    """Verify that digest module has the four helpers pinned by review-ruling.py.
+
+    If any of these names are renamed in precedent-digest.py, this test fails first,
+    ensuring breaking changes are caught before runtime.
+    """
+    required_helpers = {"_norm", "_fold", "_option_key", "_review_options"}
+    available = {name for name in dir(DIGEST) if not name.startswith("__")}
+    for name in required_helpers:
+        h.test_result(
+            f"digest module has helper {name}",
+            name in available,
+            f"available: {sorted(available)}",
+        )
+
+
 def main() -> None:
     h = Harness("review-ruling.py Tests")
+    test_digest_module_pinning(h)
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
         test_round_trip(h, base)
