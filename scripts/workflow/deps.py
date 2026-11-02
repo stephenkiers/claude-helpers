@@ -101,6 +101,8 @@ _REDACTIONS: List[Tuple[Any, str]] = [
     (re.compile(r"(?i)([a-z][a-z0-9+.\-]*://)[^\s/@]+@"), r"\1***@"),
     # Token prefixes: GitHub (ghp_, gho_, ghu_, ghs_, ghr_, github_pat_), npm (npm_), Slack (xoxb-, xoxp-, ...).
     (re.compile(r"(\b(?:gh[pousr]_|github_pat_|npm_|xox[abposr]-))[A-Za-z0-9_\-]{16,}"), r"\1***"),
+    # Environment variable colon form: GH_TOKEN: value, NPM_TOKEN: value.
+    (re.compile(r"(?i)((?:GH_TOKEN|NPM_TOKEN)\s*:\s*)\S+"), r"\1***"),
 ]
 
 
@@ -374,9 +376,18 @@ def _write_stamp(path: Path, data: Dict[str, Any]) -> Optional[str]:
 
 
 def _remove_file(path: Path) -> Optional[str]:
-    """Delete path. A missing file is fine; any other failure is returned so the caller can stop."""
+    """
+    Delete path, preserving symlinks. If path is a symlink, delete its target instead of the link.
+    A missing file is fine; any other failure is returned so the caller can stop.
+    """
     try:
-        path.unlink()
+        # If path is a symlink, resolve and delete the target instead of the symlink
+        path_str = str(path)
+        if os.path.islink(path_str):
+            target_str = os.path.realpath(path_str)
+            os.unlink(target_str)
+        else:
+            path.unlink()
     except FileNotFoundError:
         return None
     except OSError as e:

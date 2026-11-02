@@ -30,7 +30,9 @@ def atomic_write_text(path: Path, text: str) -> None:
     The temp file is created with mode 0o666, so the kernel applies the process umask and the umask is
     never toggled. An existing target keeps its permission bits; a new file gets the umask default.
     """
-    target = Path(os.path.realpath(str(path)))
+    # Resolve any symlinks to get the real file path
+    target_str = os.path.realpath(str(path))
+    target = Path(target_str)
     target.parent.mkdir(parents=True, exist_ok=True)
     existing_mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else None
     temp_name = str(target.parent / f".{target.name}.{secrets.token_hex(8)}.tmp")
@@ -40,7 +42,7 @@ def atomic_write_text(path: Path, text: str) -> None:
             handle.write(text)
         if existing_mode is not None:
             os.chmod(temp_name, existing_mode)
-        os.replace(temp_name, str(target))
+        os.replace(temp_name, target_str)
     except BaseException:
         try:
             os.unlink(temp_name)
