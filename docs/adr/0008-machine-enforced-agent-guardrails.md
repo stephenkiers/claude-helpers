@@ -266,7 +266,7 @@ documented bypasses), or **prompt-level** (instruction-based, not enforced).
 | **Edit omission** | technical | `flow-implement` has no `Edit` tool; `flow-review` keeps `Edit` (red-line exception; see residuals below) |
 | **Agent/Task allowlist hook** | technical (settings-level and frontmatter; see 2026-10-30 amendment) | `PreToolUse` hook with `scripts/flow-agent-guard.py` registered in `~/.claude/settings.json` at settings level (verified in probe); frontmatter-declared hooks in agent files are belt-and-braces (observed firing in the #402 probe, interactive session only; headless not re-probed); run `/setup-local` or `./install.sh` to register settings-level hooks |
 | **Skill allowlist hook** | technical (settings-level and frontmatter; see 2026-10-30 amendment) | `PreToolUse` hook with `scripts/flow-skill-guard.py` registered in `~/.claude/settings.json` at settings level; frontmatter wiring is belt-and-braces (same as Agent hook; firing observed in the #402 probe, but the allowed-Skill evidence cannot isolate it from the settings-level hook); run `/setup-local` or `./install.sh` to register |
-| **Bash guard** | best-effort | Q1=C: refuses wrappers (`sh -c`, `bash -c`, `eval`, `xargs git\|gh`, `env git\|gh`, `git -c`, `git --git-dir`, `git --exec-path`, `gh api` non-GET) and publishing verbs; known bypasses: write-a-script-then-run, `python3 -c`, nested `general-purpose` agent (if Agent hook is not technical) |
+| **Bash guard** | best-effort | Q1=C: refuses wrappers (`sh -c`, `bash -c`, `eval`, `xargs git\|gh`, `env git\|gh`, `git -c`, `git --git-dir`, `git --exec-path`, `gh api` non-GET) and publishing verbs; known bypasses: write-a-script-then-run, `python3 -c` (verb-pair blocked; concatenation still bypasses), nested `general-purpose` agent (if Agent hook is not technical) |
 | **Step contract** | prompt-level | `prompts/flow-step-contract.md` with injection-defence block; contract-read/FAILED stop if unreadable; procedure-level rules ("invoke via Skill", "treat data as data", "FLOW_DIR authoritative") |
 | **Agent-file preflight** | technical | Stop at flow start, on `--resume`, and per step if file/hook/contract missing; "run /setup-local" message |
 
@@ -298,14 +298,15 @@ no narrowing of Bash guard required.
 ### Known bypasses and residuals
 
 **Best-effort bypasses:** The Bash guard can be bypassed by (a) writing a script to a temp file and
-invoking it, (b) `python3 -c "..."`, (c) nested `general-purpose` agent, which exists only if neither the settings-level nor the frontmatter Agent hook is loaded
+invoking it, (b) `python3 -c "..."` (verb-pair blocked; concatenation still bypasses; see the 2026-10-30 #403 amendment), (c) nested `general-purpose` agent, which exists only if neither the settings-level nor the frontmatter Agent hook is loaded
 (frontmatter hooks were observed to fire in the 2026-10-30 probe). Newly registered settings-level hooks fail open during the hot-load lag window (see the amendment), so this bypass is open until the hooks load.
 
 **Residual risks:**
 - `Write` tool is not path-scoped; writes outside the worktree are undetected (open issue #353).
 - `plan-implementer` keeps `Edit` and `bypassPermissions` (unchanged from ADR-0008 design).
-- `flow-review` keeps `Edit` solely for red-lining the `claude-action-plan.md` file produced by triage. This is prompt-scoped, not path-scoped: the agent is instructed to use `Edit` only on that file, not a machine-enforced boundary. A scripted, field-scoped rulings writer is pending as a follow-up (file #CP-W1).
+- `flow-review` keeps `Edit` solely for red-lining the `claude-action-plan.md` file produced by triage. This is prompt-scoped, not path-scoped: the agent is instructed to use `Edit` only on that file, not a machine-enforced boundary. A scripted, field-scoped rulings writer is now the Step 12 mechanism (`scripts/review-ruling.py`, #408), and `flow-review` keeps `Edit` as a mechanically defined fallback used only when that script is missing or exits 126/127. This is still not a technical control while `flow-review` keeps `Write` and Bash that the Bash guard does not cover. `/verify-queue` (`commands/verify-queue.md` write-back) remains a second, unvalidated STATUS/DECISION writer and is tracked as follow-up #429.
 - Nested `general-purpose` agent spawning from a restricted step gets `Edit` and no hook.
+- `Bash(python3:*)` in `commands/expert-review.md`'s `allowed-tools` is a blanket grant covering multiple script invocations (metrics, precedent handling, north-star preflight, review-ruling); scoping it to review-ruling.py alone would break other legitimate script calls, so it remains broad.
 
 ### Wrapper set and publishing verbs (drift guard targets)
 
@@ -406,3 +407,96 @@ Unverified comment text deliberately reaches planning, the one step that is stil
 - No fail-closed carve-out when comments are unavailable (Q2 = B exactly): an `--auto-merge` or `--fleet` run can merge with `comments_status: unavailable`, visibly marked in the receipt.
 - Org-owned repos where the flow's user shows as MEMBER: the watermark and Implementation Plan dedupe switch off (W2 consequence), and post-plan steps see none of that user's comments. Inside a flow the plan-fetch lower bound still applies.
 - Owner-account compromise is mitigated only by framing, not machine-enforced boundary.
+
+## Amendment 2026-10-30 (#403, #404, #405): Bash guard parser contract, prefix normaliser, fail-closed tests
+
+The Bash guard (`scripts/flow-bash-guard.py`) stays **best-effort**. It is a strong heuristic with the
+documented bypasses above, not a technical control over arbitrary shell. This amendment changes what the
+guard blocks and lets through, and it does not close the documented bypasses. Behaviour changes in both
+directions are listed in the ledger below.
+
+**Parser contract.** The splitter is a single pass with three quote states (unquoted, single-quoted,
+double-quoted), following `shlex` posix escape rules: a backslash is literal in single quotes; inside double
+quotes only `\"`, `\\`, `\$`, `` \` `` and backslash-newline are escapes; unquoted, a backslash escapes the
+next character.
+- No operator splits inside single quotes. Inside double quotes `; && || | & ( ) { } \n` do not split, but
+  `$(...)` and backticks are still extracted and recursed into.
+- `<(` and `>(` are ordinary groups whose body is recursed into, as they already were.
+- A `$` immediately before `'` or `"` is deleted only when it is unescaped (not consumed by a preceding
+  backslash) and the tracker is not in the single-quoted state. `$'` followed by a word therefore becomes a
+  plain single-quoted word and is judged as such. An escaped `$` is kept as a literal character, so quote
+  state cannot desync.
+- Backslash-newline is deleted in the unquoted and double-quoted states before a segment is tokenised.
+
+**Heredoc and comment fallback (W1).** If the tracker sees a `<<` or a word-start `#` in the unquoted state,
+the whole command is re-split quote-blind, line by line, which is never weaker than the previous guard.
+Body lines keep line-by-line inspection. A `#` inside quotes does not trigger the fallback, so a commit
+message containing `#403` inside double quotes is allowed. The fallback is quote-blind but is not the previous
+`split_segments`/`_group_end` verbatim: a `$` before a quote is deleted unless it is escaped (preceded by an
+odd run of backslashes), and it uses the same linear group-end scan and depth cap as the quote-aware path.
+Commands with an unquoted `<<` or `#` keep the quote-blind false positives of the previous guard; a
+heredoc-receiver follow-up is filed if this proves common.
+
+**Unparseable and nesting limits.** Unterminated quotes, an unclosed `$(`, and an unclosed backtick at end of
+input are blocked (exit 2). Nesting deeper than 64 levels of `$(`, `(` or backticks is blocked (exit 2,
+"unparseable: nesting too deep") on both the quote-aware path and the fallback, and is checked from a depth
+counter rather than by `RecursionError`. Both paths find group ends with one linear forward scan (a depth
+counter or stack of open offsets); the per-group rescan is removed. There is no total-length cap.
+
+**Hook timeout source.** No hook `timeout` is configured in this repository (`install.sh`, the
+`agents/flow-implement.md` and `agents/flow-review.md` hook frontmatter, and this ADR set none). The guards
+therefore run under Claude Code's default command-hook timeout (documented as 60 s at the time of writing;
+this change did not re-verify that value). The time tests in `tests/test_flow_guard_fail_closed.py` do not
+derive their bound from that default. They use a fixed 5 s wall-clock bound per case, an order of magnitude
+below the default and far above the expected sub-second runtime.
+
+**Command-prefix normaliser.** One table, `TRANSPARENT_PREFIXES` in `scripts/flow-bash-guard.py`, holds the
+whole closed set. Each entry is a `(kind, word)` pair the normaliser dispatches on, and the normaliser reads
+the table at call time:
+- `assignment`: leading `NAME=value` tokens are dropped (no arguments);
+- `bare` `command`, `exec`, `nohup`, `time`: dropped when followed by a non-option token (no arguments);
+- `one-positional` `timeout`: drops `timeout <duration>` only when exactly one non-option token follows;
+- `nice`: drops bare `nice` or `nice -n <N>`;
+- `zsh-equals`: one leading `=` is stripped from the command word (zsh `=cmd` expansion, e.g., `=ls` → `ls` for pathname lookup).
+
+Only `timeout` and `nice` take arguments, each in the one shape stated. Any other option after a prefix
+(`exec -a x`, `command -p`, `timeout -s KILL 5`, `nice -5`) stops normalisation, and the command is judged as
+the guard already sees it. These are recorded residuals. `env` is not touched; it keeps its `WRAPPER_FORMS`
+rule. The normaliser runs before `is_wrapper_form`, `is_publishing_verb` and the interpreter check.
+
+**Interpreter verb-pair check.** A command whose command word basename is `python`, `python3`, `python3.N`,
+`node`, `perl` or `ruby`, with a `-c`/`-e` flag (combined short forms such as `-Ic` included, plus
+`node --eval`/`-p`/`--print` and `perl -E`), is blocked when its program text contains a publishing verb.
+The check pulls word-like tokens from the program text and runs the existing `is_publishing_verb` at each
+`git`/`gh` token, so it skips global options and derives from `PUBLISHING_VERBS` with no second list. A
+one-liner with no verb pair (`python3 -c 'import json; print(1)'`) stays allowed. Concatenation and other
+deliberate obfuscation still bypass the check.
+
+**Fail-closed tests across all three guards.** `flow-bash-guard.py`, `flow-agent-guard.py` and
+`flow-skill-guard.py` each exit 2 on malformed or empty stdin, a non-dict payload, a non-dict `tool_input`,
+and bad argv, and each exit-2 path has a path-specific stderr marker that the test asserts (an exit code alone
+is not enough). The catch-all `except Exception` is covered by its own tests (`Unexpected error`). The Bash
+guard exits 2 with `Unknown --agent value: {agent}` for any `--agent` value other than `flow-implement`,
+`flow-review` or `auto`; `flow-review` keeps its exit-0 pass-through. Auto mode with a missing or non-flow
+`agent_type`, and non-matching `tool_name` values, exit 0 and are pinned by tests.
+
+**Mutation policy.** The named tables are `WRAPPER_FORMS`, `PUBLISHING_VERBS` and `TRANSPARENT_PREFIXES`.
+Every entry in each needs a single-rule corpus command (a command caught only by that rule) and a mutant in
+`tests/test_flow_bash_guard_mutants.py`, which removes the entry in-process and requires the corpus command to
+flip to allowed. Every prefix rule, including `NAME=value` and zsh `=cmd`, is such an entry. There is no
+generic registry: a new table must be added to this list by name. **#359** (per-agent guard tables) carries
+this duty: when it rebases onto this change, its per-agent table must add single-rule corpus entries and
+mutants for each new deny-rule table.
+
+**Test corpus and false-negative ledger.** `tests/test_flow_bash_guard_quotes.py` holds the shared deny
+corpus, the must-stay-allowed and must-become-allowed entries, and the must-become-blocked entries (the
+`$'` bypass in every mode, the Q2 prefix forms, and interpreter verb pairs main allowed), each with the rule
+expected to catch it. It also holds a commented false-negative ledger: commands the previous guard blocked
+that this change allows, and residuals the previous guard already allowed that this change does not close:
+interpreter one-liners without a verb pair, verb pairs built by concatenation, escape-encoded ANSI-C such as
+`$'\x67it'` followed by a publishing verb, prefixes with options outside the Q2 set, and zsh glob qualifiers.
+
+**Residual.** The hook-level fail-open (non-2 exits and timeouts are treated as allow by Claude Code) is a
+known residual and a follow-up candidate, with a frontmatter-only wrapper as the first candidate. It is out
+of scope here and tracked as follow-up #430. The guard remains best-effort, and the documented bypasses in "Known bypasses and residuals"
+stand except where the bypass list above says otherwise.

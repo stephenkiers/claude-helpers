@@ -1080,3 +1080,26 @@ This amendment adds the third bounded exception to the no-auto-remediation stanc
 **Scout policy (fail closed).** Unverified comments reach the plan step only by an explicit, valid `include` verdict for their id. A missing, malformed or unrecognised verdict drops the comment, and finalize re-applies the budgets after dropping. Scout report validators and budget expansion are tracked by #421.
 
 **See also:** ADR-0008 amendment 2026-10-30 for the standing exception on which general-purpose steps read issue comments, and for the statement that deprecated planners do not consume comments.
+
+## Amendment (2026-11-01): fix-mode coverage reads the Doing-it File cell (#409)
+
+**Context.** `fix` coverage enumerated `D<n>` units from the action plan but located their files by searching for `### D<n>` headings. `claude-action-plan.md` has no such headings: the Doing-it findings are rows of a table. The lookup found nothing, so every fix row was `unknown` with `no extractable evidence (no files in table row)`, and the assess stage asked about every one of them. The #358 flow shows this: 18 Doing-it rows, all `unknown`, all with files named in the File column (`fixtures/coverage-fix-358/`).
+
+**Row contract.** Doing-it table rows are numbered `D1..Dn` in table order. The File column is located by header text (case-insensitive `file`), not by index. The parser is shared with the unit enumerator, so the set of `D` ids the verifier counts and the set it classifies are the same. Decided and measured ruling directives never take `D` ids.
+
+**Classification (fix mode only).** The File cell is split on `;` and `,`, with backticks, the `:…` suffix, `~` and whitespace removed. A token containing `/` is a candidate path. A token without `/` survives only when it exactly equals a name in the diff (for example `CLAUDE.md`). Fragments such as `1758-1777` or `~1350` are not paths and are dropped. Matching is exact string equality, with no suffix matching. Then:
+
+- no surviving token gives `unknown` (`no extractable evidence (no files in table row)`);
+- no surviving token in the diff gives `uncovered` (`not in diff: …`);
+- a token in the diff that no other Doing-it row names gives `covered` (`files in diff: …`);
+- a token in the diff that another row also names gives `unknown` (`file shared with D<k>, …`).
+
+A shared file is not evidence that a particular row was finished, so it stays `unknown` and is asked. Implement-mode coverage is unchanged and still uses `### Step N` sections.
+
+**Reconciliation.** The 2026-10-21 text that names `D<n>` directives as the fix units still holds, but the unit set is now the Doing-it table rows, not `### D<n>` headings. The 2026-10-27 rule that `unknown` coverage rows are always asked still holds. This amendment narrows how `unknown` is produced: fewer rows are `unknown`, because a row with a file that is in the diff and owned by no other row is now `covered`. It does not change the always-asked rule for the rows that remain `unknown`.
+
+**Consequences.**
+- Fewer `unknown` rows reach the assess stage, so fewer questions are asked for fix steps.
+- Rows whose File cell names a path not in the diff are now `uncovered`. A fix receipt that declares no outstanding item for them can now produce `FIDELITY: reduced plan coverage`. This is the intended effect of the fix, and it can change the verdict of a flow that previously passed.
+- Coverage files written by a run before this amendment keep their all-`unknown` content. They are not recomputed, so an in-flight flow resumed after this change still asks about those rows.
+- Downstream, #380 (the planned relay of fix coverage to later steps) reads these classifications and should be checked against this contract.

@@ -141,6 +141,7 @@ DispositionBy = Literal["human", "assessor-verified"]
 DispositionRoute = Literal["leave", "pause", "issue", "none"]
 MarkerKind = Literal["v2", "legacy"]
 AssessmentMode = Literal["assessor", "taken-over"]
+DoingItStatus = Literal["unknown", "uncovered", "covered"]
 
 
 class OutstandingItem(NamedTuple):
@@ -215,6 +216,17 @@ class Disposition(NamedTuple):
     route: DispositionRoute
     url: str
     reason: str
+
+
+class CoverageClassification(NamedTuple):
+    """Classification result for a Doing-it row's coverage status.
+
+    Attributes:
+        status: One of 'unknown', 'uncovered', or 'covered'
+        evidence: Text describing the classification reasoning
+    """
+    status: DoingItStatus
+    evidence: str
 
 
 class OutstandingSetItem(NamedTuple):
@@ -2495,46 +2507,177 @@ def _enumerate_step_headings(plan_text: str) -> List[str]:
     return units
 
 
-def _enumerate_doing_it_items(action_plan_text: str) -> List[str]:
-    """Enumerate D<n> directives from 'Doing it' section of action plan.
+class DoingItRow(NamedTuple):
+    """One data row of the `## Doing it:` table in a claude-action-plan.md.
 
-    Returns list of unit ids like ['D1', 'D2', ...] in order.
+    unit_id is `D<n>`, numbered in table row order across the Doing-it section. file_cell is the text of
+    the File column, located by header text, or None when the table has no File header.
     """
-    units: List[str] = []
+    unit_id: str
+    file_cell: Optional[str]
+
+
+def _split_table_cells(line: str) -> List[str]:
+    """Split one markdown table line into stripped cell texts. An escaped `\\|` stays inside its cell."""
+    body = line.strip()
+    if body.startswith("|"):
+        body = body[1:]
+    if body.endswith("|") and not body.endswith("\\|"):
+        body = body[:-1]
+    cells: List[str] = []
+    current: List[str] = []
+    i = 0
+    while i < len(body):
+        if body[i] == "\\" and i + 1 < len(body) and body[i + 1] == "|":
+            current.append("|")
+            i += 2
+            continue
+        if body[i] == "|":
+            cells.append("".join(current).strip())
+            current = []
+        else:
+            current.append(body[i])
+        i += 1
+    cells.append("".join(current).strip())
+    return cells
+
+
+def _file_column_index(header_cells: List[str]) -> Optional[int]:
+    """Index of the column whose header text is `File` (case-insensitive), or None."""
+    for index, cell in enumerate(header_cells):
+        if cell.lower() == "file":
+            return index
+    return None
+
+
+def _parse_doing_it_rows(action_plan_text: str) -> List[DoingItRow]:
+    """Parse the data rows of the `## Doing it:` table in an action plan, in table order.
+
+    A table starts at the first `|` line after the Doing-it heading and ends at the next line that is not
+    a `|` line, or at the next `## ` heading. Its first `|` line is the header, separator rows are skipped,
+    and every other `|` line is a data row numbered D1, D2, ... The File column is found by header text.
+    Returns [] when the section has no table.
+    """
+    rows: List[DoingItRow] = []
     in_doing_it = False
     table_started = False
+    file_index: Optional[int] = None
     doing_it_count = 0
 
     for line in action_plan_text.split("\n"):
-        # Match "## Doing it:" heading
         if re.match(r"^##\s+Doing it:", line):
             in_doing_it = True
             table_started = False
+            file_index = None
             continue
 
-        # Stop at next ## heading
         if in_doing_it and re.match(r"^##\s+", line):
             break
 
-        if in_doing_it:
-            stripped = line.strip()
+        if not in_doing_it:
+            continue
 
-            # Check for table start (first line starting with |)
-            if stripped.startswith("|") and not table_started:
-                table_started = True
+        stripped = line.strip()
+        if stripped.startswith("|") and not table_started:
+            table_started = True
+            file_index = _file_column_index(_split_table_cells(stripped))
+            continue
+
+        if table_started and stripped.startswith("|"):
+            if _is_markdown_separator_row(stripped):
                 continue
+            doing_it_count += 1
+            file_cell: Optional[str] = None
+            if file_index is not None:
+                cells = _split_table_cells(stripped)
+                file_cell = cells[file_index] if file_index < len(cells) else ""
+            rows.append(DoingItRow(f"D{doing_it_count}", file_cell))
+        elif table_started:
+            table_started = False
 
-            # In table: count data rows, skip header and separator
-            if table_started and stripped.startswith("|"):
-                # Skip separator rows: cells with optional colons and dashes
-                if not _is_markdown_separator_row(stripped):
-                    doing_it_count += 1
-                    units.append(f"D{doing_it_count}")
-            elif table_started and not stripped.startswith("|"):
-                # Table ended
-                table_started = False
+    return rows
 
-    return units
+
+def _enumerate_doing_it_items(action_plan_text: str) -> List[str]:
+    """Enumerate D<n> directives from 'Doing it' section of action plan.
+
+    Returns list of unit ids like ['D1', 'D2', ...] in order. Built on _parse_doing_it_rows.
+    """
+    return [row.unit_id for row in _parse_doing_it_rows(action_plan_text)]
+
+
+def _doing_it_path_tokens(file_cell: str, changed_files: Set[str]) -> List[str]:
+    """Path tokens of one Doing-it File cell that survive string-only extraction (D4).
+
+    The cell is split on `;` and `,`. Each token drops backticks, a `:...` line suffix, `~` and
+    surrounding whitespace. A token containing `/` is kept as a candidate path, to be compared exactly
+    against the diff. A token without `/` is kept only when it exactly equals a changed file name (for
+    example `CLAUDE.md`). Line fragments such as `1758-1777` and unresolved basenames are dropped. There is
+    no prefix, suffix, directory or glob matching and no filesystem access. Leading `./` is stripped
+    (repeatedly, but not `../`).
+    """
+    tokens: List[str] = []
+    for raw in re.split(r"[;,]", file_cell):
+        token = raw.replace("`", "").strip()
+        token = token.split(":", 1)[0].strip()
+        token = token.replace("~", "").strip()
+        # Strip leading ./ (repeatedly, but not ../)
+        while token.startswith("./"):
+            token = token[2:]
+        if not token or token in tokens:
+            continue
+        if "/" in token or token in changed_files:
+            tokens.append(token)
+    return tokens
+
+
+def _classify_doing_it_rows(rows: List[DoingItRow], changed_files: Set[str]) -> Dict[str, CoverageClassification]:
+    """Classify Doing-it rows for fix-mode coverage: unit id -> CoverageClassification.
+
+    Each surviving path token is mapped to the set of rows that name it. Then, per row:
+    - no File header: unknown, "no extractable evidence (File header missing)";
+    - empty cell or fragments only: unknown, "no extractable evidence (no files in table row)";
+    - no surviving path is in the diff: uncovered;
+    - at least one in-diff path is named by no other row: covered;
+    - otherwise every in-diff path is shared with another row: unknown, `file shared with D<k>, ...`.
+    A shared file never credits a row that does not own it (Q3 B).
+    """
+    tokens_by_unit: Dict[str, List[str]] = {}
+    no_file_header: Set[str] = set()
+    owners: Dict[str, Set[str]] = {}
+    for row in rows:
+        if row.file_cell is None:
+            tokens = []
+            no_file_header.add(row.unit_id)
+        else:
+            tokens = _doing_it_path_tokens(row.file_cell, changed_files)
+        tokens_by_unit[row.unit_id] = tokens
+        for token in tokens:
+            owners.setdefault(token, set()).add(row.unit_id)
+
+    results: Dict[str, CoverageClassification] = {}
+    for row in rows:
+        tokens = tokens_by_unit[row.unit_id]
+        if not tokens:
+            if row.unit_id in no_file_header:
+                evidence = "no extractable evidence (File header missing)"
+            else:
+                evidence = "no extractable evidence (no files in table row)"
+            results[row.unit_id] = CoverageClassification("unknown", evidence)
+            continue
+        in_diff = [token for token in tokens if token in changed_files]
+        if not in_diff:
+            results[row.unit_id] = CoverageClassification("uncovered", f"not in diff: {', '.join(tokens)}")
+        elif any(len(owners[token]) == 1 for token in in_diff):
+            results[row.unit_id] = CoverageClassification("covered", f"files in diff: {', '.join(in_diff)}")
+        else:
+            others: Set[str] = set()
+            for token in in_diff:
+                others |= owners[token]
+            others.discard(row.unit_id)
+            shared = ", ".join(sorted(others, key=lambda unit: int(unit[1:])))
+            results[row.unit_id] = CoverageClassification("unknown", f"file shared with {shared}")
+    return results
 
 
 def _get_file_names_from_plan_section(plan_text: str, unit_id: str) -> List[str]:
@@ -2542,12 +2685,13 @@ def _get_file_names_from_plan_section(plan_text: str, unit_id: str) -> List[str]
 
     Looks for backtick-quoted tokens that look like file paths in the section
     from unit_id heading to the next ### heading.
-    Returns list of file paths found.
+    Returns list of file paths found. Used by implement mode only; fix mode reads
+    the File cells of the Doing-it table via _parse_doing_it_rows.
 
     Note: 'covered' is a file-touch heuristic. Files are extracted as-is but normalized:
     - Leading ./ is stripped
     - Trailing :digit+ (line references) are stripped
-    - Suffix matching is used for comparison
+    - Comparison against the diff is an exact string match (no suffix or basename matching)
     """
     # Find the section from the unit heading to the next ###
     lines = plan_text.split("\n")
@@ -3392,7 +3536,10 @@ def coverage_mode(
     - covered: files in the unit appear in the diff
     - declared: unit is in OUTSTANDING section
     - uncovered: unit is not in diff and not declared
-    - unknown: no extractable evidence (git failure, fix with no files, etc.)
+    - unknown: no extractable evidence (git failure, fix row with no path, or fix row whose
+      in-diff files are all shared with another row)
+
+    Fix mode classifies the Doing-it rows from their File cells (see _classify_doing_it_rows).
 
     Exits with 0 unless plan is unreadable (exit 2).
     """
@@ -3411,6 +3558,7 @@ def coverage_mode(
 
     # Enumerate units based on step
     units: List[str] = []
+    doing_it_rows: List[DoingItRow] = []
     if step == "implement":
         units = _enumerate_step_headings(plan_text)
     elif step == "fix":
@@ -3420,10 +3568,16 @@ def coverage_mode(
         action_plan_path = plan_file  # The --plan argument is the action plan for fix
         if action_plan_path.exists():
             action_plan_text = read_file(action_plan_path)
-            units = _enumerate_doing_it_items(action_plan_text)
+            doing_it_rows = _parse_doing_it_rows(action_plan_text)
+            units = [row.unit_id for row in doing_it_rows]
 
     # Get the changed files from git diff (None = unknown state)
     changed_files = _git_diff_names(repo, base, branch)
+
+    # Fix rows are classified from their File cells (#409); implement mode keeps the plan-section walk.
+    fix_results: Dict[str, CoverageClassification] = {}
+    if step == "fix" and changed_files is not None:
+        fix_results = _classify_doing_it_rows(doing_it_rows, changed_files)
 
     # Parse outstanding items from receipt (validate format first)
     outstanding_dict: Dict[str, OutstandingItem] = {}
@@ -3451,14 +3605,14 @@ def coverage_mode(
             item = outstanding_dict[unit_id]
             status = "declared"
             evidence = f"{item.provenance}: {item.reason}"
+        elif step == "fix":
+            classification = fix_results[unit_id]
+            status = classification.status
+            evidence = classification.evidence
         else:
             # Check if covered: files in the unit appear in the diff
             unit_files = _get_file_names_from_plan_section(plan_text, unit_id)
-            if step == "fix" and not unit_files:
-                # For fix mode, no files from action plan table row = unknown (F1)
-                status = "unknown"
-                evidence = "no extractable evidence (no files in table row)"
-            elif unit_files and any(f in changed_files for f in unit_files):
+            if unit_files and any(f in changed_files for f in unit_files):
                 status = "covered"
                 evidence = f"files in diff: {', '.join(unit_files)}"
             elif unit_files:
