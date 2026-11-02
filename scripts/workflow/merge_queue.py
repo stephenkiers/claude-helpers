@@ -1858,8 +1858,27 @@ def _phase_rebase(
 ) -> Optional[MergeResult]:
     """
     Phase 6: Rebase on origin/base.
+    Skips the rebase when origin/base is already an ancestor of HEAD (#420).
     Returns KICKBACK if rebase fails, else None.
     """
+    # Ordering: this probe reads the symbolic origin/<base> as it stands after the
+    # Phase 4 fetch in _locked_flow. Phase 9's fresh fetch is the backstop if the
+    # base moves before the gate finishes.
+    # ADR-0021 Decision 3: the skip still runs the gate on base plus the PR.
+    # Push: tested_sha == orig_head == lease_sha, so the audited force_push_tested
+    # push (Phase 8) is a no-op, the same state linear up-to-date branches reach.
+    # Errors: is_ancestor returns False for exit 1 ("not an ancestor"). Any other
+    # CalledProcessError (e.g. 128 for a bad ref) also reads as False and falls
+    # through to the rebase, which surfaces the real error. Non-CalledProcessError
+    # exceptions propagate on purpose and fail closed.
+    if git.is_ancestor(f"origin/{config.base}", "HEAD", cwd=cwd):
+        print(
+            f"merge-queue: PR #{pr}: rebase skipped: origin/{config.base} is already an ancestor of HEAD",
+            file=sys.stderr,
+        )
+        append_queue_log({"event": "rebase_skipped", "pr": pr, "branch": branch, "time": time.time()})
+        return None
+
     try:
         Runner.run_git(["rebase", f"origin/{config.base}"], cwd=cwd, timeout=config.mutation_timeout_secs)
     except RuntimeError as e:
@@ -2223,8 +2242,8 @@ def _locked_flow(
         # Phase 7: Run gate and post-gate assertions
         result, tested_sha = _phase_run_gate_and_assertions(pr, branch, worktree, orig_head, config, lock_fd_to_inherit, cwd)
         if result:
-            # Rebase (phase 6) already moved local HEAD to tested_sha, but nothing was
-            # ever pushed. Restore the worktree to orig_head so it matches origin/<branch>
+            # Phase 6 may have moved local HEAD to tested_sha (not when it was skipped),
+            # but nothing was ever pushed. Restore the worktree to orig_head so it matches origin/<branch>
             # again; otherwise the next enqueue's lease check (phase 4) sees local HEAD
             # diverged from remote and misreports it as "base moved".
             _restore_worktree_to_orig_head(cwd, orig_head)

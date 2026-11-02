@@ -431,6 +431,10 @@ verdict for Compose repos and a plain scrubbed run with a diagnostic note for ot
 allowlist never overrides a configured repo's own `.envrc`: variables it exports are applied on
 top of the base allowlist.
 
+## Amendment: Phase 6 rebase skip when base is already an ancestor (#420)
+
+**Status:** Accepted (2026-11-02). Phase 6 skips `git rebase` when `origin/<base>` is already an ancestor of HEAD, logs a stderr line and a `rebase_skipped` queue event, and goes straight to the gate. On the skip path the rebase result and the pre-rebase tip are the same commit, so Decision 5's tested-commit recovery applies unchanged (in code, `_restore_worktree_to_orig_head` resets to `orig_head` after a post-rebase kickback, which on the skip path is the tested commit; on the replaying path it is the pre-rebase tip), and `tested_sha == orig_head == lease_sha` makes the audited `force_push_tested` push in Phase 8 a no-op (the same state an already-current linear branch reaches; it remains the only push site). This matches Decision 3, because the gate still runs on the base plus the PR, and HEAD's tree equals base plus the PR's net diff, the same tree the squash lands. The Phase 9 base-unchanged re-check stays mandatory as the backstop. A branch that merged an older base still takes the replaying rebase (tracked as a follow-up, #431).
+
 ## Follow-ups
 
 - **GitHub ruleset:** after two clean weeks of local queuing, add a GitHub ruleset requiring the
