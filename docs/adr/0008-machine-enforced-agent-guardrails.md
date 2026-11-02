@@ -304,7 +304,7 @@ invoking it, (b) `python3 -c "..."` (verb-pair blocked; concatenation still bypa
 **Residual risks:**
 - `Write` tool is not path-scoped; writes outside the worktree are undetected (open issue #353).
 - `plan-implementer` keeps `Edit` and `bypassPermissions` (unchanged from ADR-0008 design).
-- `flow-review` keeps `Edit` solely for red-lining the `claude-action-plan.md` file produced by triage. This is prompt-scoped, not path-scoped: the agent is instructed to use `Edit` only on that file, not a machine-enforced boundary. A scripted, field-scoped rulings writer is now the Step 12 mechanism (`scripts/review-ruling.py`, #408), and `flow-review` keeps `Edit` as a mechanically defined fallback used only when that script is missing or exits 126/127. This is still not a technical control while `flow-review` keeps `Write` and Bash that the Bash guard does not cover. `/verify-queue` (`commands/verify-queue.md` write-back) remains a second, unvalidated STATUS/DECISION writer and is a follow-up.
+- `flow-review` keeps `Edit` solely for red-lining the `claude-action-plan.md` file produced by triage. This is prompt-scoped, not path-scoped: the agent is instructed to use `Edit` only on that file, not a machine-enforced boundary. A scripted, field-scoped rulings writer is now the Step 12 mechanism (`scripts/review-ruling.py`, #408), and `flow-review` keeps `Edit` as a mechanically defined fallback used only when that script is missing or exits 126/127. This is still not a technical control while `flow-review` keeps `Write` and Bash that the Bash guard does not cover. `/verify-queue` (`commands/verify-queue.md` write-back) remains a second, unvalidated STATUS/DECISION writer and is tracked as follow-up #429.
 - Nested `general-purpose` agent spawning from a restricted step gets `Edit` and no hook.
 - `Bash(python3:*)` in `commands/expert-review.md`'s `allowed-tools` is a blanket grant covering multiple script invocations (metrics, precedent handling, north-star preflight, review-ruling); scoping it to review-ruling.py alone would break other legitimate script calls, so it remains broad.
 
@@ -498,5 +498,5 @@ interpreter one-liners without a verb pair, verb pairs built by concatenation, e
 
 **Residual.** The hook-level fail-open (non-2 exits and timeouts are treated as allow by Claude Code) is a
 known residual and a follow-up candidate, with a frontmatter-only wrapper as the first candidate. It is out
-of scope here. The guard remains best-effort, and the documented bypasses in "Known bypasses and residuals"
+of scope here and tracked as follow-up #430. The guard remains best-effort, and the documented bypasses in "Known bypasses and residuals"
 stand except where the bypass list above says otherwise.
