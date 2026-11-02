@@ -5,11 +5,13 @@ Wraps gh commands via argv builders in scripts/workflow/git.py.
 """
 
 import tempfile
+import json
 from pathlib import Path
-from typing import List, Optional, Union, Tuple
+from typing import List, Optional, Union, Tuple, Any, Dict
 
 from ..models import IssueInfo
 from .. import git, project
+from .base import ProviderError
 
 
 class GithubProvider:
@@ -157,3 +159,23 @@ class GithubProvider:
                 raise RuntimeError(f"failed to edit issue {number}")
         finally:
             body_file.unlink(missing_ok=True)
+
+    def fetch_issue_with_comments(self, number: int, repo: Tuple[str, str]) -> Tuple[Optional[Dict[str, Any]], Optional[Any]]:
+        """
+        Fetch an issue and its comments as raw gh JSON.
+
+        Runs: gh issue view <number> --repo <owner/name> --json number,title,body,labels,state,url,createdAt,comments
+        """
+        owner, name = repo
+        repo_str = f"{owner}/{name}"
+        try:
+            args = [
+                "issue", "view", str(number),
+                "--repo", repo_str,
+                "--json", "number,title,body,labels,state,url,createdAt,comments"
+            ]
+            output = git.run_gh_command(args, cwd=self.cwd)
+            result = json.loads(output)
+            return result, None
+        except Exception as e:
+            return None, ProviderError(str(e))

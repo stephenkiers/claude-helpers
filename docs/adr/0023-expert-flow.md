@@ -1053,3 +1053,30 @@ This amendment adds the third bounded exception to the no-auto-remediation stanc
   The `flow-healer` agent's tools are exactly: `Read, Edit, Grep, Glob, Bash(git diff:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git add:*), Bash(git commit:*), Bash(git checkout HEAD -- *)`. It has no `Write`, push, fetch, WebFetch, WebSearch, Task, or generic Bash.
 
 **Consequences.** `flow-healer` is a capability-restricted agent, narrower than the ADR-0008 standing exception for general-purpose step agents. Its `Edit` is not path-scoped, and `git commit:*` admits `--amend`; the prompt forbids both misuses, and the orchestrator mechanically checks only the commit count, single parent, trailer, clean worktree, the three script hashes, `.claude/repo-cache.json` hash, and resolved check command hash after the healer returns (an edit outside the worktree is not detected, nor can the orchestrator verify that the healer did not maliciously edit `.claude/repo-cache.json`). These are residual risks, not eliminated ones. A healed run never auto-merges: the human merge gate always fires.
+
+## Amendment 2026-10-30: Issue comments through Ask-based "new comment since plan" relay
+
+**Overview:** With the `/expert-flow` helper that fetches and filters GitHub issue comments (ticket #401 implements ticket #370), the flow reads live comments at plan time and in post-plan steps, and relays new comments through the Ask block. Under `--fleet`, the Ask becomes a park (`fleet-ask.json`), and fleet processing resumes each parked ticket once the human has answered the fleet batch. Ticket #421 tracks the missing parts of the relevance-scout path (validators for scout reports, unverified-comment budget expansion). Ticket #418 (the `/expert-flow` allowlist guard work) is sequenced with this change: the issue-comments allowlist widening lands with, or after, #418's guard, and `tests/test_expert_flow.py` is re-run once #418 lands.
+
+**Consumers that raise the Ask:** implement and fix (`/implement-with-haiku` in flow), review (`/expert-review`), ship (`/shipit`), and the orchestrator's pre-merge check. Each runs the helper with `--trusted-only --flow-dir "$FLOW_DIR"`. Deprecated planners do not consume comments. The in-flow plan step does not raise the Ask; it reads comments as planning input.
+
+**Relay mechanism:** Every post-plan consumer that runs inside a flow, one comment per turn:
+
+1. Fetches comments with `--trusted-only --flow-dir "$FLOW_DIR"`. The plan step's fetch time is the lower bound (deterministic, not wall-clock), and the helper marks each comment `acknowledged`.
+2. Takes the first trusted comment that is not acknowledged and is not an implementation-plan comment, and raises one Ask-block question for it:
+   - The question entry carries the GitHub comment id in its `comment_id` field
+   - The comment is fenced in `summary`/`brief`, with the body section it touches
+   - Two options, exact labels: **Continue — the plan stands** or **Stop for re-plan**. A free-text answer or any other label is a Stop.
+3. Waits for the answer (END TURN). The orchestrator records the human's answer in the flow's human ledger (background `answer`, the only ledger entry this relay writes). Comments are never ledger records.
+4. Re-runs the procedure on resume; the next comment is raised, or the step continues.
+5. A Stop answer is a hard stop: the step writes `Decision: FAILED` with `Reason: stopped on new issue comment <id>`. Under `--auto-merge`, when comments are available, a Stop halts the merge. The comment stays unacknowledged, so a later Retry or `--resume` raises it again.
+
+**Acknowledgement is resolved from existing artifacts.** The helper treats a comment as acknowledged when some `${FLOW_DIR}/questions/<STEP>-<SEQ>.json` entry carries that `comment_id` and the matching `${FLOW_DIR}/answers/<STEP>-<SEQ>.json` answer is Continue. There is no `answers.jsonl` and no separate acknowledgement file. Because the answers are the flow's own artifacts, a comment answered Continue is raised once per flow, including across Retry, `--resume` and `--fleet`.
+
+**Fleet.** Under `--fleet` the Ask parks as `fleet-ask.json` instead of asking. A repeated ask under `--fleet` parks again only when the previous answer was not Continue; ack-from-artifacts is what makes a Continue answer raise-once.
+
+**Lower bound:** The plan step records its fetch time and the comment ids it showed the planner in `${FLOW_DIR}/plan-issue-snapshot.json` and `${FLOW_DIR}/plan-comment-ids.json`. Post-plan steps treat later, unacknowledged comments as "new since plan".
+
+**Scout policy (fail closed).** Unverified comments reach the plan step only by an explicit, valid `include` verdict for their id. A missing, malformed or unrecognised verdict drops the comment, and finalize re-applies the budgets after dropping. Scout report validators and budget expansion are tracked by #421.
+
+**See also:** ADR-0008 amendment 2026-10-30 for the standing exception on which general-purpose steps read issue comments, and for the statement that deprecated planners do not consume comments.

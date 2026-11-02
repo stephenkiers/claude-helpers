@@ -477,8 +477,7 @@ runs on the same PR. Gather:
 - **Title**: a concise (<70 char), imperative summary of the whole branch's diff — same register as
   a commit subject (`add X`, `fix Y`, `rewrite Z`), not a restatement of the last commit alone.
   Assign it to `$TITLE`.
-- **Why this PR exists**: if `$ISSUE_NUM` is set, run `gh issue view "$ISSUE_NUM" --json
-  title,body` directly. If `$ISSUE_NUM` is not set, derive the
+- **Why this PR exists**: if `$ISSUE_NUM` is set, read the linked issue through the helper (`issue-comments fetch --issue "$ISSUE_NUM" --cwd "$CALLER_DIR" --trusted-only --format json`, parsed to extract the issue title and body). If `$ISSUE_NUM` is not set, derive the
   problem from the user's original request earlier in this conversation. 1-3 sentences on the problem/need being addressed.
 - **What it does**: a bulleted list of concrete behavior/code changes, derived from the `git log`
   / `git diff --stat` output above.
@@ -494,6 +493,25 @@ runs on the same PR. Gather:
 **Guardrail:** you are synthesizing this body from conversation context, which may contain
 internal-only detail (credentials, other people's names, private ticket notes). Write PR-body prose
 as if it will be public — don't restate secrets or non-public context.
+
+### Handle new comments since plan (flow only)
+
+When `FLOW_DIR` is set and an issue number is available (`$ISSUE_NUM`), call the helper with `--flow-dir` to check for unacknowledged trusted comments posted after the plan step fetched. The helper marks a comment `acknowledged` from the flow's `questions/*.json` and `answers/*.json` artifacts, so nothing else is tracked here:
+
+```bash
+NEW_COMMENT_ID=""
+if [[ -n "$FLOW_DIR" && -n "$ISSUE_NUM" ]]; then
+  CALLER_DIR=$(pwd)
+  source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
+  NEW_COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_NUM" --cwd "$CALLER_DIR" --trusted-only --flow-dir "$FLOW_DIR" --format json 2>/dev/null) || NEW_COMMENTS_JSON=""
+  # The first unacknowledged trusted comment
+  if [[ -n "$NEW_COMMENTS_JSON" ]]; then
+    NEW_COMMENT_ID=$(printf '%s' "$NEW_COMMENTS_JSON" | jq -r '[.comments[] | select(.trust == "trusted" and .acknowledged == false and .kind != "implementation_plan") | .id] | .[0] // empty')
+  fi
+fi
+```
+
+If `NEW_COMMENT_ID` is non-empty, raise **one** Ask for it, then end the turn, before any PR is created or merged. Use the "New comment since plan" Ask procedure in `~/.claude/prompts/issue-comments-reference.md`, with `STEP_NAME` = `ship` and `COMMENT_ID` = `$NEW_COMMENT_ID`. It writes `questions/ship-<SEQ>.json` with `comment_id` set on the question entry, offers exactly `"Continue — the plan stands"` and `"Stop for re-plan"`, and puts the fenced comment in `summary`/`brief`. On resume, re-run this section from the fetch: the next unacknowledged comment is raised, or the step continues when none remain. A `Stop for re-plan` answer or a free-text answer writes a `Decision: FAILED` receipt with `Reason: stopped on new issue comment <id>` and stops; the comment stays unacknowledged. Under `--auto-merge` the Ask still applies and a Stop halts the run before merge. Under `--fleet` the Ask parks as `fleet-ask.json` (see ADR-0023).
 
 ```bash
 # Prepare temp file for PR body (multi-line content too risky to inline)

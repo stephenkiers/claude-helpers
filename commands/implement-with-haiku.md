@@ -1,6 +1,6 @@
 ---
 description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
-allowed-tools: Read, Write, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/primary-checkout-drift.py":*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks:*), Bash(cd:*), Bash(jq:*), Agent
+allowed-tools: Read, Write, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/primary-checkout-drift.py":*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks:*), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*), Bash(cd:*), Bash(jq:*), Agent
 ---
 
 # Implement with Haiku
@@ -347,7 +347,7 @@ In priority order:
 0. **Args contain a path to an existing `claude-action-plan.md` file** → read it directly, set
    `PLAN_SOURCE=claude-action-plan`. Record `PLAN_REF=<path>`. If the path doesn't exist, fall through to priority 1–3 below
    with a one-line warning.
-1. **Args contain an issue number or URL** → fetch with `gh issue view <number>`. Record `PLAN_REF=<number or URL>`.
+1. **Args contain an issue number or URL** → fetch with the helper (issue-comments fetch). The body comes from the helper's `.body` output. Record `PLAN_REF=<number or URL>`.
 2. **`.claude/github-cache.json` exists** → read it, use `issue.body` as the plan. Record `PLAN_REF=<issue number from cache>`.
 3. **A plan is visible in the current conversation** → use it directly. Record `PLAN_REF=none`.
 
@@ -391,6 +391,75 @@ if [[ -z "$PLAN_REF" ]]; then
   PLAN_REF="none"
 fi
 ```
+
+### Fetch issue with comments (when PLAN_REF is an issue number)
+
+**Only when `PLAN_REF` is a numeric issue or GitHub issue URL**, fetch the issue and its comments through the helper at coordinator start, before any unit is spawned. Trusted comments go to the coordinator only; units still receive the plan exactly as today. Read the comments_status and counts for the receipt, and fall back to cached `issue.body` if the helper exits with 3:
+
+```bash
+ISSUE_BODY=""
+ISSUE_REF=""
+COMMENTS_STATUS="unavailable"
+
+# Only fetch if PLAN_REF is an issue number or URL
+if [[ "$PLAN_REF" =~ ^[0-9]+$ ]] || { [[ "$PLAN_REF" == *"github.com"* ]] && [[ "$PLAN_REF" == *"/issues/"* ]]; }; then
+  ISSUE_REF=$(printf '%s' "$PLAN_REF" | sed 's/.*issues\///' | sed 's/[^0-9].*//')
+  
+  if [[ -n "$ISSUE_REF" && "$ISSUE_REF" =~ ^[0-9]+$ ]]; then
+    # Fetch using the helper
+    CALLER_DIR=$(pwd)
+    source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
+    COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --trusted-only --format json)
+    FETCH_EXIT=$?
+    
+    if [[ $FETCH_EXIT -eq 0 ]]; then
+      ISSUE_BODY=$(printf '%s' "$COMMENTS_JSON" | jq -r '.body')
+      COMMENTS_STATUS=$(printf '%s' "$COMMENTS_JSON" | jq -r '.comments_status')
+      # Extract counts line for receipt
+      COMMENTS_COUNTS=$(printf '%s' "$COMMENTS_JSON" | jq -r '.counts // ""')
+    elif [[ $FETCH_EXIT -eq 3 ]]; then
+      # Issue itself could not be fetched, fall back to cache if available
+      if [[ -f ".claude/github-cache.json" ]]; then
+        ISSUE_BODY=$(jq -r '.issue.body // ""' .claude/github-cache.json 2>/dev/null || true)
+        COMMENTS_STATUS="unavailable"
+      fi
+    fi
+  fi
+fi
+```
+
+Include the comments_status and counts line in the step receipt.
+
+### Handle new comments since plan (flow only)
+
+When `FLOW_DIR` is set and an issue number was fetched, call the helper again with
+`--flow-dir` to check for unacknowledged trusted comments posted after the plan step
+fetched (the lower bound is set from `plan-issue-snapshot.json`). The helper marks a comment
+`acknowledged` from the flow's own `questions/*.json` and `answers/*.json` artifacts (a comment is
+acknowledged once its question was answered Continue), so nothing else is tracked here:
+
+```bash
+NEW_COMMENT_ID=""
+if [[ -n "$FLOW_DIR" && -n "$ISSUE_REF" && -n "$ISSUE_BODY" ]]; then
+  CALLER_DIR=$(pwd)
+  source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
+  NEW_COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --trusted-only --flow-dir "$FLOW_DIR" --format json 2>/dev/null) || NEW_COMMENTS_JSON=""
+  # The first unacknowledged trusted comment (excluding the implementation plan marker)
+  if [[ -n "$NEW_COMMENTS_JSON" ]]; then
+    NEW_COMMENT_ID=$(printf '%s' "$NEW_COMMENTS_JSON" | jq -r '[.comments[] | select(.trust == "trusted" and .acknowledged == false and .kind != "implementation_plan") | .id] | .[0] // empty')
+  fi
+fi
+```
+
+If `NEW_COMMENT_ID` is non-empty, raise **one** Ask for it, then end the turn. Use the
+"New comment since plan" Ask procedure in `~/.claude/prompts/issue-comments-reference.md`, with
+`STEP_NAME` = `implement` (or `fix`, from the step prompt) and `COMMENT_ID` = `$NEW_COMMENT_ID`. It writes
+`questions/<STEP_NAME>-<SEQ>.json` with `comment_id` set on the question entry, offers exactly
+`"Continue — the plan stands"` and `"Stop for re-plan"`, and puts the fenced comment in `summary`/`brief`.
+On resume, re-run this section from the fetch: the answered comment is now acknowledged, so the
+next unacknowledged comment is raised, or the step continues when none remain. A `Stop for re-plan`
+answer, or a free-text answer, writes a `Decision: FAILED` receipt with `Reason: stopped on new issue comment <id>`
+and stops; the comment stays unacknowledged. Under `--fleet` the Ask parks as `fleet-ask.json` (see ADR-0023).
 
 ### Parse claude-action-plan.md into directives
 

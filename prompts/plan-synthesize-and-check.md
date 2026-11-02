@@ -104,7 +104,7 @@ replacement for the plan.
 
 After writing `{SESSION_DIR}/plan.md`, immediately perform these checks on the plan you just wrote:
 
-1. **Requirement Coverage**: For each major requirement listed in `context.md` and expert contributions, verify it reaches a plan section or step. If not, add a note to **Requirement and Decision Coverage** marking unmapped requirements.
+1. **Requirement Coverage**: For each major requirement listed in `context.md` and expert contributions, verify it reaches a plan section or step. If not, add a note to **Requirement and Decision Coverage** marking unmapped requirements. Within a flow, verify the **Requirement and Decision Coverage** section carries the ticket's acceptance criteria (when the body has become a revised plan, the original ticket text is in the `## Original ticket (from the first plan)` section); they survive a pivot or re-plan in this section.
 
 2. **Error and Status Handling**: Look for error-handling mentions in context and expert input. If they appear in the plan's Approach but not in Implementation Steps, add an explicit note.
 

@@ -1,7 +1,7 @@
 ---
 description: Smart expert code review with triage - works across all projects
 argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--effort 1|2|3|4|5] [--all] [--force] [--allow-degraded] | <github-pr-url> [--effort 1|2|3|4|5] [--allow-degraded]
-allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(mktemp:*), Bash(mv:*), Bash(eval:*), Bash(bash:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
+allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(mktemp:*), Bash(mv:*), Bash(eval:*), Bash(bash:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*), Bash(cd:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
 model: sonnet
 ---
 
@@ -345,13 +345,13 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
    These are defined in the expert framework (Project Modifiers section) — pass any detected
    modifiers to every reviewer prompt.
 
-6. **Gather plan/ticket context** (cache-first, excludes the prior-review check which now runs in sub-step 1):
-   - Read `.claude/github-cache.json`. If `issue.body` exists → business context; `issue.title`
-     → summarizer prompt; `issue.url` → report.
+6. **Gather plan/ticket context** (cache-first, non-PR mode only, excludes the prior-review check which now runs in sub-step 1):
+   - Read `.claude/github-cache.json`. If `issue.body` exists → fetch the issue with the helper. When `FLOW_DIR` is set, call with `--flow-dir` to get post-lower-bound comments; otherwise call without `--flow-dir`. Command: `issue-comments fetch --issue <number> --cwd <cwd> --trusted-only [--flow-dir <flow_dir>]`. Trusted, post-lower-bound comments go only where `issue.body` already goes: the summarizer (Step 4) and Sam System's "Known Integration Concerns" (Step 6). They never reach a separate Pass 1 channel. Unverified comments are excluded by `--trusted-only`, so an outsider's comment cannot reach the blind panel.
    - **Fallback (no cache):** search `~/.claude/plans/*.md` for mentions of this branch/project;
      also check for kanban files (`*-kanban.md`) in project root or docs/.
-   - Plan context found → give it to the summarizer (Step 4) and to Sam System as "Known
-     Integration Concerns" (Step 6); cross-reference in the final report.
+   - Plan context found → give it to the summarizer (Step 4) and to Sam System; cross-reference in the final report.
+   - **PR mode:** unchanged — PR mode never reads the cache and does not fetch comments (ADR-0009).
+   - **New comments since plan (flow only):** when inside a flow (`FLOW_DIR` set), `/expert-review` raises an Ask for each unacknowledged trusted comment posted after the plan fetch. Outside a flow, new comments appear only in the counts.
 
 Emit `stage-end --stage setup --outcome success`:
 ```bash
@@ -579,6 +579,28 @@ never fails on a bad token (an invalid one prints `nick=unparseable` with a stde
 effort resolution needs the diff. A hard failure leaves no checkpoint but does leave that
 directory; in PR mode the stop message also prints the worktree path and the PR-mode cleanup
 commands below (`git worktree remove` / `branch -D`).
+
+### Handle new comments since plan (flow only)
+
+When `FLOW_DIR` is set and an issue number was cached in `.claude/github-cache.json`, call the helper again with `--flow-dir` to check for unacknowledged trusted comments posted after the plan step fetched (the lower bound is set from `plan-issue-snapshot.json`). The helper marks a comment `acknowledged` from the flow's `questions/*.json` and `answers/*.json` artifacts, so nothing else is tracked here:
+
+```bash
+NEW_COMMENT_ID=""
+if [[ -n "$FLOW_DIR" ]]; then
+  ISSUE_REF=$(jq -r '.issue.number // empty' .claude/github-cache.json 2>/dev/null)
+  if [[ -n "$ISSUE_REF" ]]; then
+    CALLER_DIR=$(pwd)
+    source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
+    NEW_COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --trusted-only --flow-dir "$FLOW_DIR" --format json 2>/dev/null) || NEW_COMMENTS_JSON=""
+    # The first unacknowledged trusted comment
+    if [[ -n "$NEW_COMMENTS_JSON" ]]; then
+      NEW_COMMENT_ID=$(printf '%s' "$NEW_COMMENTS_JSON" | jq -r '[.comments[] | select(.trust == "trusted" and .acknowledged == false and .kind != "implementation_plan") | .id] | .[0] // empty')
+    fi
+  fi
+fi
+```
+
+If `NEW_COMMENT_ID` is non-empty, raise **one** Ask for it, then end the turn. Use the "New comment since plan" Ask procedure in `~/.claude/prompts/issue-comments-reference.md`, with `STEP_NAME` = `review` and `COMMENT_ID` = `$NEW_COMMENT_ID`. It writes `questions/review-<SEQ>.json` with `comment_id` set on the question entry, offers exactly `"Continue — the plan stands"` and `"Stop for re-plan"`, and puts the fenced comment in `summary`/`brief`. On resume, re-run this section from the fetch: the next unacknowledged comment is raised, or the step continues when none remain. A `Stop for re-plan` answer or a free-text answer writes a `Decision: FAILED` receipt with `Reason: stopped on new issue comment <id>` and stops; the comment stays unacknowledged. Under `--fleet` the Ask parks as `fleet-ask.json` (see ADR-0023).
 
 ### PR Mode (positional `<github-pr-url>`)
 

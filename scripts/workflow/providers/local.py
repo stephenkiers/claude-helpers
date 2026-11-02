@@ -6,10 +6,11 @@ instead of GitHub issues.
 """
 
 from pathlib import Path
-from typing import List, Optional, Union, Tuple
+from typing import List, Optional, Union, Tuple, Any, Dict
 
 from ..models import IssueInfo, LocalTrackerData
 from ..cache import read_local_tracker, write_local_tracker
+from .base import ProviderUnsupportedError
 
 
 class LocalProvider:
@@ -175,3 +176,13 @@ class LocalProvider:
             plan_path.write_text(body)
         except OSError as e:
             raise RuntimeError(f"could not write plan file {plan_path}: {e}")
+
+    def fetch_issue_with_comments(self, number: int, repo: Tuple[str, str]) -> Tuple[Optional[Dict[str, Any]], Optional[Any]]:
+        """
+        Local mode does not support fetching comments.
+
+        Returns (None, ProviderUnsupportedError) per ADR-0013 convention; the caller maps
+        this typed error to comments_status: unsupported.
+        """
+        error = ProviderUnsupportedError("Local plan mode has no comment channel (comment_issue is a documented no-op)")
+        return None, error

@@ -92,6 +92,8 @@ READ_ONLY_BASH = (
     # agents/flow-healer.md, not here.
     r"python3 \"\$HOME/\.claude/scripts/(?:anti-cheat-scan|heal-check)\.py\"(?::\*)?",
     r"shasum -a 256(?::\*)?",
+    # Named exception for pre-merge issue-comments check (ticket 401, fetch subcommand only, read-only GET)
+    r"cd \"\$CLAUDE_HELPERS_DIR\" && PYTHONPATH=\"\$CLAUDE_HELPERS_DIR\" python3 -m scripts\.workflow\.cli issue-comments fetch",
 )
 ORCHESTRATOR_TOOLS = {"Read", "Write", "Task", "SendMessage", "AskUserQuestion", "ScheduleWakeup"}
 
@@ -244,6 +246,11 @@ def main():
     h.test_result("allowlist guard rejects Edit, Bash(git branch:*) and Bash(sed:*) (fixture)",
                   set(disallowed_grants(guard_fixture)) == {"Edit", "Bash(git branch:*)", "Bash(sed:*)"},
                   str(disallowed_grants(guard_fixture)))
+    finalize_fixture = r'Bash(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments finalize:*)'
+    finalize_offenders = disallowed_grants(finalize_fixture)
+    h.test_result("allowlist guard still rejects finalize grant (fixture)",
+                  len(finalize_offenders) == 1 and finalize_fixture in finalize_offenders,
+                  str(finalize_offenders))
     for good in ("Task", "SendMessage", "AskUserQuestion", "Write", "Read"):
         h.test_result(f"allowed-tools grants {good}", good in tools)
 

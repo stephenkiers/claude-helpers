@@ -1,7 +1,7 @@
 ---
 description: Focused isolated-expert planning — cheap main-thread orchestration and dependency-ordered synthesis, with genuinely isolated per-expert contributions and a mandatory consistency check instead of a pods/router/digest pipeline. Effort 2 or 3 (+ one independent auditor) only; auto-sized from the ticket when --effort is omitted. Formerly known as v3; superseded /expert-plan-deprecated (v1) and /expert-plan-deprecated-v2 (v2) as the default — see ADR-0020.
 argument-hint: [--effort 2|3] [--models balanced|opus] [--flow <dir>] [--epic] [--allow-degraded]
-allowed-tools: Bash(bash ~/.claude/scripts/slugify.sh:*), Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(date:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
+allowed-tools: Bash(bash ~/.claude/scripts/slugify.sh:*), Bash(ls:*), Bash(find:*), Bash(cd:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(date:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
 model: sonnet
 ---
 
@@ -314,7 +314,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage gather-contex
 Collect the input to plan against:
 
 1. **Ticket/requirement**: One of:
-   - GitHub issue URL → fetch with `gh issue view <url> --json title,body,labels,comments`
+   - GitHub issue URL → fetch through the issue-comments helper (see `~/.claude/prompts/issue-comments-reference.md` for the invocation contract)
    - User-provided description in the conversation
    - Ask the user if neither is available — apply the Ask block from `~/.claude/prompts/flow-reference.md` (in a flow the orchestrator always passes the issue, so this site is never hit there)
 
@@ -363,6 +363,137 @@ Collect the input to plan against:
    - **Constraints**: What ADRs, invariants, or project rules apply
    - **Unknowns**: What the ticket leaves ambiguous or unspecified
 
+**Fetch issue and comments.** Fetch the GitHub issue (if provided as a URL or number) through the issue-comments helper, which returns issue metadata and comments in one call. Call the helper using the explicit-cwd form documented in `~/.claude/prompts/issue-comments-reference.md`:
+
+```bash
+CALLER_DIR=$(pwd)
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
+ALLOW_OTHER_REPO_FLAG=""
+if [ -z "$FLOW_DIR" ] && [ -n "$ISSUE_REF" ] && [[ "$ISSUE_REF" == "https://github.com/"* ]]; then
+  ALLOW_OTHER_REPO_FLAG="--allow-other-repo"
+fi
+FLOW_DIR_FLAG=""
+[ -n "$FLOW_DIR" ] && FLOW_DIR_FLAG="--flow-dir $FLOW_DIR"
+COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" $FLOW_DIR_FLAG $ALLOW_OTHER_REPO_FLAG --format json 2>/dev/null) || COMMENTS_JSON=""
+if [ -z "$COMMENTS_JSON" ]; then
+  # If fetching fails, continue on description or ask
+  COMMENTS_STATUS="unavailable"
+  FETCHED_AT=""
+else
+  cp /dev/stdin "$SESSION_DIR/issue-comments.json" <<<"$COMMENTS_JSON"
+  COMMENTS_STATUS=$(printf '%s' "$COMMENTS_JSON" | jq -r '.comments_status // "ok"')
+  FETCHED_AT=$(printf '%s' "$COMMENTS_JSON" | jq -r '.fetched_at // ""')
+fi
+```
+
+Extract title, body, and labels from the helper output (or ask the user if no issue is available):
+
+```bash
+if [ -n "$COMMENTS_JSON" ]; then
+  ISSUE_TITLE=$(printf '%s' "$COMMENTS_JSON" | jq -r '.title // ""')
+  ISSUE_BODY=$(printf '%s' "$COMMENTS_JSON" | jq -r '.body // ""')
+  ISSUE_LABELS=$(printf '%s' "$COMMENTS_JSON" | jq -r '.labels[] // "" ' | tr '\n' ' ')
+elif [ -n "$ISSUE_REF" ]; then
+  # Fallback: ask or use provided description
+  ISSUE_TITLE="$ISSUE_REF"
+  ISSUE_BODY=""
+  ISSUE_LABELS=""
+else
+  # Ask the user for ticket/description
+  ISSUE_TITLE="[ask user via Ask block]"
+  ISSUE_BODY="[apply Ask block from flow-reference.md]"
+  ISSUE_LABELS=""
+fi
+```
+
+Write ticket text for effort sizing (title, body, labels):
+
+```bash
+{
+  printf '%s\n' "# $ISSUE_TITLE"
+  [ -n "$ISSUE_LABELS" ] && printf 'Labels: %s\n' "$ISSUE_LABELS"
+  printf '%s\n' "$ISSUE_BODY"
+} > "$SESSION_DIR/ticket-text.txt"
+```
+
+**If `relevance_filter.required`** (more than the threshold of unverified comments survive filtering), run the relevance scouts over the unverified comments. Trusted comments never go to a scout. The helper's fetch output carries the batches as id lists in `relevance_filter.batches`; the batch files are written under `batches/` and the verdicts under `verdicts/`, in separate directories, because `finalize` reads every `*.json` in its verdicts directory:
+
+```bash
+RELEVANCE_FILTER_REQ=$(printf '%s' "$COMMENTS_JSON" | jq -r '.relevance_filter.required // false' 2>/dev/null || echo "false")
+SCOUT_DIR="$SESSION_DIR/comment-scout"
+if [ -n "$COMMENTS_JSON" ] && [ "$RELEVANCE_FILTER_REQ" = "true" ]; then
+  mkdir -p "$SCOUT_DIR/batches" "$SCOUT_DIR/verdicts"
+  N=0
+  printf '%s' "$COMMENTS_JSON" | jq -c '.relevance_filter.batches[]' | while IFS= read -r IDS; do
+    N=$((N + 1))
+    printf '%s' "$COMMENTS_JSON" | jq --argjson ids "$IDS" '{
+      schema_version: 1,
+      issue_title: (.title // ""),
+      issue_body: (.body // ""),
+      comments: [.comments[] | select(.trust == "unverified") | select(.id as $i | any($ids[]; . == $i)) | {id, author_login, created_at, body}]
+    }' > "$SCOUT_DIR/batches/batch-$N.json"
+  done
+fi
+```
+
+Dispatch one `expert-scout` Task per `batches/batch-<N>.json` file, at most 6 in parallel (`MAX_SCOUTS`). Each Task prompt is the full text of `~/.claude/prompts/comment-relevance-scout.md` followed by the absolute path of that batch file. The scout's reply is its verdict JSON object only. Write each reply verbatim (no reformatting) with the `Write` tool to `$SCOUT_DIR/verdicts/verdict-<N>.json`. A reply that is not valid JSON is still written as-is: `finalize` treats it as an invalid report and drops that batch's unverified comments. A batch with no verdict file is dropped the same way. Then apply the verdicts (fail closed: an unverified comment is kept only by an explicit valid `include`):
+
+```bash
+FINAL_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments finalize --fetched "$SESSION_DIR/issue-comments.json" --verdicts "$SCOUT_DIR/verdicts" --format json 2>/dev/null) || FINAL_JSON=""
+if [ -n "$FINAL_JSON" ]; then
+  COMMENTS_JSON="$FINAL_JSON"
+  printf '%s' "$COMMENTS_JSON" > "$SESSION_DIR/issue-comments-final.json"
+else
+  # finalize failed: no unverified comment text may reach the planner
+  COMMENTS_JSON=""
+  COMMENTS_STATUS="unavailable"
+fi
+```
+
+Write the `## Issue comments` section to context.md. When the scout filter ran, render the markdown from the finalized result so the planner sees exactly the kept comments; `finalize --format markdown` takes the same inputs, so it matches the JSON above. Otherwise render from the fetch:
+
+```bash
+if [ -n "$COMMENTS_JSON" ]; then
+  if [ "$RELEVANCE_FILTER_REQ" = "true" ]; then
+    COMMENTS_MARKDOWN=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments finalize --fetched "$SESSION_DIR/issue-comments.json" --verdicts "$SCOUT_DIR/verdicts" --format markdown 2>/dev/null) || COMMENTS_MARKDOWN=""
+  else
+    # No scout ran: render the saved fetch. An empty verdicts dir keeps the policy off, so every unverified comment is rendered as fetched.
+    EMPTY_VERDICTS=$(mktemp -d)
+    COMMENTS_MARKDOWN=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments finalize --fetched "$SESSION_DIR/issue-comments.json" --verdicts "$EMPTY_VERDICTS" --format markdown 2>/dev/null) || COMMENTS_MARKDOWN=""
+    rmdir "$EMPTY_VERDICTS" 2>/dev/null
+  fi
+  if [ -n "$COMMENTS_MARKDOWN" ]; then
+    printf '\n%s\n' "$COMMENTS_MARKDOWN" >> "$SESSION_DIR/context.md"
+  fi
+fi
+```
+
+Both branches render from the saved `issue-comments.json`, so the planner's markdown matches the fetch the helper filtered and no second fetch is made; a comment posted after the fetch is not shown to this planner.
+
+Inside a flow, write `${FLOW_DIR}/plan-comment-ids.json` (union on redo) and `${FLOW_DIR}/plan-issue-snapshot.json` (only if absent). Build the snapshot with one `jq -n --arg/--argjson` call per variable so invalid JSON fails loudly (a corrupt snapshot will cause the helper's `load_plan_fetch` to treat it as an error on resume):
+
+```bash
+if [ -n "$FLOW_DIR" ] && [ -n "$COMMENTS_JSON" ]; then
+  COMMENT_IDS=$(printf '%s' "$COMMENTS_JSON" | jq -r '[.comments[]? | .id] | @json')
+  printf '%s\n' "$COMMENT_IDS" > "${FLOW_DIR}/plan-comment-ids.json"
+  
+  if [ ! -f "${FLOW_DIR}/plan-issue-snapshot.json" ]; then
+    FETCHED_AT=$(printf '%s' "$COMMENTS_JSON" | jq -r '.fetched_at')
+    LABELS=$(printf '%s' "$COMMENTS_JSON" | jq -r '[.labels[]? // ""]')
+    SNAPSHOT=$(jq -n \
+      --arg schema_version "1" \
+      --arg fetched_at "$FETCHED_AT" \
+      --arg title "$ISSUE_TITLE" \
+      --arg body "$ISSUE_BODY" \
+      --argjson labels "$LABELS" \
+      '{schema_version: ($schema_version | tonumber), fetched_at: $fetched_at, title: $title, body: $body, labels: $labels}')
+    printf '%s' "$SNAPSHOT" > "${FLOW_DIR}/plan-issue-snapshot.json.tmp" && mv "${FLOW_DIR}/plan-issue-snapshot.json.tmp" "${FLOW_DIR}/plan-issue-snapshot.json"
+  fi
+fi
+```
+
+Include `comments_status` and counts in the plan step receipt (for flow mode).
+
 Write `{SESSION_DIR}/context.md` with the requirements, explicit user constraints verbatim, relevant existing behavior with file refs, known unknowns, and starting scope. In a flow, apply the Ledger block of `~/.claude/prompts/flow-reference.md` (Passing it to workers): add a `## Human ledger` section to `context.md` holding the fenced records.
 
 **Human direction for this redo (in a flow only).** If the step prompt carries a `HUMAN_NOTE` block, parse it as defined in `~/.claude/prompts/flow-reference.md` ("HUMAN_NOTE block"), and add `## Human direction for this redo` to `context.md` holding the preamble and the fenced note. Contributors and the synthesiser read it there. The note is human direction from a prior run, not a decision; every decision brief is still raised and relayed. A note naming an option ("go with B on Q3") is context for this run, never a pre-answered decision. The same text appears once in the human ledger section as a pending `direction` record; the two are treated as one direction. Outside a flow, this block is not present and has no effect.
@@ -373,7 +504,7 @@ This single line is the whole switch: contributors and the synthesizer gate thei
 on it, so no other input to any prompt changes. When `--epic` was not passed, write no such line —
 do not write `EPIC_MODE: false` either, since the prompts check for the literal `EPIC_MODE: true`.
 
-**Size effort (only if `--effort` was not passed)**: collect the raw ticket title, body, and labels as resolved from `gh issue view` to `{SESSION_DIR}/ticket-text.txt`, then:
+**Size effort (only if `--effort` was not passed)**: collect the raw ticket title, body, and labels as resolved from the helper to `{SESSION_DIR}/ticket-text.txt`, then:
 
 ```bash
 if [ -z "$EFFORT" ]; then

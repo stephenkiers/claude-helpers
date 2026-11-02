@@ -33,7 +33,7 @@ See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full m
 Collect the input to plan against:
 
 1. **Ticket/requirement**: One of:
-   - GitHub issue URL → fetch with `gh issue view <url> --json title,body,labels,comments`
+   - GitHub issue URL → fetch with `gh issue view <url> --json title,body,labels` (title, body and labels only; this planner has no comment wiring)
    - User-provided description in the conversation
    - Ask user if neither is available
 

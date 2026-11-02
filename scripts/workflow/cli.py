@@ -28,10 +28,10 @@ import json
 from pathlib import Path
 from typing import Callable, Any, Tuple
 
-from . import cleanup, merge, shipit, checks, track, verify_queue
+from . import cleanup, merge, shipit, checks, track, verify_queue, issue_comments
 from .models import RepoCacheData
 from .providers import GithubProvider, LocalProvider
-from .providers.base import Provider
+from .providers.base import Provider, ProviderError
 from . import worktrees
 
 
@@ -331,6 +331,61 @@ def main() -> None:
     worktree_detect_parent_parser.add_argument(
         "--cwd", default=None,
         help="Directory inside the repo (defaults to current directory)"
+    )
+
+    issue_comments_parser = subparsers.add_parser("issue-comments", help="Fetch and filter issue comments")
+    issue_comments_subparsers = issue_comments_parser.add_subparsers(dest="issue_comments_action")
+
+    issue_comments_fetch_parser = issue_comments_subparsers.add_parser(
+        "fetch",
+        help="Fetch issue comments with filtering",
+        description="Fetch issue comments with filtering. Exit codes: 0 ok (comments_status ok/unavailable/unsupported with no error), 2 usage/parse/unexpected error, 3 provider error."
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--issue", required=True,
+        help="Issue number or GitHub URL (e.g., 123 or https://github.com/owner/repo/issues/123)"
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--cwd", required=True,
+        help="Working directory of the target repo"
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--trusted-only", action="store_true",
+        help="Withhold unverified (non-OWNER/COLLABORATOR) comments"
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--flow-dir", default=None,
+        help="Flow directory (reads acknowledged ids and plan fetch record)"
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--format", choices=["json", "markdown"], default="json",
+        help="Output format (default: json)"
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--allow-other-repo", action="store_true",
+        help="Allow URLs for repos other than the target"
+    )
+    issue_comments_fetch_parser.add_argument(
+        "--mode", choices=["github", "local"], default="github",
+        help="Provider to fetch through: github (default) or local (no comment channel: comments_status unsupported)"
+    )
+
+    issue_comments_finalize_parser = issue_comments_subparsers.add_parser(
+        "finalize",
+        help="Apply scout verdicts and re-apply budgets",
+        description="Apply scout verdicts and re-apply budgets. Exit codes: 0 ok, 2 error."
+    )
+    issue_comments_finalize_parser.add_argument(
+        "--fetched", required=True,
+        help="Path to fetched JSON file from issue-comments fetch"
+    )
+    issue_comments_finalize_parser.add_argument(
+        "--verdicts", required=True,
+        help="Directory containing scout verdict JSON files"
+    )
+    issue_comments_finalize_parser.add_argument(
+        "--format", choices=["json", "markdown"], default="json",
+        help="Output format (default: json)"
     )
 
     args = parser.parse_args()
@@ -636,6 +691,79 @@ def main() -> None:
                 sys.exit(1)
         else:
             checks_parser.print_help()
+            sys.exit(1)
+    elif args.command == "issue-comments":
+        if args.issue_comments_action == "fetch":
+            try:
+                ic_result, ic_error = issue_comments.fetch_issue_comments(
+                    issue_ref=args.issue,
+                    cwd=Path(args.cwd).resolve(),
+                    trusted_only=args.trusted_only,
+                    flow_dir=Path(args.flow_dir).resolve() if args.flow_dir else None,
+                    allow_other_repo=args.allow_other_repo,
+                    mode=args.mode
+                )
+                if ic_error:
+                    # Every error exit carries comments_status (unavailable when there is no result)
+                    output = ic_result.to_dict() if ic_result else {}
+                    output["comments_status"] = ic_result.comments_status if ic_result else "unavailable"
+                    output["error"] = str(ic_error)
+                    print(json.dumps(output))
+                    sys.exit(3 if isinstance(ic_error, ProviderError) else 2)
+                else:
+                    if ic_result is None:
+                        output = {"error": "Unexpected: no result or error"}
+                        print(json.dumps(output))
+                        sys.exit(2)
+                    if args.format == "markdown":
+                        print(issue_comments.render_markdown(ic_result))
+                    else:
+                        print(json.dumps(ic_result.to_dict()))
+            except Exception as e:
+                output = {"comments_status": "unavailable", "error": str(e)}
+                print(json.dumps(output))
+                sys.exit(2)
+        elif args.issue_comments_action == "finalize":
+            try:
+                # Read fetched JSON file
+                fetched_path = Path(args.fetched)
+                if not fetched_path.exists():
+                    print(json.dumps({"error": f"Fetched file not found: {fetched_path}"}))
+                    sys.exit(2)
+
+                with open(fetched_path) as f:
+                    fetched_data = json.load(f)
+
+                # Call finalize
+                finalize_result, finalize_error = issue_comments.finalize_comments(
+                    fetched=fetched_data,
+                    verdicts_dir=Path(args.verdicts)
+                )
+
+                if finalize_error:
+                    output = finalize_result.to_dict() if finalize_result else {}
+                    output["error"] = str(finalize_error)
+                    print(json.dumps(output))
+                    sys.exit(2)
+                else:
+                    if finalize_result is None:
+                        output = {"error": "Unexpected: no result or error"}
+                        print(json.dumps(output))
+                        sys.exit(2)
+                    if args.format == "markdown":
+                        print(issue_comments.render_markdown(finalize_result))
+                    else:
+                        print(json.dumps(finalize_result.to_dict()))
+            except json.JSONDecodeError as e:
+                output = {"comments_status": "unavailable", "error": f"Invalid fetched JSON: {e}"}
+                print(json.dumps(output))
+                sys.exit(2)
+            except Exception as e:
+                output = {"comments_status": "unavailable", "error": str(e)}
+                print(json.dumps(output))
+                sys.exit(2)
+        else:
+            issue_comments_parser.print_help()
             sys.exit(1)
     else:
         parser.print_help()

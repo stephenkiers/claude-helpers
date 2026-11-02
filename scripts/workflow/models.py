@@ -6,7 +6,7 @@ its own schema_version and content structure.
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal, TypedDict
 
 
 GITHUB_CACHE_SCHEMA_VERSION = "1.0"
@@ -351,3 +351,215 @@ def validate_local_tracker_data(data: Any) -> bool:
         if not isinstance(entry.get("status"), str):
             return False
     return True
+
+
+# Issue comments types (Step 2 of plan)
+CommentTrust = Literal["trusted", "unverified"]
+CommentsStatus = Literal["ok", "unavailable", "unsupported"]
+CommentSource = Literal["issue"]
+CommentKind = Literal["ordinary", "implementation_plan"]
+DropReason = Literal["outdated", "superseded_plan_content", "off_topic", "duplicate", "low_signal", "instruction_like"]
+
+
+class RelevanceFilterDict(TypedDict, total=False):
+    """TypedDict for relevance_filter field: required (bool), threshold (int), batches (List[List[str]])."""
+    required: bool
+    threshold: int
+    batches: List[List[str]]
+
+
+def validate_relevance_filter(data: Any) -> RelevanceFilterDict:
+    """Validate a relevance_filter mapping. Ignores unknown keys (same policy as the other from_dict methods).
+
+    Raises ValueError if a known key has the wrong type.
+    """
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid relevance_filter: {data!r}")
+    result: RelevanceFilterDict = {}
+    if "required" in data:
+        if not isinstance(data["required"], bool):
+            raise ValueError(f"Invalid relevance_filter.required: {data['required']!r}")
+        result["required"] = data["required"]
+    if "threshold" in data:
+        threshold = data["threshold"]
+        if not isinstance(threshold, int) or isinstance(threshold, bool):
+            raise ValueError(f"Invalid relevance_filter.threshold: {threshold!r}")
+        result["threshold"] = threshold
+    if "batches" in data:
+        batches = data["batches"]
+        if not isinstance(batches, list) or not all(
+            isinstance(batch, list) and all(isinstance(i, str) for i in batch) for batch in batches
+        ):
+            raise ValueError("Invalid relevance_filter.batches: must be a list of lists of strings")
+        result["batches"] = [list(batch) for batch in batches]
+    return result
+
+
+@dataclass
+class IssueComment:
+    """A single issue comment with trust, kind, and acknowledged status."""
+    id: str  # GraphQL node id (string)
+    author_login: Optional[str]
+    author_association: Optional[str]
+    trust: CommentTrust
+    created_at: str  # ISO 8601 UTC
+    is_minimized: bool
+    kind: CommentKind
+    body: str
+    acknowledged: bool
+    source: CommentSource = "issue"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "IssueComment":
+        """Construct from parsed JSON dict. Ignores unknown keys. Validates Literal fields."""
+        # Extract only known fields, ignoring unknowns
+        known_fields = {
+            "id", "author_login", "author_association", "trust", "created_at",
+            "is_minimized", "kind", "body", "acknowledged", "source"
+        }
+        filtered_data = {k: v for k, v in data.items() if k in known_fields}
+
+        # Validate Literal fields if present
+        if "trust" in filtered_data and filtered_data["trust"] not in ("trusted", "unverified"):
+            raise ValueError(f"Invalid trust value: {filtered_data['trust']}")
+        if "kind" in filtered_data and filtered_data["kind"] not in ("ordinary", "implementation_plan"):
+            raise ValueError(f"Invalid kind value: {filtered_data['kind']}")
+        if "source" in filtered_data and filtered_data["source"] not in ("issue",):
+            raise ValueError(f"Invalid source value: {filtered_data['source']}")
+
+        return cls(**filtered_data)
+
+
+@dataclass
+class CommentCounts:
+    """Counters for comment drops and truncation."""
+    dropped_minimized: int = 0
+    dropped_malformed: int = 0
+    dropped_superseded: int = 0
+    dropped_pre_watermark: int = 0
+    dropped_pre_plan: int = 0
+    dropped_stale_implementation_plan: int = 0
+    dropped_relevance: int = 0
+    dropped_scout_invalid: int = 0
+    truncated_trusted: int = 0
+    truncated_unverified: int = 0
+    withheld_unverified: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CommentCounts":
+        """Construct from parsed JSON dict."""
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class IssueWithComments:
+    """Issue body plus fetched comments with filtering metadata."""
+    number: int
+    title: str
+    url: str
+    state: str
+    labels: List[str]
+    body: str
+    created_at: str
+    fetched_at: str  # UTC time taken immediately BEFORE the gh call
+    comments: List[IssueComment]
+    comments_status: CommentsStatus
+    watermark: Optional[str]  # ISO 8601 UTC of newest trusted superseded-plan comment
+    lower_bound_source: Literal["marker_watermark", "plan_fetch"]
+    counts: CommentCounts
+    truncated: bool
+    withheld_unverified_authors: List[str]
+    relevance_filter: RelevanceFilterDict  # {"required": bool, "threshold": int, "batches": [[id, ...], ...]}
+    schema_version: int = 1
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        d = asdict(self)
+        d["counts"] = self.counts.to_dict()
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "IssueWithComments":
+        """Construct from parsed JSON dict. Validates Literal fields, schema_version and relevance_filter.
+
+        Unknown keys are ignored, matching IssueComment, CommentCounts and ScoutVerdict.
+        """
+        # Validate schema_version: exactly the version this code writes (bool is not an int here)
+        schema_version = data.get("schema_version", 1)
+        if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != 1:
+            raise ValueError(f"Invalid schema_version: {schema_version!r}")
+
+        relevance_filter = validate_relevance_filter(data.get("relevance_filter", {}))
+
+        # Validate comments_status Literal
+        comments_status = data.get("comments_status", "unavailable")
+        if comments_status not in ("ok", "unavailable", "unsupported"):
+            raise ValueError(f"Invalid comments_status: {comments_status}")
+
+        # Validate lower_bound_source Literal
+        lower_bound_source = data.get("lower_bound_source", "marker_watermark")
+        if lower_bound_source not in ("marker_watermark", "plan_fetch"):
+            raise ValueError(f"Invalid lower_bound_source: {lower_bound_source}")
+
+        comments_data = data.get("comments", [])
+        comments = [IssueComment.from_dict(c) for c in comments_data]
+        counts_data = data.get("counts", {})
+        counts = CommentCounts.from_dict(counts_data)
+        return cls(
+            number=data.get("number", 0),
+            title=data.get("title", ""),
+            url=data.get("url", ""),
+            state=data.get("state", "open"),
+            labels=data.get("labels", []),
+            body=data.get("body", ""),
+            created_at=data.get("created_at", ""),
+            fetched_at=data.get("fetched_at", ""),
+            comments=comments,
+            comments_status=comments_status,
+            watermark=data.get("watermark"),
+            lower_bound_source=lower_bound_source,
+            counts=counts,
+            truncated=data.get("truncated", False),
+            withheld_unverified_authors=data.get("withheld_unverified_authors", []),
+            relevance_filter=relevance_filter,
+            schema_version=schema_version
+        )
+
+
+@dataclass
+class ScoutVerdict:
+    """A scout's verdict on a single comment."""
+    comment_id: str
+    verdict: Literal["include", "drop"]
+    reason: Optional[DropReason] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        d = asdict(self)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ScoutVerdict":
+        """Construct from parsed JSON dict. Ignores unknown keys; validates verdict and reason."""
+        if not isinstance(data, dict):
+            raise ValueError(f"Invalid scout verdict: {data!r}")
+        comment_id = data.get("comment_id")
+        if not isinstance(comment_id, str):
+            raise ValueError(f"Invalid scout verdict comment_id: {comment_id!r}")
+        verdict = data.get("verdict")
+        if verdict not in ("include", "drop"):
+            raise ValueError(f"Invalid scout verdict value: {verdict!r}")
+        reason = data.get("reason")
+        if reason is not None and reason not in (
+            "outdated", "superseded_plan_content", "off_topic", "duplicate", "low_signal", "instruction_like"
+        ):
+            raise ValueError(f"Invalid scout verdict reason: {reason!r}")
+        return cls(comment_id=comment_id, verdict=verdict, reason=reason)
