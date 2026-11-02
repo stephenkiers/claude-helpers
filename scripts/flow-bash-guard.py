@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 
 # Known flow agents that are governed by this guard.
-KNOWN_FLOW_AGENTS = ("flow-implement", "flow-review", "flow-ship", "flow-merge")
+KNOWN_FLOW_AGENTS = ("flow-implement", "flow-review", "flow-ship", "flow-merge", "flow-healer")
 
 # Escalation hint for denied push/merge commands: tells the agent to surface via Ask block.
 ESCALATION_HINT = "If this command is legitimate, do not retry a variant: surface it to the human through the Ask block (prompts/flow-reference.md) instead."
@@ -1015,14 +1015,17 @@ def check_command_for_agent(command: str, agent: str) -> Tuple[bool, str, str]:
     Per-agent rules:
     - flow-implement: full checks (wrappers and publishing verbs)
     - flow-review: pass through (allow all)
+    - flow-healer: pass through (its tools list already restricts Bash to scoped git)
     - flow-ship: restricted wrappers, allowed git push forms, all gh pr merge denied
     - flow-merge: restricted wrappers, allowed git push forms, gh pr merge --admin denied,
       gh pr merge --squash allowed only if no merge-queue config exists
 
     Returns: (is_blocked: bool, reason: str if blocked, rule_id: str)
     """
-    if agent == "flow-review":
-        # flow-review: pass through
+    if agent in ("flow-review", "flow-healer"):
+        # flow-review: pass through. flow-healer: pass through too; its Bash is already limited
+        # by its tools list to git diff/status/rev-parse/add/commit/checkout HEAD -- (no push,
+        # no gh), so this guard adds nothing (#380; ADR-0023 2026-10-29 amendment).
         return False, "", ""
 
     # Fail closed on unknown flow-* agents; allow non-flow agents (e.g., general-purpose)
@@ -1355,7 +1358,7 @@ def main():
     try:
         # Parse CLI argument
         if len(sys.argv) < 3 or sys.argv[1] != "--agent":
-            print("Usage: flow-bash-guard.py --agent <flow-implement|flow-review|flow-ship|flow-merge|auto>", file=sys.stderr)
+            print("Usage: flow-bash-guard.py --agent <flow-implement|flow-review|flow-ship|flow-merge|flow-healer|auto>", file=sys.stderr)
             sys.exit(2)
 
         agent = sys.argv[2]
@@ -1381,7 +1384,7 @@ def main():
                 sys.exit(0)
 
             # If agent_type starts with flow- but not in known set, fail closed
-            if agent_type not in ("flow-implement", "flow-review", "flow-ship", "flow-merge"):
+            if agent_type not in ("flow-implement", "flow-review", "flow-ship", "flow-merge", "flow-healer"):
                 print(f"Auto mode: agent_type '{agent_type}' is unknown, denying", file=sys.stderr)
                 sys.exit(2)
 
@@ -1389,12 +1392,12 @@ def main():
             agent = agent_type
         else:
             # Explicit agent specified; if it's flow-* and unknown, fail closed
-            if agent.startswith("flow-") and agent not in ("flow-implement", "flow-review", "flow-ship", "flow-merge"):
+            if agent.startswith("flow-") and agent not in ("flow-implement", "flow-review", "flow-ship", "flow-merge", "flow-healer"):
                 print(f"Explicit agent '{agent}' is unknown, denying", file=sys.stderr)
                 sys.exit(2)
 
-        # flow-review has no Bash restrictions; pass through before payload checks
-        if agent == "flow-review":
+        # flow-review and flow-healer have no Bash restrictions here; pass through before payload checks
+        if agent in ("flow-review", "flow-healer"):
             sys.exit(0)
 
         tool_name = payload.get("tool_name")
