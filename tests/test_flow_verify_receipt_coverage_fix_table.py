@@ -242,6 +242,12 @@ def case_f_token_classification() -> Tuple[bool, str]:
         ("`scripts/flow-agent-guard.py:~625-660`", set(), ["scripts/flow-agent-guard.py"]),
         ("flow-review.md", {"agents/flow-review.md"}, []),
         ("", set(), []),
+        # Leading ./ normalization: ./scripts/x.py matches scripts/x.py in diff
+        ("./scripts/flow-bash-guard.py", {"scripts/flow-bash-guard.py"}, ["scripts/flow-bash-guard.py"]),
+        # Multiple leading ./ stripped repeatedly
+        ("././scripts/test.py", {"scripts/test.py"}, ["scripts/test.py"]),
+        # ../ not stripped (protected)
+        ("../scripts/x.py", set(), ["../scripts/x.py"]),
     ]
     for cell, diff, want in cases:
         got = fvr._doing_it_path_tokens(cell, diff)
@@ -275,6 +281,32 @@ def case_g_no_file_header_all_unknown() -> Tuple[bool, str]:
         plan.write_text(NO_FILE_HEADER_PLAN, encoding="utf-8")
         rows = parse_rows(run_fix_coverage(plan, {"scripts/flow-bash-guard.py", "tests/test_x.py"}))
     return expect_rows(rows, {
+        "D1": ("unknown", "no extractable evidence (File header missing)"),
+        "D2": ("unknown", "no extractable evidence (File header missing)"),
+    })
+
+
+# (h) empty cells vs no File header ------------------------------------------------------------------
+
+EMPTY_CELLS_PLAN = """# Action plan
+
+## Doing it: 2
+
+| Item | File |
+|------|------|
+| one |  |
+| two |  |
+
+## Deferred: 0
+"""
+
+
+def case_h_empty_cells_vs_no_header() -> Tuple[bool, str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        plan = Path(tmp) / "plan.md"
+        plan.write_text(EMPTY_CELLS_PLAN, encoding="utf-8")
+        rows = parse_rows(run_fix_coverage(plan, {}))
+    return expect_rows(rows, {
         "D1": ("unknown", "no extractable evidence (no files in table row)"),
         "D2": ("unknown", "no extractable evidence (no files in table row)"),
     })
@@ -292,6 +324,7 @@ CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("(e) parity: row parser and enumerator both yield the observed 18 units in order", case_e_parity_with_observed_rows),
     ("(f) per-token classification on the real cell strings", case_f_token_classification),
     ("(g) a table with no File header yields all unknown", case_g_no_file_header_all_unknown),
+    ("(h) empty File cells are distinct from no File header; both yield unknown but with different evidence", case_h_empty_cells_vs_no_header),
 ]
 
 

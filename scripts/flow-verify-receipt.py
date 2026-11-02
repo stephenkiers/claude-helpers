@@ -141,6 +141,7 @@ DispositionBy = Literal["human", "assessor-verified"]
 DispositionRoute = Literal["leave", "pause", "issue", "none"]
 MarkerKind = Literal["v2", "legacy"]
 AssessmentMode = Literal["assessor", "taken-over"]
+DoingItStatus = Literal["unknown", "uncovered", "covered"]
 
 
 class OutstandingItem(NamedTuple):
@@ -215,6 +216,17 @@ class Disposition(NamedTuple):
     route: DispositionRoute
     url: str
     reason: str
+
+
+class CoverageClassification(NamedTuple):
+    """Classification result for a Doing-it row's coverage status.
+
+    Attributes:
+        status: One of 'unknown', 'uncovered', or 'covered'
+        evidence: Text describing the classification reasoning
+    """
+    status: DoingItStatus
+    evidence: str
 
 
 class OutstandingSetItem(NamedTuple):
@@ -2601,13 +2613,17 @@ def _doing_it_path_tokens(file_cell: str, changed_files: Set[str]) -> List[str]:
     surrounding whitespace. A token containing `/` is kept as a candidate path, to be compared exactly
     against the diff. A token without `/` is kept only when it exactly equals a changed file name (for
     example `CLAUDE.md`). Line fragments such as `1758-1777` and unresolved basenames are dropped. There is
-    no prefix, suffix, directory or glob matching and no filesystem access.
+    no prefix, suffix, directory or glob matching and no filesystem access. Leading `./` is stripped
+    (repeatedly, but not `../`).
     """
     tokens: List[str] = []
     for raw in re.split(r"[;,]", file_cell):
         token = raw.replace("`", "").strip()
         token = token.split(":", 1)[0].strip()
         token = token.replace("~", "").strip()
+        # Strip leading ./ (repeatedly, but not ../)
+        while token.startswith("./"):
+            token = token[2:]
         if not token or token in tokens:
             continue
         if "/" in token or token in changed_files:
@@ -2615,42 +2631,52 @@ def _doing_it_path_tokens(file_cell: str, changed_files: Set[str]) -> List[str]:
     return tokens
 
 
-def _classify_doing_it_rows(rows: List[DoingItRow], changed_files: Set[str]) -> Dict[str, Tuple[str, str]]:
-    """Classify Doing-it rows for fix-mode coverage: unit id -> (status, evidence).
+def _classify_doing_it_rows(rows: List[DoingItRow], changed_files: Set[str]) -> Dict[str, CoverageClassification]:
+    """Classify Doing-it rows for fix-mode coverage: unit id -> CoverageClassification.
 
     Each surviving path token is mapped to the set of rows that name it. Then, per row:
-    - no path tokens survive (no File header, empty cell, or fragments only): unknown;
+    - no File header: unknown, "no extractable evidence (File header missing)";
+    - empty cell or fragments only: unknown, "no extractable evidence (no files in table row)";
     - no surviving path is in the diff: uncovered;
     - at least one in-diff path is named by no other row: covered;
     - otherwise every in-diff path is shared with another row: unknown, `file shared with D<k>, ...`.
     A shared file never credits a row that does not own it (Q3 B).
     """
     tokens_by_unit: Dict[str, List[str]] = {}
+    no_file_header: Set[str] = set()
     owners: Dict[str, Set[str]] = {}
     for row in rows:
-        tokens = [] if row.file_cell is None else _doing_it_path_tokens(row.file_cell, changed_files)
+        if row.file_cell is None:
+            tokens = []
+            no_file_header.add(row.unit_id)
+        else:
+            tokens = _doing_it_path_tokens(row.file_cell, changed_files)
         tokens_by_unit[row.unit_id] = tokens
         for token in tokens:
             owners.setdefault(token, set()).add(row.unit_id)
 
-    results: Dict[str, Tuple[str, str]] = {}
+    results: Dict[str, CoverageClassification] = {}
     for row in rows:
         tokens = tokens_by_unit[row.unit_id]
         if not tokens:
-            results[row.unit_id] = ("unknown", "no extractable evidence (no files in table row)")
+            if row.unit_id in no_file_header:
+                evidence = "no extractable evidence (File header missing)"
+            else:
+                evidence = "no extractable evidence (no files in table row)"
+            results[row.unit_id] = CoverageClassification("unknown", evidence)
             continue
         in_diff = [token for token in tokens if token in changed_files]
         if not in_diff:
-            results[row.unit_id] = ("uncovered", f"not in diff: {', '.join(tokens)}")
+            results[row.unit_id] = CoverageClassification("uncovered", f"not in diff: {', '.join(tokens)}")
         elif any(len(owners[token]) == 1 for token in in_diff):
-            results[row.unit_id] = ("covered", f"files in diff: {', '.join(in_diff)}")
+            results[row.unit_id] = CoverageClassification("covered", f"files in diff: {', '.join(in_diff)}")
         else:
             others: Set[str] = set()
             for token in in_diff:
                 others |= owners[token]
             others.discard(row.unit_id)
             shared = ", ".join(sorted(others, key=lambda unit: int(unit[1:])))
-            results[row.unit_id] = ("unknown", f"file shared with {shared}")
+            results[row.unit_id] = CoverageClassification("unknown", f"file shared with {shared}")
     return results
 
 
@@ -3549,7 +3575,7 @@ def coverage_mode(
     changed_files = _git_diff_names(repo, base, branch)
 
     # Fix rows are classified from their File cells (#409); implement mode keeps the plan-section walk.
-    fix_results: Dict[str, Tuple[str, str]] = {}
+    fix_results: Dict[str, CoverageClassification] = {}
     if step == "fix" and changed_files is not None:
         fix_results = _classify_doing_it_rows(doing_it_rows, changed_files)
 
@@ -3580,7 +3606,9 @@ def coverage_mode(
             status = "declared"
             evidence = f"{item.provenance}: {item.reason}"
         elif step == "fix":
-            status, evidence = fix_results[unit_id]
+            classification = fix_results[unit_id]
+            status = classification.status
+            evidence = classification.evidence
         else:
             # Check if covered: files in the unit appear in the diff
             unit_files = _get_file_names_from_plan_section(plan_text, unit_id)
