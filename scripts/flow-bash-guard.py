@@ -151,9 +151,9 @@ def _scan(command, pos, depth, kind, out):
             continue
 
         if ch == "$" and nxt in ("'", '"'):
-            # $'...' and $"...": the $ is dropped so the quoted text is read as the word it is.
-            i += 1
-            continue
+            # $'...' and $"...": ANSI-C quoting can have escapes that desync quote tracking.
+            # Fail closed: treat as unparseable and fall back to quote-blind split.
+            raise _NeedFallback()
 
         if ch == "`":
             if kind == "backtick" and state is None:
@@ -355,10 +355,34 @@ def _strip_one(kind, name, tokens):
     if kind == "assignment":
         return tokens[1:] if _ASSIGN_RE.match(head) else None
     if kind == "bare":
-        return tokens[1:] if head == name else None
+        if head == name:
+            # Special handling for 'time' with -p option
+            if name == "time" and len(tokens) >= 2 and tokens[1] == "-p":
+                return tokens[2:]
+            return tokens[1:]
+        return None
     if kind == "one-positional":
-        if head == name and len(tokens) >= 3 and not tokens[1].startswith("-"):
-            return tokens[2:]
+        if head == name:
+            # Special handling for 'timeout' with options
+            if name == "timeout":
+                # timeout -k DURATION DURATION COMMAND, timeout -s SIGNAL DURATION COMMAND
+                i = 1
+                while i < len(tokens) and tokens[i].startswith("-"):
+                    if tokens[i] in ("-k", "-s"):
+                        # These options take an argument, skip both
+                        i += 2
+                    else:
+                        # Unknown option, fail closed
+                        i += 1
+                    if i >= len(tokens):
+                        return None
+                # Now we should have the duration and command
+                if i < len(tokens) - 1 and not tokens[i].startswith("-"):
+                    return tokens[i + 1:]
+                return None
+            # Standard one-positional: NAME DURATION COMMAND
+            if len(tokens) >= 3 and not tokens[1].startswith("-"):
+                return tokens[2:]
         return None
     if kind == "nice":
         if head != name:
@@ -368,7 +392,8 @@ def _strip_one(kind, name, tokens):
         if len(tokens) >= 2 and not tokens[1].startswith("-"):
             return tokens[1:]
         return None
-    return None
+    raise ValueError(f"Unknown prefix kind: {kind}")
+
 
 
 def strip_command_prefix(tokens):
@@ -670,6 +695,7 @@ def is_interpreter_verb_pair(tokens):
     The program text is split into words, both as written and with string escapes decoded. At
     each word that is git or gh, the words that follow (with git -c pairs removed) are checked
     with is_publishing_verb(). Only programs after an eval flag are checked; a script file is not read.
+    Stops scanning for eval flags once a positional argument (non-option) is encountered.
     """
     if not tokens:
         return False
@@ -679,6 +705,9 @@ def is_interpreter_verb_pair(tokens):
 
     for k in range(1, len(tokens)):
         tok = tokens[k]
+        # Stop at the first positional argument (script file or argument)
+        if not tok.startswith("-"):
+            break
         is_eval_flag = (
             _SHORT_EVAL_FLAG_RE.match(tok) is not None
             or tok in ("--eval", "--print")

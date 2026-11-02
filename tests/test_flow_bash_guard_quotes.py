@@ -54,6 +54,8 @@ MUST_STAY_ALLOWED = [
     ("sort -t $'\\t' -k2 f", "$' normalised to '\\t'; no verb"),
     ("grep -n 'foo$' file", "$ inside single quotes is literal"),
     ("rg 'done$'", "$ inside single quotes is literal"),
+    ("python3 script.py -c", "script argument after positional script name; -c is not an eval flag"),
+    ("python3 script.py -e arg", "script argument after positional script name; -e is not an eval flag"),
 ]
 
 MUST_STAY_BLOCKED = [
@@ -95,13 +97,19 @@ MUST_BECOME_BLOCKED = [
     ("echo hi; $'git' push", "tracker drops the unescaped $ before ' outside single quotes"),
     ("echo hi # x\n$'git' push", "fallback drops the unescaped $ before ' (word-start # triggers it)"),
     ("cat <<EOF\nx\nEOF\n$'git' push", "fallback drops the unescaped $ before ' (heredoc triggers it)"),
+    ("echo $'it\\'s'; git push", "ANSI-C quoting with escaped quote desyncs tracker; fallback"),
+    ("echo $\"greeting\"; git push", "ANSI-C double-quote desyncs tracker; fallback"),
+    ("$'git' push", "ANSI-C quoting of command triggers fallback"),
     ("GIT_TERMINAL_PROMPT=0 git push", "TRANSPARENT_PREFIXES: assignment"),
     ("A=1 B=2 git push", "TRANSPARENT_PREFIXES: assignment, repeated"),
     ("command git push", "TRANSPARENT_PREFIXES: bare command"),
     ("exec git push", "TRANSPARENT_PREFIXES: bare exec"),
     ("nohup git push", "TRANSPARENT_PREFIXES: bare nohup"),
     ("time git push", "TRANSPARENT_PREFIXES: bare time"),
+    ("time -p git push", "TRANSPARENT_PREFIXES: time with -p option"),
     ("timeout 5 git push", "TRANSPARENT_PREFIXES: one-positional timeout"),
+    ("timeout -k 5 10 git push", "TRANSPARENT_PREFIXES: timeout with -k option"),
+    ("timeout -s TERM 5 git push", "TRANSPARENT_PREFIXES: timeout with -s signal option"),
     ("nice -n 10 git push", "TRANSPARENT_PREFIXES: nice -n N"),
     ("=git push", "TRANSPARENT_PREFIXES: zsh-equals"),
     ("$(git status", "unclosed $( is unparseable (main inspects the open group and allows it)"),
@@ -123,7 +131,6 @@ FALSE_NEGATIVE_LEDGER = [
     ("$'\\x67it' push", "escape-encoded ANSI-C word; $ dropped, \\x67 stays literal (main allows it too)"),
     ("exec -a x git push", "prefix option outside the Q2 set; normalisation stops at -a"),
     ("command -p git push", "prefix option outside the Q2 set; normalisation stops at -p"),
-    ("timeout -s KILL 5 git push", "timeout with an option; only timeout <duration> is stripped"),
     ("nice -5 git push", "nice with a numeric option; only nice -n N and bare nice are stripped"),
     ("*(e:'git push':)", "zsh glob qualifier; the quoted text is one token that is not git"),
 ]

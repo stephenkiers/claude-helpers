@@ -49,7 +49,9 @@ SKILL_GUARD = REPO_ROOT / "scripts" / "flow-skill-guard.py"
 # Fixed wall-clock bound for each time-bound case (see module docstring for the source).
 TIME_BOUND_SECS = 5.0
 
-# Nesting cap of the guard (64 levels). Depth 65 must be refused on both splitter paths.
+# Nesting cap of the guard (64 levels): MAX_NESTING constant in flow-bash-guard.py.
+# Depth exactly 64 is ALLOWED; depth 65 must be refused on both splitter paths.
+AT_CAP_DEPTH = 64
 OVER_CAP_DEPTH = 65
 
 
@@ -403,6 +405,27 @@ def main():
     # ========================================================================
     print("\n[Section 6] Nesting cap: quote-aware path and heredoc fallback path")
 
+    # At-limit cases: depth 64 (MAX_NESTING) is allowed on both paths
+    quote_aware_limit = [
+        ("quote-aware path: $( nesting at depth 64 (limit) exits 0 allowed",
+         "echo " + nested_groups("$(", ")", AT_CAP_DEPTH)),
+        ("quote-aware path: ( nesting at depth 64 (limit) exits 0 allowed",
+         nested_groups("(", ")", AT_CAP_DEPTH)),
+    ]
+    for label, command in quote_aware_limit:
+        rc, stderr, _ = run_guard(BASH_GUARD, ["--agent", "flow-implement"],
+                                  payload_bytes(bash_payload(command)))
+        check_case(h, label, rc, stderr, 0, None)
+
+    fallback_limit = (
+        "fallback path (heredoc): $( nesting at depth 64 (limit) exits 0 allowed",
+        "cat <<EOF ; echo " + nested_groups("$(", ")", AT_CAP_DEPTH) + "\nEOF",
+    )
+    rc, stderr, _ = run_guard(BASH_GUARD, ["--agent", "flow-implement"],
+                              payload_bytes(bash_payload(fallback_limit[1])))
+    check_case(h, fallback_limit[0], rc, stderr, 0, None)
+
+    # Over-limit cases: depth 65 is rejected on both paths
     quote_aware_deep = [
         ("quote-aware path: $( nesting at depth 65 exits 2 with nesting marker",
          "echo " + nested_groups("$(", ")", OVER_CAP_DEPTH)),
