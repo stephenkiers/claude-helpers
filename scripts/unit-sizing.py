@@ -7,7 +7,8 @@ Prints one JSON object with fields:
   schema_version: 1
   kind: "plan" or "action-plan"
   steps, files, findings: int or null (when unparseable)
-  ceilings: dict of active per-unit ceilings
+  ceilings: dict of active per-unit ceilings (provisional: 8 steps / 12 files / 16 findings per unit)
+  floor_is_lower_bound: true (the min_units result is a lower bound; depends on actual complexity)
   min_units: int >= 1, or "unknown"
   status: "ok" or "unknown"
   reason: string (empty on success; error message otherwise)
@@ -23,8 +24,14 @@ import math
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
+try:
+    import yaml  # type: ignore[import-untyped]
+except ImportError:
+    yaml = None  # type: ignore[assignment]
+
+# Provisional ceilings: 8 steps / 12 files / 16 findings per unit
 DEFAULTS: Dict[str, Any] = {
     "steps_per_unit": 8,
     "files_per_unit": 12,
@@ -35,9 +42,7 @@ CONFIG_NAME = "unit-sizing-heuristic.yaml"
 
 def _load(path: Path) -> Dict[str, Any]:
     """Load YAML config file, surfacing parse errors to stderr."""
-    try:
-        import yaml  # type: ignore[import-untyped]
-    except ImportError:
+    if yaml is None:
         print("warning: PyYAML not available; using defaults", file=sys.stderr)
         return {}
     try:
@@ -100,19 +105,47 @@ def count_plan_steps(text: str) -> Optional[int]:
 
 
 def extract_files_from_step(step_text: str) -> set:  # type: ignore[type-arg]
-    """Extract file paths from a step's **Files**: line."""
+    """Extract file paths from a step's **Files**: line (format: - **Files**: `a.py`, `b.py`)."""
     files: set = set()  # type: ignore[assignment]
     for line in step_text.split("\n"):
-        if line.strip().startswith("**Files**:"):
+        # Match lines starting with "- **Files**:"
+        if re.match(r"^\s*-\s+\*\*Files\*\*:", line):
             # Extract everything after the colon
             content = line.split("**Files**:", 1)[1].strip()
-            # Split on commas and parse paths
+            # Split on commas and parse paths, stripping backticks
             for part in content.split(","):
                 path = part.strip()
+                # Remove backticks if present
+                path = path.lstrip("`").rstrip("`")
                 if path and path not in ("", "none", "N/A", "n/a"):
                     files.add(path)
             break
     return files
+
+
+def build_result(
+    kind: str,
+    steps: Optional[int],
+    files: Optional[int],
+    findings: Optional[int],
+    ceilings: Dict[str, int],
+    min_units: Union[int, str],
+    status: str,
+    reason: str = "",
+) -> Dict[str, Any]:
+    """Build a result dict in the standard output format."""
+    return {
+        "schema_version": 1,
+        "kind": kind,
+        "steps": steps,
+        "files": files,
+        "findings": findings,
+        "ceilings": ceilings,
+        "floor_is_lower_bound": True,
+        "min_units": min_units,
+        "status": status,
+        "reason": reason,
+    }
 
 
 def count_distinct_files(text: str) -> Optional[int]:
@@ -124,6 +157,17 @@ def count_distinct_files(text: str) -> Optional[int]:
         files = extract_files_from_step(step_text)
         all_files.update(files)
     return len(all_files) if len(all_files) > 0 else None
+
+
+def is_directive_row(line: str) -> bool:
+    """Check if a line is a Doing it table data row (not header or separator)."""
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return False
+    # Skip separator rows: all dashes/colons/pipes
+    if re.match(r"^\|\s*[-:\s|]+\|\s*$", stripped):
+        return False
+    return True
 
 
 def count_action_plan_findings(text: str) -> Tuple[Optional[int], Optional[int]]:
@@ -155,13 +199,12 @@ def count_action_plan_findings(text: str) -> Tuple[Optional[int], Optional[int]]
                 continue
 
             # In table: count data rows, skip header and separator
-            if table_started and stripped.startswith("|"):
-                # Skip separator rows: all dashes/colons/pipes
-                if not re.match(r"^\|\s*[-:\s|]+\|\s*$", stripped):
+            if table_started:
+                if is_directive_row(line):
                     directive_count += 1
-            elif table_started and not stripped.startswith("|"):
-                # Table ended
-                table_started = False
+                elif not stripped.startswith("|"):
+                    # Table ended
+                    table_started = False
 
     # Count items with - **STATUS**: decided or - **STATUS**: measured
     for match in re.finditer(r"- \*\*STATUS\*\*:\s*(decided|measured)", text):
@@ -246,19 +289,17 @@ def main(argv: list) -> None:  # type: ignore[type-arg]
         args = parser.parse_args(argv[1:])
     except SystemExit:
         # argparse calls sys.exit on error; catch and print fallback
-        print(
-            json.dumps({
-                "schema_version": 1,
-                "kind": None,
-                "steps": None,
-                "files": None,
-                "findings": None,
-                "ceilings": {},
-                "min_units": "unknown",
-                "status": "unknown",
-                "reason": "invalid arguments",
-            })
+        result = build_result(
+            kind="",
+            steps=None,
+            files=None,
+            findings=None,
+            ceilings={},
+            min_units="unknown",
+            status="unknown",
+            reason="invalid arguments",
         )
+        print(json.dumps(result))
         return
 
     kind = args.kind  # type: ignore[attr-defined]
@@ -268,38 +309,34 @@ def main(argv: list) -> None:  # type: ignore[type-arg]
     try:
         plan_text = Path(args.plan_file).read_text(encoding="utf-8")  # type: ignore[attr-defined]
     except Exception as e:
-        print(
-            json.dumps({
-                "schema_version": 1,
-                "kind": kind,
-                "steps": None,
-                "files": None,
-                "findings": None,
-                "ceilings": {},
-                "min_units": "unknown",
-                "status": "unknown",
-                "reason": f"failed to read file: {e}",
-            })
+        result = build_result(
+            kind=kind,
+            steps=None,
+            files=None,
+            findings=None,
+            ceilings={},
+            min_units="unknown",
+            status="unknown",
+            reason=f"failed to read file: {e}",
         )
+        print(json.dumps(result))
         return
 
     # Filter to only-units if specified
     if only_units:
         filtered = filter_only_units(plan_text, kind, only_units)
         if filtered is None:
-            print(
-                json.dumps({
-                    "schema_version": 1,
-                    "kind": kind,
-                    "steps": None,
-                    "files": None,
-                    "findings": None,
-                    "ceilings": {},
-                    "min_units": "unknown",
-                    "status": "unknown",
-                    "reason": f"no matching units found for: {only_units}",
-                })
+            result = build_result(
+                kind=kind,
+                steps=None,
+                files=None,
+                findings=None,
+                ceilings={},
+                min_units="unknown",
+                status="unknown",
+                reason=f"no matching units found for: {only_units}",
             )
+            print(json.dumps(result))
             return
         plan_text = filtered
 
@@ -323,7 +360,7 @@ def main(argv: list) -> None:  # type: ignore[type-arg]
         # For action-plan, steps are not relevant
         findings_count, _ = count_action_plan_findings(plan_text)
 
-    # Calculate min_units
+    # Calculate min_units and determine status
     units_by_dimension: List[int] = []
     if steps_count is not None:
         units_needed = math.ceil(steps_count / cfg["steps_per_unit"])
@@ -335,32 +372,48 @@ def main(argv: list) -> None:  # type: ignore[type-arg]
         units_needed = math.ceil(findings_count / cfg["findings_per_unit"])
         units_by_dimension.append(units_needed)
 
-    if units_by_dimension:
-        min_units = max(units_by_dimension)
-        status = "ok"
-        reason = ""
-    else:
-        # No recognizable structure
-        if kind == "plan" and steps_count is None:
-            reason = "no '### Step N' headings found in plan"
-        elif kind == "action-plan" and findings_count is None:
-            reason = "no directives found in action-plan"
-        else:
-            reason = "no counts could be determined"
-        min_units = "unknown"  # type: ignore[assignment]
-        status = "unknown"
+    # Determine status based on what was parsed
+    status = "unknown"
+    reason = ""
+    min_units_val: Union[int, str] = "unknown"
 
-    result = {
-        "schema_version": 1,
-        "kind": kind,
-        "steps": steps_count,
-        "files": files_count,
-        "findings": findings_count,
-        "ceilings": ceilings_obj,
-        "min_units": min_units,
-        "status": status,
-        "reason": reason,
-    }
+    if kind == "plan":
+        # For plans, require both steps and files for "ok" status
+        if steps_count is not None and files_count is not None and units_by_dimension:
+            min_units_val = max(units_by_dimension)
+            # Clamp to at least 1
+            if isinstance(min_units_val, int) and min_units_val < 1:
+                min_units_val = 1
+            status = "ok"
+        elif steps_count is None and files_count is None:
+            reason = "no '### Step N' headings or '- **Files**:' lines found in plan"
+        elif steps_count is None:
+            reason = "no '### Step N' headings found in plan"
+        elif files_count is None:
+            reason = "no '- **Files**:' lines found in plan"
+        else:
+            reason = "unable to determine units for plan"
+    elif kind == "action-plan":
+        # For action-plans, require directives for "ok" status
+        if findings_count is not None and findings_count > 0 and units_by_dimension:
+            min_units_val = max(units_by_dimension)
+            # Clamp to at least 1
+            if isinstance(min_units_val, int) and min_units_val < 1:
+                min_units_val = 1
+            status = "ok"
+        else:
+            reason = "no directives found in action-plan"
+
+    result = build_result(
+        kind=kind,
+        steps=steps_count,
+        files=files_count,
+        findings=findings_count,
+        ceilings=ceilings_obj,
+        min_units=min_units_val,
+        status=status,
+        reason=reason,
+    )
     print(json.dumps(result))
 
 
