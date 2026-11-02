@@ -1,0 +1,20 @@
+# Unit-sizing heuristic configuration (provisional, uncalibrated — see issue #325)
+#
+# Adjusts the per-unit ceiling for parallelizing plan steps, counting distinct files,
+# and action-plan findings into work units.
+#
+# Config cascade: built-in defaults < ~/.claude/unit-sizing-heuristic.yaml
+# < <project-root>/.claude/unit-sizing-heuristic.yaml
+#
+# All values must be positive integers. Non-numeric or zero values are silently
+# ignored and fall back to the built-in default, with a warning on stderr.
+#
+# Built-in defaults (provisional):
+#   steps_per_unit: 8
+#   files_per_unit: 12
+#   findings_per_unit: 16
+#
+# Example (adjust ceilings for your project):
+# steps_per_unit: 10
+# files_per_unit: 15
+# findings_per_unit: 20
