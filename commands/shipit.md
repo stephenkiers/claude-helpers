@@ -432,9 +432,9 @@ Then also run the **"Detect layout"** block from `~/.claude/prompts/worktree-ref
 # The early plan is the only cache reader here; it ignores a cache that does not describe this branch.
 BRANCH=$(git branch --show-current)
 [ -s "$EARLY_PLAN_FILE" ] || { printf '%s\n' "ERROR: EARLY_PLAN_FILE lost before reading issue_number" >&2; exit 1; }
-ISSUE_REF=$(jq -r '.issue_number // empty' < "$EARLY_PLAN_FILE" 2>/dev/null)
-if [ -z "$ISSUE_REF" ]; then
-  ISSUE_REF=$(echo "$BRANCH" | grep -oE '^[0-9]+' || echo "")
+ISSUE_NUM=$(jq -r '.issue_number // empty' < "$EARLY_PLAN_FILE" 2>/dev/null)
+if [ -z "$ISSUE_NUM" ]; then
+  ISSUE_NUM=$(echo "$BRANCH" | grep -oE '^[0-9]+' || echo "")
 fi
 
 if [ "$STACK_IS_STACKED" != "true" ]; then
@@ -477,7 +477,7 @@ runs on the same PR. Gather:
 - **Title**: a concise (<70 char), imperative summary of the whole branch's diff — same register as
   a commit subject (`add X`, `fix Y`, `rewrite Z`), not a restatement of the last commit alone.
   Assign it to `$TITLE`.
-- **Why this PR exists**: if `$ISSUE_REF` is set, read the linked issue through the helper (`issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --trusted-only --format json`, parsed to extract the issue title and body). If `$ISSUE_REF` is not set, derive the
+- **Why this PR exists**: if `$ISSUE_NUM` is set, read the linked issue through the helper (`issue-comments fetch --issue "$ISSUE_NUM" --cwd "$CALLER_DIR" --trusted-only --format json`, parsed to extract the issue title and body). If `$ISSUE_NUM` is not set, derive the
   problem from the user's original request earlier in this conversation. 1-3 sentences on the problem/need being addressed.
 - **What it does**: a bulleted list of concrete behavior/code changes, derived from the `git log`
   / `git diff --stat` output above.
@@ -496,14 +496,14 @@ as if it will be public — don't restate secrets or non-public context.
 
 ### Handle new comments since plan (flow only)
 
-When `FLOW_DIR` is set and an issue number is available (`$ISSUE_REF`), call the helper with `--flow-dir` to check for unacknowledged trusted comments posted after the plan step fetched. The helper marks a comment `acknowledged` from the flow's `questions/*.json` and `answers/*.json` artifacts, so nothing else is tracked here:
+When `FLOW_DIR` is set and an issue number is available (`$ISSUE_NUM`), call the helper with `--flow-dir` to check for unacknowledged trusted comments posted after the plan step fetched. The helper marks a comment `acknowledged` from the flow's `questions/*.json` and `answers/*.json` artifacts, so nothing else is tracked here:
 
 ```bash
 NEW_COMMENT_ID=""
-if [[ -n "$FLOW_DIR" && -n "$ISSUE_REF" ]]; then
+if [[ -n "$FLOW_DIR" && -n "$ISSUE_NUM" ]]; then
   CALLER_DIR=$(pwd)
   source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"
-  NEW_COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --trusted-only --flow-dir "$FLOW_DIR" --format json 2>/dev/null) || NEW_COMMENTS_JSON=""
+  NEW_COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_NUM" --cwd "$CALLER_DIR" --trusted-only --flow-dir "$FLOW_DIR" --format json 2>/dev/null) || NEW_COMMENTS_JSON=""
   # The first unacknowledged trusted comment
   if [[ -n "$NEW_COMMENTS_JSON" ]]; then
     NEW_COMMENT_ID=$(printf '%s' "$NEW_COMMENTS_JSON" | jq -r '[.comments[] | select(.trust == "trusted" and .acknowledged == false and .kind != "implementation_plan") | .id] | .[0] // empty')
@@ -551,9 +551,9 @@ Once you've written that real content to `$TMP_BODY`, continue:
 
 ```bash
 # Prepend "Closes #N" if issue is set
-if [ -n "$ISSUE_REF" ]; then
+if [ -n "$ISSUE_NUM" ]; then
   {
-    echo "Closes #$ISSUE_REF"
+    echo "Closes #$ISSUE_NUM"
     echo ""
     cat "$TMP_BODY"
   } > "${TMP_BODY}.with-issue"
