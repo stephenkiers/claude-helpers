@@ -810,11 +810,26 @@ with tempfile.TemporaryDirectory() as tmp:
     # answers.jsonl is never read
     (flow / "answers.jsonl").write_text(json.dumps({"question_id": "q6", "answer": "Continue"}) + "\n")
     write_pair("STEP-6.json", {"id": "q6", "comment_id": "c6"}, None)
+    # Free text (not the exact label) -> not acknowledged
+    write_pair("STEP-7.json", {"id": "q7", "comment_id": "c7"},
+               {"answers": {"q7": "Let me think about it first"}})
+    # Other (free text via the Other option) -> not acknowledged
+    write_pair("STEP-8.json", {"id": "q8", "comment_id": "c8"},
+               {"answers": {"q8": {"disposition": "answered", "value": "Other", "label": "Other"}}})
+    # Near-miss label (missing the em dash clause) -> not acknowledged
+    write_pair("STEP-9.json", {"id": "q9", "comment_id": "c9"},
+               {"answers": {"q9": "Continue"}})
+    # multiSelect list answer, even containing the exact label -> not acknowledged
+    write_pair("STEP-10.json", {"id": "q10", "comment_id": "c10"},
+               {"answers": {"q10": ["Continue — the plan stands"]}})
+    # Exact label as an answered dict value -> acknowledged
+    write_pair("STEP-11.json", {"id": "q11", "comment_id": "c11"},
+               {"answers": {"q11": {"disposition": "answered", "value": "Continue — the plan stands"}}})
 
     acked = issue_comments.load_acknowledged_ids(flow)
     h.test_result(
-        "only non-Stop answered questions acknowledge their comment (c1 only)",
-        acked == ["c1"],
+        "only exact Continue answers acknowledge their comment (c1 and c11)",
+        acked == ["c1", "c11"],
         f"got {acked}"
     )
     h.test_result(

@@ -79,7 +79,7 @@ Post-plan consumers (implement, fix, review, ship, and the orchestrator's pre-me
 
 The option labels are exact: `CONTINUE_LABEL` = `"Continue — the plan stands"` (em dash). A `multiSelect` answer or a label other than these two is treated as Stop.
 
-**Under `--auto-merge`** the pre-merge check still raises this Ask, and a Stop halts the merge. **Under `--fleet`** the Ask parks as `fleet-ask.json` instead of being asked; the fleet resumes the ticket with the answer, so each comment is raised once (ack-from-artifacts). A repeated ask under `--fleet` parks again only when the previous answer was not Continue.
+**Under `--auto-merge`** the pre-merge check still raises this Ask when comments are available, and a Stop halts the merge. **Under `--fleet`** the Ask parks as `fleet-ask.json` instead of being asked; the fleet resumes the ticket with the answer, so each comment is raised once (ack-from-artifacts). A repeated ask under `--fleet` parks again only when the previous answer was not Continue.
 
 **Outside a flow** (`FLOW_DIR` empty), do not ask. Show the new comments and counts in the step's output.
 
@@ -94,7 +94,7 @@ Planning reads unverified comments. When the fetch output has `relevance_filter.
 
 **Fail closed.** An unverified comment is kept only by an explicit, valid `include` verdict for its id. A missing verdict file, invalid JSON, a missing id, an unknown verdict value, or an unknown reason is a drop. Trusted comments are never subject to verdicts. Finalize re-applies the budgets after dropping. Re-running `finalize` on the same inputs gives the same output.
 
-The planner's markdown is rendered from the finalized result (`finalize --format markdown`) when the filter ran. When it did not run, the markdown comes from a separate `fetch --format markdown` call (the CLI has no render-from-file subcommand).
+The planner's markdown is always rendered from the saved `issue-comments.json` with `finalize --format markdown`. When the filter ran, it is passed the scout verdicts directory. When it did not run, it is passed an empty temp directory, which keeps the policy off so every unverified comment is rendered as fetched. There is no second fetch.
 
 ## Consumers
 
@@ -105,7 +105,7 @@ The planner's markdown is rendered from the finalized result (`finalize --format
 | `/expert-review` (in-flow; post-plan) | "new comment since plan" Ask | Helper `--trusted-only` + `--flow-dir`; the Ask procedure above with `STEP_NAME` = `review` |
 | `/shipit` (in-flow; post-plan) | "new comment since plan" Ask + reasoning reader ("Why this PR exists") | Helper `--trusted-only` (`--flow-dir` for the Ask); body-only use for PR body synthesis; the Ask runs before the PR is created |
 | `/expert-is-it-done` | reasoning reader + human report | Helper `--trusted-only` to agents; unverified shown to the human as counts and authors |
-| `/expert-flow` orchestrator (pre-merge check) | metadata reader + pre-merge check | Metadata reads stay as they are; pre-merge helper check with `--trusted-only` + `--flow-dir`; the Ask procedure above; the relay strips `comment_id`; a Stop halts the merge even under `--auto-merge` |
+| `/expert-flow` orchestrator (pre-merge check) | metadata reader + pre-merge check | Metadata reads stay as they are; pre-merge helper check with `--trusted-only` + `--flow-dir`; the Ask procedure above; the relay strips `comment_id`; a Stop halts the merge, even under `--auto-merge`, when comments are available |
 | `/expert-plan-deprecated`, `/expert-plan-deprecated-v2` | (none) | Deprecated planners do not read issue comments at all (title, body and labels only); not in-flow |
 | `/track-and-start` `:463` (worktree-only), `:1230` (pivot body fetch), `:981`, `:1024`, `:1258` | mechanical reader (branch name, verbatim archival, state and URL validation) | Body/metadata only, deliberately. These reads never feed reasoning, and archiving must copy the body verbatim |
 | `/track-and-start` Step 4d (`:1060-1120`) | plan-comment **writer** (`## Superseded Plan`) | Unchanged; keeps writing. The marker literal must equal `SUPERSEDED_PLAN_MARKER` (test-pinned). Its comments set the watermark outside a flow and are dropped read-side; inside a flow, post-plan steps use the plan fetch time instead |

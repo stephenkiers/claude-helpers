@@ -396,7 +396,7 @@ With the `/expert-flow` helper for reading GitHub issue comments (ticket #401), 
 **Mitigations** (what they do and do not do):
 - Trust tier boundaries (OWNER/COLLABORATOR vs. unverified)
 - `--trusted-only` everywhere except the in-flow plan step
-- Comment text is fenced where it is shown to a scout or an Ask. This is a presentation convention, not a machine-enforced boundary; no nonce fence is implemented.
+- Comment text is fenced where it is shown to the planner: `render_markdown` wraps the comments block in a per-render nonce fence (`<<<COMMENT-{nonce}` ... `<<<COMMENT-{nonce}>>>>`, regenerated until the nonce appears in no body) and quotes every unverified body line. This is a presentation convention, not a machine-enforced boundary; scout batch files are plain JSON and are not fenced.
 - Haiku scouts on long unverified threads, fail closed: an unverified comment reaches the planner only by an explicit, valid `include` verdict for its id. A missing, malformed, or unknown verdict drops it. Scouts limit volume; they do not sanitise the text of the comments they include. Threads under the filter threshold reach the plan orchestrator unfiltered.
 
 Unverified comment text deliberately reaches planning, the one step that is still unrestricted and full-capability. That is the accepted placement (per ticket decision W1), not a reduction of the attack surface; the boundary enforcement that closes it is pending (#359/#360, restricting the remaining general-purpose steps).

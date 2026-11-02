@@ -57,10 +57,6 @@ MAX_SCOUTS = 6  # Maximum concurrent scout batches
 # Clip marker appended to a body cut at PER_COMMENT_CHAR_CAP (matched for idempotent clipping)
 _CLIP_MARKER_RE = re.compile(r"\n\[clipped [0-9]+ chars\]$")
 
-# Answer text that means "stop" (the only non-acknowledging answer)
-_STOP_RE = re.compile(r"Stop\b")
-_LETTER_PREFIX_RE = re.compile(r"^[A-Za-z]\s+-\s+")
-
 _EPOCH_UTC = datetime.min.replace(tzinfo=timezone.utc)
 
 
@@ -549,38 +545,31 @@ def _question_comment_ids(question_data: Any) -> Dict[str, str]:
     return mapping
 
 
-def _answered_texts(entry: Any) -> Optional[List[str]]:
+def _is_continue_answer(entry: Any) -> bool:
     """
-    Return the answer texts for one answer entry, or None if it is not an answer.
+    True only when one recorded answer is exactly CONTINUE_LABEL.
 
-    A plain string is an answer. A dict is an answer only if its disposition (when present)
-    is "answered" and its value is a non-empty string; the label is also returned so a
-    "Stop" label is caught the same way as a "Stop" value.
+    A plain string must equal CONTINUE_LABEL. A dict answer must have disposition "answered"
+    (when present), a value equal to CONTINUE_LABEL, and a label (when present) equal to
+    CONTINUE_LABEL too. Everything else is not an ack: free text, "Other", near-miss or Stop
+    labels, a multiSelect list, a null value, or a non-answer disposition.
     """
     if isinstance(entry, str):
-        return [entry] if entry.strip() else None
+        return entry == CONTINUE_LABEL
     if not isinstance(entry, dict):
-        return None
+        return False
     if "disposition" in entry and entry.get("disposition") != "answered":
-        return None
-    value = entry.get("value")
-    if not isinstance(value, str) or not value.strip():
-        return None
-    texts = [value]
-    label = entry.get("label")
-    if isinstance(label, str) and label.strip():
-        texts.append(label)
-    return texts
+        return False
+    if entry.get("value") != CONTINUE_LABEL:
+        return False
+    if "label" in entry and entry.get("label") != CONTINUE_LABEL:
+        return False
+    return True
 
 
-def _is_stop(text: str) -> bool:
-    """True when an answer text means Stop, with or without a leading 'X - ' letter prefix."""
-    return bool(_STOP_RE.match(_LETTER_PREFIX_RE.sub("", text.strip(), count=1)))
-
-
-def _answers_by_question(answer_data: Any) -> Dict[str, List[str]]:
-    """Map casefolded question id -> answer texts, from the 'answers' or 'items' object of an answers file."""
-    result: Dict[str, List[str]] = {}
+def _answers_by_question(answer_data: Any) -> Dict[str, Any]:
+    """Map casefolded question id -> raw answer entry, from the 'answers' or 'items' object of an answers file."""
+    result: Dict[str, Any] = {}
     if not isinstance(answer_data, dict):
         return result
     container = answer_data.get("answers")
@@ -589,11 +578,8 @@ def _answers_by_question(answer_data: Any) -> Dict[str, List[str]]:
     if not isinstance(container, dict):
         return result
     for key, entry in container.items():
-        if not isinstance(key, str):
-            continue
-        texts = _answered_texts(entry)
-        if texts is not None:
-            result[key.casefold()] = texts
+        if isinstance(key, str):
+            result[key.casefold()] = entry
     return result
 
 
@@ -603,8 +589,9 @@ def load_acknowledged_ids(flow_dir: Optional[Path]) -> List[str]:
 
     Pairs each questions/<name>.json with answers/<name>.json (same file name). A question
     carries a comment_id, and its answer is matched by question id (case-insensitive). A
-    comment is acknowledged when its question was answered with anything other than "Stop".
-    Only "Stop" is a non-ack. No new store is read; answers.jsonl is not used.
+    comment is acknowledged only when its question was answered with exactly CONTINUE_LABEL
+    (see _is_continue_answer). Free text, "Other", near-miss or Stop labels, multiSelect lists,
+    and unanswered questions are not acks. No new store is read; answers.jsonl is not used.
 
     Defensive: missing dirs, corrupt JSON, or missing fields mean "not acknowledged" (no crash).
     Returns a deduplicated list of comment ids in file order.
@@ -632,8 +619,7 @@ def load_acknowledged_ids(flow_dir: Optional[Path]) -> List[str]:
         comment_ids = _question_comment_ids(question_data)
         answers = _answers_by_question(answer_data)
         for qid, comment_id in comment_ids.items():
-            texts = answers.get(qid)
-            if texts is None or any(_is_stop(t) for t in texts):
+            if qid not in answers or not _is_continue_answer(answers[qid]):
                 continue
             if comment_id not in acknowledged:
                 acknowledged.append(comment_id)

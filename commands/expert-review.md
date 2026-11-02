@@ -594,7 +594,7 @@ if [[ -n "$FLOW_DIR" ]]; then
     NEW_COMMENTS_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" --trusted-only --flow-dir "$FLOW_DIR" --format json 2>/dev/null) || NEW_COMMENTS_JSON=""
     # The first unacknowledged trusted comment
     if [[ -n "$NEW_COMMENTS_JSON" ]]; then
-      NEW_COMMENT_ID=$(printf '%s' "$NEW_COMMENTS_JSON" | jq -r '[.comments[] | select(.trust == "trusted" and .acknowledged == false) | .id] | .[0] // empty')
+      NEW_COMMENT_ID=$(printf '%s' "$NEW_COMMENTS_JSON" | jq -r '[.comments[] | select(.trust == "trusted" and .acknowledged == false and .kind != "implementation_plan") | .id] | .[0] // empty')
     fi
   fi
 fi

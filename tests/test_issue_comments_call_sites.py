@@ -283,6 +283,24 @@ for doc_path in ASK_CONSUMER_DOCS:
     )
 
 # ==============================================================================
+# TEST: New-comment jq filters never raise the implementation-plan comment
+# ==============================================================================
+print("\n[New Comment Filters Exclude implementation_plan]")
+
+NEW_COMMENT_FILTER_DOCS = [
+    "commands/implement-with-haiku.md",
+    "commands/expert-review.md",
+    "commands/shipit.md",
+]
+for doc_path in NEW_COMMENT_FILTER_DOCS:
+    text = read(doc_path)
+    h.test_result(
+        f"{doc_path}: new-comment filter excludes kind implementation_plan",
+        'select(.trust == "trusted" and .acknowledged == false and .kind != "implementation_plan")' in text,
+        "new-comment jq filter does not exclude implementation_plan",
+    )
+
+# ==============================================================================
 # TEST: Acknowledgement is resolved from artifacts (no answers.jsonl, no ack file)
 # ==============================================================================
 print("\n[Acknowledgement From Existing Artifacts]")

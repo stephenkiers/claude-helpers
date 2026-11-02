@@ -457,7 +457,10 @@ if [ -n "$COMMENTS_JSON" ]; then
   if [ "$RELEVANCE_FILTER_REQ" = "true" ]; then
     COMMENTS_MARKDOWN=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments finalize --fetched "$SESSION_DIR/issue-comments.json" --verdicts "$SCOUT_DIR/verdicts" --format markdown 2>/dev/null) || COMMENTS_MARKDOWN=""
   else
-    COMMENTS_MARKDOWN=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch --issue "$ISSUE_REF" --cwd "$CALLER_DIR" $FLOW_DIR_FLAG $ALLOW_OTHER_REPO_FLAG --format markdown 2>/dev/null) || COMMENTS_MARKDOWN=""
+    # No scout ran: render the saved fetch. An empty verdicts dir keeps the policy off, so every unverified comment is rendered as fetched.
+    EMPTY_VERDICTS=$(mktemp -d)
+    COMMENTS_MARKDOWN=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments finalize --fetched "$SESSION_DIR/issue-comments.json" --verdicts "$EMPTY_VERDICTS" --format markdown 2>/dev/null) || COMMENTS_MARKDOWN=""
+    rmdir "$EMPTY_VERDICTS" 2>/dev/null
   fi
   if [ -n "$COMMENTS_MARKDOWN" ]; then
     printf '\n%s\n' "$COMMENTS_MARKDOWN" >> "$SESSION_DIR/context.md"
@@ -465,7 +468,7 @@ if [ -n "$COMMENTS_JSON" ]; then
 fi
 ```
 
-The unfiltered branch still makes a second call (the CLI has no render-from-file subcommand), so its markdown can differ from `issue-comments.json` if a comment is posted between the two calls.
+Both branches render from the saved `issue-comments.json`, so the planner's markdown matches the fetch the helper filtered and no second fetch is made; a comment posted after the fetch is not shown to this planner.
 
 Inside a flow, write `${FLOW_DIR}/plan-comment-ids.json` (union on redo) and `${FLOW_DIR}/plan-issue-snapshot.json` (only if absent). Build the snapshot with one `jq -n --arg/--argjson` call per variable so invalid JSON fails loudly (a corrupt snapshot will cause the helper's `load_plan_fetch` to treat it as an error on resume):
 

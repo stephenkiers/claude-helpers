@@ -1069,7 +1069,7 @@ This amendment adds the third bounded exception to the no-auto-remediation stanc
    - Two options, exact labels: **Continue — the plan stands** or **Stop for re-plan**. A free-text answer or any other label is a Stop.
 3. Waits for the answer (END TURN). The orchestrator records the human's answer in the flow's human ledger (background `answer`, the only ledger entry this relay writes). Comments are never ledger records.
 4. Re-runs the procedure on resume; the next comment is raised, or the step continues.
-5. A Stop answer is a hard stop: the step writes `Decision: FAILED` with `Reason: stopped on new issue comment <id>`. Under `--auto-merge`, a Stop halts the merge. The comment stays unacknowledged, so a later Retry or `--resume` raises it again.
+5. A Stop answer is a hard stop: the step writes `Decision: FAILED` with `Reason: stopped on new issue comment <id>`. Under `--auto-merge`, when comments are available, a Stop halts the merge. The comment stays unacknowledged, so a later Retry or `--resume` raises it again.
 
 **Acknowledgement is resolved from existing artifacts.** The helper treats a comment as acknowledged when some `${FLOW_DIR}/questions/<STEP>-<SEQ>.json` entry carries that `comment_id` and the matching `${FLOW_DIR}/answers/<STEP>-<SEQ>.json` answer is Continue. There is no `answers.jsonl` and no separate acknowledgement file. Because the answers are the flow's own artifacts, a comment answered Continue is raised once per flow, including across Retry, `--resume` and `--fleet`.
 
