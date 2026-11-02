@@ -433,7 +433,7 @@ top of the base allowlist.
 
 ## Amendment: Phase 6 rebase skip when base is already an ancestor (#420)
 
-**Status:** Accepted (2026-11-02). Phase 6 skips `git rebase` when `origin/<base>` is already an ancestor of HEAD, logs a stderr line and a `rebase_skipped` queue event, and goes straight to the gate. This matches Decision 3, because the gate still runs on the freshly fetched base plus the PR. On the skip path `tested_sha == orig_head == lease_sha`, so the audited `force_push_tested` push in Phase 8 is a no-op, the same state an already-current linear branch reaches today; it remains the only push site. The Phase 9 base-unchanged re-check stays mandatory as the backstop. Decision 5's body is unchanged; a branch that merged an older base still takes the replaying rebase (tracked as a follow-up).
+**Status:** Accepted (2026-11-02). Phase 6 skips `git rebase` when `origin/<base>` is already an ancestor of HEAD, logs a stderr line and a `rebase_skipped` queue event, and goes straight to the gate. On the skip path the rebase result and the pre-rebase tip are the same commit, so Decision 5's tested-commit recovery applies unchanged, and `tested_sha == orig_head == lease_sha` makes the audited `force_push_tested` push in Phase 8 a no-op (the same state an already-current linear branch reaches; it remains the only push site). This matches Decision 3, because the gate still runs on the base plus the PR, and HEAD's tree equals base plus the PR's net diff, the same tree the squash lands. The Phase 9 base-unchanged re-check stays mandatory as the backstop. A branch that merged an older base still takes the replaying rebase (tracked as a follow-up).
 
 ## Follow-ups
 

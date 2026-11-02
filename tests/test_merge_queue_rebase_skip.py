@@ -33,14 +33,14 @@ def _write_and_commit(fixture, cwd, filename, message):
 
 
 def _setup_repo():
-    """Return (fixture, branch_worktree, base_sha_A) with hermetic repo config."""
+    """Return (fixture, branch_worktree) with hermetic repo config."""
     fixture = GitFixture()
     fixture._run_git(["config", "commit.gpgsign", "false"], cwd=fixture.repo_root)
     fixture._run_git(["config", "core.hooksPath", "/dev/null"], cwd=fixture.repo_root)
-    sha_a = fixture.create_initial_commit("A")
+    fixture.create_initial_commit("A")
     fixture.create_branch("feature")
     wt = fixture.create_worktree("feature")
-    return fixture, wt, sha_a
+    return fixture, wt
 
 
 def _run_phase_rebase(wt, config):
@@ -62,14 +62,28 @@ def _run_phase_rebase(wt, config):
 config = MergeQueueConfig(base="main", steps=[], mutation_timeout_secs=60)
 
 # Case 1: branch contains a merge of origin/main -> skip, no rebase
-fixture, wt, sha_a = _setup_repo()
+fixture = None
 try:
+    fixture, wt = _setup_repo()
     _write_and_commit(fixture, wt, "b.txt", "b")
     sha_c = _write_and_commit(fixture, fixture.repo_root, "c.txt", "C")
     fixture._run_git(["update-ref", "refs/remotes/origin/main", sha_c], cwd=fixture.repo_root)
     fixture._run_git(["merge", "--no-edit", "main"], cwd=wt)
     _write_and_commit(fixture, wt, "d.txt", "d")
     head_before = fixture.get_head_sha(cwd=wt)
+
+    # Precondition: origin/main is an ancestor of HEAD, and the branch contains a
+    # two-parent merge commit (HEAD itself is the commit after that merge).
+    merge_line = fixture._run_git(["rev-list", "--parents", "-n1", "--merges", "HEAD"], cwd=wt).split()
+    test_result(
+        "(1) Case 1 precondition: origin/main is ancestor of HEAD",
+        merge_queue.git.is_ancestor("origin/main", "HEAD", cwd=wt),
+    )
+    test_result(
+        "(1) Case 1 precondition: branch contains a two-parent merge",
+        len(merge_line) == 3,
+        f"rev-list --parents --merges={merge_line}",
+    )
 
     result, argvs, events = _run_phase_rebase(wt, config)
     head_after = fixture.get_head_sha(cwd=wt)
@@ -87,11 +101,13 @@ try:
         f"events={events}",
     )
 finally:
-    fixture.cleanup()
+    if fixture is not None:
+        fixture.cleanup()
 
 # Case 2: origin/main has a commit the branch lacks -> rebase still runs
-fixture, wt, sha_a = _setup_repo()
+fixture = None
 try:
+    fixture, wt = _setup_repo()
     _write_and_commit(fixture, wt, "b.txt", "b")
     sha_c = _write_and_commit(fixture, fixture.repo_root, "c.txt", "C")
     fixture._run_git(["update-ref", "refs/remotes/origin/main", sha_c], cwd=fixture.repo_root)
@@ -118,7 +134,8 @@ try:
         f"events={events}",
     )
 finally:
-    fixture.cleanup()
+    if fixture is not None:
+        fixture.cleanup()
 
 print()
 h.summarize_and_exit()

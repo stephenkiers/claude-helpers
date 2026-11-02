@@ -1867,8 +1867,10 @@ def _phase_rebase(
     # ADR-0021 Decision 3: the skip still runs the gate on base plus the PR.
     # Push: tested_sha == orig_head == lease_sha, so the audited force_push_tested
     # push (Phase 8) is a no-op, the same state linear up-to-date branches reach.
-    # Errors: CalledProcessError means "not an ancestor" and falls through to the
-    # rebase. Any other error propagates on purpose and fails closed.
+    # Errors: is_ancestor returns False for exit 1 ("not an ancestor"). Any other
+    # CalledProcessError (e.g. 128 for a bad ref) also reads as False and falls
+    # through to the rebase, which surfaces the real error. Non-CalledProcessError
+    # exceptions propagate on purpose and fail closed.
     if git.is_ancestor(f"origin/{config.base}", "HEAD", cwd=cwd):
         print(
             f"merge-queue: PR #{pr}: rebase skipped: origin/{config.base} is already an ancestor of HEAD",
