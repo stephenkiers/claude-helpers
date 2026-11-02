@@ -297,14 +297,17 @@ def main() -> None:
         type=int,
         help="Timeout per check in seconds (default: SHIPIT_CHECK_TIMEOUT_SECS, then the cache's checkTimeoutSecs, then 300)"
     )
+    checks_run_parser.add_argument(
+        "--base",
+        help="Base ref for the attested run (e.g. origin/main); required to record attestation"
+    )
 
     checks_receipt_parser = checks_subparsers.add_parser(
         "receipt", help="Write or verify the check receipt that lets merge skip re-running /shipit's checks"
     )
     checks_receipt_sub = checks_receipt_parser.add_subparsers(dest="receipt_action")
-    receipt_write_parser = checks_receipt_sub.add_parser("write", help="Record that checks passed at HEAD")
+    receipt_write_parser = checks_receipt_sub.add_parser("write", help="Record that checks passed at HEAD (reads attestation)")
     receipt_write_parser.add_argument("--worktree", default=".", help="Worktree directory (default: cwd)")
-    receipt_write_parser.add_argument("--base", required=True, help="Base ref the checks ran on top of, e.g. origin/main")
     receipt_verify_parser = checks_receipt_sub.add_parser("verify", help="Exit 0 if the receipt is still fresh")
     receipt_verify_parser.add_argument("--worktree", default=".", help="Worktree directory (default: cwd)")
 
@@ -647,11 +650,26 @@ def main() -> None:
                     # env value falls through to the cache value, then the default.
                     env_value = checks.env_timeout_secs()
                     timeout = env_value or repo_cache.check_timeout_secs or checks.DEFAULT_CHECK_TIMEOUT_SECS
+
+                # Record attestation before running checks
+                worktree = Path.cwd()
+                if args.base:
+                    att_ok, att_err = checks.record_check_attestation(
+                        worktree, repo_cache.commands, args.base, checks.CheckResults()
+                    )
+
                 result, err = checks.run_checks(
                     commands=repo_cache.commands,
                     repo_root=Path.cwd(),
                     timeout=timeout
                 )
+
+                # Update attestation with results
+                if args.base:
+                    att_ok, att_err = checks.record_check_attestation(
+                        worktree, repo_cache.commands, args.base, result
+                    )
+
                 print(json.dumps(result.to_dict()))
                 exit_code = 0
                 if err:
@@ -675,11 +693,11 @@ def main() -> None:
                 print(json.dumps({"fresh": False, "reason": "no readable repo-cache.json"}))
                 sys.exit(1)
             if args.receipt_action == "write":
-                ok, werr = checks.write_check_receipt(wt, receipt_cache.commands, args.base)
+                ok, werr = checks.write_check_receipt(wt, receipt_cache.commands)
                 print(json.dumps({"written": ok, "error": str(werr) if werr else None}))
                 sys.exit(0 if ok else 1)
             elif args.receipt_action == "verify":
-                fresh, reason = checks.check_receipt_fresh(wt, receipt_cache.commands)
+                fresh, reason = checks.check_receipt_fresh(wt, receipt_cache.commands, fetch=True)
                 print(json.dumps({"fresh": fresh, "reason": reason}))
                 sys.exit(0 if fresh else 1)
             else:

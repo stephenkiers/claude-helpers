@@ -833,7 +833,7 @@ def _run_merge_gate_checks(target_worktree: Path) -> Tuple[bool, bool, Optional[
 
     # /shipit just ran this exact gate on this exact tree and base: don't repeat it.
     # Any doubt (no/stale receipt, fetch failure) falls through to running the checks.
-    fresh, _reason = check_receipt_fresh(target_worktree, cache_data.commands)
+    fresh, _reason = check_receipt_fresh(target_worktree, cache_data.commands, fetch=True)
     if fresh:
         return True, True, None
 

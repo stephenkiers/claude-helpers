@@ -243,8 +243,6 @@ If `node_modules` missing (or `node_modules/.bun` for bun): run cached install c
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage run-checks >/dev/null 2>&1 || true
 ```
 
-**Skip if recently run:** If lint/typecheck/test were run earlier in this conversation and all passed, skip re-running them. Trust the prior results.
-
 Every non-null command in the cache runs — no exceptions. The canonical order is: `format → check`
 (composite, replaces `lint`+`typecheck` if present) `→ lint → typecheck → vet → test → build`, plus
 any other cached command key sorted deterministically between `test` and `build`. This is a literal
@@ -260,10 +258,14 @@ invoked from):
 ```bash
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
+# Resolve the default branch for the attestation
+DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+
 # Run checks via deterministic CLI. Exit codes: 0 = passed, 1 = a check failed,
 # 2 = nothing ran (empty/all-null cache) or a coverage-assertion violation.
 CACHE_JSON=$(cat .claude/repo-cache.json 2>/dev/null || echo '{}')
-CHECK_RESULT=$(printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks run -)
+CHECK_RESULT=$(printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks run - --base "origin/${DEFAULT_BRANCH}")
 CHECK_EXIT=$?
 CHECK_STATUS=$(printf '%s' "$CHECK_RESULT" | jq -r '.status // "unknown"')
 CHECK_EXECUTED=$(printf '%s' "$CHECK_RESULT" | jq -r '.executed // [] | join(", ")')
@@ -354,16 +356,17 @@ Write commit message:
 (The wrapper's modeling step handles this; the CLI just commits the message already written.)
 
 **Record the check receipt.** Once the commit exists, write the receipt that lets
-`/merge-and-cleanup` skip re-running the gate you just passed. It records the committed tree, the
-configured commands, and the base tip the checks ran on top of; merge reuses it only while all three
-still match (a moved base means a rebase may change the tree, so merge re-runs the checks then).
-Best-effort: a failure here only means merge re-runs the checks. Skip when this run's checks did not
-run (e.g. you skipped them as "recently run").
+`/merge-and-cleanup` skip re-running the gate you just passed. The receipt is written only from the
+attestation that the checks run recorded; it fails silently if the attestation was not recorded (e.g.,
+when checks failed or did not run), or if HEAD's tree differs from what the checks ran on. The receipt
+records the tree, configured commands, and base tip; merge reuses it only while all three still match
+(a moved base means a rebase may change the tree, so merge re-runs the checks then).
 
 ```bash
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || true
-DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
-PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks receipt write --worktree . --base "origin/${DEFAULT_BRANCH:-main}" >/dev/null 2>&1 || true
+if [ "$CHECK_EXIT" = "0" ]; then
+  PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks receipt write --worktree . >/dev/null 2>&1 || true
+fi
 ```
 
 ## 5. Push & PR
