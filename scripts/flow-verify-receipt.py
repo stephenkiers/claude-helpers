@@ -214,15 +214,27 @@ class LedgerUnreadable(LedgerLoad):
         self.detail = detail
 
 
+# D17: Cache the loaded flow-ledger module
+_cached_flow_ledger_module: Optional[object] = None
+
+
 def _load_flow_ledger_module() -> Optional[object]:
-    """Load flow-ledger.py module via importlib, next to this script."""
+    """Load flow-ledger.py module via importlib, next to this script. Cached after first load."""
+    global _cached_flow_ledger_module
+    if _cached_flow_ledger_module is not None:
+        return _cached_flow_ledger_module
+
     ledger_path = Path(__file__).parent / "flow-ledger.py"
     spec = importlib.util.spec_from_file_location("flow_ledger", ledger_path)
     if spec is None or spec.loader is None:
         return None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    try:
+        spec.loader.exec_module(module)
+        _cached_flow_ledger_module = module
+        return module
+    except Exception:
+        return None
 
 
 def load_ledger(flow_dir: Path) -> LedgerLoad:
@@ -249,20 +261,35 @@ def load_ledger(flow_dir: Path) -> LedgerLoad:
         # Convert to LedgerRecord tuples
         ledger_records: List[LedgerRecord] = []
         for r in records_list:
+            # D17: Index required keys; fail if missing
+            seq = r.get("seq")
+            ts = r.get("ts")
+            kind = r.get("kind")
+            step = r.get("step")
+            status = r.get("status")
+            text = r.get("text")
+            if seq is None or ts is None or kind is None or step is None or status is None or text is None:
+                return LedgerUnreadable("ledger record missing required field")
             rec = LedgerRecord(
-                seq=cast(int, r.get("seq", 0)),
-                ts=flow_log.parse_iso8601(cast(str, r.get("ts", ""))),
-                kind=cast(str, r.get("kind", "")),
-                step=cast(str, r.get("step", "")),
-                status=cast(str, r.get("status", "")),
-                text=cast(str, r.get("text", "")),
+                seq=cast(int, seq),
+                ts=flow_log.parse_iso8601(cast(str, ts)),
+                kind=cast(str, kind),
+                step=cast(str, step),
+                status=cast(str, status),
+                text=cast(str, text),
                 supersedes=cast(Optional[int], r.get("supersedes")),
             )
             ledger_records.append(rec)
         return LedgerRecords(tuple(ledger_records))
-    except Exception as e:
-        # Catch any exception from read_records or the module itself
+    except (LedgerReadError, OSError, ValueError) as e:  # D17: Catch specific exceptions
         return LedgerUnreadable(str(e))
+
+
+# D17: Define LedgerReadError (imported from flow-ledger)
+try:
+    from flow_ledger import LedgerReadError  # type: ignore
+except ImportError:
+    LedgerReadError = Exception  # type: ignore
 
 
 def parse_addressed(receipt_text: str) -> AddressedLine:
@@ -314,22 +341,34 @@ def parse_addressed(receipt_text: str) -> AddressedLine:
             return AddressedMalformed(f"non-integer token: {part!r}")
         seqs_set.add(int(part))
 
+    # D16: Return AddressedMalformed when no token was parsed (empty or comma-only)
+    if not seqs_set:
+        return AddressedMalformed("no sequence numbers found")
+
     return AddressedSeqs(frozenset(seqs_set))
 
 
 def ledger_format_of(flow_dir: Path) -> Optional[int]:
     """Read ledger_format from flow_dir/state.json.
 
-    Returns None if not present, the integer value if present.
+    Returns None if the key is absent. Returns the integer value if present and valid.
+    For flows where human.jsonl exists (D7: fail closed at ledger_format >= 1), a corrupt
+    or wrongly typed state.json surfaces as None only if the key is absent; malformed
+    state surfaces as None (will be caught as an error when ledger_format >= 1 and human.jsonl exists).
     """
     state_file = flow_dir / "state.json"
     try:
         if state_file.exists():
             data = json.loads(state_file.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                fmt = data.get("ledger_format")
-                if fmt is not None and isinstance(fmt, int):
-                    return fmt
+                if "ledger_format" in data:
+                    fmt = data.get("ledger_format")
+                    if isinstance(fmt, int):
+                        return fmt
+                    # Malformed state: key present but not int; return None
+                    return None
+                # Key absent: return None
+                return None
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         pass
     return None
@@ -348,8 +387,8 @@ def _normalize_quote(text: str) -> str:
     text = unicodedata.normalize("NFKC", text)
     # Casefold
     text = text.casefold()
-    # Smart quotes to straight
-    text = text.replace("'", "'").replace("'", "'").replace(""", '"').replace(""", '"')
+    # Smart quotes to straight (D5: use explicit curly-quote escapes)
+    text = text.replace("‘", "'").replace("’", "'").replace("“", '"').replace("”", '"')
     # Strip markdown emphasis and backticks
     text = re.sub(r"[*_`]", "", text)
     # Collapse whitespace
@@ -409,26 +448,22 @@ def references_seq(decisions_text: str, record: LedgerRecord) -> bool:
         if re.search(pattern, entry, re.IGNORECASE):
             return True
 
-        # Check for quote match
+        # Check for quote match (D4: use sliding 20-char window)
         record_text = record.text
         norm_record = _normalize_quote(record_text)
         norm_entry = _normalize_quote(entry)
 
-        if len(record_text) < QUOTE_MIN_LENGTH:
+        # D4: Branch once on normalized length
+        if len(norm_record) < QUOTE_MIN_LENGTH:
             # Must match whole
             if norm_record in norm_entry:
                 return True
         else:
-            # Must have 20+ character substring match
-            if len(norm_record) >= QUOTE_MIN_LENGTH:
-                if norm_record in norm_entry:
+            # Must have 20+ character substring match (use sliding window)
+            for i in range(len(norm_record) - QUOTE_MIN_LENGTH + 1):
+                substring = norm_record[i:i + QUOTE_MIN_LENGTH]
+                if substring in norm_entry:
                     return True
-            else:
-                # Find longest contiguous substring of norm_record in norm_entry
-                for i in range(len(norm_record) - QUOTE_MIN_LENGTH + 1):
-                    substring = norm_record[i:i + QUOTE_MIN_LENGTH]
-                    if substring in norm_entry:
-                        return True
 
     return False
 
@@ -462,12 +497,25 @@ def owed_seqs(records: Tuple[LedgerRecord, ...], step: str, step_begin_ts: float
         if record.ts > step_begin_ts:
             continue
 
-        # Determine effective kind
+        # Determine effective kind (D3: resolve correction chain to non-correction)
         effective_kind = record.kind
         if record.kind == "correction" and record.supersedes is not None:
-            superseded = records_by_seq.get(record.supersedes)
-            if superseded:
-                effective_kind = superseded.kind
+            # Follow the chain to the non-correction kind
+            current_seq: Optional[int] = record.supersedes
+            chain_resolved = False
+            while current_seq is not None:
+                superseded = records_by_seq.get(current_seq)
+                if superseded is None:
+                    # Chain broken; reject
+                    break
+                if superseded.kind != "correction":
+                    effective_kind = superseded.kind
+                    chain_resolved = True
+                    break
+                current_seq = superseded.supersedes
+            if not chain_resolved:
+                # Chain ended without finding non-correction; skip this record
+                continue
 
         # Only direction and question kinds are owed
         if effective_kind not in ("direction", "question"):
@@ -1127,6 +1175,33 @@ def _check_excerpt_validity(
 
 
 # Post-tier ledger handle: a D/W/Q letter followed by digits (D1, W1, Q1, ...).
+# D2: Helper to get step_begin_ts with error handling
+def _step_begin_ts(flow_dir: Optional[Path], step: str) -> Tuple[float, Optional[str]]:
+    """Get step_begin_ts from flow_dir/log.md for ledger binding checks.
+
+    Returns (timestamp, error_reason). error_reason is None on success.
+    On failure, returns (0.0, error_reason) - the error should be used to fail closed
+    at ledger_format >= 1.
+    """
+    if flow_dir is None:
+        return (0.0, None)
+
+    log_file = flow_dir / "log.md"
+    if not log_file.exists():
+        return (0.0, None)
+
+    try:
+        log_ts, _ = flow_log.newest_attempt_start_detail(log_file, step)
+        if log_ts:
+            try:
+                return (flow_log.parse_iso8601(log_ts), None)
+            except ValueError as e:
+                return (0.0, f"cannot parse step begin timestamp: {e}")
+        return (0.0, None)
+    except (flow_log.FlowLogError, flow_log.MalformedLineError) as e:
+        return (0.0, f"cannot read step begin from log: {e}")
+
+
 _LEDGER_HANDLE_RE = re.compile(r"[DWQ]\d+")
 
 
@@ -1800,8 +1875,11 @@ def _check_ledger_in_receipt(receipt_text: str, flow_dir: Optional[Path], step: 
         seqs_str = ", ".join(str(s) for s in sorted_missing)
         return REASON_DIRECTION_UNADDRESSED.format(seqs=seqs_str)
 
-    # For plan step only: check that each owed seq is referenced in decisions.md
-    if step == "plan" and decisions_text is not None:
+    # For plan step only: check that each owed seq is referenced in decisions.md (D11)
+    if step == "plan":
+        # D11: Treat None decisions_text as an error; report only unreferenced seqs
+        if decisions_text is None:
+            return "plan step ledger check: decisions.md not available"
         for seq in owed:
             if seq in records_by_seq:
                 rec = records_by_seq[seq]
@@ -2002,18 +2080,17 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
         reason += ")"
         return reason
 
-    # Step 4: Check ledger binding (after artifact checks)
-    if flow_dir is not None:
-        # Get step_begin_ts from log.md
-        step_begin_ts: float = 0.0
-        try:
-            log_ts, _ = flow_log.newest_attempt_start_detail(flow_dir / "log.md", "plan")
-            if log_ts:
-                step_begin_ts = flow_log.parse_iso8601(log_ts)
-        except (flow_log.FlowLogError, flow_log.MalformedLineError):
-            pass
+    # Step 4: Check ledger binding (after artifact checks; D2: use _step_begin_ts helper)
+    # D14: Guard the ledger check on Decision == "OK"
+    decision = parse_receipt_field(receipt, "Decision")
+    if decision == "OK" and flow_dir is not None:
+        step_ts, ts_err = _step_begin_ts(flow_dir, "plan")
+        fmt = ledger_format_of(flow_dir)
+        # D2: Fail closed at ledger_format >= 1 if we can't resolve begin timestamp
+        if fmt is not None and fmt >= 1 and ts_err is not None:
+            return f"cannot verify ledger binding: {ts_err}"
 
-        ledger_reason = _check_ledger_in_receipt(receipt, flow_dir, "plan", step_begin_ts, decisions_text)
+        ledger_reason = _check_ledger_in_receipt(receipt, flow_dir, "plan", step_ts, decisions_text)
         if ledger_reason:
             return ledger_reason
 
@@ -2074,18 +2151,17 @@ def check_review(receipt_file: Path, since: float, home: Path, flow_dir: Optiona
         reason += ")"
         return reason
 
-    # Step 4: Check ledger binding (after artifact checks)
-    if flow_dir is not None:
-        # Get step_begin_ts from log.md
-        step_begin_ts: float = 0.0
-        try:
-            log_ts, _ = flow_log.newest_attempt_start_detail(flow_dir / "log.md", "review")
-            if log_ts:
-                step_begin_ts = flow_log.parse_iso8601(log_ts)
-        except (flow_log.FlowLogError, flow_log.MalformedLineError):
-            pass
+    # Step 4: Check ledger binding (after artifact checks; D2: use _step_begin_ts helper)
+    # D14: Guard the ledger check on Decision == "OK"
+    decision = parse_receipt_field(receipt, "Decision")
+    if decision == "OK" and flow_dir is not None:
+        step_ts, ts_err = _step_begin_ts(flow_dir, "review")
+        fmt = ledger_format_of(flow_dir)
+        # D2: Fail closed at ledger_format >= 1 if we can't resolve begin timestamp
+        if fmt is not None and fmt >= 1 and ts_err is not None:
+            return f"cannot verify ledger binding: {ts_err}"
 
-        ledger_reason = _check_ledger_in_receipt(receipt, flow_dir, "review", step_begin_ts)
+        ledger_reason = _check_ledger_in_receipt(receipt, flow_dir, "review", step_ts)
         if ledger_reason:
             return ledger_reason
 
@@ -3630,7 +3706,8 @@ def check_assess(receipt_path: Path, flow_dir: Path) -> Optional[str]:
         # Step 5b special handling for ledger: ids (parked items)
         is_ledger_id = r.id.startswith("ledger:")
 
-        if not r.evidence and not is_ledger_id:  # rule 3
+        # D9: Keep the evidence requirement for ledger: ids too
+        if not r.evidence:  # rule 3
             return f"assess receipt: evidence is empty for {r.id}"
         if r.kind == "mechanical" and r.status == "unfinished":  # rule 4
             if not r.finish_plan:
@@ -3993,6 +4070,9 @@ def outstanding_gate(flow_dir: Path, marker_file: Path) -> NoReturn:
             elif d.disposition == "finished":
                 if d.by != "assessor-verified":
                     error(f"outstanding gate: parked item {d.id} finished without assessor verification")
+                # D9: Do not skip taken-over guard for ledger: ids
+                if mode == "taken-over":
+                    error(f"outstanding gate: finished not allowed under taken-over: {d.id}")
                 continue
             else:
                 error(f"outstanding gate: parked item {d.id} has invalid disposition: {d.disposition}")
@@ -4695,15 +4775,17 @@ def main() -> None:
             if effective_kind not in ("direction", "question"):
                 continue
 
-            # Find the newest live receipt that lists this seq
+            # D10: Find the newest live receipt that lists this seq (no fallback)
             steps_dir = flow_dir / "steps"
-            relpath = "steps/07-assess.md"  # Default fallback
+            relpath: Optional[str] = None
+            archive_re = re.compile(r"\.a\d*\.md$")
 
             if steps_dir.exists():
-                # Check all step receipts in order
+                # Check all step receipts in order, skipping archived ones
                 for step_file in sorted(steps_dir.glob("*.md")):
-                    if step_file.name.endswith(".a.md") or step_file.name.endswith(".cover.txt"):
-                        continue  # Skip archives and coverage files
+                    # D10: Skip archived receipts (matching `.a\d*.md$`) and coverage files
+                    if archive_re.search(step_file.name) or step_file.name.endswith(".cover.txt"):
+                        continue
                     try:
                         receipt_text = step_file.read_text(encoding="utf-8")
                         addressed = parse_addressed(receipt_text)
@@ -4713,19 +4795,34 @@ def main() -> None:
                     except (OSError, UnicodeDecodeError):
                         pass
 
-            pending_items.append((record.seq, effective_kind, relpath))
+            # D10: Only add if we found a receipt proof
+            if relpath is not None:
+                pending_items.append((record.seq, effective_kind, relpath))
 
         # Check for unanswered questions
         for seq, kind, _ in pending_items:
             if kind == "question":
-                # Look for an answer
+                # Look for an answer (D8: use word-bounded regex and require answer seq > question seq)
                 answered = False
                 for record in records:
                     if record.kind == "answer" and record.status != "superseded":
-                        # Check if this answer covers the question
-                        if record.text and f"seq {seq}" in record.text:
-                            answered = True
-                            break
+                        # Check if this answer covers the question using word-bounded regex
+                        if record.text:
+                            # Extract answer seq if this is a ledger answer record
+                            answer_seq_pattern = re.compile(r"^seq (\d+)", re.MULTILINE)
+                            match = answer_seq_pattern.search(record.text)
+                            if match:
+                                try:
+                                    answer_seq = int(match.group(1))
+                                    # D8: Require answer seq > question seq
+                                    if answer_seq > seq:
+                                        # Use word-bounded search for the seq reference
+                                        pattern = r"\bseq " + re.escape(str(seq)) + r"\b"
+                                        if re.search(pattern, record.text):
+                                            answered = True
+                                            break
+                                except ValueError:
+                                    pass
 
                 if not answered:
                     # For now, just print the stop reason
