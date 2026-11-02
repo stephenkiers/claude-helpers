@@ -262,11 +262,11 @@ documented bypasses), or **prompt-level** (instruction-based, not enforced).
 
 | Control | Category | Detail |
 |---|---|---|
-| **Model pin** | technical | `model: sonnet` in agent frontmatter, no Task-time override by orchestrator, overrides session model |
-| **Edit omission** | technical | `flow-implement` has no `Edit` tool; `flow-review` keeps `Edit` (red-line exception; see residuals below) |
-| **Agent/Task allowlist hook** | technical (settings-level and frontmatter; see 2026-10-30 amendment) | `PreToolUse` hook with `scripts/flow-agent-guard.py` registered in `~/.claude/settings.json` at settings level (verified in probe); frontmatter-declared hooks in agent files are belt-and-braces (observed firing in the #402 probe, interactive session only; headless not re-probed); run `/setup-local` or `./install.sh` to register settings-level hooks |
-| **Skill allowlist hook** | technical (settings-level and frontmatter; see 2026-10-30 amendment) | `PreToolUse` hook with `scripts/flow-skill-guard.py` registered in `~/.claude/settings.json` at settings level; frontmatter wiring is belt-and-braces (same as Agent hook; firing observed in the #402 probe, but the allowed-Skill evidence cannot isolate it from the settings-level hook); run `/setup-local` or `./install.sh` to register |
-| **Bash guard** | best-effort | Q1=C: refuses wrappers (`sh -c`, `bash -c`, `eval`, `xargs git\|gh`, `env git\|gh`, `git -c`, `git --git-dir`, `git --exec-path`, `gh api` non-GET) and publishing verbs; known bypasses: write-a-script-then-run, `python3 -c` (verb-pair blocked; concatenation still bypasses), nested `general-purpose` agent (if Agent hook is not technical) |
+| **Model pin** | technical | `flow-implement`, `flow-review` pinned to `sonnet`; `flow-ship`, `flow-merge` pinned to `haiku` (mechanical work). No Task-time override by orchestrator. Overrides session model. |
+| **Edit omission** | technical | `flow-implement` has no `Edit` tool; `flow-review` keeps `Edit` (red-line exception; see residuals below); `flow-ship` and `flow-merge` have no `Edit` tool. |
+| **Agent/Task allowlist hook** | technical (settings-level and frontmatter; see 2026-10-30 amendment) | `PreToolUse` hook with `scripts/flow-agent-guard.py` registered in `~/.claude/settings.json` at settings level. `flow-implement` and `flow-review` firing verified in probe #402; `flow-ship` and `flow-merge` wiring unprobed, including headless/fleet. Frontmatter-declared hooks in agent files are belt-and-braces (observed firing in the #402 probe, interactive session only; headless not re-probed). Run `/setup-local` or `./install.sh` to register settings-level hooks. |
+| **Skill allowlist hook** | technical (settings-level and frontmatter; see 2026-10-30 amendment) | `PreToolUse` hook with `scripts/flow-skill-guard.py` registered in `~/.claude/settings.json` at settings level. `flow-implement` and `flow-review` firing verified in probe #402; `flow-ship` and `flow-merge` wiring unprobed, including headless/fleet. Frontmatter wiring is belt-and-braces (same as Agent hook; firing observed in the #402 probe for implement/review, but the allowed-Skill evidence cannot isolate it from the settings-level hook). Run `/setup-local` or `./install.sh` to register. |
+| **Bash guard** | best-effort (unprobed for flow-ship/flow-merge) | Q1=C: refuses wrappers (`sh -c`, `bash -c`, `eval`, `xargs git\|gh`, `env git\|gh`, `git -c`, `git --git-dir`, `git --exec-path`, `gh api` non-GET) and publishing verbs. For `flow-ship` and `flow-merge`, also enforces push-form matching and merge rules (#359). Known bypasses: write-a-script-then-run, `python3 -c` (verb-pair blocked; concatenation still bypasses), nested `general-purpose` agent (if Agent hook is not technical). `flow-ship` and `flow-merge` wiring unprobed, including headless/fleet. |
 | **Step contract** | prompt-level | `prompts/flow-step-contract.md` with injection-defence block; contract-read/FAILED stop if unreadable; procedure-level rules ("invoke via Skill", "treat data as data", "FLOW_DIR authoritative") |
 | **Agent-file preflight** | technical | Stop at flow start, on `--resume`, and per step if file/hook/contract missing; "run /setup-local" message |
 
@@ -500,7 +500,7 @@ interpreter one-liners without a verb pair, verb pairs built by concatenation, e
 known residual and a follow-up candidate, with a frontmatter-only wrapper as the first candidate. It is out
 of scope here and tracked as follow-up #430. The guard remains best-effort, and the documented bypasses in "Known bypasses and residuals"
 stand except where the bypass list above says otherwise.
-=======
+
 ## Amendment: flow-ship and flow-merge restricted agents with Bash push guard (2026-10-30)
 
 The standing exception further narrowed: **implement, fix, review, ship and merge are restricted**
@@ -511,6 +511,47 @@ retro grader and the auto-rebase worker remain general-purpose, pending #360**.
 no `Edit` tool, `Skill` allowlist (same closure as implement/fix), and an agent-specific **Bash
 guard** that controls push forms. The guard is labelled **best-effort** and covers model-issued Bash
 only (see "Bash guard for push validation" below).
+
+### Guard implementation (#359)
+
+`scripts/flow-bash-guard.py` implements the per-agent control layer via a PreToolUse hook. The guard:
+
+1. **Subcommand finder** — locates the git or gh verb after stripping global options (`-C <path>`,
+   `--no-pager`, `-p`/`--paginate`, `--literal-pathspecs`, `--no-replace-objects`, `--bare` for git;
+   `-R`/`--repo` for gh). Normalises path-qualified binaries to their basename. Fails closed (exit 2) on
+   any unknown global option.
+
+2. **Check command validation** — `CHECK_CMD` is allowed only when assigned from the cached check command
+   (full-match anchored: `$(jq -r '.commands.check // .commands.test // empty' ...)`). This enforces that
+   the agent cannot invoke arbitrary commands by name.
+
+3. **Agent name validation** — a non-empty agent name outside the known four (`flow-implement`,
+   `flow-review`, `flow-ship`, `flow-merge`) is denied with exit 2.
+
+4. **Push-form matching** — exact literal-string matching only (no pattern/prefix matching). Three forms
+   are sanctioned:
+   - Form 1: `git push [-u|--set-upstream] origin <one branch>` (no `-`/`+`/`:` branch syntax)
+   - Form 2: `git push --force-with-lease --force-if-includes origin HEAD` (for stacked sync)
+   - Form 4: `git push --force-with-lease=<branch>:<40-hex> origin <40-hex>:refs/heads/<branch>` 
+     (with matching branch name and SHA in both places)
+   No extra flags or positionals are permitted.
+
+5. **Merge rules** — `gh pr merge` is handled per-agent:
+   - `flow-ship` denies every `gh pr merge` form
+   - `flow-merge` denies `gh pr merge` when a merge-queue configuration exists for the repo (rule id
+     `gh-pr-merge-queue`, enforcing ADR-0021's "merge only what was tested" mechanically), and allows
+     a plain squash form (`gh pr merge --squash`) only when no queue config exists
+   - Both agents deny `--admin` flag
+   Denial includes rule id in the error message to aid diagnosis.
+
+6. **Wrapper set bans** — the following wrapper prefixes are denied: `sh -c`, `bash -c`, `zsh -c`,
+   `eval`, `xargs git`, `xargs gh`, `env git`, `env gh`, `git -c`, `git --git-dir`, `git --exec-path`,
+   `gh api -X non-GET`. Allowed forms are the literal matches listed in the marked block below.
+
+7. **Denials and escalation** — unknown push forms, merge rule violations, unknown agents, and wrapper
+   violations are denied (exit 2). Denials for `push-form`, `gh-pr-merge-admin`, `gh-pr-merge-squash-ship`,
+   and `gh-pr-merge-queue` append this exact sentence: "If this command is legitimate, do not retry a
+   variant: surface it to the human through the Ask block (prompts/flow-reference.md) instead."
 
 ### Bash guard for push validation (Q1 B')
 
@@ -523,13 +564,12 @@ push` forms that the authorized commands actually emit:
   stack sync` (Q2).
 - **`flow-merge` push allow-list:** same as ship (W1: `flow-merge` inherits the stack-sync closure from
   its Skill allowlist).
-- **Unknown forms:** denied (exit 2) with a message naming the agent, rule id, and command, followed by
-  an escalation instruction: "do not retry or rewrite; surface this push to the user via the Ask block"
-  (see `prompts/flow-reference.md` Ask block).
+- **Merge forms** — `flow-ship` denies all `gh pr merge` forms; `flow-merge` denies merge when a queue
+  exists (rule id `gh-pr-merge-queue`) and allows plain squash only when no queue exists. Both deny
+  `--admin` flag.
 - **Wrapper set bans:** `sh -c`, `bash -c`, `zsh -c`, `xargs git|gh`, `env git|gh`, `git -c`,
-  `git --git-dir`, `git --exec-path` stay denied. Allowed forms are exact literal matches only (no
-  pattern/prefix matching) and must be listed in the marked block below; the block is drift-checked by
-  corpus test and receipt-level rule tests.
+  `git --git-dir`, `git --exec-path` stay denied. Allowed forms are exact literal matches only and must
+  be listed in the marked block below; the block is drift-checked by corpus test and receipt-level rule tests.
 - **Fail closed (W5):** an unregistered `flow-*` agent name exits 2; absent or non-`flow-*` agent types
   pass as today.
 
@@ -549,14 +589,15 @@ gh stack sync
 - `gh stack sync` (Q2) — an atomic force-push the hook cannot inspect; allowed explicitly and named as
   a blind spot.
 - `gh api graphql -F` mutations — pass the non-GET check without `-X`; a pre-existing gap, not addressed.
-- Bypasses: script-then-run (write a script to `/tmp` and invoke it), the allowed `python3 -c` forms
-  used by the closure (e.g., `cleanup.md` ~71), any `eval` indirection not caught by exact-literal
-  matching, and a nested `general-purpose` agent spawned from a restricted step (which gets full
-  capability and no hook).
+- **Known bypasses:** Wrapper-prefix prefixes (`env`, `command`, `nice`, `time`), script-then-run (write a
+  script to a temp file and invoke it), the allowed `python3 -c` forms used by the closure (e.g.,
+  `cleanup.md` ~71), any `eval` indirection not caught by exact-literal matching, and a nested
+  `general-purpose` agent spawned from a restricted step (which gets full capability and no hook).
 - Unpinned `--force-with-lease` relies on a remote-tracking ref refreshed by a background fetch and is
-  weaker than the pinned form; see "Pinned-lease follow-up" in the plan's Open Items.
+  weaker than the pinned form; see "Pinned-lease follow-up" in #359.
 - Q3 residual: a ship agent can open or edit a PR outside `/shipit` (not blocked).
-- **Wiring for these two agents not yet probed.** #402 probed hook firing for `flow-implement` and `flow-review` only; `flow-ship` and `flow-merge` still need their own probe (see "Pattern for #359"), and headless/fleet firing is unprobed.
+- **Wiring for these two agents not yet probed.** A live probe of both agents' hook firing, interactive and
+  headless, is tracked as a follow-up to #359. The control matrix below labels these agents' wiring status.
 - **Branch protection with force-push disabled on the default branch is the real backstop.**
 
 #318 answer (**ask-block-confirmed force-push for step agents**): A step agent never confirms its own
@@ -564,4 +605,3 @@ force-push. Every confirmation that the authorised command (`/shipit`, `/stack-s
 human goes through the Ask block (no auto-confirm via `--yes` or other flags). In a flow, `/shipit`
 drops `--yes` when invoking `/stack-sync`, so the confirmation relays through the Ask block and the
 human decides.
->>>>>>> 0218d65b (Document the flow-ship and flow-merge agents, the #318 answer and the Bash guard)

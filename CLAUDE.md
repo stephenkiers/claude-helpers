@@ -338,7 +338,7 @@ so newly-written bash blocks don't regress the printf pattern.
 A per-agent **Bash guard** in `flow-bash-guard.py` allows only the push forms the authorized commands
 emit. It is labelled **best-effort** (documented bypasses and blind spots; see ADR-0008 2026-10-30
 amendment). The guard covers model-issued Bash only. An unknown push form is denied (exit 2) with
-an escalation instruction: surface it to the human via the Ask block. Branch protection with
+an escalation instruction to surface it to the human through the Ask block. Branch protection with
 force-push disabled on the default branch is the real backstop. See ADR-0008 2026-10-30 and ADR-0023
 amendments for details.
 
@@ -411,13 +411,12 @@ avoidable, so this relies on self-report rather than a lint rule.
   as its reply; the orchestrator validates the receipt and writes `steps/07-assess.md`.
 - `flow-ship` — agent for the `ship` step of `/expert-flow` (used by `/shipit` when invoked as a step
   agent). Model pinned to `haiku` (mechanical work: runs `/shipit` in the ticket worktree). No `Edit`
-  tool. Skill and Bash guards apply with an allow-list for authorized push forms (see ADR-0008
-  2026-10-30 amendment). Force-push confirmations go through the Ask block, never auto-confirmed via
+  tool. Skill and Bash guards apply with an allow-list for authorized push forms (hook wiring for `flow-ship`/`flow-merge` unprobed, including headless/fleet firing; see ADR-0008 2026-10-30 amendment). Force-push confirmations go through the Ask block, never auto-confirmed via
   `--yes` (see #318 answer in ADR-0008 2026-10-30 amendment).
 - `flow-merge` — agent for the `merge` step of `/expert-flow` (used by `/merge-and-cleanup` when
   invoked as a step agent). Model pinned to `haiku` (mechanical work: runs merge-related commands in
   the ticket/main worktree). No `Edit` tool. Skill and Bash guards apply with the same push allow-list
-  as `flow-ship` (see ADR-0008 2026-10-30 amendment). The orchestrator's `gh pr view … state`
+  as `flow-ship` (hook wiring for `flow-ship`/`flow-merge` unprobed, including headless/fleet firing; see ADR-0008 2026-10-30 amendment). The orchestrator's `gh pr view … state`
   verification is the primary backstop for MERGED state.
 
 **Panel agents are capability-restricted, not dialog-gated.** They run `bypassPermissions` — because
@@ -438,14 +437,14 @@ residual, not eliminated, risk. `/expert-spike` expert roles also write one orch
 under `${PROJECT_ROOT}/spikes/`, which is still prompt-scoped; see the ADR-0018 2026-10-09 amendment.
 
 **`/expert-flow` step agents are mixed:** `flow-implement`, `flow-review`, `flow-ship` and `flow-merge`
-are restricted agents (no `Edit` on implement, tools limited, model pinned, Bash/Skill guards; see
+are restricted agents (no `Edit` on implement, tools limited, model pinned, Bash/Skill guards; hook wiring for `flow-ship`/`flow-merge` unprobed, including headless/fleet firing; see
 ADR-0008 2026-10-26 and 2026-10-30). Worktree, plan, track, verify, the retro grader and the
 auto-rebase worker spawn `general-purpose` Task subagents with full capability (pending #360). General-purpose
 steps carry `Write` in their `allowed-tools` and the orchestrator's `Write` is prompt-scoped only (ADR-0023 §1).
-**Hard rule:** For restricted step agents (`flow-implement`, `flow-review`), `Write` is used only to
+**Hard rule:** For restricted step agents (`flow-implement`, `flow-review`, `flow-ship`, `flow-merge`), `Write` is used only to
 write receipts and markers under a validated `FLOW_DIR` — never for repo content. For general-purpose
 step agents (`/merge-and-cleanup`, `/stack-sync`, `/implement-with-haiku` invoked outside a flow,
-`/expert-rebase`, etc.), this same rule applies via their own prompt instructions. The sanctioned
+`/expert-rebase`, etc.), this same rule applies via their own prompt instructions. Note that `/merge-and-cleanup` and `/stack-sync` are restricted when invoked as the `flow-merge` and `flow-ship` step agents in a flow, while remaining general-purpose when invoked outside a flow. The sanctioned
 write prefix is `~/.claude/flows/<repo>/<issue>-<slug>-<id>/`; see ADR-0018 2026-10-13 amendment for
 the full governance rule. A nested `general-purpose` agent spawned from a restricted step gets full
 capability and no hook (an open residual; see ADR-0008 2026-10-26).
