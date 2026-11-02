@@ -508,28 +508,32 @@ def _exit_on_term(signum: int, frame: Any) -> None:
 def _execute_install(
     argv: List[str], worktree: Path, env: Dict[str, str], timeout: int, sink: IO[bytes]
 ) -> InstallOutcome:
-    try:
-        proc = subprocess.Popen(
-            argv,
-            cwd=str(worktree),
-            stdin=subprocess.DEVNULL,
-            stdout=sink,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
-        )
-    except OSError as e:
-        return InstallOutcome(None, "", launch_error=f"could not start {argv[0]}: {e}")
+    proc: Optional["subprocess.Popen[bytes]"] = None
     timed_out = False
     try:
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=str(worktree),
+                stdin=subprocess.DEVNULL,
+                stdout=sink,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=True,
+            )
+        except OSError as e:
+            return InstallOutcome(None, "", launch_error=f"could not start {argv[0]}: {e}")
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
     finally:
-        _stop_group(proc)
+        # One try covers launch and wait, so an interrupt right after Popen returns still kills the group.
+        if proc is not None:
+            _stop_group(proc)
     tail = _read_output_tail(sink)
     if timed_out:
         return InstallOutcome(None, tail, timed_out=True)
+    assert proc is not None  # a failed launch returned above
     return InstallOutcome(proc.returncode, tail)
 
 

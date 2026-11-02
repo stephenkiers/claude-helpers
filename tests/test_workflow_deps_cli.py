@@ -10,9 +10,11 @@ Run with: python3 tests/test_workflow_deps_cli.py
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -186,6 +188,44 @@ if __name__ == "__main__":
             proc.returncode == 2,
             f"rc={proc.returncode} err={proc.stderr[-200:]!r}",
         )
+
+    print("[Section 3] an interrupted install still prints a DEPS line and kills the installer group")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main, feat = make_layout(root, {"package-lock.json": NPM_LOCK})
+        bin_dir = root / "fakebin"
+        bin_dir.mkdir()
+        slow = bin_dir / "npm"
+        slow.write_text("#!/bin/sh\necho $$ > \"$MARKER\"\nsleep 60\n")
+        slow.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+        env["MARKER"] = str(root / "pid.txt")
+        env["HOME"] = str(root / "home")
+        child = subprocess.Popen(
+            [sys.executable, "-m", "scripts.workflow.cli", "deps", "ensure",
+             "--worktree", str(feat), "--main-worktree", str(main)],
+            cwd=str(REPO_ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+        )
+        marker = root / "pid.txt"
+        deadline = time.time() + 20
+        while not marker.exists() and time.time() < deadline:
+            time.sleep(0.1)
+        time.sleep(0.3)
+        child.send_signal(signal.SIGTERM)
+        out, err = child.communicate(timeout=30)
+        test_result(
+            "SIGTERM mid-install exits 143 and prints 'DEPS: failed: interrupted'",
+            child.returncode == 143 and "DEPS: failed: interrupted" in out,
+            f"rc={child.returncode} out={out!r} err={err[-200:]!r}",
+        )
+        installer_alive = True
+        try:
+            os.kill(int(marker.read_text().strip()), 0)
+        except (OSError, ValueError):
+            installer_alive = False
+        test_result("the installer process is gone after SIGTERM", not installer_alive, "installer still running")
 
     print()
     h.summarize_and_exit()

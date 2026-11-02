@@ -886,12 +886,21 @@ def main() -> None:
             sys.exit(1)
     elif args.command == "deps":
         if args.deps_action == "ensure":
-            deps_result = deps.ensure_deps(
-                Path(args.worktree),
-                Path(args.main_worktree),
-                base=args.base,
-                approve_manifest=args.approve_manifest,
-            )
+            try:
+                deps_result = deps.ensure_deps(
+                    Path(args.worktree),
+                    Path(args.main_worktree),
+                    base=args.base,
+                    approve_manifest=args.approve_manifest,
+                )
+            except KeyboardInterrupt:
+                print("DEPS: failed: interrupted")
+                sys.exit(130)
+            except SystemExit as interrupted:
+                # SIGTERM turns into SystemExit(143) inside the install; still print a DEPS line.
+                if isinstance(interrupted.code, int) and interrupted.code >= 128:
+                    print("DEPS: failed: interrupted")
+                raise
             for out_line in deps_result.output_lines():
                 print(out_line)
             sys.exit(deps_result.exit_code)
