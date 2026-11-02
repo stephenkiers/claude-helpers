@@ -884,7 +884,7 @@ When `IMPLEMENTER_MODEL` is set (escalated attempt) or `--split-finer` is set or
 
 For sequential runs, each unit prompt must also note that earlier units' code is already present and committed, it may modify files owned by earlier units, and its `forbidden-files` list is only the files owned by later units.
 
-**Waiting (parallel):** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
 **Waiting (sequential):** wait for each unit's completion before launching the next.
 

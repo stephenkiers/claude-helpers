@@ -93,7 +93,7 @@ header_complete = (
     "IMPLEMENTER_MODEL: haiku\n"
     "ROUND 1 — Implementer (parallel)\n"
     "OUTSTANDING: none\n"
-    "Decision: OK\n"
+    "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n"
     "<!-- step-end -->\n"
 )
 rc, out = verify(header_complete, step="implement", expect_model="haiku")
@@ -104,7 +104,7 @@ t("expect-model on complete OK receipt passes", rc == 0,
 no_header = (
     "IMPLEMENTER_MODEL: haiku\n"
     "OUTSTANDING: none\n"
-    "Decision: OK\n"
+    "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n"
     "<!-- step-end -->\n"
 )
 rc, out = verify(no_header, step="implement", expect_model="haiku")
@@ -117,7 +117,7 @@ t("expect-model failure reason names ROUND 1 when header missing", rc == 1 and "
 no_outstanding = (
     "IMPLEMENTER_MODEL: haiku\n"
     "ROUND 1 — Implementer (parallel)\n"
-    "Decision: OK\n"
+    "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n"
     "<!-- step-end -->\n"
 )
 rc, out = verify(no_outstanding, step="implement", expect_model="haiku")
@@ -136,7 +136,7 @@ print("=" * 70)
 crlf_complete = (
     "ROUND 1 — Implementer (parallel)\r\n"
     "OUTSTANDING: none\r\n"
-    "Decision: OK\r\n"
+    "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\r\n"
     "<!-- step-end -->\r\n"
 )
 rc, out = verify(crlf_complete, step="implement")
@@ -147,7 +147,7 @@ t("ROUND 1 header with CRLF line endings is accepted", rc == 0,
 mixed_crlf = (
     "ROUND 1 — Implementer (parallel)\r\n"
     "OUTSTANDING: none\n"
-    "Decision: OK\n"
+    "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n"
     "<!-- step-end -->\n"
 )
 rc, out = verify(mixed_crlf, step="implement")
@@ -158,7 +158,7 @@ t("ROUND 1 header with CRLF accepts mixed line endings in body", rc == 0,
 crlf_body_only = (
     "ROUND 1 — Implementer (parallel)\n"
     "OUTSTANDING: none\r\n"
-    "Decision: OK\r\n"
+    "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\r\n"
     "<!-- step-end -->\r\n"
 )
 rc, out = verify(crlf_body_only, step="implement")
@@ -175,7 +175,7 @@ print("=" * 70)
 ok_with_header = (
     "ROUND 1 — Implementer (parallel)\n"
     "OUTSTANDING: none\n"
-    "Decision: OK\n"
+    "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n"
     "<!-- step-end -->\n"
 )
 rc, out = verify(ok_with_header, step="implement")
@@ -185,7 +185,7 @@ t("OK receipt with ROUND 1 header passes (no reason needed)", rc == 0,
 # Edge case: Missing ROUND 1 header — verify the reason is plain text
 no_header_missing = (
     "OUTSTANDING: none\n"
-    "Decision: OK\n"
+    "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n"
     "<!-- step-end -->\n"
 )
 rc, out = verify(no_header_missing, step="implement")
@@ -247,11 +247,11 @@ print("=" * 70)
 # Verify ROUND1_HEADER_PATTERN in the verifier script
 # We'll check this by verifying that various shapes work or fail
 test_patterns = [
-    ("bare ROUND 1", "ROUND 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->\n", True),
-    ("ROUND 1 with em dash", "ROUND 1 — units\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->\n", True),
-    ("ROUND 1 with colon", "ROUND 1: units\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->\n", True),
-    ("ROUND 1 with period (rejected)", "ROUND 1.\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->\n", False),
-    ("ROUND 1 with word no sep (rejected)", "ROUND 1 units\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->\n", False),
+    ("bare ROUND 1", "ROUND 1\nOUTSTANDING: none\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n<!-- step-end -->\n", True),
+    ("ROUND 1 with em dash", "ROUND 1 — units\nOUTSTANDING: none\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n<!-- step-end -->\n", True),
+    ("ROUND 1 with colon", "ROUND 1: units\nOUTSTANDING: none\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n<!-- step-end -->\n", True),
+    ("ROUND 1 with period (rejected)", "ROUND 1.\nOUTSTANDING: none\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n<!-- step-end -->\n", False),
+    ("ROUND 1 with word no sep (rejected)", "ROUND 1 units\nOUTSTANDING: none\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n<!-- step-end -->\n", False),
 ]
 
 for name, receipt, should_pass in test_patterns:
