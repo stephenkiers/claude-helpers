@@ -659,3 +659,289 @@ def resolve_check_timeout(
         if value is not None:
             return value, _with_ignored(label, ignored)
     return DEFAULT_CHECK_TIMEOUT_SECS, _with_ignored("default", ignored)
+
+
+# --- Check receipt: lets /merge-and-cleanup trust the gate /shipit just passed ---------------------
+#
+# /shipit records a check attestation before running checks, capturing the tree of the full non-ignored
+# working state via a temp git index. After checks pass, write_check_receipt validates the attestation
+# and writes .claude/check-receipt.json. /merge-and-cleanup's repo-cache gate skips re-running the
+# checks only when the receipt still describes exactly what would be merged: same HEAD tree, same
+# configured commands, and the base branch tip has not moved since (a moved base means a rebase may
+# be needed, which changes the tree the checks would see). Any doubt -- missing/corrupt attestation,
+# stale receipt, fetch failure, differing value -- means "not fresh", and the caller runs the checks
+# as before. Both files are gitignored per-worktree state, the same trust tier as repo-cache.json.
+
+ATTESTATION_RELPATH: Final = Path(".claude") / "check-attestation.json"
+ATTESTATION_SCHEMA_VERSION: Final = 1
+RECEIPT_RELPATH: Final = Path(".claude") / "check-receipt.json"
+RECEIPT_SCHEMA_VERSION: Final = 1
+
+
+def worktree_tree(worktree: Path) -> Optional[str]:
+    """
+    Get the tree of the full non-ignored working state without touching the real index.
+
+    Creates a temp git index file, reads the current HEAD tree, stages all changes via
+    `git add -A`, and captures the result tree with `git write-tree`. Deletes the temp
+    file on exit. Returns the tree SHA (40-hex), or None on any error.
+    """
+    import tempfile
+
+    try:
+        # Create temp index file
+        fd, tmp_index_path = tempfile.mkstemp(prefix="git-index-", dir=worktree / ".git")
+        os.close(fd)
+
+        try:
+            env = os.environ.copy()
+            env["GIT_INDEX_FILE"] = str(tmp_index_path)
+
+            # Seed temp index with HEAD
+            subprocess.run(
+                ["git", "read-tree", "HEAD"],
+                cwd=worktree,
+                env=env,
+                capture_output=True,
+                check=True,
+            )
+
+            # Stage all changes
+            subprocess.run(
+                ["git", "add", "-A"],
+                cwd=worktree,
+                env=env,
+                capture_output=True,
+                check=True,
+            )
+
+            # Get tree SHA
+            result = subprocess.run(
+                ["git", "write-tree"],
+                cwd=worktree,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return result.stdout.strip()
+        finally:
+            # Clean up temp file
+            try:
+                os.remove(tmp_index_path)
+            except OSError:
+                pass
+    except Exception:
+        return None
+
+
+def _commands_digest(commands: Mapping[str, Optional[str]]) -> str:
+    import hashlib
+
+    canonical = json.dumps({k: commands[k] for k in sorted(commands)}, sort_keys=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _resolve_sha(rev: str, worktree: Path) -> Optional[str]:
+    from . import git
+
+    try:
+        return git.run_git_command(
+            ["--no-optional-locks", "rev-parse", "--verify", "--end-of-options", f"{rev}^{{commit}}"],
+            cwd=worktree,
+        )
+    except Exception:
+        return None
+
+
+def record_check_attestation(
+    worktree: Path, commands: Mapping[str, Optional[str]], base_ref: str, result: Optional[CheckResults] = None
+) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Record a check attestation capturing pre-run and post-run trees and result status.
+
+    Captures the working-state tree before checks run, resolves base_ref SHA, runs the
+    checks, and captures the tree after. Writes attestation with passed=True only if all
+    passed and the tree was unchanged. Always overwrites any prior attestation at the start.
+
+    Returns (True, None) on successful attestation write, (False, Unknown(...)) on failure.
+    """
+    import time
+
+    try:
+        path = worktree / ATTESTATION_RELPATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        pending: Optional[Dict[str, Any]] = None
+        if result is not None:
+            # Finishing call: the pending attestation written before the run holds the gate-time tree and base.
+            try:
+                loaded = json.loads(path.read_text())
+                pending = loaded if isinstance(loaded, dict) else None
+            except (OSError, ValueError):
+                pending = None
+
+        # Always remove any prior attestation so a crashed or interrupted run leaves none that passed
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+        tree_now = worktree_tree(worktree)
+        if result is None:
+            tree_before = tree_now
+            base_sha = _resolve_sha(base_ref, worktree)
+            passed = False
+        else:
+            tree_before = pending.get("tree") if pending else None
+            base_sha = pending.get("base_sha") if pending else None
+            passed = bool(
+                result.all_passed
+                and result.status == "passed"
+                and tree_before
+                and tree_before == tree_now
+                and base_sha
+            )
+
+        attestation = {
+            "schema_version": ATTESTATION_SCHEMA_VERSION,
+            "tree": tree_before or "",
+            "base_ref": base_ref,
+            "base_sha": base_sha or "",
+            "commands_digest": _commands_digest(commands),
+            "passed": passed,
+            "written_at": int(time.time()),
+        }
+
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(attestation, indent=2) + "\n")
+        os.replace(tmp, path)
+        return True, None
+    except OSError as e:
+        return False, Unknown(f"record_check_attestation: {e}")
+    except Exception as e:
+        return False, Unknown(f"record_check_attestation: {e}")
+
+
+def write_check_receipt(
+    worktree: Path, commands: Mapping[str, Optional[str]]
+) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Record that checks passed, reading values from the attestation.
+
+    Refuses unless the attestation exists, passed is True, tree and base_sha are non-empty
+    strings, commands_digest matches current, and HEAD tree matches the attested tree.
+
+    Returns (True, None) on success, (False, Unknown(...)) on refusal.
+    """
+    import time
+    from . import git
+
+    path = worktree / ATTESTATION_RELPATH
+    try:
+        attestation = json.loads(path.read_text())
+    except FileNotFoundError:
+        return False, Unknown("write_check_receipt: no check attestation")
+    except (OSError, ValueError):
+        return False, Unknown("write_check_receipt: unreadable or malformed attestation")
+
+    # Validate attestation schema and content
+    if not isinstance(attestation, dict) or attestation.get("schema_version") != ATTESTATION_SCHEMA_VERSION:
+        return False, Unknown("write_check_receipt: unrecognized attestation schema")
+
+    if not attestation.get("passed"):
+        return False, Unknown("write_check_receipt: attested run did not pass")
+
+    tree = attestation.get("tree")
+    base_sha = attestation.get("base_sha")
+    if not isinstance(tree, str) or not tree or not isinstance(base_sha, str) or not base_sha:
+        return False, Unknown("write_check_receipt: attestation has empty or missing tree/base_sha")
+
+    if attestation.get("commands_digest") != _commands_digest(commands):
+        return False, Unknown("write_check_receipt: configured check commands changed since attestation")
+
+    head_tree = git.tree_of("HEAD", worktree)
+    if head_tree != tree:
+        return False, Unknown("write_check_receipt: HEAD tree differs from attested tree")
+
+    # Write receipt from attestation values
+    base_ref = attestation.get("base_ref", "")
+    receipt = {
+        "schema_version": RECEIPT_SCHEMA_VERSION,
+        "tree": tree,
+        "base_ref": base_ref,
+        "base_sha": base_sha,
+        "commands_digest": attestation.get("commands_digest", ""),
+        "written_at": int(time.time()),
+    }
+    try:
+        receipt_path = worktree / RECEIPT_RELPATH
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = receipt_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(receipt, indent=2) + "\n")
+        os.replace(tmp, receipt_path)
+    except OSError as e:
+        return False, Unknown(f"write_check_receipt: {e}")
+    return True, None
+
+
+def check_receipt_fresh(
+    worktree: Path, commands: Mapping[str, Optional[str]], fetch: bool = True
+) -> Tuple[bool, str]:
+    """
+    Return (True, "") if the receipt still covers what would merge, else (False, reason).
+
+    Args:
+        worktree: Worktree directory.
+        commands: Current configured check commands.
+        fetch: If True, fetch base_ref before checking; returns not-fresh on fetch failure.
+               If False, use the local ref as-is.
+
+    Returns (False, reason) if the receipt is unreadable, corrupt, has empty tree/base_sha,
+    commands differ, HEAD tree differs, or (if fetch=True) cannot be fetched or the base moved.
+    """
+    from . import git
+
+    path = worktree / RECEIPT_RELPATH
+    try:
+        receipt = json.loads(path.read_text())
+    except FileNotFoundError:
+        return False, "no check receipt"
+    except (OSError, ValueError):
+        return False, "unreadable or malformed check receipt"
+    if not isinstance(receipt, dict) or receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION:
+        return False, "unrecognized check receipt schema"
+
+    # Require non-empty tree and base_sha
+    tree = receipt.get("tree")
+    base_sha = receipt.get("base_sha")
+    if not isinstance(tree, str) or not tree:
+        return False, "receipt has empty or missing tree"
+    if not isinstance(base_sha, str) or not base_sha:
+        return False, "receipt has empty or missing base_sha"
+
+    base_ref = receipt.get("base_ref")
+    if not isinstance(base_ref, str) or not base_ref:
+        return False, "receipt has no base_ref"
+
+    if fetch and "/" in base_ref:
+        remote, _, branch = base_ref.partition("/")
+        try:
+            git.run_git_command(["fetch", remote, branch], cwd=worktree)
+        except Exception:
+            return False, f"could not fetch {base_ref}"
+
+    if receipt.get("commands_digest") != _commands_digest(commands):
+        return False, "configured check commands changed since the receipt"
+
+    head_tree = git.tree_of("HEAD", worktree)
+    if head_tree != tree:
+        return False, "HEAD tree differs from the checked tree"
+
+    resolved_base_sha = _resolve_sha(base_ref, worktree)
+    if resolved_base_sha is None:
+        return False, f"could not resolve {base_ref}"
+    if resolved_base_sha != base_sha:
+        return False, f"{base_ref} moved since the checks ran (rebase may be needed)"
+
+    return True, ""

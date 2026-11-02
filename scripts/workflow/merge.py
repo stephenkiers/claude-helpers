@@ -816,10 +816,10 @@ def _run_merge_gate_checks(target_worktree: Path) -> Tuple[bool, bool, Optional[
     Run repo-cache check gate via run_checks.
 
     Returns (True, False, None) if no cache exists (gate not applied).
-    Returns (True, True, None) if gate passes.
+    Returns (True, True, None) if gate passes (or a fresh /shipit check receipt covers it).
     Returns (False, True, diagnostic_message) if gate fails.
     """
-    from .checks import run_checks
+    from .checks import run_checks, check_receipt_fresh
 
     cache_file = target_worktree / ".claude" / "repo-cache.json"
     if not cache_file.exists():
@@ -830,6 +830,12 @@ def _run_merge_gate_checks(target_worktree: Path) -> Tuple[bool, bool, Optional[
         return False, True, str(err)
     if not cache_data:
         return True, False, None
+
+    # /shipit just ran this exact gate on this exact tree and base: don't repeat it.
+    # Any doubt (no/stale receipt, fetch failure) falls through to running the checks.
+    fresh, _reason = check_receipt_fresh(target_worktree, cache_data.commands, fetch=True)
+    if fresh:
+        return True, True, None
 
     timeout = _get_merge_apply_timeout()
     result, check_err = run_checks(
