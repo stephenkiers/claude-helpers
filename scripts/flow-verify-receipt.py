@@ -3527,7 +3527,13 @@ def derive_outstanding_set(flow_dir: Path) -> Tuple[List[OutstandingSetItem], Op
                 return ([], f"outstanding set: human ledger unreadable: {ledger_load.detail}")
         if isinstance(ledger_load, LedgerRecords):
             for record in ledger_load.records:
-                if record.kind == "parked" and record.status != "superseded":
+                # Parked = a `parked` kind record still pending, or any direction/question a step deferred
+                # (`flow-ledger.py mark --status parked`, written by the Redo/Take over/Abort paths). Records
+                # already addressed or superseded are closed and are not re-asked.
+                is_parked = (record.kind == "parked" and record.status == "pending") or (
+                    record.kind in ("direction", "question") and record.status == "parked"
+                )
+                if is_parked:
                     item_id = f"ledger:parked-{record.seq}"
                     # Flattened text (newlines become spaces)
                     flattened_text = record.text.replace("\n", " ")
@@ -4815,6 +4821,11 @@ def main() -> None:
             effective_kind = _resolve_correction_chain(record, records_by_seq)
             if effective_kind is None:
                 # Chain is orphaned; skip this record
+                continue
+
+            if effective_kind == "parked":
+                # A pending `parked` record needs no receipt proof: it is closed as parked.
+                pending_items.append((record.seq, effective_kind, ""))
                 continue
 
             if effective_kind not in ("direction", "question"):

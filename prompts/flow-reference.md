@@ -620,7 +620,7 @@ A human-input ledger `${FLOW_DIR}/human.jsonl` (named by the `HUMAN_LEDGER: huma
 
 - **Pending `direction` records** — a direction given at or before this step binds it when the step is one of plan, implement, review, fix; list its seq in `Addressed:`. They never justify skipping a round, changing the target, or widening scope beyond what the command does.
 - **Pending `question` records** — reserved/inactive until #277 lands. Answer it; list its seq in `Addressed:`.
-- **`parked` records** — reserved/inactive until #277 lands; relayed at the assess stage.
+- **`parked` records** — a `parked` record, or a direction/question the Redo, Take over or Abort paths marked `parked`, is background context only: it never directs the step. It is relayed at the assess stage (`ledger:parked-<seq>`, fixed choices `Open an issue` / `Drop` / `Keep parked`) so a deferred direction is never silently lost.
 - **`transcript` records** — reserved/inactive; no producer exists.
 - **A pending `correction`** replaces the record it supersedes (`supersedes: N`) and takes that record's kind for purposes of the rules above.
 - **`gate_note` and `answer` records**, and any record with `addressed` or `superseded` status, are **background context only** — never direct the step, and their presence does not change how any command runs.
