@@ -1204,7 +1204,7 @@ Every implement or fix step maintains a typed unit record, written by `scripts/u
 
 ### 5. Relabelled Retry for single-unit plus turns-exhausted
 
-For a receipt with `UNITS: 1` and `TURNS_EXHAUSTED: yes`, the hard-stop Retry option is relabelled **"Retry, split finer"** to signal that the human may choose to apply the partial-work contract (keep or reset) and re-run the unit split at a finer granularity. This is user-chosen, receipt-dependent, not automatic, and subject to the existing two-attempt cap per step. No fifth option is added; the "Retry, split finer" label is the only change to the menu. The relabelling is ruled out by Decision 1's "nothing else" for multi-unit runs: ADR-0004's "never automatic for multi-unit runs" still holds.
+For a receipt with `UNITS: 1` and `TURNS_EXHAUSTED: yes`, the hard-stop Retry option is relabelled **"Retry, split finer"** to signal that the human may choose to apply the partial-work contract (keep or reset) and re-run the unit split at a finer granularity. This is user-chosen, receipt-dependent, not automatic, and subject to the existing two-attempt cap per step. No fifth option is added; the "Retry, split finer" label is the only change to the menu. The relabelling is ruled out by Decision 1's "nothing else" for multi-unit runs: ADR-0004's "never automatic for multi-unit runs" still holds. The relabelled option is also offered on the post-escalation menu when the receipt still has `UNITS: 1` and `TURNS_EXHAUSTED: yes`: it changes the unit granularity, not the model, so the escalation-once limit does not apply, and the two-attempt cap bounds it. A split-finer re-run uses `implementer_model[STEP]` when set, otherwise Haiku.
 
 ### 6. Every implement/fix re-run passes `--partial-base`
 
