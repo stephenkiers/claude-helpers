@@ -1,7 +1,7 @@
 ---
 description: Smart expert code review with triage - works across all projects
 argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--effort 1|2|3|4|5] [--all] [--force] [--allow-degraded] | <github-pr-url> [--effort 1|2|3|4|5] [--allow-degraded]
-allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(mktemp:*), Bash(mv:*), Bash(eval:*), Bash(bash:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*), Bash(cd:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
+allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(mktemp:*), Bash(mv:*), Bash(eval:*), Bash(bash:*), Bash(python3:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*), Bash(cd:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
 model: sonnet
 ---
 
@@ -147,7 +147,7 @@ already-reviewed commit never overwrites the prior run):
 | `{reviewer}-questions-answered.md` | Haiku Q&A | Step 8 — only reviewers with open questions |
 | `{reviewer}-pass2.md` | Pass 2 subagents | Step 9 — only reviewers with findings, judgment reviewers only |
 | `final-report.md` | Amalgamator | Step 10 — the complete record; the gut-check instrument |
-| `claude-action-plan.md` | Triage Chief (Step 11); `STATUS`/`DECISION` fields updated in place by the main thread (Step 12) | Step 11 — decision-first; **the file the human opens** |
+| `claude-action-plan.md` | Triage Chief (Step 11); `STATUS`/`DECISION` fields written by `scripts/review-ruling.py` from the main thread (Step 12) | Step 11 — decision-first; **the file the human opens** |
 | `transcript-origin.json` | `write-transcript-origin.py` | Step 1 — bounded transcript discovery hint, recording where the review's session is anchored |
 
 ---
@@ -917,7 +917,7 @@ EOF_FILTER_HELD_OUT
 
 10. **Persist trace.** The trace has already been validated and written in step 8. Re-read `${REVIEW_DIR}/precedent-trace.txt` to check it is one of these eight values: `shown K of N`, `no-eligible-questions`, `digest-failed`, `no-digest-entries`, `pat-failed`, `pat-invalid`, `pat-silent`, `render-failed`. The `precedent-lines.json` file (containing rendered lines for batch annotation) is written in step 8 when the trace starts with `shown`. When the file is missing or empty (e.g., the trace is not `shown*`), display-only batch rendering must show `Precedent: none` for all items (no line was rendered; nothing to log).
 
-**Display-only rule:** The `precedent.md` file and its digest files are read-only by the batch rendering below (for showing Precedent lines beside questions) and by per-batch logging. Nothing in Step 12's decision path — the Edit mechanism or any other logic — reads `precedent.md` or the digest files. Option labels and the `(Recommended)` marker are never modified based on precedent. Precedent never influences which option is offered, which is highlighted, or which is presented as recommended. No decision path uses it to pick, reorder, or change any default for any question. Held-out questions (deterministic 1-in-8 subset) have their Precedent lines withheld from display (show `Precedent: none`) but are still logged with `displayed: false` for control-arm measurement, where `precedent-log.py` computes hold-out status via `_should_display()`.
+**Display-only rule:** The `precedent.md` file and its digest files are read-only by the batch rendering below (for showing Precedent lines beside questions) and by per-batch logging. Nothing in Step 12's decision path — the ruling writer or any other logic — reads `precedent.md` or the digest files. Option labels and the `(Recommended)` marker are never modified based on precedent. Precedent never influences which option is offered, which is highlighted, or which is presented as recommended. No decision path uses it to pick, reorder, or change any default for any question. Held-out questions (deterministic 1-in-8 subset) have their Precedent lines withheld from display (show `Precedent: none`) but are still logged with `displayed: false` for control-arm measurement, where `precedent-log.py` computes hold-out status via `_should_display()`.
 
 Otherwise, present each escalation with **`AskUserQuestion`** via the Ask block (`prompts/flow-reference.md`) — one question per item, the Triage
 Chief's recommended option **first and labeled `(recommended)`**, with the pros and cons from the
@@ -944,17 +944,31 @@ rulings dropped`. The orchestrator's verifier counts the *Needs you* items again
 nothing is written; the orchestrator's own step gate shows the human the action plan.
 Before ending the turn, close the open stage with `stage-end --stage rulings
 --outcome interrupted` (then the Ask block's `command-end --outcome interrupted`); on resume, re-open
-it with `stage-begin --stage rulings`, record that batch's answers with the `Edit` mechanism below
+it with `stage-begin --stage rulings`, record that batch's answers with the ruling writer below
 exactly as if the tool had returned them, then ask the next batch. The idempotency check below is what
 makes a resume safe: items already ruled are skipped, never re-asked.
 
 For each escalation whose answer just came back — and only that one; if the user made no selection for
 an item (e.g. they closed the batch early), leave that item's `STATUS`/`DECISION` fields untouched and
-do not fabricate a ruling for it — **`Edit` `{REVIEW_DIR}/claude-action-plan.md` in place**.
+do not fabricate a ruling for it — **record it with the ruling writer below**.
 
-**Edit red line (security control — retained regardless of any future changes to triage or recorded rulings):** The only permitted `Edit` target in this command is the `STATUS` and `DECISION` fields of an already-answered escalation in `claude-action-plan.md`. Prohibited targets: `settings.json`, `CLAUDE.md`, anything under `agents/`, `reviewers/`, or source files. If the Edit target does not match, stop and report rather than proceeding.
+**The ruling writer (`scripts/review-ruling.py`).** Each answer is recorded by one call to the script, one item per call. Pass every value as its own quoted argument; never interpolate a value into a larger string:
 
-Restructure the item from an open options menu into a resolved question-and-answer record, so an executor skimming the file meets only the chosen answer, not the declined ones:
+- Option picked: `python3 "$HOME/.claude/scripts/review-ruling.py" decide --review-dir "${REVIEW_DIR}" --item <N> --option "<picked label>" [--reasoning "<the user's own note>"] --mode "$([ "${PR_MODE:-false}" = true ] && echo pr || echo local)"`. Omit `--reasoning` when the user gave no note; the script then uses the chosen option's rationale.
+- Typed answer ("Other"): the same call with `--custom "<typed text>"` in place of `--option`. Never pass both.
+- Needs-measurement result reported back: `python3 "$HOME/.claude/scripts/review-ruling.py" measure --review-dir "${REVIEW_DIR}" --item <N> --result "<reported result>" --mode "$([ "${PR_MODE:-false}" = true ] && echo pr || echo local)"`.
+
+The exit code decides what happens next:
+- **0** — recorded, or already recorded with the same answer (idempotent). Continue.
+- **1** — a named refusal; the reason is on stderr (non-unique anchor, unknown label, path outside the reviews root, symlinked file, PR mode). The item is **unrecorded**. Report it in the closing message with that reason. Do not retry it with `Edit`.
+- **3** — a conflicting prior ruling; the existing `DECISION` is on stderr. Report the item to the human as a conflicting prior ruling. Never overwrite a recorded answer.
+- **126 or 127** — the script or `python3` cannot run. The fallback below applies.
+
+**Existence check and fallback.** Before the first ruling of the run, check that the script is installed with the `Read` tool (no shell, no new permission) on the absolute path of `~/.claude/scripts/review-ruling.py` (the home directory expanded), with `limit: 1`. A "file does not exist" error means the script is missing; a dangling `/setup-local` symlink reports the same error. Use the `Edit` fallback for an item only when that `Read` check reports the file missing, or when a `python3` call exits 126 or 127. Every other non-zero exit leaves the item unrecorded and is never retried with `Edit`. Whenever the fallback is used, the Step 12 closing summary prints `review-ruling.py not installed; run /setup-local`. On the fallback, `Edit` the same fields of `{REVIEW_DIR}/claude-action-plan.md` for that one item, following the fold rules below exactly.
+
+**Edit red line (security control — retained regardless of any future changes to triage or recorded rulings):** The only permitted `Edit` target in this command, and only on the fallback path above, is the `STATUS` and `DECISION` fields of an already-answered escalation in `claude-action-plan.md`. Prohibited targets: `settings.json`, `CLAUDE.md`, anything under `agents/`, `reviewers/`, or source files. If the Edit target does not match, stop and report rather than proceeding.
+
+The fold the ruling writer produces (the fallback must reproduce it, so an executor skimming the file meets only the chosen answer, not the declined ones):
 
 1. Replace the block starting at `- **Options**:` through the line before `- **STATUS**:`. Anchor the
    whole match on the item's own `### N. [Title]` heading to keep multiple escalations from colliding.
@@ -976,7 +990,7 @@ Rendering location (two surfaces, depending on context):
 
 When the line is rendered (the handle is present in `precedent-lines.json` and its prediction exactly matches an option label), show it on the appropriate surface for the context; when there is no precedent for the item (trace does not start with `shown`, Pat abstained on the item, or its validated block has no precedent lines), show `Precedent: none` only on that item; when precedent exists but the line was skipped or the prediction matches no option label, show no Precedent text for that item and do not log it (a hold-out item is the exception: it shows no Precedent text but IS logged, with `displayed: false`).
 
-**Per-batch logging.** Define `<SEQ>` as the flow answers-file sequence (`${FLOW_DIR}/answers/review-<SEQ>.json`) in the flow path, and a batch counter in the non-flow path (SEQ = 1, 2, … for each Ask batch in order). When each batch is built, record that batch's `qK -> N<k>` map in `${REVIEW_DIR}/precedent-batch-map.json`, keyed by `<SEQ>` in both paths. After that batch's answers are recorded with the `Edit` (and only when the persisted `${REVIEW_DIR}/precedent-trace.txt` starts with `shown`), write `${REVIEW_DIR}/precedent-answers-<SEQ>.json` with the `Write` tool. The format is `{"answers": {"N<k>": "<picked label or typed text>"}}`, one entry per answered item (held-out or displayed). Items that Pat never spoke on (no validated block) are not included. In the flow path the source is `${FLOW_DIR}/answers/review-<SEQ>.json` mapped through the batch map. In the non-flow path it is the tool's returned answers, mapped through the same batch map. Then run `precedent-log.py append --validated "${REVIEW_DIR}/precedent-validated.json" --questions "${REVIEW_DIR}/precedent-questions.json" --answers "${REVIEW_DIR}/precedent-answers-<SEQ>.json" --repo-key "$REPO_KEY" --command expert-review --run "$(basename "$REVIEW_DIR")" --trace-file "${REVIEW_DIR}/precedent-trace.txt" >> "${REVIEW_DIR}/precedent-log-output.txt" 2>&1 || true`. precedent-log.py handles display status (set to `false` for held-out items by the `_should_display()` function). Never pass `--flow-answers` files directly. A re-resume of an already-logged batch is a no-op through the helper's first-wins `(run, question_id, command)` keys, which is safe because the handles are item-stable. Nothing is appended to the action plan.
+**Per-batch logging.** Define `<SEQ>` as the flow answers-file sequence (`${FLOW_DIR}/answers/review-<SEQ>.json`) in the flow path, and a batch counter in the non-flow path (SEQ = 1, 2, … for each Ask batch in order). When each batch is built, record that batch's `qK -> N<k>` map in `${REVIEW_DIR}/precedent-batch-map.json`, keyed by `<SEQ>` in both paths. After that batch's answers are recorded with the ruling writer (and only when the persisted `${REVIEW_DIR}/precedent-trace.txt` starts with `shown`), write `${REVIEW_DIR}/precedent-answers-<SEQ>.json` with the `Write` tool. The format is `{"answers": {"N<k>": "<picked label or typed text>"}}`, one entry per answered item (held-out or displayed). Items that Pat never spoke on (no validated block) are not included. In the flow path the source is `${FLOW_DIR}/answers/review-<SEQ>.json` mapped through the batch map. In the non-flow path it is the tool's returned answers, mapped through the same batch map. Then run `precedent-log.py append --validated "${REVIEW_DIR}/precedent-validated.json" --questions "${REVIEW_DIR}/precedent-questions.json" --answers "${REVIEW_DIR}/precedent-answers-<SEQ>.json" --repo-key "$REPO_KEY" --command expert-review --run "$(basename "$REVIEW_DIR")" --trace-file "${REVIEW_DIR}/precedent-trace.txt" >> "${REVIEW_DIR}/precedent-log-output.txt" 2>&1 || true`. precedent-log.py handles display status (set to `false` for held-out items by the `_should_display()` function). Never pass `--flow-answers` files directly. A re-resume of an already-logged batch is a no-op through the helper's first-wins `(run, question_id, command)` keys, which is safe because the handles are item-stable. Nothing is appended to the action plan.
 
 Runs **unconditionally whenever `needs-you > 0`**.
 
@@ -998,8 +1012,7 @@ pointer to `claude-action-plan.md` — this is the one output category the human
 outside this conversation, so it shouldn't cost them a second file-open to discover). Each item stays
 `STATUS: pending-measurement` until the human reports the command's result back to Claude — in this
 conversation, when they report back, or when `/verify-queue` drains it — at which point Claude (not
-the human) edits `STATUS: measured` and `DECISION: {result}` in place. There is no hand-editing path
-for this field anymore.
+the human) records it with `review-ruling.py measure`: STATUS `measured`, DECISION `{result}`, the placeholder replaced. There is no hand-editing path for this field anymore.
 
 Print precedent debug output (for observability):
 ```bash
@@ -1156,8 +1169,8 @@ Reason: completed
 ```
 
 Zero CONFIRMED findings is still `Decision: OK` — the orchestrator decides whether to skip the fix
-step. Rulings recorded during the run already live in `claude-action-plan.md` (Step 12's `Edit`
-mechanism, unchanged); the receipt does not repeat them beyond the closing message.
+step. Rulings recorded during the run already live in `claude-action-plan.md` (Step 12's `review-ruling.py`
+writer, unchanged); the receipt does not repeat them beyond the closing message.
 
 **Happy-path command-end (non-PR mode).** Emit `command-end` at the very end of the command, after
 Step 14:
@@ -1281,9 +1294,10 @@ ceiling), or when no Critical findings came back.
 - `~/.claude/prompts/precedent-pat.md` — Precedent Pat role prompt, surfaces past answers to similar *Needs you* items (Step 12, non-PR mode; ADR-0024)
 
 **Supporting scripts:**
+- `scripts/review-ruling.py` — records Step 12 rulings (`decide` for a *Needs you* answer, `measure` for a *Needs measurement* result) in `claude-action-plan.md`; containment, idempotent exit codes 0/1/3 (#408)
 - `scripts/precedent-digest.py` — reads the repo's prior decision rulings and filters by keyword match; called in Step 12's Precedent block
 - `scripts/precedent-render.py` — validates Precedent Pat's output and renders display lines; called in Step 12's Precedent block and by batch rendering when using the results
-- `scripts/precedent-log.py` — logs per-batch answers with hit predictions for accuracy measurement; called after each batch's Edit completes
+- `scripts/precedent-log.py` — logs per-batch answers with hit predictions for accuracy measurement; called after each batch's rulings are recorded
 
 **Design documents:**
 - `docs/adr/0024-precedent-pat.md` — the design decision for Precedent Pat as a display-only role (ADR-0024)
