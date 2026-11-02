@@ -41,13 +41,19 @@ def make_repo():
     return root, wt
 
 
+def _attest(wt, cmds, base, result):
+    """Record the pending attestation (before the run), then finalize it with the result (after)."""
+    checks.record_check_attestation(wt, cmds, base)
+    return checks.record_check_attestation(wt, cmds, base, result)
+
+
 def main():
     h = Harness("check receipt")
     _, wt = make_repo()
 
     # Test attestation and receipt flow
     result = checks.CheckResults(all_passed=True, status="passed", executed=["check"])
-    ok, err = checks.record_check_attestation(wt, CMDS, "origin/main", result)
+    ok, err = _attest(wt, CMDS, "origin/main", result)
     h.test_result("record attestation succeeds", ok and err is None)
 
     ok, err = checks.write_check_receipt(wt, CMDS)
@@ -61,16 +67,30 @@ def main():
     ok, err = checks.write_check_receipt(wt_no_att, CMDS)
     h.test_result("write refused with no attestation", not ok and err is not None)
 
+    # Test: a pending attestation (run started, never finished) cannot back a receipt
+    _, wt_pending = make_repo()
+    checks.record_check_attestation(wt_pending, CMDS, "origin/main")
+    ok, err = checks.write_check_receipt(wt_pending, CMDS)
+    h.test_result("write refused for a run that never finished", not ok and err is not None)
+
+    # Test: tree edited while the checks ran is not attested as passed
+    _, wt_edit = make_repo()
+    checks.record_check_attestation(wt_edit, CMDS, "origin/main")
+    (wt_edit / "c.txt").write_text("edited during run")
+    checks.record_check_attestation(wt_edit, CMDS, "origin/main", result)
+    ok, err = checks.write_check_receipt(wt_edit, CMDS)
+    h.test_result("write refused when tree changed during the run", not ok and err is not None)
+
     # Test: write refused when attested run failed
     _, wt_failed = make_repo()
     failed_result = checks.CheckResults(all_passed=False, status="failed", failed_at="check")
-    checks.record_check_attestation(wt_failed, CMDS, "origin/main", failed_result)
+    _attest(wt_failed, CMDS, "origin/main", failed_result)
     ok, err = checks.write_check_receipt(wt_failed, CMDS)
     h.test_result("write refused when attested run failed", not ok and err is not None)
 
     # Test: write refused when HEAD tree differs
     _, wt_tree_diff = make_repo()
-    checks.record_check_attestation(wt_tree_diff, CMDS, "origin/main", result)
+    _attest(wt_tree_diff, CMDS, "origin/main", result)
     (wt_tree_diff / "c.txt").write_text("c")
     git(wt_tree_diff, "add", ".")
     git(wt_tree_diff, "commit", "-qm", "more")
@@ -79,13 +99,13 @@ def main():
 
     # Test: write refused when commands digest differs
     _, wt_cmd_diff = make_repo()
-    checks.record_check_attestation(wt_cmd_diff, CMDS, "origin/main", result)
+    _attest(wt_cmd_diff, CMDS, "origin/main", result)
     ok, err = checks.write_check_receipt(wt_cmd_diff, {"check": "false"})
     h.test_result("write refused when commands digest differs", not ok and "commands" in str(err))
 
     # Test: base_sha in receipt is from attestation (move origin/main after attestation)
     _, wt2 = make_repo()
-    checks.record_check_attestation(wt2, CMDS, "origin/main", result)
+    _attest(wt2, CMDS, "origin/main", result)
     ok, err = checks.write_check_receipt(wt2, CMDS)
     h.test_result("write receipt with attested base_sha", ok and err is None)
 
@@ -148,7 +168,7 @@ def main():
 
     # Record attestation and write receipt
     result_merge = checks.CheckResults(all_passed=True, status="passed", executed=["check"])
-    att_ok, att_err = checks.record_check_attestation(wt_merge, {"check": "true"}, "origin/main", result_merge)
+    att_ok, att_err = _attest(wt_merge, {"check": "true"}, "origin/main", result_merge)
     h.test_result("record attestation for merge gate test", att_ok and att_err is None, att_err)
 
     rec_ok, rec_err = checks.write_check_receipt(wt_merge, {"check": "true"})

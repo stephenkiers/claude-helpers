@@ -655,7 +655,7 @@ def main() -> None:
                 worktree = Path.cwd()
                 if args.base:
                     att_ok, att_err = checks.record_check_attestation(
-                        worktree, repo_cache.commands, args.base, checks.CheckResults()
+                        worktree, repo_cache.commands, args.base
                     )
 
                 result, err = checks.run_checks(

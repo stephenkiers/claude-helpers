@@ -756,7 +756,7 @@ def _resolve_sha(rev: str, worktree: Path) -> Optional[str]:
 
 
 def record_check_attestation(
-    worktree: Path, commands: Mapping[str, Optional[str]], base_ref: str, result: CheckResults
+    worktree: Path, commands: Mapping[str, Optional[str]], base_ref: str, result: Optional[CheckResults] = None
 ) -> Tuple[bool, Optional[Unknown]]:
     """
     Record a check attestation capturing pre-run and post-run trees and result status.
@@ -773,27 +773,36 @@ def record_check_attestation(
         path = worktree / ATTESTATION_RELPATH
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Always remove any prior attestation at the start
+        pending: Optional[Dict[str, Any]] = None
+        if result is not None:
+            # Finishing call: the pending attestation written before the run holds the gate-time tree and base.
+            try:
+                loaded = json.loads(path.read_text())
+                pending = loaded if isinstance(loaded, dict) else None
+            except (OSError, ValueError):
+                pending = None
+
+        # Always remove any prior attestation so a crashed or interrupted run leaves none that passed
         try:
             path.unlink()
         except FileNotFoundError:
             pass
 
-        # Capture tree before checks
-        tree_before = worktree_tree(worktree)
-        base_sha = _resolve_sha(base_ref, worktree)
-
-        # Capture tree after checks (result already ran)
-        tree_after = worktree_tree(worktree)
-
-        # Determine if passed: all checks passed, tree unchanged, and base resolved
-        passed = (
-            result.all_passed
-            and result.status != "no_checks_ran"
-            and tree_before is not None
-            and tree_before == tree_after
-            and base_sha is not None
-        )
+        tree_now = worktree_tree(worktree)
+        if result is None:
+            tree_before = tree_now
+            base_sha = _resolve_sha(base_ref, worktree)
+            passed = False
+        else:
+            tree_before = pending.get("tree") if pending else None
+            base_sha = pending.get("base_sha") if pending else None
+            passed = bool(
+                result.all_passed
+                and result.status == "passed"
+                and tree_before
+                and tree_before == tree_now
+                and base_sha
+            )
 
         attestation = {
             "schema_version": ATTESTATION_SCHEMA_VERSION,
