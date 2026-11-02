@@ -97,6 +97,12 @@ try:
         "case1 setup: origin/main is an ancestor of branch HEAD (real git)",
         is_ancestor("origin/main", "HEAD", cwd=wt),
     )
+    merge_line = fixture._run_git(["rev-list", "--parents", "-n1", "--merges", "HEAD"], cwd=wt).split()
+    test_result(
+        "case1 setup: branch contains a two-parent merge",
+        len(merge_line) == 3,
+        f"rev-list --parents --merges={merge_line}",
+    )
     result, recorded, _err, _, head_before, head_after = _run_phase_rebase(fixture, wt, "feature/merged")
 
     test_result(
@@ -129,7 +135,7 @@ try:
     wt = fixture.create_worktree("feature/linear")
     _commit_file(fixture, wt, "b.txt", "b")  # linear commit on top of origin/main
 
-    result, recorded, err, events, head_before, head_after = _run_phase_rebase(fixture, wt, "feature/linear")
+    result, recorded, err, _, head_before, head_after = _run_phase_rebase(fixture, wt, "feature/linear")
 
     test_result(
         "case2 (linear, contains origin/main) returns None",
@@ -164,7 +170,7 @@ try:
     fixture.create_branch("feature/empty")  # branch at A == origin/main
     wt = fixture.create_worktree("feature/empty")
 
-    result, recorded, err, events, head_before, head_after = _run_phase_rebase(fixture, wt, "feature/empty")
+    result, recorded, err, _, head_before, head_after = _run_phase_rebase(fixture, wt, "feature/empty")
 
     test_result(
         "case3 (HEAD == origin/main) returns None",
