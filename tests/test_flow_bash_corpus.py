@@ -85,7 +85,13 @@ def main():
         for doc, line, cmd in corpus(agent):
             # Find all command verbs in this line using the guard's own segment splitter,
             # so we catch verbs after cd, pipes, semicolons, and &&/|| operators.
-            segments = guard.split_segments(cmd)
+            try:
+                segments = guard.split_segments(cmd)
+            except guard.UnparseableCommand:
+                # The corpus is line-based, so a line from a multi-line quoted or $( ) command
+                # is an unterminated fragment. It has no verb to check; skip it (the guard
+                # itself fails closed on such input).
+                segments = []
             found_verb = False
             for segment in segments:
                 tokens = guard.tokenize_segment(segment)

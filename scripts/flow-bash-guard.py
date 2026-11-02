@@ -1362,7 +1362,7 @@ def main():
             sys.exit(2)
 
         agent = sys.argv[2]
-        if agent not in ("flow-implement", "flow-review", "auto"):
+        if agent not in ("flow-implement", "flow-review", "flow-ship", "flow-merge", "auto"):
             print(f"Unknown --agent value: {agent}", file=sys.stderr)
             sys.exit(2)
 
