@@ -262,5 +262,52 @@ finally:
     fixture.cleanup()
 
 
+# ---------------------------------------------------------------------------
+# Case 6: same-file conflicting topology -> skip (the scenario #420 was filed for)
+# Branch and base both edit shared.txt; the conflict was resolved in a merge of base into the
+# branch. A replaying `git rebase origin/main` would linearize the branch and re-hit that conflict.
+# ---------------------------------------------------------------------------
+fixture, a_sha = _make_repo()
+try:
+    _commit_file(fixture, fixture.repo_root, "shared.txt", "base")
+    fixture.create_branch("feature/conflicting")
+    wt = fixture.create_worktree("feature/conflicting")
+    _commit_file(fixture, wt, "shared.txt", "branch edit")
+    c_sha = _commit_file(fixture, fixture.repo_root, "shared.txt", "main edit")  # same file, conflicting
+    _set_origin_main(fixture, c_sha)
+    fixture._run_git(["merge", "--no-edit", "-X", "ours", "main"], cwd=wt)  # conflict resolved in the merge
+
+    test_result(
+        "case6 setup: origin/main is an ancestor of branch HEAD (real git)",
+        is_ancestor("origin/main", "HEAD", cwd=wt),
+    )
+    result, recorded, err, events, head_before, head_after = _run_phase_rebase(
+        fixture, wt, "feature/conflicting"
+    )
+
+    test_result(
+        "case6 (same-file conflict) _phase_rebase returns None, no conflict kickback",
+        result is None,
+        f"result={result!r}",
+    )
+    test_result(
+        "case6 (same-file conflict) no git rebase argv issued",
+        _rebase_argvs(recorded) == [],
+        f"rebase argvs={_rebase_argvs(recorded)!r}",
+    )
+    test_result(
+        "case6 (same-file conflict) HEAD unchanged",
+        head_after == head_before,
+        f"before={head_before} after={head_after}",
+    )
+    test_result(
+        "case6 (same-file conflict) rebase_skipped queue event recorded",
+        any(isinstance(e, dict) and e.get("event") == "rebase_skipped" for e in events),
+        f"events={events!r}",
+    )
+finally:
+    fixture.cleanup()
+
+
 print()
 h.summarize_and_exit()
