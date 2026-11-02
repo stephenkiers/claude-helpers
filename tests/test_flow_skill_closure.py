@@ -37,13 +37,16 @@ def load_allowed():
     return mod.ALLOWED_SKILLS
 
 
+# Number of characters to scan before and after each Skill mention when looking for
+# invoked command names. This window captures a Skill call in context (/Skill and nearby
+# /name or `name` tokens) while excluding passing prose mentions elsewhere in the doc.
 WINDOW = 160
 
 
 def direct_skills(name):
     """Commands a command doc invokes through the Skill tool.
 
-    Only /name tokens and `name` skill spans within WINDOW characters of a Skill mention
+    Only /name tokens and `name` skill spans within the WINDOW character range of a Skill mention
     count, so prose elsewhere in the doc ("complements /shipit") is not an invocation.
     """
     text = (COMMANDS / f"{name}.md").read_text()
@@ -71,6 +74,16 @@ def closure(entry):
 def main():
     h = Harness("FLOW SKILL CLOSURE TEST SUITE (#359)")
     allowed = load_allowed()
+
+    # Positive control: verify the detector finds a known Skill edge.
+    # shipit calls stack-sync via Skill (one of the few restricted-agent cross-calls),
+    # so the closure from shipit must include stack-sync.
+    shipit_direct = direct_skills("shipit")
+    h.test_result(
+        "positive control: detector finds shipit → stack-sync Skill edge",
+        "stack-sync" in shipit_direct,
+        f"stack-sync not in direct_skills('shipit')={sorted(shipit_direct)}",
+    )
 
     for agent, entry in ENTRY.items():
         reach = closure(entry)
