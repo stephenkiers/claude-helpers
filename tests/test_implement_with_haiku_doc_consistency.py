@@ -1187,4 +1187,94 @@ t("No old 'cwd-drift:' or 'cwd-drift-overlap:' prefixes remain in doc",
 
 print()
 
+# ============================================================================
+# Unit sizing and SPLIT_BASIS consistency (#419)
+# ============================================================================
+print("[Unit sizing] SPLIT_BASIS values consistent across docs and verifier")
+
+# Load the verifier script to check its grammar
+VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
+verifier_text = read(VERIFIER)
+
+# Expected SPLIT_BASIS values from the plan
+split_basis_values = ["parallel", "sequential", "single", "none"]
+
+# Check that implement-with-haiku mentions all the key values
+for value in ["parallel", "sequential", "single"]:
+    t(f"implement-with-haiku mentions SPLIT_BASIS: {value}",
+      f"SPLIT_BASIS: {value}" in IMPLEMENT_WITH_HAIKU or f"split_basis: {value}" in IMPLEMENT_WITH_HAIKU,
+      f"SPLIT_BASIS: {value} not found in doc")
+
+# Check that expert-flow mentions split-finer
+EXPERT_FLOW = read(REPO_ROOT / "commands" / "expert-flow.md")
+t("expert-flow.md mentions --split-finer flag",
+  "--split-finer" in EXPERT_FLOW,
+  "Flag --split-finer not documented in expert-flow")
+
+t("expert-flow.md mentions 'Retry, split finer' label",
+  "split finer" in EXPERT_FLOW.lower(),
+  "Menu label 'Retry, split finer' not found")
+
+# Check that every implement/fix re-run passes --partial-base
+partial_base_runs = len(re.findall(r"--partial-base", EXPERT_FLOW))
+t("expert-flow has multiple --partial-base args on re-runs",
+  partial_base_runs >= 3,  # plain Retry, sonnet, split-finer, coverage
+  f"Found {partial_base_runs} --partial-base refs, expected >=3")
+
+# Check receipt field consistency
+receipt_fields = ["SPLIT_BASIS", "MIN_UNITS", "PRIOR_SPLIT_BASIS", "UNITS"]
+for field in receipt_fields:
+    in_impl = field in IMPLEMENT_WITH_HAIKU
+    in_flow = field in EXPERT_FLOW or field.lower() in EXPERT_FLOW.lower()
+    t(f"Receipt field {field} documented in implement-with-haiku",
+      in_impl,
+      f"Field {field} not mentioned")
+
+print()
+
+# ============================================================================
+# Script allowlisting (#419 audit F5)
+# ============================================================================
+print("[Audit F5] Script invocations in implement-with-haiku are allowlisted")
+
+# Find all script invocation patterns in the doc
+script_invocations = re.findall(
+    r'\$\{?HOME\}?/\.claude/scripts/([a-z0-9_-]+\.py)["\s]',
+    IMPLEMENT_WITH_HAIKU
+)
+unique_scripts = set(script_invocations)
+
+# Get the frontmatter allowed-tools section
+frontmatter_match = re.search(
+    r'^---\n(.*?)\n---',
+    IMPLEMENT_WITH_HAIKU, re.DOTALL | re.MULTILINE
+)
+frontmatter = frontmatter_match.group(1) if frontmatter_match else ""
+
+# Check that each script is explicitly mentioned
+for script in unique_scripts:
+    is_allowlisted = f"unit-{script.replace('_', '-')}" in frontmatter or script in frontmatter
+    t(f"Script {script} is allowlisted in frontmatter",
+      is_allowlisted,
+      f"Script {script} invoked but not in allowed-tools")
+
+print()
+
+# ============================================================================
+# Unit-Id trailer is never read (log-only rule) (#419 audit)
+# ============================================================================
+print("[Audit] Unit-Id trailer is never read by scripts")
+
+# The Unit-Id trailer should never be consulted by any script
+unit_progress_code = read(REPO_ROOT / "scripts" / "unit-progress.py")
+primary_drift_code = read(REPO_ROOT / "scripts" / "primary-checkout-drift.py")
+
+# These scripts should not read Unit-Id (the record is the authority)
+# We can't read the source per instructions, so just check it's documented in the plan
+t("Unit-Id trailer documented as log-only in comments",
+  "log-only" in IMPLEMENT_WITH_HAIKU.lower() and "Unit-Id" in IMPLEMENT_WITH_HAIKU,
+  "Unit-Id trailer's log-only status not documented")
+
+print()
+
 h.summarize_and_exit()

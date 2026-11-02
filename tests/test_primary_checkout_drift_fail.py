@@ -59,7 +59,8 @@ def main() -> None:
         h.test_result("telemetry called with cwd_drift", rec.read_text().strip() == "command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift", rec.read_text())
         h.test_result("receipt exact", text == (
             "ATTEMPT: 2\nDecision: FAILED\nReason: primary-checkout-drift: a.py,b.py\n"
-            "FAILURE_CLASS: cwd-drift\nIMPLEMENTER_MODEL: sonnet\nUNITS: 3\nTURNS_USED: unknown\n"
+            "FAILURE_CLASS: cwd-drift\nSPLIT_BASIS: none\nMIN_UNITS: unknown\nPRIOR_SPLIT_BASIS: none\n"
+            "IMPLEMENTER_MODEL: sonnet\nUNITS: 3\nTURNS_USED: unknown\n"
             "MAX_TURNS: 40\nTURNS_EXHAUSTED: unknown\n<!-- step-end -->\n"), text)
 
         print("[Test 2] baseline-unavailable (compare-exit 2)")
@@ -124,7 +125,8 @@ def main() -> None:
         text = receipt.read_text()
         h.test_result("overlap receipt exact", text == (
             "ATTEMPT: 1\nDecision: FAILED\nReason: primary-checkout-drift: overlap u1\n"
-            "FAILURE_CLASS: cwd-drift\nOVERLAP_FILES: a.py,b.py\nIMPLEMENTER_MODEL: haiku\nUNITS: 2\n"
+            "FAILURE_CLASS: cwd-drift\nSPLIT_BASIS: none\nMIN_UNITS: unknown\nPRIOR_SPLIT_BASIS: none\n"
+            "OVERLAP_FILES: a.py,b.py\nIMPLEMENTER_MODEL: haiku\nUNITS: 2\n"
             "TURNS_USED: unknown\nMAX_TURNS: 30\nTURNS_EXHAUSTED: unknown\n<!-- step-end -->\n"), text)
         h.test_result("overlap exit 1 + telemetry", code == 1 and "cwd_drift" in rec.read_text())
         rec.write_text("")
