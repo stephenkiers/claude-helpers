@@ -208,7 +208,8 @@ def read_records(ledger_file: Path) -> List[Record]:
     """Read and validate all records from ledger file. Return empty list if file missing.
 
     Raises LedgerReadError on any error reading or validating the ledger.
-    Takes no lock and creates no lock file.
+    Takes no lock and creates no lock file. Retries once on read/parse failure to handle
+    transient issues (e.g., concurrent writes).
 
     Args:
         ledger_file: Path to the human.jsonl file.
@@ -218,37 +219,50 @@ def read_records(ledger_file: Path) -> List[Record]:
 
     Raises:
         LedgerReadError: On torn write, blank line, JSON error, schema error, or seq continuity error.
+                         Includes note that failure may be transient if retry also failed.
     """
     if not ledger_file.exists():
         return []
 
-    records: List[Record] = []
+    def _do_read() -> List[Record]:
+        """Inner read function, raises LedgerReadError on any failure."""
+        records: List[Record] = []
+        try:
+            with open(ledger_file, "r", encoding="utf-8") as f:
+                for line_no, line in enumerate(f, 1):
+                    if not line.endswith("\n"):
+                        raise LedgerReadError(f"human.jsonl line {line_no}: missing trailing newline (torn write; delete the partial last line to repair)")
+                    if not line.rstrip("\n"):
+                        raise LedgerReadError(f"human.jsonl line {line_no}: blank line")
+                    try:
+                        obj = json.loads(line.rstrip("\n"))
+                    except json.JSONDecodeError as e:
+                        raise LedgerReadError(f"human.jsonl line {line_no}: JSON parse error: {e}") from e
+                    # parse_record will raise LedgerReadError for schema violations
+                    rec = parse_record(obj, f"human.jsonl line {line_no}")
+                    records.append(rec)
+        except LedgerReadError:
+            raise
+        except (OSError, UnicodeDecodeError) as e:
+            raise LedgerReadError(f"human.jsonl: read error: {e}") from e
+
+        # Check seq continuity
+        if records:
+            for i, rec in enumerate(records, 1):
+                if rec["seq"] != i:
+                    raise LedgerReadError(f"human.jsonl line {i}: seq must be exactly 1..n in order, got {rec['seq']}")
+
+        return records
+
+    # Try once; on failure, retry once to handle transient issues
     try:
-        with open(ledger_file, "r", encoding="utf-8") as f:
-            for line_no, line in enumerate(f, 1):
-                if not line.endswith("\n"):
-                    raise LedgerReadError(f"human.jsonl line {line_no}: missing trailing newline (torn write; delete the partial last line to repair)")
-                if not line.rstrip("\n"):
-                    raise LedgerReadError(f"human.jsonl line {line_no}: blank line")
-                try:
-                    obj = json.loads(line.rstrip("\n"))
-                except json.JSONDecodeError as e:
-                    raise LedgerReadError(f"human.jsonl line {line_no}: JSON parse error: {e}")
-                # parse_record will raise LedgerReadError for schema violations
-                rec = parse_record(obj, f"human.jsonl line {line_no}")
-                records.append(rec)
+        return _do_read()
     except LedgerReadError:
-        raise
-    except (OSError, UnicodeDecodeError) as e:
-        raise LedgerReadError(f"human.jsonl: read error: {e}")
-
-    # Check seq continuity
-    if records:
-        for i, rec in enumerate(records, 1):
-            if rec["seq"] != i:
-                raise LedgerReadError(f"human.jsonl line {i}: seq must be exactly 1..n in order, got {rec['seq']}")
-
-    return records
+        try:
+            return _do_read()
+        except LedgerReadError as retry_e:
+            # Append note that failure may be transient
+            raise LedgerReadError(f"{retry_e} (may be transient; retry)") from retry_e
 
 
 def load_records(ledger_file: Path) -> List[Record]:
@@ -259,6 +273,25 @@ def load_records(ledger_file: Path) -> List[Record]:
     """
     try:
         return read_records(ledger_file)
+    except LedgerReadError as e:
+        error(f"flow-ledger: {e}")
+
+
+def parse_record_or_exit(obj: Any, label: str) -> Record:
+    """Parse and validate a record, calling error() on failure.
+
+    Wraps parse_record() and converts LedgerReadError to error() exit.
+    On any validation error, calls error() which exits with code 1.
+
+    Args:
+        obj: The object to parse (should be dict).
+        label: A description for error messages (e.g. "append: new record").
+
+    Returns:
+        A validated Record on success; never returns on error (exits with code 1).
+    """
+    try:
+        return parse_record(obj, label)
     except LedgerReadError as e:
         error(f"flow-ledger: {e}")
 
@@ -453,10 +486,7 @@ def cmd_append(
         }
 
         # Validate the new record
-        try:
-            parse_record(new_record, "append: new record")
-        except LedgerReadError as e:
-            error(f"flow-ledger: {e}")
+        parse_record_or_exit(new_record, "append: new record")
 
         # Append or rewrite depending on supersedes
         if supersedes is None:
@@ -532,10 +562,7 @@ def cmd_mark(flow_dir: Path, seq: int, status: MarkStatus, by: Optional[str]) ->
             record["addressed_by"] = by
 
         # Re-validate the modified record
-        try:
-            parse_record(record, f"mark: record {seq}")
-        except LedgerReadError as e:
-            error(f"flow-ledger: {e}")
+        parse_record_or_exit(record, f"mark: record {seq}")
 
         # Rewrite file
         write_records(ledger_file, records, "mark")
