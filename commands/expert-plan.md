@@ -1135,9 +1135,11 @@ FINAL_PLAN_PATH: <absolute FINAL_PLAN_PATH, $HOME expanded>
 ATTEMPT: <k>
 Decision: OK
 Reason: completed
-Addressed: none
+Addressed: <line>
 <!-- step-end -->
 ```
+
+When there are no pending directions owed to the plan step (no human ledger entries to be addressed), the value is literally `none`. Otherwise, show the carried-forward human direction line number (e.g., `line 5` or `line 12`).
 
 `FINAL_PLAN_PATH:` must sit on its own line — the orchestrator parses it. When `FLOW_DIR` is empty,
 write nothing.

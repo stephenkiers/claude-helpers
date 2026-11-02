@@ -1781,7 +1781,11 @@ On a validated `FAILED` (the stage is already closed as `failure` by the loop), 
       ```
       It re-runs the eligibility check and refuses with exit 1 and the `ACCEPT: no` line if it fails, or exits 2 on an IO error. On exit 1, the refusal drops the option; if the output has no `ACCEPT: no` line, clean the note and re-run `record` once. On exit 2 or any other non-zero exit, drop the option, print the reason, and re-ask the menu. On success it prints the class and appends one block to `steps/<NN>-<STEP>.accepted.md`.
    3. **Attestation second.** Log `<STEP> accepted (<class>: <reason>)`, with `<reason>` sanitised by the `REASON` snippet of the log section (`<reason>` is `stop_reason[STEP]`). The line is the attestation; the trail file alone is not one, so a crash between steps 2 and 3 leaves the step open for a new choice.
-   4. **Redo lineage.** If the failed attempt is a redo attempt (the item 4 condition holds), mark its `direction` record `addressed --by "$FLOW_DIR/steps/<NN>-<STEP>.md"` (`python3 "$HOME/.claude/scripts/flow-ledger.py" mark --flow-dir "$FLOW_DIR" --seq <seq> --status addressed --by "$FLOW_DIR/steps/<NN>-<STEP>.md"`) and set `redo_archive: null`, as redo step 8 does after an OK.
+   4. **Redo lineage.** If the failed attempt is a redo attempt (the item 4 condition holds), mark its `direction` record `addressed --by <receipt-path>` (where `<receipt-path>` is the relative receipt path, e.g., `steps/<NN>-<STEP>.md`):
+      ```bash
+      python3 "$HOME/.claude/scripts/flow-ledger.py" mark --flow-dir "$FLOW_DIR" --seq <seq> --status addressed --by <receipt-path>
+      ```
+      Then set `redo_archive: null`, as redo step 8 does after an OK.
    5. **State.** Leave `failures[STEP]` untouched. Clear `stop_source[STEP]` and `stop_reason[STEP]`. Set `status: running`. Extract the step's required values from the receipt as the OK branch does (`plan_path` from `FINAL_PLAN_PATH`; `review_dir` from `REVIEW_DIR`, with the `.claude/github-cache.json` repoint for review). `WRITE-STATE`.
    6. **Continue.** Run the "Step gate" when `flags.step_gates` is set, with the digest prefixed by the line `accepted, not audited: <class> — <reason>`. Otherwise advance `STEP` and restart the loop at 1, exactly as the OK branch's tail does. The telemetry stage stays closed as `failure`, which is how loop step 5 closed it. No `command-end` is issued, because the flow continues.
 
@@ -2079,9 +2083,9 @@ Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in shi
 1. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --ledger-close --flow-dir "${FLOW_DIR}"`. Exit 1 is a ship hard stop with its reason (an unanswered question or an unreadable ledger); `/shipit` is never spawned. On exit 0, iterate over each `CLOSE:` line printed.
 2. For each line, parse the status and seq. If the status is `addressed`, run:
    ```bash
-   python3 "$HOME/.claude/scripts/flow-ledger.py" mark --flow-dir "$FLOW_DIR" --seq <seq> --status addressed --by "$FLOW_DIR/steps/<NN>-<STEP>.md"
+   python3 "$HOME/.claude/scripts/flow-ledger.py" mark --flow-dir "$FLOW_DIR" --seq <seq> --status addressed --by <receipt-path>
    ```
-   If the status is `parked`, run:
+   where `<receipt-path>` is the relative receipt path from the `CLOSE:` line (e.g., `steps/<NN>-<STEP>.md`). If the status is `parked`, run:
    ```bash
    python3 "$HOME/.claude/scripts/flow-ledger.py" mark --flow-dir "$FLOW_DIR" --seq <seq> --status parked
    ```
