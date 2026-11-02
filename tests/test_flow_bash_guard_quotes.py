@@ -4,7 +4,7 @@ Differential corpus for the flow Bash guard's quote-aware splitter (#403).
 
 Pins how scripts/flow-bash-guard.py classifies shell commands across the change from the
 quote-blind splitter on main to the quote-aware splitter, the command-prefix normaliser and
-the interpreter verb-pair check. Every entry runs through check_command() in-process.
+the interpreter verb-pair check. Every entry runs through check_command_for_agent(command, "flow-implement") in-process.
 
 Categories (each entry carries a comment naming the rule or path that decides it):
   MUST_BECOME_ALLOWED    blocked on unchanged main, allowed after the change
@@ -13,7 +13,7 @@ Categories (each entry carries a comment naming the rule or path that decides it
   MUST_BECOME_BLOCKED    allowed on unchanged main, blocked after; each names the new rule
   FALSE_NEGATIVE_LEDGER  allowed after the change; known residuals, each with a justification
 
-Pre-change side: before the splitter change, every entry was run through check_command() on the
+Pre-change side: before the splitter change, every entry was run through check_command_for_agent(command, "flow-implement") on the
 unmodified base commit. MUST_BECOME_ALLOWED entries were blocked there, MUST_BECOME_BLOCKED entries
 were allowed, and MUST_STAY and ledger entries matched their category. Sections 1 and 4 therefore
 fail on the base commit and pass on the new guard. This file asserts the after side.
@@ -146,7 +146,7 @@ def load_guard():
 
 def run_must_stay(h, guard, title, entries, expect_blocked):
     for command, why in entries:
-        blocked, reason = guard.check_command(command)
+        blocked, reason, _rule = guard.check_command_for_agent(command, "flow-implement")
         h.test_result(
             f"{title}: {command!r}",
             blocked == expect_blocked,

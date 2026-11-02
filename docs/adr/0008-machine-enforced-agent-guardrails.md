@@ -525,8 +525,8 @@ only (see "Bash guard for push validation" below).
    (full-match anchored: `$(jq -r '.commands.check // .commands.test // empty' ...)`). This enforces that
    the agent cannot invoke arbitrary commands by name.
 
-3. **Agent name validation** — a non-empty agent name outside the known four (`flow-implement`,
-   `flow-review`, `flow-ship`, `flow-merge`) is denied with exit 2.
+3. **Agent name validation** — a non-empty agent name outside the known five (`flow-implement`,
+   `flow-review`, `flow-ship`, `flow-merge`, `flow-healer`) is denied with exit 2.
 
 4. **Push-form matching** — exact literal-string matching only (no pattern/prefix matching). Three forms
    are sanctioned:

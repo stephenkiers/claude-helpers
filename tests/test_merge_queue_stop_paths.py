@@ -3,7 +3,8 @@
 Phase 4-Q stop paths of commands/merge-and-cleanup.md, executed (#359, plan Step 6).
 
 flow-merge relies on a queue kickback, refusal, or unusable outcome ending the step with a
-nonzero exit, a FAILED receipt Reason, and the worktree left intact (never reaching /cleanup).
+nonzero exit and a FAILED receipt Reason, never reaching /cleanup. (Whether the worktree survives
+is not asserted here; run_case only reports it.)
 This extracts the real Phase 4-Q bash block, stubs only `gh`, and drives it with fixture
 result files.
 

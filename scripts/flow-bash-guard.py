@@ -876,15 +876,6 @@ def is_interpreter_verb_pair(tokens):
     return False
 
 
-def check_command(command: str) -> Tuple[bool, str]:
-    """flow-implement check as (is_blocked, reason); a thin wrapper kept for in-process tests.
-
-    The hook itself goes through check_command_for_agent().
-    """
-    blocked, reason, _rule = check_command_for_agent(command, "flow-implement")
-    return blocked, reason
-
-
 def check_push_form(tokens: List[str]) -> Tuple[bool, str]:
     """Check if tokens match an allowed git push form.
 
@@ -1362,7 +1353,7 @@ def main():
             sys.exit(2)
 
         agent = sys.argv[2]
-        if agent not in ("flow-implement", "flow-review", "flow-ship", "flow-merge", "auto"):
+        if agent not in KNOWN_FLOW_AGENTS + ("auto",):
             print(f"Unknown --agent value: {agent}", file=sys.stderr)
             sys.exit(2)
 
@@ -1384,7 +1375,7 @@ def main():
                 sys.exit(0)
 
             # If agent_type starts with flow- but not in known set, fail closed
-            if agent_type not in ("flow-implement", "flow-review", "flow-ship", "flow-merge", "flow-healer"):
+            if agent_type not in KNOWN_FLOW_AGENTS:
                 print(f"Auto mode: agent_type '{agent_type}' is unknown, denying", file=sys.stderr)
                 sys.exit(2)
 
@@ -1392,7 +1383,7 @@ def main():
             agent = agent_type
         else:
             # Explicit agent specified; if it's flow-* and unknown, fail closed
-            if agent.startswith("flow-") and agent not in ("flow-implement", "flow-review", "flow-ship", "flow-merge", "flow-healer"):
+            if agent.startswith("flow-") and agent not in KNOWN_FLOW_AGENTS:
                 print(f"Explicit agent '{agent}' is unknown, denying", file=sys.stderr)
                 sys.exit(2)
 

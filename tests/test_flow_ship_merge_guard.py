@@ -21,6 +21,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
 
+# Number of push forms in the ADR-0008 flow-bash-push-allowlist block (Forms 1-4; Form 4 has two
+# variants). Update together with that block.
+EXPECTED_PUSH_FORMS = 5
+
 SCRIPTS = REPO_ROOT / "scripts"
 BASH = SCRIPTS / "flow-bash-guard.py"
 AGENTS = ("flow-ship", "flow-merge")
@@ -66,6 +70,14 @@ def main():
     h = Harness("flow-ship / flow-merge guard")
 
     # Import the guard to test explicit agent rows
+    def _load(modname, path):
+        sp = importlib.util.spec_from_file_location(modname, path)
+        mod = importlib.util.module_from_spec(sp)
+        sp.loader.exec_module(mod)
+        return mod
+
+    agent_guard = _load("flow_agent_guard", SCRIPTS / "flow-agent-guard.py")
+    skill_guard = _load("flow_skill_guard", SCRIPTS / "flow-skill-guard.py")
     spec = importlib.util.spec_from_file_location("flow_bash_guard", BASH)
     flow_bash_guard = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(flow_bash_guard)
@@ -130,10 +142,10 @@ def main():
         if name.startswith("flow-"):
             h.test_result(f"flow-bash-guard has explicit handling for {name}",
                           name in flow_bash_guard.KNOWN_FLOW_AGENTS, f"agent {name} not in KNOWN_FLOW_AGENTS")
-        for guard in ("flow-bash-guard.py", "flow-agent-guard.py", "flow-skill-guard.py"):
-            h.test_result(f"{guard} has an explicit row for {name}",
-                          f'"{name}"' in (SCRIPTS / guard).read_text() or f"'{name}'" in (SCRIPTS / guard).read_text(),
-                          "no explicit mention")
+        for label, table in (("flow-agent-guard.py ALLOWED_SUBAGENT_TYPES", agent_guard.ALLOWED_SUBAGENT_TYPES),
+                             ("flow-skill-guard.py ALLOWED_SKILLS", skill_guard.ALLOWED_SKILLS)):
+            h.test_result(f"{label} has a table key for {name}", name in table,
+                          f"{name} is not a key of {label}")
     def forms(text):
         out = []
         for ln in re.search(r"^(?:# |<!-- )flow-bash-push-allowlist:begin.*?\n(.*?)^(?:# |<!-- )flow-bash-push-allowlist:end",
@@ -145,7 +157,7 @@ def main():
 
     adr = next((REPO_ROOT / "docs" / "adr").glob("0008-*.md")).read_text()
     h.test_result("ADR-0008 push allow-list block matches the guard's marked block",
-                  forms(adr) == forms(BASH.read_text()) and len(forms(adr)) == 5,
+                  forms(adr) == forms(BASH.read_text()) and len(forms(adr)) == EXPECTED_PUSH_FORMS,
                   f"adr={forms(adr)} guard={forms(BASH.read_text())}")
     h.summarize_and_exit()
 
