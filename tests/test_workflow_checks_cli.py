@@ -377,5 +377,85 @@ if __name__ == "__main__":
             f"rc={proc_else.returncode} out={proc_else.stdout[:200]!r}",
         )
 
+    print("[Section 10] checks ensure-check CLI: CHECK_SOURCE first line and CHECK_ACTION (#417 Step 2)")
+
+    def run_checks_cli(args):
+        return subprocess.run(
+            [sys.executable, "-m", "scripts.workflow.cli", "checks"] + args,
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        main = base / "main"
+        feat = base / "feat"
+        feat.mkdir(parents=True)
+        main.mkdir(parents=True)
+        (feat / "package-lock.json").write_text("{}")
+        (feat / "package.json").write_text(json.dumps({"scripts": {"check": "run-all"}}))
+        proc = run_checks_cli(["ensure-check", "--worktree", str(feat), "--main-worktree", str(main)])
+        lines = proc.stdout.splitlines()
+        test_result(
+            "ensure-check detected: exit 0, CHECK_SOURCE is the first line, then CHECK_ACTION and CHECK_COMMAND",
+            proc.returncode == 0 and lines[:2] == ["CHECK_SOURCE: repo-cache (package-json)", "CHECK_ACTION: detected"]
+            and "CHECK_COMMAND: npm run check" in lines,
+            f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr[-200:]!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        main = base / "main"
+        feat = base / "feat"
+        feat.mkdir(parents=True)
+        main.mkdir(parents=True)
+        (feat / "CLAUDE.md").write_text("Run `just check` before pushing.\n")
+        proc = run_checks_cli(["ensure-check", "--worktree", str(feat), "--main-worktree", str(main)])
+        test_result(
+            "ensure-check unresolved: exit 0, CHECK_SOURCE unresolved, SUGGESTION is labelled unverified",
+            proc.returncode == 0 and proc.stdout.splitlines()[0] == "CHECK_SOURCE: unresolved"
+            and "CHECK_ACTION: unresolved" in proc.stdout
+            and "SUGGESTION: just check (from CLAUDE.md, unverified)" in proc.stdout,
+            f"rc={proc.returncode} out={proc.stdout!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        main = base / "main"
+        main.mkdir(parents=True)
+        proc = run_checks_cli(["record-check-answer", "--main-worktree", str(main), "--command", "make verify"])
+        resolved = run_checks_cli(["resolve-check", "--worktree", str(main)])
+        test_result(
+            "record-check-answer --command exits 0, prints CHECK_RECORDED, and the answer resolves",
+            proc.returncode == 0 and proc.stdout.startswith("CHECK_RECORDED:")
+            and json.loads(resolved.stdout)["command"] == "make verify",
+            f"rc={proc.returncode} out={proc.stdout!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        main.mkdir(parents=True)
+        (main / ".claude").mkdir()
+        (main / ".claude" / "repo-cache.json").write_text(json.dumps({"version": 1, "commands": {"check": "from-cache"}}))
+        proc = run_checks_cli(["record-check-answer", "--main-worktree", str(main), "--command", "new"])
+        test_result(
+            "record-check-answer that does not verify exits 1 and names the YAML to add by hand",
+            proc.returncode == 1 and "add this YAML by hand" in proc.stdout and 'check: "new"' in proc.stdout,
+            f"rc={proc.returncode} out={proc.stdout!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        main.mkdir(parents=True)
+        proc = run_checks_cli(
+            ["record-check-answer", "--main-worktree", str(main), "--command", "a", "--opt-out", "b"]
+        )
+        test_result(
+            "record-check-answer with both --command and --opt-out is an argparse usage error (exit 2)",
+            proc.returncode == 2,
+            f"rc={proc.returncode} err={proc.stderr[-200:]!r}",
+        )
+
     print()
     h.summarize_and_exit()

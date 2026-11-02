@@ -9,6 +9,7 @@ which is a hard error rather than a silent pass).
 
 import json
 import os
+import re
 import signal
 import subprocess
 from dataclasses import dataclass, field, asdict
@@ -17,6 +18,7 @@ from typing import List, Dict, Optional, Tuple, Any, Mapping, Final, Literal
 
 from .safety import Unknown, fail_closed
 from .cache import read_repo_cache
+from .deps import atomic_write_text, find_lockfile, read_json_object
 from .models import validate_repo_cache, valid_timeout_secs  # noqa: F401  (re-exported)
 
 try:
@@ -381,6 +383,65 @@ def _load_repo_cache_mapping(path: Path) -> Optional[Dict[str, Any]]:
     return data
 
 
+PACKAGE_JSON_PROVENANCE = "package-json"
+PACKAGE_JSON_LABEL = "repo-cache (package-json)"
+_CLAUDE_MD_CHECK_RE = re.compile(r"`((?:npm|pnpm|yarn|bun) run check|just check|make check)`")
+_TOP_LEVEL_COMMANDS_RE = re.compile(r"^commands\s*:(.*)$")
+_TOP_LEVEL_OPT_OUT_RE = re.compile(r"^checkOptOut\s*:")
+_CHILD_CHECK_RE = re.compile(r"^(\s+)check\s*:")
+
+
+def _repo_cache_label(path: Path) -> str:
+    """
+    The source label for a check read from repo-cache.json.
+
+    A check written by `checks ensure-check` from package.json carries top-level
+    commandSources.check == "package-json" and gets its own label, so the provenance is visible
+    in resolve-check output and receipts. Any other repo-cache check keeps the plain label.
+    """
+    data = read_json_object(path)
+    sources = data.get("commandSources") if data is not None else None
+    if isinstance(sources, dict) and sources.get("check") == PACKAGE_JSON_PROVENANCE:
+        return PACKAGE_JSON_LABEL
+    return "repo-cache"
+
+
+def detect_package_json_check(worktree: Path) -> Optional[str]:
+    """
+    Derive "<manager> run check" from a worktree's package.json, or None.
+
+    Only a single unambiguous lockfile (see deps.find_lockfile) and a non-empty scripts.check
+    string produce a command. Ambiguity or a missing script yields None; nothing is guessed.
+    """
+    lockfile, ambiguous = find_lockfile(worktree)
+    if ambiguous is not None or lockfile is None:
+        return None
+    manifest = read_json_object(worktree / "package.json")
+    if manifest is None:
+        return None
+    scripts = manifest.get("scripts")
+    if not isinstance(scripts, dict):
+        return None
+    script = scripts.get("check")
+    if not isinstance(script, str) or not script.strip():
+        return None
+    return f"{lockfile.manager} run check"
+
+
+def suggest_from_claude_md(worktree: Path) -> Optional[str]:
+    """
+    A check command named in the worktree's CLAUDE.md, for display only.
+
+    The suggestion is never written to any config and is labelled unverified by the caller.
+    """
+    try:
+        text = (worktree / "CLAUDE.md").read_text()
+    except OSError:
+        return None
+    match = _CLAUDE_MD_CHECK_RE.search(text)
+    return match.group(1) if match else None
+
+
 def _read_timeout_value(path: Path, kind: ConfigKind) -> Tuple[Optional[int], bool]:
     """
     Read checkTimeoutSecs from one config file, parsed according to its explicit kind.
@@ -473,7 +534,9 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
         if not read_err and cache_data:
             check_cmd = cache_data.commands.get("check")
             if isinstance(check_cmd, str) and check_cmd.strip():
-                return CheckResolution(check_cmd.strip(), "repo-cache", cache_file, None, source_scope="worktree")
+                return CheckResolution(
+                    check_cmd.strip(), _repo_cache_label(cache_file), cache_file, None, source_scope="worktree"
+                )
             else:
                 sources_tried[-1] += REPO_CACHE_NO_KEY_SUFFIX
         else:
@@ -490,7 +553,9 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
             if not read_err and cache_data:
                 check_cmd = cache_data.commands.get("check")
                 if isinstance(check_cmd, str) and check_cmd.strip():
-                    return CheckResolution(check_cmd.strip(), "repo-cache", main_cache_file, None, source_scope="main")
+                    return CheckResolution(
+                        check_cmd.strip(), _repo_cache_label(main_cache_file), main_cache_file, None, source_scope="main"
+                    )
                 else:
                     sources_tried[-1] += REPO_CACHE_NO_KEY_SUFFIX
             else:
@@ -587,6 +652,183 @@ def resolve_check_command(
     """
     resolution = resolve_check_detail(worktree, main_worktree)
     return resolution.command, resolution.source, resolution.failure_reason
+
+
+@dataclass
+class EnsureCheckResult:
+    """
+    Outcome of ensure_check.
+
+    action is "resolved", "detected", "opt-out", "unresolved" or "error". source is the CHECK_SOURCE
+    label (None for unresolved and error). error is set only for "error".
+    """
+    action: str
+    source: Optional[str]
+    command: Optional[str] = None
+    opt_out_reason: Optional[str] = None
+    suggestion: Optional[str] = None
+    error: Optional[str] = None
+
+
+def _write_detected_check(main_worktree: Path, command: str) -> Optional[str]:
+    """
+    Write a package.json-derived check into the MAIN repo-cache.json, keeping its other keys.
+
+    A corrupt or schema-invalid existing file is refused rather than overwritten. Returns an error
+    message, or None on success.
+    """
+    cache_path = main_worktree / ".claude" / "repo-cache.json"
+    data: Dict[str, Any] = {"version": 1}
+    if cache_path.exists():
+        try:
+            loaded = json.loads(cache_path.read_text())
+        except (OSError, ValueError) as e:
+            return f"refusing to overwrite unreadable main repo-cache.json: {e}"
+        if not isinstance(loaded, dict) or not validate_repo_cache(loaded):
+            return "refusing to overwrite invalid main repo-cache.json"
+        data = loaded
+    commands = data.get("commands", {})
+    if not isinstance(commands, dict):
+        return "refusing to overwrite: main repo-cache.json commands is not an object"
+    commands["check"] = command
+    data["commands"] = commands
+    sources = data.get("commandSources", {})
+    if not isinstance(sources, dict):
+        sources = {}
+    sources["check"] = PACKAGE_JSON_PROVENANCE
+    data["commandSources"] = sources
+    try:
+        atomic_write_text(cache_path, json.dumps(data, indent=2) + "\n")
+    except OSError as e:
+        return f"could not write main repo-cache.json: {e}"
+    return None
+
+
+def ensure_check(worktree: Path, main_worktree: Path) -> EnsureCheckResult:
+    """
+    Make the check resolvable without asking, where that is safe.
+
+    An existing resolution (including an explicit opt-out) is reported as-is. Otherwise a single
+    unambiguous package.json "check" script is written into the MAIN repo-cache.json with
+    commandSources.check = "package-json". If nothing can be derived, the result is "unresolved"
+    and CLAUDE.md may offer an unverified suggestion, which is never written anywhere.
+    """
+    resolution = resolve_check_detail(worktree, main_worktree)
+    if resolution.source == OPT_OUT_SOURCE:
+        return EnsureCheckResult("opt-out", OPT_OUT_SOURCE, opt_out_reason=resolution.opt_out_reason)
+    if resolution.command is not None:
+        return EnsureCheckResult("resolved", resolution.source, command=resolution.command)
+    detected = detect_package_json_check(worktree)
+    if detected is None:
+        return EnsureCheckResult("unresolved", None, suggestion=suggest_from_claude_md(worktree))
+    error = _write_detected_check(main_worktree, detected)
+    if error is not None:
+        return EnsureCheckResult("error", None, error=error)
+    return EnsureCheckResult("detected", PACKAGE_JSON_LABEL, command=detected)
+
+
+def _with_check_line(text: str, command: str) -> Tuple[str, str, Optional[str]]:
+    """
+    Return (new_text, snippet, refusal) with commands.check added to project.yaml text.
+
+    refusal is set when the edit is unsafe: flow-style commands, an existing check key, or more than
+    one top-level commands key. The snippet is the YAML the human would add by hand.
+    """
+    value_line = f"check: {json.dumps(command)}"
+    lines = text.splitlines()
+    commands_idx = [i for i, line in enumerate(lines) if _TOP_LEVEL_COMMANDS_RE.match(line)]
+    if len(commands_idx) > 1:
+        return text, "", "refusing: project.yaml has more than one top-level commands key"
+    base = text if (text == "" or text.endswith("\n")) else text + "\n"
+    if not commands_idx:
+        snippet = f"commands:\n  {value_line}"
+        return base + snippet + "\n", snippet, None
+
+    idx = commands_idx[0]
+    match = _TOP_LEVEL_COMMANDS_RE.match(lines[idx])
+    rest = match.group(1).strip() if match else ""
+    if rest and not rest.startswith("#"):
+        return text, "", "refusing: commands is in flow style; add the check key by hand"
+    indent: Optional[str] = None
+    for line in lines[idx + 1:]:
+        if line.strip() == "" or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            break
+        if indent is None:
+            indent = line[: len(line) - len(line.lstrip())]
+        if _CHILD_CHECK_RE.match(line):
+            return text, "", "refusing: commands.check already exists in project.yaml"
+    child_indent = indent if indent is not None else "  "
+    lines.insert(idx + 1, f"{child_indent}{value_line}")
+    snippet = f"{child_indent}{value_line}"
+    return "\n".join(lines) + "\n", snippet, None
+
+
+def _with_opt_out_line(text: str, reason: str) -> Tuple[str, str, Optional[str]]:
+    """Return (new_text, snippet, refusal) with a top-level checkOptOut appended to project.yaml text."""
+    if any(_TOP_LEVEL_OPT_OUT_RE.match(line) for line in text.splitlines()):
+        return text, "", "refusing: project.yaml already has a checkOptOut line; edit it by hand"
+    snippet = f"checkOptOut: {json.dumps(reason)}"
+    base = text if (text == "" or text.endswith("\n")) else text + "\n"
+    return base + snippet + "\n", snippet, None
+
+
+def record_check_answer(
+    main_worktree: Path, command: Optional[str] = None, opt_out: Optional[str] = None
+) -> Tuple[bool, str]:
+    """
+    Record a human's check answer in the MAIN worktree's project.yaml, then verify it resolves.
+
+    Exactly one of command / opt_out must be given. The text edit is refused for shapes it cannot
+    safely make. The result is re-resolved against the main worktree; if it does not resolve to the
+    answer, the file is restored to its original bytes (or removed if it did not exist) and the
+    message names the YAML to add by hand. Returns (ok, message).
+    """
+    if (command is None) == (opt_out is None):
+        return False, "exactly one of --command or --opt-out is required"
+    answer = command if command is not None else opt_out
+    if answer is None or "\n" in answer or "\r" in answer or not answer.strip():
+        return False, "the answer must be a single non-empty line"
+    answer = " ".join(answer.split()) if command is None else answer.strip()
+
+    path = main_worktree / ".claude" / "project.yaml"
+    original: Optional[str] = None
+    if path.exists():
+        try:
+            original = path.read_text()
+        except OSError as e:
+            return False, f"cannot read main project.yaml: {e}"
+    text = original if original is not None else ""
+
+    if command is not None:
+        new_text, snippet, refusal = _with_check_line(text, answer)
+    else:
+        new_text, snippet, refusal = _with_opt_out_line(text, answer)
+    if refusal is not None:
+        return False, refusal
+
+    try:
+        atomic_write_text(path, new_text)
+    except OSError as e:
+        return False, f"could not write main project.yaml: {e}"
+
+    resolution = resolve_check_detail(main_worktree, None)
+    if command is not None:
+        resolved = resolution.command == answer
+    else:
+        resolved = resolution.source == OPT_OUT_SOURCE and resolution.opt_out_reason == answer
+    if resolved:
+        return True, "CHECK_RECORDED: " + snippet.replace("\n", " | ")
+
+    try:
+        if original is None:
+            path.unlink()
+        else:
+            atomic_write_text(path, original)
+    except OSError as e:
+        return False, f"verification failed and rollback failed ({e}); add this YAML by hand: {snippet}"
+    return False, f"verification failed: the answer did not resolve against main; add this YAML by hand: {snippet}"
 
 
 def _with_ignored(base: str, ignored: List[str]) -> str:
