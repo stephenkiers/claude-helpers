@@ -198,7 +198,7 @@ When `FLOW_DIR` is set:
   and `TURNS_USED` is known and below that threshold. Write `unknown` when `TURNS_USED` is unknown
   or the status cannot be determined.
 
-**Incomplete steps (diff heuristic).** For each step or directive (`D<n>` for action plans):
+**Incomplete steps (diff heuristic).** For each step or directive (`D<n>` for action plans; Doing-it table rows are `D1..Dn` in table order, and decided/measured ruling directives never take `D` ids):
 - Mark incomplete if **none** of its named files appear in `git diff --name-only <START_SHA>..HEAD`
   and the staged files.
 - Also mark incomplete if any file gained marker lines (`TODO|FIXME|unimplemented!()|todo!()|NotImplementedError|throw new NotImplemented`)
