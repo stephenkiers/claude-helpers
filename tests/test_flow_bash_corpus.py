@@ -62,6 +62,9 @@ def skipped(doc, line, cmd, rule):
     return False
 
 
+# SANCTIONED: commands that actually appear in the agent's closure docs (reachable at runtime)
+# and must not be denied. Corpus test ensures the guard doesn't reject these.
+# (Different from ALLOWED in test_flow_ship_merge_guard.py which tests edge cases.)
 SANCTIONED = [
     "git push --force-with-lease --force-if-includes origin HEAD",
     "git -C /tmp/wt push --force-with-lease",

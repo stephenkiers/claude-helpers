@@ -11,6 +11,7 @@ explicit row in all three guards.
 Run with: python3 tests/test_flow_ship_merge_guard.py
 """
 
+import importlib.util
 import json
 import re
 import subprocess
@@ -36,11 +37,13 @@ def bash(command, agent):
     return run(BASH, {"tool_name": "Bash", "tool_input": {"command": command}}, agent)
 
 
+# ALLOWED: test cases for commands that should be allowed by the guard.
+# SANCTIONED in test_flow_bash_corpus.py is extracted from actual closure docs (different curated list)
 ALLOWED = [
     "git push --force-with-lease --force-if-includes origin HEAD",
     "git -C /tmp/wt push --force-with-lease",
     "git push -u origin feature/x",
-    f"git push --force-with-lease=feature/x:{SHA_A} origin {SHA_B}:refs/heads/feature/x",
+    f"git push --force-with-lease=feature/x:{SHA_A} origin {SHA_A}:refs/heads/feature/x",
     "gh stack sync",
     "gh pr create --title t --body b",
     'eval "$CHECK_CMD"',
@@ -52,11 +55,21 @@ DENIED_BOTH = [
     "git push --force-with-lease --force origin HEAD",
     "gh pr merge 1 --admin", "gh api -X POST repos/o/r/issues",
     'eval "$OTHER"',
+    "git -C /tmp/wt push origin main --force",  # Extra flag
+    "git --no-pager push --force origin main",  # Global option before push with --force
+    f"git push --force-with-lease=feature/x:tooshort origin {SHA_A}:refs/heads/feature/x",  # Short SHA
+    f"git push --force-with-lease=feature/x:{SHA_A} origin {SHA_B}:refs/heads/other",  # Branch mismatch
 ]
 
 
 def main():
     h = Harness("flow-ship / flow-merge guard")
+
+    # Import the guard to test explicit agent rows
+    spec = importlib.util.spec_from_file_location("flow_bash_guard", BASH)
+    flow_bash_guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(flow_bash_guard)
+
     for agent in AGENTS:
         for cmd in ALLOWED:
             rc, err = bash(cmd, agent)
@@ -65,14 +78,27 @@ def main():
             rc, _ = bash(cmd, agent)
             h.test_result(f"{agent}: denies {cmd[:55]}", rc == 2, f"rc={rc}")
         rc, err = bash("git push --weird origin x", agent)
-        h.test_result(f"{agent}: unknown push form names rule id", rc == 2 and "rule push-form" in err, err.strip())
+        h.test_result(f"{agent}: unknown push form names rule id and escalation hint",
+                      rc == 2 and "rule push-form" in err and "Ask block" in err, err.strip())
         rc, err = run(BASH, {"tool_name": "Bash", "tool_input": {"command": "git push --weird"},
                              "agent_type": agent}, "auto")
         h.test_result(f"{agent}: auto mode resolves its own row", rc == 2 and agent in err, err.strip())
-    rc, _ = bash("gh pr merge 1 --squash", "flow-ship")
-    h.test_result("flow-ship denies gh pr merge --squash", rc == 2, f"rc={rc}")
-    rc, _ = bash("gh pr merge 1 --squash", "flow-merge")
-    h.test_result("flow-merge allows gh pr merge --squash", rc == 0, f"rc={rc}")
+
+    # Test flow-ship denies ALL gh pr merge
+    rc, err = bash("gh pr merge 1 --squash", "flow-ship")
+    h.test_result("flow-ship denies gh pr merge (any flags) and includes escalation hint",
+                  rc == 2 and "gh-pr-merge-ship" in err and "Ask block" in err, err.strip())
+    rc, err = bash("gh pr merge 1", "flow-ship")
+    h.test_result("flow-ship denies gh pr merge without flags", rc == 2, err.strip())
+
+    # Test flow-merge gh pr merge --squash: behavior depends on merge-queue config
+    # If merge-queue exists (deny), if it doesn't exist (allow)
+    rc, err = bash("gh pr merge 1 --squash", "flow-merge")
+    has_merge_queue = (REPO_ROOT.parent.parent / "merge-queue.json").exists()
+    if has_merge_queue:
+        h.test_result("flow-merge denies gh pr merge --squash (merge-queue exists)", rc == 2 and "gh-pr-merge-queue" in err, err.strip())
+    else:
+        h.test_result("flow-merge allows gh pr merge --squash (no merge-queue)", rc == 0, f"rc={rc}")
 
     rc, _ = bash("git status", "flow-bogus")
     h.test_result("unknown flow-* agent fails closed", rc == 2, f"rc={rc}")
@@ -83,10 +109,27 @@ def main():
         rc, _ = run(BASH, payload, "auto")
         h.test_result(f"auto mode passes agent_type={at}", rc == 0, f"rc={rc}")
 
+    # Test escalation hint appears in denial messages for specific rules
+    escalation_in_rules = ["push-form", "gh-pr-merge-admin", "gh-pr-merge-ship"]
+    for rule_id in escalation_in_rules:
+        # Use the guard module to check that these rules include the escalation hint
+        if rule_id == "push-form":
+            rc, err = bash("git push --unknown origin x", "flow-ship")
+        elif rule_id == "gh-pr-merge-admin":
+            rc, err = bash("gh pr merge 1 --admin", "flow-merge")
+        elif rule_id == "gh-pr-merge-ship":
+            rc, err = bash("gh pr merge 1", "flow-ship")
+        h.test_result(f"Rule {rule_id} includes escalation hint in message",
+                      "Ask block" in err, f"{rule_id}: {err.strip()}")
+
     for f in sorted((REPO_ROOT / "agents").glob("flow-*.md")):
         name = re.search(r"^name:\s*(\S+)", f.read_text(), re.M).group(1)
         if name == "flow-assessor":
             continue  # tool-restricted (no Write/Edit, git read-only); not hook-guarded
+        # Verify agent is in KNOWN_FLOW_AGENTS constant or is not a flow-* agent
+        if name.startswith("flow-"):
+            h.test_result(f"flow-bash-guard has explicit handling for {name}",
+                          name in flow_bash_guard.KNOWN_FLOW_AGENTS, f"agent {name} not in KNOWN_FLOW_AGENTS")
         for guard in ("flow-bash-guard.py", "flow-agent-guard.py", "flow-skill-guard.py"):
             h.test_result(f"{guard} has an explicit row for {name}",
                           f'"{name}"' in (SCRIPTS / guard).read_text() or f"'{name}'" in (SCRIPTS / guard).read_text(),
