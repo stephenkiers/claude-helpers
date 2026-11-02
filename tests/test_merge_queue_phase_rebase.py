@@ -97,7 +97,7 @@ try:
         "case1 setup: origin/main is an ancestor of branch HEAD (real git)",
         is_ancestor("origin/main", "HEAD", cwd=wt),
     )
-    result, recorded, _err, events, head_before, head_after = _run_phase_rebase(fixture, wt, "feature/merged")
+    result, recorded, _err, _, head_before, head_after = _run_phase_rebase(fixture, wt, "feature/merged")
 
     test_result(
         "case1 (merge of base) _phase_rebase returns None",
