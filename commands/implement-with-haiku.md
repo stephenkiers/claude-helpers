@@ -2331,14 +2331,18 @@ CHECK: <resolved command verbatim | opted-out>
 CHECK_EXIT: <n | none>
 CHECK_SOURCE: <repo-cache | project.yaml | justfile | opt-out>
 CHECK_SHA: <full 40-hex SHA the check ran on>
+RUN_KEY: <RUN_KEY>
+RECEIPT_CONTRACT: 1
 OUTSTANDING: <line>
 <!-- step-end -->
 ```
 
-**Header block.** The verifier reads `CHECK`, `CHECK_EXIT`, `CHECK_SOURCE`, `CHECK_SHA`, `ATTEMPT`, `Decision`, `Reason` and
+**Header block.** The verifier reads `CHECK`, `CHECK_EXIT`, `CHECK_SOURCE`, `CHECK_SHA`, `ATTEMPT`, `Decision`, `Reason`, `RUN_KEY`, `RECEIPT_CONTRACT` and
 `OUTSTANDING` only up to the first blank line, so write the receipt as one contiguous block with no blank line from the first
 summary line through `<!-- step-end -->` (drop the summary's blank lines when copying it). A receipt whose `Decision:` sits below a
-blank line is rejected with `receipt Decision missing or outside the header block`; the check gate is never skipped.
+blank line is rejected with `receipt Decision missing or outside the header block`; the check gate is never skipped. `RUN_KEY:` is the literal value recorded from `init`'s `RUN_KEY:` line (the same value passed to `finish --run-key`). `RECEIPT_CONTRACT: 1` is written verbatim and never omitted.
+
+**Finish cross-check on `RUN_KEY`.** Every `finish` that reaches the completeness gate appends one parse-inert line to the run's `ledger.md`: `# finish-event run-key=<RUN_KEY> outcome=<success|steps_skipped> epoch=<seconds>`. The bound `render --flow-dir <FLOW_DIR> --step <implement|fix>` (the form the Fidelity audit uses, not the bare summary render above) reads those lines for every run of this repo created in the attempt's window, pointers, tombstones and superseded runs alike. The named `RUN_KEY` must be the run whose finish event is the latest in that window; if another run finished last, `render` exits 3 with `is not the run this step recorded finishing`, so a receipt cannot name a clean run while an incomplete run did the work. When no finish event exists in the window, `render` prints a `render: warning:` line on stderr and proceeds (a render before the run's own `finish` is expected). Write the receipt's `RUN_KEY` from `init`'s line only; never reuse a key from an earlier run.
 
 Where `OUTSTANDING: <line>` is either `none` or the lines computed above. The `CHECK:` lines are the
 Final check's result, taken from its resolver output and its run (see the Final check section); never
