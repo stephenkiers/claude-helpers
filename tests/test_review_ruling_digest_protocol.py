@@ -3,7 +3,7 @@
 Spec-blind tests for scripts/review-ruling.py and digest module integration from plan #418.
 
 Plan items covered:
-- Plan 6: review-ruling.py loads digest module untyped: Protocol for the four helpers, cast, one pinning test
+- review-ruling.py loads digest module untyped: Protocol for the four helpers, cast, one pinning test
   This test verifies that review-ruling.py can properly consume output from the digest module's helpers
   (parse_review function) and that the returned data structures have well-defined types.
 
@@ -111,9 +111,9 @@ class Sandbox:
 
 
 def main():
-    h = Harness("REVIEW-RULING DIGEST PROTOCOL INTEGRATION TEST (#418 PLAN)")
+    h = Harness("REVIEW-RULING DIGEST PROTOCOL INTEGRATION TEST")
 
-    print("[Plan 6] digest module parse_review protocol: structure and types")
+    print("digest module parse_review protocol: structure and types")
 
     # Load the parse_review function
     try:
@@ -132,7 +132,7 @@ def main():
         "parse_review is not callable"
     )
 
-    print("\n[Plan 6] parse_review return structure after decide")
+    print("\nparse_review return structure after decide")
 
     sb = Sandbox()
     try:
@@ -211,7 +211,7 @@ def main():
     finally:
         sb.close()
 
-    print("\n[Plan 6] parse_review with multiple items")
+    print("\nparse_review with multiple items")
 
     sb = Sandbox()
     try:
@@ -252,7 +252,7 @@ def main():
     finally:
         sb.close()
 
-    print("\n[Plan 6] parse_review with measurement")
+    print("\nparse_review with measurement")
 
     sb = Sandbox()
     try:

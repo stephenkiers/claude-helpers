@@ -3,7 +3,7 @@
 Spec-blind tests for scripts/review-ruling.py --reasoning handling from plan #418.
 
 Plan items covered:
-- Plan 9: idempotent re-run drops different --reasoning: document reasoning excluded from comparison
+- idempotent re-run drops different --reasoning: document reasoning excluded from comparison
   This test verifies that idempotent re-runs with different --reasoning still succeeds (exit 0)
   and leaves the file unchanged, because reasoning is excluded from the idempotency check.
 
@@ -82,9 +82,9 @@ class Sandbox:
 
 
 def main():
-    h = Harness("REVIEW-RULING REASONING EXCLUDED FROM IDEMPOTENCY TEST (#418 PLAN)")
+    h = Harness("REVIEW-RULING REASONING EXCLUDED FROM IDEMPOTENCY TEST")
 
-    print("[Plan 9] idempotent re-run with different --reasoning")
+    print("idempotent re-run with different --reasoning")
 
     # First decide with one reasoning
     sb = Sandbox()
@@ -137,7 +137,7 @@ def main():
     finally:
         sb.close()
 
-    print("\n[Plan 9] idempotency respects only option, not reasoning")
+    print("\nidempotency respects only option, not reasoning")
 
     sb = Sandbox()
     try:

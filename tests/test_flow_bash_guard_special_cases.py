@@ -3,9 +3,9 @@
 Spec-blind tests for flow-bash-guard.py special cases from plan #418.
 
 Plan items covered:
-- Plan 3/10: time -p / timeout -k unstripped and unledgered: add to FALSE_NEGATIVE_LEDGER with tests
-- Plan 12: eval-flag regex matches at any arg position: stop after first positional or anchor per interpreter
-- Plan 19: prefix table mixes sentinel with control flow: raise on unknown kind or use named boolean
+- time -p / timeout -k unstripped and unledgered: add to FALSE_NEGATIVE_LEDGER with tests
+- eval-flag regex matches at any arg position: stop after first positional or anchor per interpreter
+- prefix table mixes sentinel with control flow: raise on unknown kind or use named boolean
 
 Every case runs the real production script as a subprocess via black-box interface.
 
@@ -56,13 +56,13 @@ def describe(command, rc, err):
 
 
 def main():
-    h = Harness("FLOW BASH GUARD SPECIAL CASES (#418 PLAN)")
+    h = Harness("FLOW BASH GUARD SPECIAL CASES")
 
     # ========================================================================
     # SECTION 1: time -p and timeout -k should be in FALSE_NEGATIVE_LEDGER
     # (Plan item 3/10)
     # ========================================================================
-    print("[Plan 3/10] time -p and timeout -k handling")
+    print("time -p and timeout -k handling")
 
     # time -p is a prefix that should be normalized before deny rules
     rc, _, err = guard("time -p git push")
@@ -108,7 +108,7 @@ def main():
     # SECTION 2: eval-flag regex should stop after first positional
     # (Plan item 12)
     # ========================================================================
-    print("\n[Plan 12] eval-flag regex: stop after first positional argument")
+    print("\neval-flag regex: stop after first positional argument")
 
     # python3 -c is an eval flag and should block publishing verbs
     rc, _, err = guard("python3 -c 'import os; os.system(\"git push\")'")
@@ -163,7 +163,7 @@ def main():
     # SECTION 3: prefix table should handle unknown kinds
     # (Plan item 19)
     # ========================================================================
-    print("\n[Plan 19] prefix table handling of unknown kinds")
+    print("\nprefix table handling of unknown kinds")
 
     # All known prefixes should work (these are already tested in mutants)
     # The test here is that unknown kinds should not crash but should fail closed if present

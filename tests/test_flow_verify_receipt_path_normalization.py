@@ -3,15 +3,15 @@
 Spec-blind tests for scripts/flow-verify-receipt.py path handling from plan #418.
 
 Plan items covered:
-- Plan 14: `./` prefix not normalised in Doing-it paths: strip leading `./`, add test row
+- `./` prefix not normalised in Doing-it paths: strip leading `./`, add test row
   This test verifies that paths like `./scripts/x.py` are treated the same as `scripts/x.py`
   in coverage classification.
 
-- Plan 13: missing File header gives misleading reason; give it its own evidence string
+- missing File header gives misleading reason; give it its own evidence string
   This test verifies that flow-verify-receipt gives appropriate evidence strings for
   evidence types, specifically File vs other types.
 
-- Plan 16: coverage classification untyped tuple: Literal status + NamedTuple (no behavior change)
+- coverage classification untyped tuple: Literal status + NamedTuple (no behavior change)
   This test verifies that coverage classification output is well-formed and uses expected types.
 
 Every case runs the real production script as a subprocess against temporary git repos.
@@ -97,13 +97,13 @@ def run_verifier_coverage(receipt_path: str, plan_path: str, repo: str, branch: 
 
 
 def main():
-    h = Harness("FLOW-VERIFY-RECEIPT PATH NORMALIZATION (#418 PLAN)")
+    h = Harness("FLOW-VERIFY-RECEIPT PATH NORMALIZATION")
 
     # ========================================================================
     # SECTION 1: ./ prefix normalization in coverage output
     # (Plan item 14)
     # ========================================================================
-    print("[Plan 14] ./ prefix normalization in Doing-it paths")
+    print("./ prefix normalization in Doing-it paths")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
@@ -140,7 +140,7 @@ def main():
             f"stdout:\n{stdout[:300]!r} classification_lines: {classification_lines}"
         )
 
-    print("\n[Plan 14] ./ prefix equivalence test: same file referenced two ways")
+    print("\n./ prefix equivalence test: same file referenced two ways")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
@@ -180,7 +180,7 @@ def main():
     # SECTION 2: Coverage classification types
     # (Plan item 16: coverage classification should have well-defined types)
     # ========================================================================
-    print("\n[Plan 16] coverage classification tuple structure")
+    print("\ncoverage classification tuple structure")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
