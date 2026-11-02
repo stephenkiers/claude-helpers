@@ -3,12 +3,23 @@
 PreToolUse hook for flow-implement agent: best-effort Bash command guard.
 
 Threat model: prevent accidental shell wrappers and publishing commands.
-Best-effort control, not a sandbox: write-a-script-then-run, `python3 -c`, and a nested
-general-purpose agent bypass it. See docs/adr/0008.
+Best-effort control, not a sandbox: write-a-script-then-run, a nested general-purpose agent,
+and the residual gaps listed in tests/test_flow_bash_guard_quotes.py (FALSE_NEGATIVE_LEDGER)
+bypass it. See docs/adr/0008.
 
 This script refuses:
   - Top-level shell wrappers (sh -c, bash -c, eval, xargs git/gh, env ... git/gh, etc.)
-  - Publishing verbs (git push, gh pr create, gh pr merge, etc.)
+  - Publishing verbs (git push, gh pr create, gh pr merge, etc.), including when they are
+    reached through a transparent prefix (command, exec, nohup, time, timeout N, nice -n N,
+    VAR=value, =name) or inside a python/node/perl/ruby -c/-e program
+  - Commands it cannot follow: unterminated quotes, unclosed $( or backticks, nesting deeper
+    than 64 groups
+
+Splitting is quote-aware: separators inside '...' and "..." are literal, while $(...),
+`...`, (...) and {...} are recursed into, so a publishing verb inside a group is still seen.
+A heredoc (<<) or a word-start # comment switches to a quote-blind split, which is the
+conservative pre-change behaviour, because those constructs can desynchronise the quote
+tracking.
 
 Exit codes:
   - 0: allow (command is safe)
@@ -59,69 +70,267 @@ PUBLISHING_VERBS = (
     ("gh", "workflow", "run"),
 )
 
-# Split on shell metacharacters and subshell/group syntax
-_SEGMENT_RE = re.compile(r'(;|&&|\|\||&|\||`|$\(|[({]|\n)')
+# Maximum group nesting ($( ), ` `, ( ), { }) before the guard blocks as unparseable.
+MAX_NESTING = 64
+
+# Characters that end a word, so a following # starts a comment (quote-aware fallback trigger).
+_WORD_BREAK = " \t\n;&|()`{}<>"
+
+# Prefixes the guard looks through before checking the command word (closed set).
+# Each entry is (kind, name). Applied by strip_command_prefix().
+TRANSPARENT_PREFIXES = (
+    ("assignment", None),     # VAR=value, repeated
+    ("bare", "command"),
+    ("bare", "exec"),
+    ("bare", "nohup"),
+    ("bare", "time"),
+    ("one-positional", "timeout"),  # timeout <duration> <command>
+    ("nice", "nice"),         # nice <command> or nice -n N <command>
+    ("zsh-equals", None),     # =name is zsh's expansion of `which name`; applied once
+)
+
+_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_INTERPRETER_RE = re.compile(r"^(python3(\.\d+)?|python|node|perl|ruby)$")
+# A short flag that takes a program: -c (python), -e (node, perl, ruby), -E (perl), -p (node).
+# Combined forms such as -Ic are included.
+_SHORT_EVAL_FLAG_RE = re.compile(r"^-[A-Za-z]*[ceEp]$")
+_PROGRAM_WORD_RE = re.compile(r"[\w./=-]+")
 
 
-def _group_end(command, start):
-    """Return the index just past the group opened before `start`.
+class UnparseableCommand(Exception):
+    """The splitter cannot follow the command. check_command() blocks it."""
 
-    `start` is the index of the first character inside the group. Counts nested
-    ( ) and { } together. If the group never closes, returns len(command) so the
-    caller still inspects the whole remainder (fail closed).
+
+class _NeedFallback(Exception):
+    """Internal: the quote-aware pass met a construct it does not model. Use the quote-blind pass."""
+
+
+def _scan(command, pos, depth, kind, out):
+    """Quote-aware scan of one group, starting at `pos`. Appends finished segments to `out`.
+
+    `kind` is "top", "dollar" ($( ), "paren" ( ), "brace" { } or "backtick" (` `). Returns
+    (index just past the group, closed). A group that never closes is inspected to the end,
+    except $( and backtick, which the caller turns into an unparseable block.
+    Scanning is linear: each character is visited once.
     """
-    depth = 1
-    i = start
-    while i < len(command) and depth > 0:
-        if command[i] in "({":
-            depth += 1
-        elif command[i] in ")}":
-            depth -= 1
+    if depth > MAX_NESTING:
+        raise UnparseableCommand("nesting too deep")
+
+    current = []
+    state = None  # None (unquoted), "'" (single-quoted) or '"' (double-quoted)
+    i = pos
+    n = len(command)
+
+    def flush():
+        if current:
+            out.append("".join(current).strip())
+            del current[:]
+
+    while i < n:
+        ch = command[i]
+        nxt = command[i + 1:i + 2]
+
+        if state == "'":
+            # Single quotes: everything is literal until the closing quote.
+            current.append(ch)
+            if ch == "'":
+                state = None
+            i += 1
+            continue
+
+        if ch == "$" and nxt == "(":
+            flush()
+            end, closed = _scan(command, i + 2, depth + 1, "dollar", out)
+            if not closed:
+                raise UnparseableCommand("unclosed $(")
+            i = end
+            continue
+
+        if ch == "$" and nxt in ("'", '"'):
+            # $'...' and $"...": the $ is dropped so the quoted text is read as the word it is.
+            i += 1
+            continue
+
+        if ch == "`":
+            if kind == "backtick" and state is None:
+                flush()
+                return i + 1, True
+            flush()
+            end, closed = _scan(command, i + 1, depth + 1, "backtick", out)
+            if not closed:
+                raise UnparseableCommand("unclosed backtick")
+            i = end
+            continue
+
+        if state == '"':
+            if ch == "\\" and nxt:
+                if nxt == "\n":
+                    i += 2
+                elif nxt in ('"', "\\", "$", "`"):
+                    current.append(ch)
+                    current.append(nxt)
+                    i += 2
+                else:
+                    current.append(ch)
+                    i += 1
+                continue
+            if ch == '"':
+                state = None
+            current.append(ch)
+            i += 1
+            continue
+
+        # Unquoted from here on.
+        if ch == "\\":
+            if nxt == "\n":
+                # Line continuation: removed, so the words on either side join.
+                i += 2
+                continue
+            current.append(ch)
+            if nxt:
+                current.append(nxt)
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if ch in ("'", '"'):
+            state = ch
+            current.append(ch)
+            i += 1
+            continue
+
+        if ch == "<" and nxt == "<":
+            raise _NeedFallback()
+
+        if ch == "#" and (i == 0 or command[i - 1] in _WORD_BREAK):
+            raise _NeedFallback()
+
+        if (kind in ("dollar", "paren") and ch == ")") or (kind == "brace" and ch == "}"):
+            flush()
+            return i + 1, True
+
+        if ch in ("(", "{"):
+            flush()
+            child_kind = "paren" if ch == "(" else "brace"
+            end, _closed = _scan(command, i + 1, depth + 1, child_kind, out)
+            i = end
+            continue
+
+        if ch in (";", "&", "|", "\n"):
+            flush()
+            i += 1
+            continue
+
+        current.append(ch)
         i += 1
-    return i
+
+    if state is not None:
+        raise UnparseableCommand("unterminated quote")
+    flush()
+    return n, False
 
 
-def split_segments(command):
-    """Split command into segments on metacharacters, subshells, and grouping.
+def _drop_ansi_c_dollars(command):
+    """Drop a $ that directly precedes a quote, unless the $ itself is escaped (odd backslash run)."""
+    out = []
+    backslashes = 0
+    for i, ch in enumerate(command):
+        nxt = command[i + 1:i + 2]
+        if ch == "$" and nxt in ("'", '"') and backslashes % 2 == 0:
+            backslashes = 0
+            continue
+        backslashes = backslashes + 1 if ch == "\\" else 0
+        out.append(ch)
+    return "".join(out)
 
-    Returns a flat list of command segments. The contents of (...), {...} and
-    $(...) are recursed into (not skipped), so a publishing verb or wrapper inside
-    a group is still seen. An unclosed group is inspected through to the end.
+
+def _split_quote_blind(command):
+    """Quote-blind split, used when the quote-aware pass meets a heredoc or a comment.
+
+    Splits on separators and recurses into $( ), ` `, ( ) and { } with a stack. It does not
+    track quotes, so it blocks more and never allows a segment the quote-aware pass would block.
     """
+    text = _drop_ansi_c_dollars(command)
     segments = []
     current = []
-    i = 0
+    stack = []
 
     def flush():
         if current:
             segments.append("".join(current).strip())
             del current[:]
 
-    while i < len(command):
-        if command[i:i+2] in ("&&", "||"):
-            flush()
+    def push(kind):
+        stack.append(kind)
+        if len(stack) > MAX_NESTING:
+            raise UnparseableCommand("nesting too deep")
+
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        pair = text[i:i + 2]
+        if pair == "\\\n":
             i += 2
-        elif command[i:i+2] == "$(":
+            continue
+        if pair == "$(":
             flush()
-            end = _group_end(command, i + 2)
-            inner_end = end - 1 if end <= len(command) and command[end - 1:end] in (")", "}") else end
-            segments.extend(split_segments(command[i + 2:inner_end]))
-            i = end
-        elif command[i] in ("(", "{"):
+            push("dollar")
+            i += 2
+            continue
+        if ch == "`":
             flush()
-            end = _group_end(command, i + 1)
-            inner_end = end - 1 if command[end - 1:end] in (")", "}") else end
-            segments.extend(split_segments(command[i + 1:inner_end]))
-            i = end
-        elif command[i] in (";", "&", "|", "`", "\n"):
+            if stack and stack[-1] == "backtick":
+                stack.pop()
+            else:
+                push("backtick")
+            i += 1
+            continue
+        if ch in ("(", "{"):
+            flush()
+            push("paren" if ch == "(" else "brace")
+            i += 1
+            continue
+        if ch == ")" and stack and stack[-1] in ("dollar", "paren"):
+            flush()
+            stack.pop()
+            i += 1
+            continue
+        if ch == "}" and stack and stack[-1] == "brace":
+            flush()
+            stack.pop()
+            i += 1
+            continue
+        if ch in (";", "&", "|", "\n"):
             flush()
             i += 1
-        else:
-            current.append(command[i])
-            i += 1
+            continue
+        current.append(ch)
+        i += 1
 
     flush()
+    if "dollar" in stack or "backtick" in stack:
+        raise UnparseableCommand("unclosed $( or backtick")
     return [s for s in segments if s]
+
+
+def split_segments(command):
+    """Split command into simple-command segments.
+
+    Quote-aware: separators inside '...' and "..." are literal. The contents of (...),
+    {...}, $(...) and `...` are recursed into, so a publishing verb or wrapper inside a group
+    is still seen. Falls back to the quote-blind split on a heredoc or a word-start #.
+
+    Raises UnparseableCommand for an unterminated quote, an unclosed $( or backtick, or
+    nesting deeper than MAX_NESTING.
+    """
+    out = []
+    try:
+        _scan(command, 0, 0, "top", out)
+    except _NeedFallback:
+        return _split_quote_blind(command)
+    return [s for s in out if s]
 
 
 def tokenize_segment(segment):
@@ -134,6 +343,52 @@ def tokenize_segment(segment):
     except ValueError:
         # Unparseable (e.g., unbalanced quotes) -> block
         return None
+
+
+def _strip_one(kind, name, tokens):
+    """Return tokens with one occurrence of the prefix removed, or None if it does not apply."""
+    head = tokens[0]
+    if kind == "assignment":
+        return tokens[1:] if _ASSIGN_RE.match(head) else None
+    if kind == "bare":
+        return tokens[1:] if head == name else None
+    if kind == "one-positional":
+        if head == name and len(tokens) >= 3 and not tokens[1].startswith("-"):
+            return tokens[2:]
+        return None
+    if kind == "nice":
+        if head != name:
+            return None
+        if len(tokens) >= 3 and tokens[1] == "-n":
+            return tokens[3:]
+        if len(tokens) >= 2 and not tokens[1].startswith("-"):
+            return tokens[1:]
+        return None
+    return None
+
+
+def strip_command_prefix(tokens):
+    """Remove transparent prefixes from the front of a segment's tokens.
+
+    Loops over TRANSPARENT_PREFIXES until none applies. Then applies the zsh =name rule once.
+    Returns a new list. Only the closed set in TRANSPARENT_PREFIXES is stripped; any other
+    prefix (for example `exec -a name` or `command -p`) is left in place.
+    """
+    tokens = list(tokens)
+    changed = True
+    while changed and tokens:
+        changed = False
+        for kind, name in TRANSPARENT_PREFIXES:
+            if kind == "zsh-equals":
+                continue
+            stripped = _strip_one(kind, name, tokens)
+            if stripped is not None:
+                tokens = stripped
+                changed = True
+                break
+    if tokens and tokens[0].startswith("=") and len(tokens[0]) > 1:
+        tokens = [tokens[0][1:]] + tokens[1:]
+    return tokens
 
 
 def skip_global_options(tokens, start=0):
@@ -360,6 +615,43 @@ def is_publishing_verb(tokens):
     return False
 
 
+def _program_words(tokens):
+    """Split the tokens of an interpreter program into bare words."""
+    words = []
+    for tok in tokens:
+        words.extend(_PROGRAM_WORD_RE.findall(tok))
+    return words
+
+
+def is_interpreter_verb_pair(tokens):
+    """Check whether a python/node/perl/ruby -c/-e program contains a git or gh verb pair.
+
+    The program text is split into words. At each word that is git or gh, the words that
+    follow are checked with is_publishing_verb(). Only programs after an eval flag are
+    checked; a script file is not read.
+    """
+    if not tokens:
+        return False
+    name = os.path.basename(tokens[0]).lower()
+    if not _INTERPRETER_RE.match(name):
+        return False
+
+    for k in range(1, len(tokens)):
+        tok = tokens[k]
+        is_eval_flag = (
+            _SHORT_EVAL_FLAG_RE.match(tok) is not None
+            or tok in ("--eval", "--print")
+            or tok.startswith("--eval=")
+        )
+        if not is_eval_flag:
+            continue
+        words = _program_words(tokens[k:])
+        for j, word in enumerate(words):
+            if word.lower() in ("git", "gh") and is_publishing_verb([word] + words[j + 1:]):
+                return True
+    return False
+
+
 def check_command(command):
     """Check if a command violates wrapper or verb rules.
 
@@ -370,7 +662,10 @@ def check_command(command):
     if not command or not isinstance(command, str):
         return True, "Empty or invalid command"
 
-    segments = split_segments(command)
+    try:
+        segments = split_segments(command)
+    except UnparseableCommand as exc:
+        return True, f"unparseable: {exc}"
 
     for segment in segments:
         if not segment:
@@ -381,11 +676,16 @@ def check_command(command):
             # Parse error (e.g., unbalanced quotes) -> block
             return True, f"Unparseable command: {segment}"
 
+        tokens = strip_command_prefix(tokens)
+
         if is_wrapper_form(tokens):
             return True, "shell wrappers (sh -c, bash -c, eval, etc.) are not allowed"
 
         if is_publishing_verb(tokens):
             return True, "publishing commands (git push, gh pr create, etc.) are not allowed"
+
+        if is_interpreter_verb_pair(tokens):
+            return True, "interpreter -c/-e program runs a publishing command (git push, gh pr create, etc.)"
 
     return False, ""
 
@@ -403,6 +703,9 @@ def main():
             sys.exit(2)
 
         agent = sys.argv[2]
+        if agent not in ("flow-implement", "flow-review", "auto"):
+            print(f"Unknown --agent value: {agent}", file=sys.stderr)
+            sys.exit(2)
 
         # Parse JSON payload from stdin
         payload = json.load(sys.stdin)
@@ -430,6 +733,7 @@ def main():
 
         tool_name = payload.get("tool_name")
         if tool_name is None:
+            print("Missing tool_name in payload", file=sys.stderr)
             sys.exit(2)
 
         if tool_name != "Bash":
