@@ -549,7 +549,7 @@ only (see "Bash guard for push validation" below).
    `gh api -X non-GET`. Allowed forms are the literal matches listed in the marked block below.
 
 7. **Denials and escalation** — unknown push forms, merge rule violations, unknown agents, and wrapper
-   violations are denied (exit 2). Denials for `push-form`, `gh-pr-merge-admin`, `gh-pr-merge-squash-ship`,
+   violations are denied (exit 2). Denials for `push-form`, `gh-pr-merge-admin`, `gh-pr-merge-ship`,
    and `gh-pr-merge-queue` append this exact sentence: "If this command is legitimate, do not retry a
    variant: surface it to the human through the Ask block (prompts/flow-reference.md) instead."
 

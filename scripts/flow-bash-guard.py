@@ -502,11 +502,11 @@ def find_subcommand(tokens: List[str], tool: str) -> Optional[str]:
 
     Known git global options:
       -C <path>, --git-dir=..., --exec-path=..., --config-env=..., --git-common-dir=...,
-      --namespace=..., --work-tree=..., --super-prefix=..., --no-pager, -p, --paginate,
-      --no-replace-objects, --literal-pathspecs, --bare
+      --namespace=..., --work-tree=..., --super-prefix=..., -c <name=value>, --no-pager, -p,
+      --paginate, --no-replace-objects, --literal-pathspecs, --bare
 
     Known gh global options:
-      -R <repo>, --repo <repo>, --repo=...
+      -R <repo>, --repo <repo>, --repo=..., --json <fields>
     """
     if not tokens:
         return None
@@ -523,7 +523,7 @@ def find_subcommand(tokens: List[str], tool: str) -> Optional[str]:
 
         # Git options that take a separate value token
         if tok in ("-C", "--git-dir", "--exec-path", "--config-env", "--git-common-dir",
-                   "--namespace", "--work-tree", "--super-prefix"):
+                   "--namespace", "--work-tree", "--super-prefix", "-c"):
             # Skip the option and its value
             i += 2
             continue
@@ -540,12 +540,12 @@ def find_subcommand(tokens: List[str], tool: str) -> Optional[str]:
             continue
 
         # gh options with value
-        if tok in ("-R", "--repo"):
+        if tok in ("-R", "--repo", "--json"):
             i += 2
             continue
 
         # gh options with = form
-        if tok.startswith("--repo="):
+        if tok.startswith(("--repo=", "--json=")):
             i += 1
             continue
 
@@ -575,8 +575,8 @@ def skip_global_options(tokens: List[str], start: int = 0) -> int:
 
     Handles:
       - git: -C <dir>, --git-dir=, --exec-path=, --config-env=, --git-common-dir=,
-             --namespace=, --work-tree=, and other -X= or -X value forms
-      - gh: -R <repo>, --repo <repo>
+             --namespace=, --work-tree=, -c <name=value>, and other -X= or -X value forms
+      - gh: -R <repo>, --repo <repo>, --json <fields>
 
     For git, skips -C and its argument but does NOT skip -c (which is in the deny list).
     """
@@ -596,14 +596,19 @@ def skip_global_options(tokens: List[str], start: int = 0) -> int:
             i += 1
             continue
 
-        # gh -R <repo> or gh --repo <repo>
-        if (tok == "-R" or tok == "--repo") and i + 1 < len(tokens):
+        # gh -R <repo> or gh --repo <repo> or gh --json <fields>
+        if (tok == "-R" or tok == "--repo" or tok == "--json") and i + 1 < len(tokens):
             i += 2
+            continue
+
+        # gh --repo=... or gh --json=...
+        if tok.startswith("--repo=") or tok.startswith("--json="):
+            i += 1
             continue
 
         # git global options that take a separate value token
         if tok in ("--git-dir", "--work-tree", "--namespace", "--exec-path",
-                   "--config-env", "--super-prefix", "--git-common-dir") and i + 1 < len(tokens):
+                   "--config-env", "--super-prefix", "--git-common-dir", "-c") and i + 1 < len(tokens):
             i += 2
             continue
 
@@ -871,42 +876,13 @@ def is_interpreter_verb_pair(tokens):
     return False
 
 
-def check_command(command):
-    """Check if a command violates wrapper or verb rules.
+def check_command(command: str) -> Tuple[bool, str]:
+    """flow-implement check as (is_blocked, reason); a thin wrapper kept for in-process tests.
 
-    Returns: (is_blocked: bool, reason: str)
-    - (True, reason): command is blocked
-    - (False, ""): command is allowed
+    The hook itself goes through check_command_for_agent().
     """
-    if not command or not isinstance(command, str):
-        return True, "Empty or invalid command"
-
-    try:
-        segments = split_segments(command)
-    except UnparseableCommand as exc:
-        return True, f"Unparseable command: {exc}"
-
-    for segment in segments:
-        if not segment:
-            continue
-
-        tokens = tokenize_segment(segment)
-        if tokens is None:
-            # Parse error (e.g., unbalanced quotes) -> block
-            return True, f"Unparseable command: {segment}"
-
-        tokens = strip_command_prefix(tokens)
-
-        if is_wrapper_form(tokens):
-            return True, "shell wrappers (sh -c, bash -c, eval, etc.) are not allowed"
-
-        if is_publishing_verb(tokens):
-            return True, "publishing commands (git push, gh pr create, etc.) are not allowed"
-
-        if is_interpreter_verb_pair(tokens):
-            return True, "interpreter -c/-e program runs a publishing command (git push, gh pr create, etc.)"
-
-    return False, ""
+    blocked, reason, _rule = check_command_for_agent(command, "flow-implement")
+    return blocked, reason
 
 
 def check_push_form(tokens: List[str]) -> Tuple[bool, str]:
@@ -932,13 +908,8 @@ def check_push_form(tokens: List[str]) -> Tuple[bool, str]:
     if find_subcommand(tokens, "git") != "push":
         return False, ""
 
-    # Skip past tool and global options to find push
-    i = 1
-    while i < len(tokens) and (tokens[i].startswith("-") or (tokens[i] == "-C" and i + 1 < len(tokens))):
-        if tokens[i] == "-C":
-            i += 2
-        else:
-            i += 1
+    # Skip past tool and global options to find push using the shared helper
+    i = skip_global_options(tokens, 1)
 
     # Now we should be at "push"
     if i >= len(tokens) or tokens[i].lower() != "push":
@@ -1107,6 +1078,16 @@ def check_command_for_agent(command: str, agent: str) -> Tuple[bool, str, str]:
             # Check for wrapper forms, but allow specific python3 -c and eval forms
             if is_wrapper_form_restricted(tokens, agent):
                 return True, "restricted wrapper form not allowed", "wrapper-form"
+
+            # For git/gh commands, fail closed if subcommand cannot be determined (unknown option)
+            cmd_basename = os.path.basename(tokens[0].strip('\'"')).lower() if tokens else ""
+            if cmd_basename in ("git", "gh"):
+                tool = "git" if cmd_basename == "git" else "gh"
+                subcommand = find_subcommand(tokens, tool)
+                # If subcommand is None, it means an unknown option was encountered: fail closed
+                if subcommand is None:
+                    msg = f"Unable to parse {cmd_basename} command (unknown option). {ESCALATION_HINT}"
+                    return True, msg, "unknown-option"
 
             # Check git push specifically using the shared helper
             if find_subcommand(tokens, "git") == "push":

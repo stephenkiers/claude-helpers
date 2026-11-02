@@ -272,6 +272,24 @@ def main():
         f"exit={code}"
     )
 
+    print()
+    print("[Test Group 7] Edge case: command ends at global options (no subcommand)\n")
+
+    # Test that commands ending after global options don't crash and are denied
+    code, err = run_guard("flow-ship", "git -C /tmp")
+    h.test_result(
+        "git -C /tmp (no subcommand) is denied or allowed consistently",
+        code in (0, 2),
+        f"exit={code} (should not crash)"
+    )
+
+    code, err = run_guard("flow-implement", "gh -R myrepo")
+    h.test_result(
+        "gh -R repo (no subcommand) is denied or allowed consistently",
+        code in (0, 2),
+        f"exit={code} (should not crash)"
+    )
+
     h.summarize_and_exit()
 
 
