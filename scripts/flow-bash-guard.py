@@ -109,6 +109,124 @@ class _NeedFallback(Exception):
     """Internal: the quote-aware pass met a construct it does not model. Use the quote-blind pass."""
 
 
+def _flush(current, out):
+    """Append the pending segment, stripped, to `out` and clear `current`."""
+    if current:
+        out.append("".join(current).strip())
+        del current[:]
+
+
+def _scan_single_quoted(ch, state, current):
+    """Single-quoted mode: one character. Everything is literal until the closing quote.
+
+    Returns the new state, which is None once the closing quote is consumed.
+    """
+    current.append(ch)
+    return None if ch == "'" else state
+
+
+def _scan_dollar_group(command, i, depth, out):
+    """Scan the $( ) group whose `$` is at `i`. The caller has already flushed.
+
+    Returns the index just past the group. Raises UnparseableCommand if it never closes.
+    """
+    end, closed = _scan(command, i + 2, depth + 1, "dollar", out)
+    if not closed:
+        raise UnparseableCommand("unclosed $(")
+    return end
+
+
+def _scan_backtick_group(command, i, depth, out):
+    """Scan the ` ` group opened by the backtick at `i`. The caller has already flushed.
+
+    Returns the index just past the group. Raises UnparseableCommand if it never closes.
+    """
+    end, closed = _scan(command, i + 1, depth + 1, "backtick", out)
+    if not closed:
+        raise UnparseableCommand("unclosed backtick")
+    return end
+
+
+def _scan_double_quoted(command, i, state, current):
+    """Double-quoted mode: one character. Only a backslash before a newline, a double quote,
+    a backslash, a dollar or a backtick changes how the next character reads.
+
+    Returns (next index, new state).
+    """
+    ch = command[i]
+    nxt = command[i + 1:i + 2]
+    if ch == "\\" and nxt:
+        if nxt == "\n":
+            return i + 2, state
+        if nxt in ('"', "\\", "$", "`"):
+            current.append(ch)
+            current.append(nxt)
+            return i + 2, state
+        current.append(ch)
+        return i + 1, state
+    if ch == '"':
+        state = None
+    current.append(ch)
+    return i + 1, state
+
+
+def _scan_unquoted_backslash(command, i, current):
+    """Unquoted backslash: a line continuation is removed, otherwise the escape is kept.
+
+    Returns the next index.
+    """
+    nxt = command[i + 1:i + 2]
+    if nxt == "\n":
+        # Line continuation: removed, so the words on either side join.
+        return i + 2
+    current.append("\\")
+    if nxt:
+        current.append(nxt)
+        return i + 2
+    return i + 1
+
+
+def _scan_unquoted(command, i, kind, depth, current, out):
+    """Unquoted mode: one character outside any quotes.
+
+    Returns (next index, new state, closed). `closed` is True when this character closes the group.
+    The new state is a quote character when a quote opens here, otherwise None.
+    Raises _NeedFallback on a heredoc or a word-start #.
+    """
+    ch = command[i]
+    nxt = command[i + 1:i + 2]
+
+    if ch == "\\":
+        return _scan_unquoted_backslash(command, i, current), None, False
+
+    if ch in ("'", '"'):
+        current.append(ch)
+        return i + 1, ch, False
+
+    if ch == "<" and nxt == "<":
+        raise _NeedFallback()
+
+    if ch == "#" and (i == 0 or command[i - 1] in _WORD_BREAK):
+        raise _NeedFallback()
+
+    if (kind in ("dollar", "paren") and ch == ")") or (kind == "brace" and ch == "}"):
+        _flush(current, out)
+        return i + 1, None, True
+
+    if ch in ("(", "{"):
+        _flush(current, out)
+        child_kind = "paren" if ch == "(" else "brace"
+        end, _closed = _scan(command, i + 1, depth + 1, child_kind, out)
+        return end, None, False
+
+    if ch in (";", "&", "|", "\n"):
+        _flush(current, out)
+        return i + 1, None, False
+
+    current.append(ch)
+    return i + 1, None, False
+
+
 def _scan(command, pos, depth, kind, out):
     """Quote-aware scan of one group, starting at `pos`. Appends finished segments to `out`.
 
@@ -116,6 +234,9 @@ def _scan(command, pos, depth, kind, out):
     (index just past the group, closed). A group that never closes is inspected to the end,
     except $( and backtick, which the caller turns into an unparseable block.
     Scanning is linear: each character is visited once.
+
+    The dispatch order is fixed: single-quoted state, then $(, then $' and $" (fallback),
+    then backtick, then double-quoted state, then unquoted handling.
     """
     if depth > MAX_NESTING:
         raise UnparseableCommand("nesting too deep")
@@ -125,29 +246,18 @@ def _scan(command, pos, depth, kind, out):
     i = pos
     n = len(command)
 
-    def flush():
-        if current:
-            out.append("".join(current).strip())
-            del current[:]
-
     while i < n:
         ch = command[i]
         nxt = command[i + 1:i + 2]
 
         if state == "'":
-            # Single quotes: everything is literal until the closing quote.
-            current.append(ch)
-            if ch == "'":
-                state = None
+            state = _scan_single_quoted(ch, state, current)
             i += 1
             continue
 
         if ch == "$" and nxt == "(":
-            flush()
-            end, closed = _scan(command, i + 2, depth + 1, "dollar", out)
-            if not closed:
-                raise UnparseableCommand("unclosed $(")
-            i = end
+            _flush(current, out)
+            i = _scan_dollar_group(command, i, depth, out)
             continue
 
         if ch == "$" and nxt in ("'", '"'):
@@ -157,81 +267,23 @@ def _scan(command, pos, depth, kind, out):
 
         if ch == "`":
             if kind == "backtick" and state is None:
-                flush()
+                _flush(current, out)
                 return i + 1, True
-            flush()
-            end, closed = _scan(command, i + 1, depth + 1, "backtick", out)
-            if not closed:
-                raise UnparseableCommand("unclosed backtick")
-            i = end
+            _flush(current, out)
+            i = _scan_backtick_group(command, i, depth, out)
             continue
 
         if state == '"':
-            if ch == "\\" and nxt:
-                if nxt == "\n":
-                    i += 2
-                elif nxt in ('"', "\\", "$", "`"):
-                    current.append(ch)
-                    current.append(nxt)
-                    i += 2
-                else:
-                    current.append(ch)
-                    i += 1
-                continue
-            if ch == '"':
-                state = None
-            current.append(ch)
-            i += 1
+            i, state = _scan_double_quoted(command, i, state, current)
             continue
 
-        # Unquoted from here on.
-        if ch == "\\":
-            if nxt == "\n":
-                # Line continuation: removed, so the words on either side join.
-                i += 2
-                continue
-            current.append(ch)
-            if nxt:
-                current.append(nxt)
-                i += 2
-            else:
-                i += 1
-            continue
-
-        if ch in ("'", '"'):
-            state = ch
-            current.append(ch)
-            i += 1
-            continue
-
-        if ch == "<" and nxt == "<":
-            raise _NeedFallback()
-
-        if ch == "#" and (i == 0 or command[i - 1] in _WORD_BREAK):
-            raise _NeedFallback()
-
-        if (kind in ("dollar", "paren") and ch == ")") or (kind == "brace" and ch == "}"):
-            flush()
-            return i + 1, True
-
-        if ch in ("(", "{"):
-            flush()
-            child_kind = "paren" if ch == "(" else "brace"
-            end, _closed = _scan(command, i + 1, depth + 1, child_kind, out)
-            i = end
-            continue
-
-        if ch in (";", "&", "|", "\n"):
-            flush()
-            i += 1
-            continue
-
-        current.append(ch)
-        i += 1
+        i, state, closed = _scan_unquoted(command, i, kind, depth, current, out)
+        if closed:
+            return i, True
 
     if state is not None:
         raise UnparseableCommand("unterminated quote")
-    flush()
+    _flush(current, out)
     return n, False
 
 
