@@ -1892,6 +1892,8 @@ source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: c
 PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli deps ensure --worktree "<WORKTREE>" --main-worktree "<MAIN_WORKTREE>" --base "origin/<DEFAULT_BRANCH>"
 ```
 
+Run it in the background or under a Bash timeout only if the wait allows more than `DEPS_TIMEOUT_SECS` (900s): the Bash maximum is 600000 ms, so re-wait rather than kill. A SIGKILL cannot run the cleanup and leaves the installer's process group running; SIGINT and SIGTERM do kill the group.
+
 `<DEFAULT_BRANCH>` is the default branch from Project detection. Handling by the status token on the printed `DEPS:` line. Exits 3, 4, and 5 are expected outcomes of `deps ensure`, not failures of the command; each maps to the status its printed line names, and that status decides the handling below:
 
 - `current` and `installed`: print one line (`deps: <result>`), append the `deps` entry, and spawn the
