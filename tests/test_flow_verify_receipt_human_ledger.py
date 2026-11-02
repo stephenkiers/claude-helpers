@@ -246,6 +246,38 @@ def main():
                   result == frozenset(), f"result: {result}")
 
     print()
+    print("[Section 6] Deep correction chains (Finding 6 fix)")
+
+    # Test that deep correction chains resolve to base kind
+    records = (
+        make_record(1, "base direction", kind="direction", status="superseded", step="plan", ts=base_ts - 300),
+        make_record(2, "correction 1", kind="correction", status="superseded", step="plan", ts=base_ts - 200, supersedes=1),
+        make_record(3, "correction 2", kind="correction", status="pending", step="plan", ts=base_ts - 100, supersedes=2),
+    )
+    result = owed_seqs(records, "plan", base_ts)
+    h.test_result("deep correction chain resolves to base direction kind",
+                  3 in result, f"result: {result}")
+    h.test_result("only the latest correction is in owed set",
+                  result == frozenset([3]), f"result: {result}")
+
+    print()
+    print("[Section 7] Curly quote matching strengthening")
+
+    # Strengthen curly quote test: verify that quote matching actually works by using a case
+    # where the seq token doesn't match but the quote does
+    curly_decisions_quote_only = "## Decisions\n## Decided\n- different decision with “smart quoted text”\n"
+    result = references_seq(curly_decisions_quote_only, make_record(9, "smart quoted text"))
+    h.test_result("curly quotes in decisions match via quote normalization (not seq token)",
+                  result is True, f"result: {result}")
+
+    # And verify the positive case: curly quotes in decisions match with straight quote text
+    # Using Unicode escape sequences for curly quotes: U+201C and U+201D
+    curly_decisions_yes = "## Decisions\n## Decided\n- seq 10: “smart quoted text”\n"
+    result = references_seq(curly_decisions_yes, make_record(10, "smart quoted text"))
+    h.test_result("curly quotes in decisions with seq token match straight quotes in record",
+                  result is True, f"result: {result}")
+
+    print()
     h.summarize_and_exit()
 
 

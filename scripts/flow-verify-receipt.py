@@ -216,6 +216,8 @@ class LedgerUnreadable(LedgerLoad):
 
 # D17: Cache the loaded flow-ledger module
 _cached_flow_ledger_module: Optional[object] = None
+# D17: Cache LedgerReadError from flow-ledger module
+_cached_ledger_read_error: Optional[type] = None
 
 
 def _load_flow_ledger_module() -> Optional[object]:
@@ -235,6 +237,29 @@ def _load_flow_ledger_module() -> Optional[object]:
         return module
     except Exception:
         return None
+
+
+def _get_ledger_read_error() -> type:
+    """Get LedgerReadError from the dynamically loaded flow-ledger module.
+
+    Falls back to Exception if the module cannot be loaded.
+    """
+    global _cached_ledger_read_error
+    if _cached_ledger_read_error is not None:
+        return _cached_ledger_read_error
+
+    flow_ledger = _load_flow_ledger_module()
+    if flow_ledger is None:
+        _cached_ledger_read_error = Exception
+        return Exception
+
+    try:
+        ledger_read_error = getattr(flow_ledger, "LedgerReadError")
+        _cached_ledger_read_error = ledger_read_error
+        return ledger_read_error
+    except AttributeError:
+        _cached_ledger_read_error = Exception
+        return Exception
 
 
 def load_ledger(flow_dir: Path) -> LedgerLoad:
@@ -281,15 +306,18 @@ def load_ledger(flow_dir: Path) -> LedgerLoad:
             )
             ledger_records.append(rec)
         return LedgerRecords(tuple(ledger_records))
-    except (LedgerReadError, OSError, ValueError) as e:  # D17: Catch specific exceptions
+    except (OSError, ValueError) as e:  # D17: Catch specific exceptions
         return LedgerUnreadable(str(e))
+    except Exception as e:  # D17: Catch LedgerReadError and other exceptions from dynamic module
+        # Check if this is LedgerReadError
+        LedgerReadError = _get_ledger_read_error()
+        if isinstance(e, LedgerReadError):
+            return LedgerUnreadable(str(e))
+        # Re-raise unexpected exceptions
+        raise
 
 
-# D17: Define LedgerReadError (imported from flow-ledger)
-try:
-    from flow_ledger import LedgerReadError  # type: ignore
-except ImportError:
-    LedgerReadError = Exception  # type: ignore
+# D17: LedgerReadError is obtained from the dynamically loaded module via _get_ledger_read_error()
 
 
 def parse_addressed(receipt_text: str) -> AddressedLine:
@@ -352,9 +380,8 @@ def ledger_format_of(flow_dir: Path) -> Optional[int]:
     """Read ledger_format from flow_dir/state.json.
 
     Returns None if the key is absent. Returns the integer value if present and valid.
-    For flows where human.jsonl exists (D7: fail closed at ledger_format >= 1), a corrupt
-    or wrongly typed state.json surfaces as None only if the key is absent; malformed
-    state surfaces as None (will be caught as an error when ledger_format >= 1 and human.jsonl exists).
+    For flows where human.jsonl exists, returns -1 if state.json is malformed or
+    ledger_format is present but not an int, to signal fail-closed at ledger_format >= 1.
     """
     state_file = flow_dir / "state.json"
     try:
@@ -365,12 +392,15 @@ def ledger_format_of(flow_dir: Path) -> Optional[int]:
                     fmt = data.get("ledger_format")
                     if isinstance(fmt, int):
                         return fmt
-                    # Malformed state: key present but not int; return None
-                    return None
+                    # Malformed state: key present but not int; return -1 to signal error
+                    return -1
                 # Key absent: return None
                 return None
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        pass
+        # Malformed state.json file itself; return -1 if human.jsonl exists
+        human_ledger = flow_dir / "human.jsonl"
+        if human_ledger.exists():
+            return -1
     return None
 
 
@@ -468,6 +498,33 @@ def references_seq(decisions_text: str, record: LedgerRecord) -> bool:
     return False
 
 
+def _resolve_correction_chain(record: LedgerRecord, records_by_seq: Dict[int, LedgerRecord]) -> Optional[str]:
+    """Resolve correction chain to find the effective kind (non-correction).
+
+    D3: Follow a chain of corrections to find the base kind.
+    Returns the effective kind (non-correction), or None if chain is orphaned.
+    """
+    effective_kind = record.kind
+    if record.kind == "correction" and record.supersedes is not None:
+        # Follow the chain to the non-correction kind
+        current_seq: Optional[int] = record.supersedes
+        chain_resolved = False
+        while current_seq is not None:
+            superseded = records_by_seq.get(current_seq)
+            if superseded is None:
+                # Chain broken; reject
+                break
+            if superseded.kind != "correction":
+                effective_kind = superseded.kind
+                chain_resolved = True
+                break
+            current_seq = superseded.supersedes
+        if not chain_resolved:
+            # Chain ended without finding non-correction; return None
+            return None
+    return effective_kind
+
+
 def owed_seqs(records: Tuple[LedgerRecord, ...], step: str, step_begin_ts: float) -> FrozenSet[int]:
     """Compute which seqs are owed by this step per D1.
 
@@ -498,24 +555,10 @@ def owed_seqs(records: Tuple[LedgerRecord, ...], step: str, step_begin_ts: float
             continue
 
         # Determine effective kind (D3: resolve correction chain to non-correction)
-        effective_kind = record.kind
-        if record.kind == "correction" and record.supersedes is not None:
-            # Follow the chain to the non-correction kind
-            current_seq: Optional[int] = record.supersedes
-            chain_resolved = False
-            while current_seq is not None:
-                superseded = records_by_seq.get(current_seq)
-                if superseded is None:
-                    # Chain broken; reject
-                    break
-                if superseded.kind != "correction":
-                    effective_kind = superseded.kind
-                    chain_resolved = True
-                    break
-                current_seq = superseded.supersedes
-            if not chain_resolved:
-                # Chain ended without finding non-correction; skip this record
-                continue
+        effective_kind = _resolve_correction_chain(record, records_by_seq)
+        if effective_kind is None:
+            # Chain is orphaned; skip this record
+            continue
 
         # Only direction and question kinds are owed
         if effective_kind not in ("direction", "question"):
@@ -2086,8 +2129,8 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
     if decision == "OK" and flow_dir is not None:
         step_ts, ts_err = _step_begin_ts(flow_dir, "plan")
         fmt = ledger_format_of(flow_dir)
-        # D2: Fail closed at ledger_format >= 1 if we can't resolve begin timestamp
-        if fmt is not None and fmt >= 1 and ts_err is not None:
+        # D2: Fail closed at ledger_format >= 1 or when malformed if we can't resolve begin timestamp
+        if fmt is not None and (fmt >= 1 or fmt == -1) and ts_err is not None:
             return f"cannot verify ledger binding: {ts_err}"
 
         ledger_reason = _check_ledger_in_receipt(receipt, flow_dir, "plan", step_ts, decisions_text)
@@ -2157,8 +2200,8 @@ def check_review(receipt_file: Path, since: float, home: Path, flow_dir: Optiona
     if decision == "OK" and flow_dir is not None:
         step_ts, ts_err = _step_begin_ts(flow_dir, "review")
         fmt = ledger_format_of(flow_dir)
-        # D2: Fail closed at ledger_format >= 1 if we can't resolve begin timestamp
-        if fmt is not None and fmt >= 1 and ts_err is not None:
+        # D2: Fail closed at ledger_format >= 1 or when malformed if we can't resolve begin timestamp
+        if fmt is not None and (fmt >= 1 or fmt == -1) and ts_err is not None:
             return f"cannot verify ledger binding: {ts_err}"
 
         ledger_reason = _check_ledger_in_receipt(receipt, flow_dir, "review", step_ts)
@@ -2673,19 +2716,18 @@ def check_implement(
         if gate_reason:
             return gate_reason
 
-    # Step 4: Check ledger binding (after artifact checks)
+    # Step 4: Check ledger binding (after artifact checks; D2: use _step_begin_ts helper)
+    # D14: Guard the ledger check on Decision == "OK"
+    decision = parse_receipt_field(receipt, "Decision")
     flow_dir = resolve_flow_dir(None, receipt_file)
-    if flow_dir is not None:
-        # Get step_begin_ts from log.md
-        step_begin_ts: float = 0.0
-        try:
-            log_ts, _ = flow_log.newest_attempt_start_detail(flow_dir / "log.md", "implement")
-            if log_ts:
-                step_begin_ts = flow_log.parse_iso8601(log_ts)
-        except (flow_log.FlowLogError, flow_log.MalformedLineError):
-            pass
+    if decision == "OK" and flow_dir is not None:
+        step_ts, ts_err = _step_begin_ts(flow_dir, "implement")
+        fmt = ledger_format_of(flow_dir)
+        # D2: Fail closed at ledger_format >= 1 or when malformed if we can't resolve begin timestamp
+        if fmt is not None and (fmt >= 1 or fmt == -1) and ts_err is not None:
+            return f"cannot verify ledger binding: {ts_err}"
 
-        ledger_reason = _check_ledger_in_receipt(receipt, flow_dir, "implement", step_begin_ts)
+        ledger_reason = _check_ledger_in_receipt(receipt, flow_dir, "implement", step_ts)
         if ledger_reason:
             return ledger_reason
 
@@ -2716,19 +2758,18 @@ def check_fix(
         if gate_reason:
             return gate_reason
 
-    # Step 4: Check ledger binding (after artifact checks)
+    # Step 4: Check ledger binding (after artifact checks; D2: use _step_begin_ts helper)
+    # D14: Guard the ledger check on Decision == "OK"
+    decision = parse_receipt_field(receipt, "Decision")
     flow_dir = resolve_flow_dir(None, receipt_file)
-    if flow_dir is not None:
-        # Get step_begin_ts from log.md
-        step_begin_ts: float = 0.0
-        try:
-            log_ts, _ = flow_log.newest_attempt_start_detail(flow_dir / "log.md", "fix")
-            if log_ts:
-                step_begin_ts = flow_log.parse_iso8601(log_ts)
-        except (flow_log.FlowLogError, flow_log.MalformedLineError):
-            pass
+    if decision == "OK" and flow_dir is not None:
+        step_ts, ts_err = _step_begin_ts(flow_dir, "fix")
+        fmt = ledger_format_of(flow_dir)
+        # D2: Fail closed at ledger_format >= 1 or when malformed if we can't resolve begin timestamp
+        if fmt is not None and (fmt >= 1 or fmt == -1) and ts_err is not None:
+            return f"cannot verify ledger binding: {ts_err}"
 
-        ledger_reason = _check_ledger_in_receipt(receipt, flow_dir, "fix", step_begin_ts)
+        ledger_reason = _check_ledger_in_receipt(receipt, flow_dir, "fix", step_ts)
         if ledger_reason:
             return ledger_reason
 
@@ -3478,8 +3519,12 @@ def derive_outstanding_set(flow_dir: Path) -> Tuple[List[OutstandingSetItem], Op
 
     # Step 5a: Add parked items from ledger (when ledger_format >= 1)
     fmt = ledger_format_of(flow_dir)
-    if fmt is not None and fmt >= 1:
+    if fmt is not None and (fmt >= 1 or fmt == -1):
         ledger_load = load_ledger(flow_dir)
+        if isinstance(ledger_load, LedgerUnreadable):
+            # Fail closed when ledger_format >= 1 and ledger is unreadable
+            if fmt >= 1 or fmt == -1:
+                return ([], f"outstanding set: human ledger unreadable: {ledger_load.detail}")
         if isinstance(ledger_load, LedgerRecords):
             for record in ledger_load.records:
                 if record.kind == "parked" and record.status != "superseded":
@@ -4759,18 +4804,18 @@ def main() -> None:
 
         # Find all pending direction and question records
         pending_items: List[Tuple[int, str, str]] = []  # (seq, kind_to_close, relpath)
+        undisposed_items: List[Tuple[int, str]] = []  # (seq, kind) for items with no receipt proof
         records_by_seq = {r.seq: r for r in records}
 
         for record in records:
             if record.status != "pending":
                 continue
 
-            # Get effective kind
-            effective_kind = record.kind
-            if record.kind == "correction" and record.supersedes is not None:
-                superseded = records_by_seq.get(record.supersedes)
-                if superseded:
-                    effective_kind = superseded.kind
+            # Get effective kind (D6: resolve full correction chain)
+            effective_kind = _resolve_correction_chain(record, records_by_seq)
+            if effective_kind is None:
+                # Chain is orphaned; skip this record
+                continue
 
             if effective_kind not in ("direction", "question"):
                 continue
@@ -4795,9 +4840,12 @@ def main() -> None:
                     except (OSError, UnicodeDecodeError):
                         pass
 
-            # D10: Only add if we found a receipt proof
+            # D10: Only add if we found a receipt proof, else report as undisposed
             if relpath is not None:
                 pending_items.append((record.seq, effective_kind, relpath))
+            else:
+                # Finding 8: Report pending items with no receipt proof
+                undisposed_items.append((record.seq, effective_kind))
 
         # Check for unanswered questions
         for seq, kind, _ in pending_items:
@@ -4806,28 +4854,26 @@ def main() -> None:
                 answered = False
                 for record in records:
                     if record.kind == "answer" and record.status != "superseded":
-                        # Check if this answer covers the question using word-bounded regex
-                        if record.text:
-                            # Extract answer seq if this is a ledger answer record
-                            answer_seq_pattern = re.compile(r"^seq (\d+)", re.MULTILINE)
-                            match = answer_seq_pattern.search(record.text)
-                            if match:
-                                try:
-                                    answer_seq = int(match.group(1))
-                                    # D8: Require answer seq > question seq
-                                    if answer_seq > seq:
-                                        # Use word-bounded search for the seq reference
-                                        pattern = r"\bseq " + re.escape(str(seq)) + r"\b"
-                                        if re.search(pattern, record.text):
-                                            answered = True
-                                            break
-                                except ValueError:
-                                    pass
+                        # D8: Require answer seq > question seq
+                        if record.seq > seq:
+                            # Check if this answer covers the question using word-bounded regex
+                            if record.text:
+                                # Use word-bounded search for the seq reference
+                                pattern = r"\bseq " + re.escape(str(seq)) + r"\b"
+                                if re.search(pattern, record.text):
+                                    answered = True
+                                    break
 
                 if not answered:
                     # For now, just print the stop reason
                     print(REASON_QUESTION_UNANSWERED.format(n=seq))
                     sys.exit(1)
+
+        # Finding 8: Report undisposed items (pending with no receipt proof)
+        if undisposed_items:
+            for seq, kind in undisposed_items:
+                print(f"UNDISPOSED: {seq} {kind} no-receipt-proof")
+            sys.exit(1)
 
         # Print CLOSE list
         for seq, kind, relpath in pending_items:
