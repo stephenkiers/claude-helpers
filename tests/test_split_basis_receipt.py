@@ -273,6 +273,18 @@ def main() -> None:
         code, _, _ = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp, repo=repo_path, branch="HEAD", base=base_sha)
         h.test_result("PRIOR_SPLIT_BASIS set on retry passes", code == 0, f"exit {code}")
 
+        print("[Test boundary] MIN_UNITS 0 is accepted, -1 is rejected")
+        for val, ok in (("0", True), ("-1", False)):
+            rcpt = f"{tmp}/receipt_min_{val}.md"
+            Path(rcpt).write_text(
+                "ROUND 1\n"
+                "SPLIT_BASIS: parallel\nMIN_UNITS: " + val + "\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\n"
+                "Decision: OK\n<!-- step-end -->"
+            )
+            err = split_error(rcpt)
+            msg_ok = (err is None) if ok else (err is not None and "non-negative" in err)
+            h.test_result(f"MIN_UNITS {val} boundary", msg_ok, f"err={err!r}")
+
     h.summarize_and_exit()
 
 
