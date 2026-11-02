@@ -305,6 +305,15 @@ for cmd in prefix_blocked:
     rc, _, err = guard(cmd)
     t(f"blocked (prefix): {cmd!r}", rc == 2, describe(cmd, rc, err))
 
+print("\n[#418] timeout option forms are stripped as transparent prefixes, blocking still applies")
+timeout_option_forms_blocked = [
+    "timeout -s KILL 5 git push",
+    "timeout -k 5 10 git push",
+]
+for cmd in timeout_option_forms_blocked:
+    rc, _, err = guard(cmd)
+    t(f"blocked (timeout option form): {cmd!r}", rc == 2, describe(cmd, rc, err))
+
 print("\n[#403] escaped quote inside double quotes is one string, so no push runs (bash-verified)")
 # Plan defect: the plan lists this under must-stay-BLOCKED, but in bash \" inside double quotes is an
 # escaped quote, so the whole text is one argument and nothing runs. The guard allows it, which matches
@@ -330,7 +339,6 @@ print("\n[#403 ledger] residuals main allows that this change does not close")
 ledger_allowed = [
     "exec -a x git push",
     "command -p git push",
-    "timeout -s KILL 5 git push",
     "nice -5 git push",
     "$'\\x67it' push",
     "*(e:'git push':)",
