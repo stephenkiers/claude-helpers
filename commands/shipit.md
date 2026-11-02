@@ -353,6 +353,19 @@ Write commit message:
 
 (The wrapper's modeling step handles this; the CLI just commits the message already written.)
 
+**Record the check receipt.** Once the commit exists, write the receipt that lets
+`/merge-and-cleanup` skip re-running the gate you just passed. It records the committed tree, the
+configured commands, and the base tip the checks ran on top of; merge reuses it only while all three
+still match (a moved base means a rebase may change the tree, so merge re-runs the checks then).
+Best-effort: a failure here only means merge re-runs the checks. Skip when this run's checks did not
+run (e.g. you skipped them as "recently run").
+
+```bash
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || true
+DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks receipt write --worktree . --base "origin/${DEFAULT_BRANCH:-main}" >/dev/null 2>&1 || true
+```
+
 ## 5. Push & PR
 
 ```bash

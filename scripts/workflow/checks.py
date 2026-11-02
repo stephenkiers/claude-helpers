@@ -659,3 +659,101 @@ def resolve_check_timeout(
         if value is not None:
             return value, _with_ignored(label, ignored)
     return DEFAULT_CHECK_TIMEOUT_SECS, _with_ignored("default", ignored)
+
+
+# --- Check receipt: lets /merge-and-cleanup trust the gate /shipit just passed ---------------------
+#
+# /shipit writes .claude/check-receipt.json after its check gate passed and the work was committed.
+# /merge-and-cleanup's repo-cache gate skips re-running the checks only when the receipt still
+# describes exactly what would be merged: same HEAD tree, same configured commands, and the base
+# branch tip has not moved since (a moved base means a rebase may be needed, which changes the tree
+# the checks would see). Any doubt -- missing/corrupt receipt, fetch failure, differing value --
+# means "not fresh", and the caller runs the checks as before. The file is gitignored per-worktree
+# state, the same trust tier as repo-cache.json.
+
+RECEIPT_RELPATH: Final = Path(".claude") / "check-receipt.json"
+RECEIPT_SCHEMA_VERSION: Final = 1
+
+
+def _commands_digest(commands: Mapping[str, Optional[str]]) -> str:
+    import hashlib
+
+    canonical = json.dumps({k: commands[k] for k in sorted(commands)}, sort_keys=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _resolve_sha(rev: str, worktree: Path) -> Optional[str]:
+    from . import git
+
+    try:
+        return git.run_git_command(
+            ["--no-optional-locks", "rev-parse", "--verify", "--end-of-options", f"{rev}^{{commit}}"],
+            cwd=worktree,
+        )
+    except Exception:
+        return None
+
+
+def write_check_receipt(
+    worktree: Path, commands: Mapping[str, Optional[str]], base_ref: str
+) -> Tuple[bool, Optional[Unknown]]:
+    """Record that `commands` passed against the tree at HEAD, on top of `base_ref`'s current tip."""
+    import time
+    from . import git
+
+    tree = git.tree_of("HEAD", worktree)
+    base_sha = _resolve_sha(base_ref, worktree)
+    if not tree or not base_sha:
+        return False, Unknown(f"write_check_receipt: could not resolve HEAD tree or base ref {base_ref!r}")
+    receipt = {
+        "schema_version": RECEIPT_SCHEMA_VERSION,
+        "tree": tree,
+        "base_ref": base_ref,
+        "base_sha": base_sha,
+        "commands_digest": _commands_digest(commands),
+        "written_at": int(time.time()),
+    }
+    try:
+        path = worktree / RECEIPT_RELPATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(receipt, indent=2) + "\n")
+        os.replace(tmp, path)
+    except OSError as e:
+        return False, Unknown(f"write_check_receipt: {e}")
+    return True, None
+
+
+def check_receipt_fresh(
+    worktree: Path, commands: Mapping[str, Optional[str]], fetch: bool = True
+) -> Tuple[bool, str]:
+    """Return (True, "") if the receipt still covers what would merge, else (False, reason)."""
+    from . import git
+
+    path = worktree / RECEIPT_RELPATH
+    try:
+        receipt = json.loads(path.read_text())
+    except FileNotFoundError:
+        return False, "no check receipt"
+    except (OSError, ValueError):
+        return False, "unreadable check receipt"
+    if not isinstance(receipt, dict) or receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION:
+        return False, "unrecognized check receipt schema"
+
+    base_ref = receipt.get("base_ref")
+    if not isinstance(base_ref, str) or not base_ref:
+        return False, "receipt has no base_ref"
+    if fetch and "/" in base_ref:
+        remote, _, branch = base_ref.partition("/")
+        try:
+            git.run_git_command(["fetch", remote, branch], cwd=worktree)
+        except Exception:
+            return False, f"could not fetch {base_ref}"
+
+    if receipt.get("commands_digest") != _commands_digest(commands):
+        return False, "configured check commands changed since the receipt"
+    if git.tree_of("HEAD", worktree) != receipt.get("tree"):
+        return False, "HEAD tree differs from the checked tree"
+    if _resolve_sha(base_ref, worktree) != receipt.get("base_sha"):
+        return False, f"{base_ref} moved since the checks ran (rebase may be needed)"
+    return True, ""
