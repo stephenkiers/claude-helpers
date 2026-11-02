@@ -7,17 +7,23 @@ format lives. Imported in-process by scripts/implement-ledger.py (`locate --flow
 scripts/flow-verify-receipt.py (`--since-from-log`, and its `_parse_iso8601` alias). This module
 imports no other repo script, so neither importer depends on the other.
 
+Also owns the SPLIT_ATTEMPT log line format (unit sizing #319):
+`<ISO-8601 UTC Z> <step> SPLIT_ATTEMPT {json}` with schema_version, step, attempt, trigger,
+prior_split_basis, split_basis, min_units, units, partial_work, decision, failure_class,
+turns_exhausted, committed_units, pending_units.
+
 Why it matters: a bound that is too early or wrong lets a stale run pass the expert-flow Fidelity
 audit (a false pass that masks a skipped step), and a bound that is too late or missing gives a false
 `ledger unavailable`. The value is produced by code and is never copied by the model.
 """
 
+import json
 import os
 import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 ISO_UTC_Z_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 STEP_RE = re.compile(r"[a-z][a-z-]*")
@@ -161,3 +167,137 @@ def validate_flow_dir(path: str) -> Path:
     if log.is_symlink() or not log.is_file():
         raise FlowLogError("log.md is missing, a symlink, or not a regular file")
     return Path(real)
+
+
+class SplitAttemptRecord(NamedTuple):
+    """A parsed SPLIT_ATTEMPT log line record.
+
+    Fields match the JSON schema: schema_version, step, attempt, trigger, prior_split_basis,
+    split_basis, min_units, units, partial_work, decision, failure_class, turns_exhausted,
+    committed_units, pending_units.
+    """
+    schema_version: int
+    step: str
+    attempt: int
+    trigger: str
+    prior_split_basis: str
+    split_basis: str
+    min_units: str
+    units: int
+    partial_work: str
+    decision: str
+    failure_class: str
+    turns_exhausted: bool
+    committed_units: List[str]
+    pending_units: List[str]
+
+
+class ParseSplitAttemptResult(NamedTuple):
+    """Result of parsing SPLIT_ATTEMPT lines from a log.
+
+    Fields:
+    - records: list of successfully parsed SplitAttemptRecord entries
+    - malformed_lines: list of strings describing malformed or unparseable lines (format issue or bad JSON)
+    """
+    records: List[SplitAttemptRecord]
+    malformed_lines: List[str]
+
+
+def parse_split_attempt_lines(log_path: Path) -> ParseSplitAttemptResult:
+    """Parse SPLIT_ATTEMPT lines from a log.md file.
+
+    Line format: `<ISO-8601 UTC Z> <step> SPLIT_ATTEMPT {json}`
+
+    Parses only lines with the SPLIT_ATTEMPT tag after timestamp and step. Bare JSON lines and
+    prose are ignored. Malformed lines (bad JSON, non-object JSON, or missing schema_version)
+    are reported but do not raise.
+
+    Returns ParseSplitAttemptResult with parsed records and a list of malformed line descriptions.
+    """
+    records: List[SplitAttemptRecord] = []
+    malformed_lines: List[str] = []
+
+    if not log_path.exists():
+        return ParseSplitAttemptResult(records, malformed_lines)
+
+    try:
+        log_content = log_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ParseSplitAttemptResult(records, malformed_lines)
+
+    # Pattern: timestamp step SPLIT_ATTEMPT {json}
+    pattern = re.compile(r"^(\S+) (\S+) SPLIT_ATTEMPT (.+)$")
+
+    for line in log_content.split("\n"):
+        line = line.rstrip()
+        match = pattern.match(line)
+        if not match:
+            continue
+
+        iso_str, step, json_str = match.groups()
+
+        # Try to parse the JSON
+        try:
+            data = json.loads(json_str)
+        except (json.JSONDecodeError, ValueError) as e:
+            malformed_lines.append(f"line has invalid JSON: {str(e)[:100]}")
+            continue
+
+        # Must be a dict
+        if not isinstance(data, dict):
+            malformed_lines.append("JSON is not an object")
+            continue
+
+        # Must have schema_version
+        if "schema_version" not in data:
+            malformed_lines.append("missing schema_version")
+            continue
+
+        # Extract all required fields with defaults
+        try:
+            record = SplitAttemptRecord(
+                schema_version=int(data.get("schema_version", 0)),
+                step=str(data.get("step", "")),
+                attempt=int(data.get("attempt", 0)),
+                trigger=str(data.get("trigger", "")),
+                prior_split_basis=str(data.get("prior_split_basis", "")),
+                split_basis=str(data.get("split_basis", "")),
+                min_units=str(data.get("min_units", "")),
+                units=int(data.get("units", 0)),
+                partial_work=str(data.get("partial_work", "")),
+                decision=str(data.get("decision", "")),
+                failure_class=str(data.get("failure_class", "")),
+                turns_exhausted=bool(data.get("turns_exhausted", False)),
+                committed_units=list(data.get("committed_units", [])),
+                pending_units=list(data.get("pending_units", [])),
+            )
+            records.append(record)
+        except (ValueError, TypeError, KeyError) as e:
+            malformed_lines.append(f"field parsing error: {str(e)[:100]}")
+
+    return ParseSplitAttemptResult(records, malformed_lines)
+
+
+def format_split_attempt_line(record: SplitAttemptRecord) -> str:
+    """Format a SPLIT_ATTEMPT log line from a record.
+
+    Returns a line in the format: `<ISO-8601 UTC Z> <step> SPLIT_ATTEMPT {json}`
+    """
+    iso_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time()))
+    data = {
+        "schema_version": record.schema_version,
+        "step": record.step,
+        "attempt": record.attempt,
+        "trigger": record.trigger,
+        "prior_split_basis": record.prior_split_basis,
+        "split_basis": record.split_basis,
+        "min_units": record.min_units,
+        "units": record.units,
+        "partial_work": record.partial_work,
+        "decision": record.decision,
+        "failure_class": record.failure_class,
+        "turns_exhausted": record.turns_exhausted,
+        "committed_units": record.committed_units,
+        "pending_units": record.pending_units,
+    }
+    return f"{iso_str} {record.step} SPLIT_ATTEMPT {json.dumps(data)}"
