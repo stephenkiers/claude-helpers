@@ -629,7 +629,6 @@ The probe in a throwaway git repo showed that the Agent `model` parameter overri
 
 ### Still out of scope
 
-- Pre-run size checks and automatic sequential split of a single-unit plan.
 - A user-facing model flag on `/expert-flow` at start.
 - Raising or overriding `maxTurns`.
 - A third implementer attempt after a failed escalation.
@@ -1175,3 +1174,58 @@ This amendment adds two pre-step environment chores to `/expert-flow`: making de
 **Consequences.** The chores are bounded: no new counter, no retry beyond the human's Retry, and no change to the two-attempt cap. Every deps result is printed as one `DEPS:` line, which is `current | installed | skipped: <reason> | ambiguous: <files> | manifest-changed: <packages> | failed: <reason>`, and any output tail is redacted and bounded before it reaches a receipt, `state.json` or a park file. The check question is the one new question a flow can ask before implement, and it is asked at most once per unresolved check. Fleet install is only as safe as #382's resolution.
 
 **Issue overlap (#424, #425).** The fleet self-heal ticket #425 overlaps the dependency-install failure handling decided in this amendment: the `failed` and `manifest-changed` stops, the Retry and `--approve-manifest` path, and the fleet park. #425's scope should be reviewed and edited to match this amendment before that work starts. This amendment does not edit #425 or any other GitHub issue.
+
+## Amendment (2026-11-02): Pre-run unit sizing and sequential split for multi-unit runs (#419)
+
+This amendment moves "Pre-run size checks and automatic sequential split of a single-unit plan" from "Still out of scope" into scope, specifying what is and what is not automatic, what is model-owned versus script-owned, and the record schema for unit state and progress.
+
+### 1. What is in scope
+
+Pre-run size checks and sequential split are in scope. Both are deterministic or model-judged INSIDE a run; neither is automatic remediation after a failure. The script (`scripts/unit-sizing.py`) computes provisional unit boundaries and reports estimated unit count; the model owns the final decision to split sequentially when coupled work is detected. Sequential split applies only to multi-unit runs (UNITS > 1) on the implement step when model-judged as needed, and the units are launched one at a time from a shared worktree, each branched from the post-commit HEAD of its predecessor.
+
+### 2. Ownership: script-provisional vs. model-judged
+
+- **Script owns:** `scripts/unit-sizing.py` computes `min_units`, a provisional and uncalibrated enforced ceiling on unit size (defaults: 8 steps / 12 files / 16 findings per unit). This is a mechanical minimum and does not guarantee optimality. A reliable calibration requires `TURNS_USED` measurement; issue #325 tracks the unblock for calibration. The script never split-attempts on its own.
+- **Model owns:** Boundaries and basis (ADR-0012's bounded judgment). The model reads the plan, sizing metadata, and coupling hints, and decides whether to split, on which plan steps, and (for sequential mode) in which order. A single-unit run is never split; a multi-unit run where the model does not detect coupling proceeds in parallel on Haiku (unit-per-worktree, independent trees). Coupling (cross-unit dependencies) is detected heuristically from the plan prose and triggers sequential mode.
+
+### 3. Sequential mode on multi-unit path
+
+When a multi-unit run spans coupled work (dependencies between units), sequential mode is selected: one worktree and unit-launch at a time, each new unit branched from the post-commit HEAD of the previous unit's completed step (so unit N+1 starts with unit N's committed changes as its base). Sequential mode does not change `FAILURE_CLASS` tracking: failure remains `other` (no special handling for sequential runs). `FAILURE_CLASS` and dormant-path condition 3 are unchanged: no automatic escalation for multi-unit runs, regardless of mode.
+
+Overlapping ownership (script and model decisions on unit scope) is permitted only in sequential mode, where commits are serialized. In parallel mode, each unit is independent and the model's boundary decision is final.
+
+### 4. Unit record schema and lifecycle
+
+Every implement or fix step maintains a typed unit record, written by `scripts/unit-progress.py` (record-only authority, single writer). The record lives under `FLOW_DIR/units/<STEP>/` with two files: `units.json` (unit list and metadata, versioned schema) and `progress.json` (per-unit progress state). Both files are scoped records under `FLOW_DIR`, written at every committing path and on explicit progress checkpoints.
+
+- **Schema versioning:** The record carries a version field. On mismatch with the orchestrator's expected schema, the flow ejects to the human with a `unit-record-mismatch` FAILED receipt, print summary, and a record-eject recovery step. A crash between commit and record write is an accepted cost: the flow ejects on resume, same procedure.
+- **Base tracking:** Each record holds `anchor_sha` (= `bases[STEP]`; the base for the step before any split) and per-unit `base_sha` (each unit's branch base). Scoped retries (e.g., `scoped-a<k>` for coverage retry) reference the anchor.
+- **Unit-Id in commits (log-only):** The `Unit-Id:` commit trailer is logged for telemetry and never read by the orchestrator. It is informational only.
+
+### 5. Relabelled Retry for single-unit plus turns-exhausted
+
+For a receipt with `UNITS: 1` and `TURNS_EXHAUSTED: yes`, the hard-stop Retry option is relabelled **"Retry, split finer"** to signal that the human may choose to apply the partial-work contract (keep or reset) and re-run the unit split at a finer granularity. This is user-chosen, receipt-dependent, not automatic, and subject to the existing two-attempt cap per step. No fifth option is added; the "Retry, split finer" label is the only change to the menu. The relabelling is ruled out by Decision 1's "nothing else" for multi-unit runs: ADR-0004's "never automatic for multi-unit runs" still holds.
+
+### 6. Every implement/fix re-run passes `--partial-base`
+
+On any Retry (including "Retry, split finer"), every implement or fix re-run passes `--partial-base <bases[STEP]>` to the unit coordinator. The `--partial-base` flag sets the anti-tamper base for plain Retry, ensuring that partial work (code modified since the step began) cannot be committed unless the orchestrator calls the partial-work contract (keep or reset prior to split). This is the enforcement mechanism for Retry-without-remediation.
+
+### 7. SPLIT_ATTEMPT log line and SPLIT_BASIS sentinel
+
+- **Log line format:** `<ts> <step> SPLIT_ATTEMPT {json}` — one line per split decision or stop. The JSON carries: `units` (final count), `split_basis` (the choice: `none`, `sequential`, `parallel`, or `failed` if no split was decided before the stop), and any metadata.
+- **SPLIT_BASIS sentinel in record:** The record includes a top-level `split_basis` field matching the log line value. On stops before the split is decided (e.g., human Abort before model responds), the sentinel is `none`. FAILED receipts with `SPLIT_ATTEMPT` absent or `split_basis` missing are accepted on retry without causing a schema-mismatch eject.
+
+### 8. Manual acceptance procedure
+
+On a scratch repo, run `/expert-flow` (or `/implement-with-haiku` with `FLOW_DIR` set) on a 12-step plan with 15+ files exhibiting cross-unit coupling (e.g., Step N and Step N+1 depend on shared data structures). Force unit 2 to fail during its build check (deliberately break a dependency until fixed in unit 3). Choose Retry from the hard-stop menu. Confirm: (a) the prefix (units 1 and completed prior units) is kept, (b) only pending units (2 onwards) run, (c) the final receipt is OK with `SPLIT_BASIS: sequential` and `UNITS >= 2`, and (d) `log.md` has one `SPLIT_ATTEMPT` line per attempt. Record the cold-build cost per unit (measure wall-clock time for each unit's setup, tree checkout, and compile pass). The acceptance procedure confirms the implementation and records the cost in the PR description.
+
+### 9. Open items
+
+- **Sanctioned reset after a record eject:** When a record mismatch ejects the flow, the human can apply the partial-work contract (keep or reset) before resuming or retrying. Reset means rolling the code back to the step start (via `git show <SHA> | git apply -R`) before continuing. No delete or force-push is used; the reset is a staged read-only operation. This is an open item requiring a recovery script and procedure document.
+- **Cold-build cost per sequential worktree:** Measure and document the cumulative cost of spawning N sequential worktrees and running each unit's setup, compile, and check. This informs slice-2 decisions on automatic parallel-to-sequential conversion thresholds.
+- **Whether incident run 58B51AB9 ended on the turn cap or context exhaustion:** A dogfood incident run requires post-analysis to determine if it hit `maxTurns` or model context exhaustion. This is informational for future turns-source calibration.
+- **Low-priority follow-ups:** (i) Add a split-attempt row to `scripts/implement-ledger.py` for telemetry; (ii) Rewrite `units.v2.json` tail (deferring the tail-rewrite optimization until the v1 schema is stable and no other changes are pending).
+
+### 10. Consequences
+
+A `/expert-flow` run on a 12-step coupled plan now sizes units automatically, splits sequentially when coupled work is detected, and persists unit state in a versioned record. Partial failures in sequential runs surface properly and require explicit human disposition (Retry with finer split, Take over, or Abort). Retry does not auto-remediate; the partial-work contract applies on each retry. Cold-build cost is measurable and logged for future threshold tuning.
