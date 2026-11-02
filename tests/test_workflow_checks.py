@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
+import workflow.checks as checks_module
 from workflow.checks import (
     execute_check, build_check_order, resolve_check_command, resolve_check_timeout,
     resolve_check_detail, detect_package_json_check, suggest_from_claude_md,
@@ -475,11 +476,34 @@ if __name__ == "__main__":
             wt / ".claude" / "repo-cache.json",
             json.dumps({"version": 1, "commands": {"check": "npm run check"}, "commandSources": {"check": "package-json"}}),
         )
+        # The package-json provenance is re-derived from this worktree, so it must derive the same check.
+        _put(wt / "package-lock.json", "{}")
+        _put(wt / "package.json", json.dumps({"scripts": {"check": "npm run check"}}))
         resolution = resolve_check_detail(wt, None)
         test_result(
             "a repo-cache check with commandSources.check == package-json is labelled 'repo-cache (package-json)'",
             resolution.source == "repo-cache (package-json)" and resolution.command == "npm run check",
             f"source={resolution.source!r}",
+        )
+
+        # Item 9: a package-json cache check is not trusted from the shared cache when this worktree
+        # derives no check; the cached value is ignored and the failure names why.
+        (wt / "package.json").write_text(json.dumps({"scripts": {"test": "x"}}))
+        resolution = resolve_check_detail(wt, None)
+        test_result(
+            "a package-json cache check is ignored when this worktree's package.json derives no check",
+            resolution.command is None and resolution.source is None
+            and "package-json check not re-derived" in (resolution.failure_reason or ""),
+            f"command={resolution.command!r} source={resolution.source!r}",
+        )
+        (wt / "package.json").write_text(json.dumps({"scripts": {"check": "pnpm-check-here"}}))
+        (wt / "package-lock.json").unlink()
+        _put(wt / "pnpm-lock.yaml", "")
+        resolution = resolve_check_detail(wt, None)
+        test_result(
+            "a package-json cache check is re-derived from this worktree, so a different branch's script is used",
+            resolution.command == "pnpm run check" and resolution.source == "repo-cache (package-json)",
+            f"command={resolution.command!r} source={resolution.source!r}",
         )
 
     print("[Section 11] detect_package_json_check")
@@ -736,6 +760,81 @@ if __name__ == "__main__":
         test_result(
             "both or neither answer flag, or a multi-line answer, is refused",
             not ok_both and not ok_none and not ok_multi and not (main / ".claude" / "project.yaml").exists(),
+        )
+
+    print("[Section 15] record_check_answer: config lock, opt-out normalization, nested check, CRLF (#417 items 10, 27)")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        _put(main / ".claude" / "project.yaml", "commands:\n  install: npm ci\n")
+        ok, message = record_check_answer(main, command="make verify")
+        test_result(
+            "the config lock file is kept out of .claude/ (only project.yaml is there after a recorded answer)",
+            ok and sorted(p.name for p in (main / ".claude").iterdir()) == ["project.yaml"],
+            f"ok={ok} message={message!r}",
+        )
+
+    saved_fcntl = checks_module.fcntl
+    checks_module.fcntl = None
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            main = Path(tmpdir) / "main"
+            main.mkdir()
+            ok, message = record_check_answer(main, command="make verify")
+            resolution = resolve_check_detail(main, None)
+            test_result(
+                "without fcntl the answer is still recorded and verified (the lock degrades to no lock)",
+                ok and resolution.command == "make verify",
+                f"ok={ok} message={message!r}",
+            )
+    finally:
+        checks_module.fcntl = saved_fcntl
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        _put(main / ".claude" / "project.yaml", "commands:\n  install: npm ci\n")
+        ok, message = record_check_answer(main, opt_out="  CI   is\toff  ")
+        text = (main / ".claude" / "project.yaml").read_text()
+        test_result(
+            "--opt-out echoes and writes the whitespace-normalized reason, not the raw value",
+            ok and 'checkOptOut: "CI is off"' in message and 'checkOptOut: "CI is off"' in text and "  CI" not in text,
+            f"ok={ok} message={message!r} text={text!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        original = "commands:\n  install:\n    check: nested-only\n"
+        _put(main / ".claude" / "project.yaml", original)
+        ok, message = record_check_answer(main, command="make verify")
+        text = (main / ".claude" / "project.yaml").read_text()
+        test_result(
+            "a deeper-nested key named check is not mistaken for commands.check; the answer is inserted",
+            ok and text == 'commands:\n  check: "make verify"\n  install:\n    check: nested-only\n',
+            f"ok={ok} text={text!r} message={message!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        (main / ".claude").mkdir(parents=True)
+        (main / ".claude" / "project.yaml").write_bytes(b"commands:\r\n  install: npm ci\r\n")
+        ok, message = record_check_answer(main, command="make verify")
+        data = (main / ".claude" / "project.yaml").read_bytes()
+        test_result(
+            "a CRLF project.yaml is edited and kept CRLF (no bare LF is introduced)",
+            ok and data == b'commands:\r\n  check: "make verify"\r\n  install: npm ci\r\n',
+            f"ok={ok} data={data!r} message={message!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        _put(main / ".claude" / "repo-cache.json", json.dumps({"version": 1, "commands": {"check": "from-cache"}}))
+        (main / ".claude" / "project.yaml").write_bytes(b"# keep me\r\n")
+        ok, message = record_check_answer(main, command="new-answer")
+        data = (main / ".claude" / "project.yaml").read_bytes()
+        test_result(
+            "a CRLF project.yaml that fails verification is restored to its original bytes",
+            not ok and data == b"# keep me\r\n",
+            f"ok={ok} data={data!r} message={message!r}",
         )
 
     print()
