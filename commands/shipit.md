@@ -185,6 +185,22 @@ Store as `make <target>` (e.g., `"lint": "make lint"`).
 
 Prefix with detected package manager: `bun run lint`, `npm run lint`, etc.
 
+**Lockfile → package manager.** This closed table is the one rule for the package manager. The
+workflow CLI's `package.json` check detector uses the same mapping, and `prompts/shipit-reference.md`
+mirrors this table. Keep the rows identical in all three places.
+
+| File | Package manager |
+|------|-----------------|
+| `package-lock.json` | npm |
+| `pnpm-lock.yaml` | pnpm |
+| `yarn.lock` | yarn |
+| `bun.lockb` | bun |
+| `bun.lock` | bun |
+
+Exactly one lockfile from this table selects the manager. Two or more lockfiles, or a `packageManager`
+field that names a different manager than the lockfile, is **ambiguous**: no manager is selected and no
+`package.json` command is detected.
+
 **Cargo.toml** (if exists):
 - `commands.lint` = `cargo clippy -- -D warnings` (if clippy available)
 - `commands.test` = `cargo test`
@@ -223,6 +239,18 @@ Only use these for command types that weren't discovered from any other source:
 After detection, write `.claude/repo-cache.json` with all discovered commands. Set `null` for command types that don't apply (e.g., `typecheck: null` for Go).
 
 **Important:** The cache captures what the project actually uses, not what the language could use. If the project has `make lint` that runs `golangci-lint`, store `"lint": "make lint"` — not the raw `golangci-lint` command. This way, if the Makefile changes what `make lint` does, we pick it up on next refresh.
+
+**Keep an existing `commands.check`.** Before writing, read the existing `.claude/repo-cache.json` if it
+exists. If its `commands.check` is non-empty, keep that value even when this run detects a different
+command (or none). Also preserve the existing `commandSources` map (command key → provenance, such as
+`package-json` or `human`, written by the workflow CLI) exactly as found. One exception: when
+`commandSources.check` is `package-json` (written by the detector) and this run detects a different
+non-null `check`, replace it, so a package-manager migration corrects it. Hand-set values, values with any
+other provenance, and values `/shipit` itself wrote on an earlier run are kept. That last group includes a
+command taken from `CLAUDE.md` prose (Source 1), so a `CLAUDE.md`-derived command `/shipit` persisted once
+stays sticky until the cache is deleted or the entry is edited by hand; the ADR-0023 amendment states this
+residual. The reason for the rule: regeneration must not change the check between a flow step and the
+verification that follows it. A kept `commands.check` also satisfies the all-null refusal below.
 
 **Refuse to write an all-null `commands` map.** If every key in `commands` resolved to `null` across
 all four sources (0–3, not counting Source 4's language-default fallback also coming up empty), do

@@ -94,6 +94,11 @@ READ_ONLY_BASH = (
     r"shasum -a 256(?::\*)?",
     # Named exception for pre-merge issue-comments check (ticket 401, fetch subcommand only, read-only GET)
     r"cd \"\$CLAUDE_HELPERS_DIR\" && PYTHONPATH=\"\$CLAUDE_HELPERS_DIR\" python3 -m scripts\.workflow\.cli issue-comments fetch",
+    # Named exceptions for the worktree-stage deps chore and the check-command question (#417).
+    # `deps ensure` runs the frozen install inside the CLI (no package-manager grant exists),
+    # `checks ensure-check` only reads, and `checks record-check-answer` is the one writer of the
+    # human's check answer into the main worktree's configuration.
+    r"python3 -m scripts\.workflow\.cli (?:deps ensure|checks ensure-check|checks record-check-answer)(?: .*)?",
 )
 ORCHESTRATOR_TOOLS = {"Read", "Write", "Task", "SendMessage", "AskUserQuestion", "ScheduleWakeup"}
 
@@ -1150,6 +1155,90 @@ def main():
     flow_bullet = claude_text[bullet_start:bullet_end] if bullet_start >= 0 and bullet_end > bullet_start else ""
     h.test_result("CLAUDE.md /expert-flow bullet mentions Redo with notes",
                   "Redo with notes" in flow_bullet)
+
+    print()
+    print("[Section 8] Deps precondition, worktree ordering, and the plan-time check question (#417)")
+    deps_grant = "Bash(python3 -m scripts.workflow.cli deps ensure:*)"
+    ensure_grant = "Bash(python3 -m scripts.workflow.cli checks ensure-check:*)"
+    record_grant = "Bash(python3 -m scripts.workflow.cli checks record-check-answer:*)"
+    for grant in (deps_grant, ensure_grant, record_grant):
+        h.test_result(f"allowed-tools grants {grant}", grant in fm, "missing from frontmatter")
+    h.test_result("no package-manager Bash grant (npm, pnpm, yarn, bun)",
+                  not re.search(r"Bash\((?:npm|pnpm|yarn|bun)\b", fm))
+    tools_match = re.search(r"allowed-tools:\s*(.*)", fm)
+    h.test_result("allowed-tools passes the read-only allowlist with the #417 grants",
+                  bool(tools_match) and not disallowed_grants(tools_match.group(1)))
+    h.test_result("state.json table documents the deps field", "| `deps` |" in text)
+
+    def block_between(start, end):
+        s = text.find(start)
+        e = text.find(end, s + 1) if s >= 0 else -1
+        return text[s:e] if s >= 0 and e > s else ""
+
+    wt = block_between("**worktree.**", "**Hand-off.**")
+    wt_flat = " ".join(wt.split())
+    order = [wt.find(m) for m in ("git worktree list --porcelain", "deps ensure",
+                                  "checks ensure-check", "`<WORKTREE>/.claude/flow-run`")]
+    h.test_result("worktree stage runs verify, then deps, then check detection, then the marker",
+                  all(p >= 0 for p in order) and order == sorted(order) and len(set(order)) == len(order),
+                  f"positions={order}")
+    h.test_result("worktree receipt carries DEPS and CHECK_SOURCE lines",
+                  "`DEPS: <result>`" in wt_flat and "`CHECK_SOURCE: <source | unresolved>`" in wt_flat)
+    h.test_result("worktree deps call passes no --base (only the prose 'no `--base`' mentions it)",
+                  wt.count("--base") == wt.count("no `--base`"))
+    h.test_result("unresolved never stops the worktree stage",
+                  "`unresolved` never stops this step" in wt_flat)
+    h.test_result("worktree receipt row in the steps table lists DEPS and CHECK_SOURCE",
+                  "`DEPS:` `CHECK_SOURCE:`" in text)
+
+    pre = subsection(text, "### Deps precondition")
+    pre_flat = " ".join(pre.split())
+    h.test_result("Deps precondition subsection exists", bool(pre))
+    h.test_result("precondition names implement, fix, and verify, and the post-rebase verify",
+                  "`implement`, `fix`, or `verify`" in pre_flat and "auto-rebase" in pre_flat)
+    h.test_result("precondition runs against the real base, not bases[STEP]",
+                  '--base "origin/<DEFAULT_BRANCH>"' in pre and "`bases[STEP]`" in pre)
+    h.test_result("precondition stops do not increment failures",
+                  "does **not** increment `failures[STEP]`" in pre_flat)
+    h.test_result("manifest-changed Retry records approval via --approve-manifest",
+                  "--approve-manifest" in pre and "`manifest-changed`" in pre)
+    h.test_result("failed result stops before the spawn with the redacted tail",
+                  "`failed`" in pre and "redacted failure tail" in pre_flat)
+    h.test_result("review and ship are named as needing no precondition",
+                  "Ship and review need no precondition" in pre_flat)
+    h.test_result("exit 126/127 inside a step stays check-not-run",
+                  "check-not-run" in pre and "`126`" in pre and "`127`" in pre)
+    for label, start, end in (("implement", "**implement.**", "**Model note:**"),
+                              ("fix", "**fix.**", "**verify.**"),
+                              ("verify", "**verify.**", "**assess.**")):
+        h.test_result(f"{label} step runs the Deps precondition before its spawn",
+                      "Deps precondition" in block_between(start, end))
+    h.test_result("ship step does not run the Deps precondition",
+                  "Deps precondition" not in block_between("**ship.**", "**merge gate.**"))
+
+    ask = block_between("**Check command question", "**plan.**")
+    ask_flat = " ".join(ask.split())
+    h.test_result("plan-time check question sits before the plan spawn", bool(ask))
+    h.test_result("check question goes through the Ask block", "Ask block" in ask_flat)
+    h.test_result("CLAUDE.md suggestion is labelled unverified",
+                  "(from CLAUDE.md, unverified)" in ask_flat)
+    h.test_result("check answer persists with --command and --opt-out",
+                  "checks record-check-answer" in ask_flat and "--command" in ask_flat
+                  and "--opt-out" in ask_flat)
+    h.test_result("check question offers checkOptOut with its implement/fix scope",
+                  "checkOptOut" in ask_flat and "implement and fix" in ask_flat)
+    h.test_result("check answer is recorded in the flow ledger",
+                  "flow-ledger.py" in ask_flat and "--kind answer" in ask_flat)
+    h.test_result("refusal prints the line to add and never guesses",
+                  "Do not guess a command" in ask_flat and "project.yaml" in ask_flat)
+    h.test_result("fleet parks the check question as a gate", "parks as a `gate`" in ask_flat)
+
+    impl_text = IMPL_CMD.read_text() if IMPL_CMD.is_file() else ""
+    h.test_result("implement-with-haiku keeps exit 126/127 as check-not-run (unchanged wording)",
+                  "`returncode` is `126`/`127`" in impl_text and "Reason `check-not-run: <detail>`" in impl_text)
+    adr_text = ADR.read_text() if ADR.is_file() else ""
+    h.test_result("ADR-0023 keeps exit 126/127 as check-not-run (unchanged wording)",
+                  "runner or shell exit `126`/`127`" in adr_text)
 
     print()
     h.summarize_and_exit()

@@ -1,7 +1,7 @@
 ---
 description: Run a whole epic — one headless /expert-flow per sub-issue, independent tickets in parallel, every question parked in one inbox and asked in batches while the other tickets keep moving. Optional big-stones pre-pass settles direction before any ticket starts.
 argument-hint: <epic-url|number> [--max K] [--only N,N,...] [--prepass] | --resume [fleet-dir|epic#] | --status [fleet-dir|epic#]
-allowed-tools: Bash(python3 "$HOME/.claude/scripts/fleet.py":*), Bash(gh issue view:*), Bash(gh issue edit:*), Bash(gh repo view:*), Bash(git rev-parse:*), Bash(git worktree list:*), Bash(ls:*), Bash(cat:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Read, Write, Task, AskUserQuestion
+allowed-tools: Bash(python3 "$HOME/.claude/scripts/fleet.py":*), Bash(gh issue view:*), Bash(gh issue edit:*), Bash(gh repo view:*), Bash(git rev-parse:*), Bash(git worktree list:*), Bash(ls:*), Bash(cat:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 -m scripts.workflow.cli checks ensure-check:*), Bash(python3 -m scripts.workflow.cli checks record-check-answer:*), Read, Write, Task, AskUserQuestion
 ---
 
 # Expert Fleet
@@ -103,7 +103,8 @@ version of them.
    Plus a list of factual corrections it verified, each tied to an issue. No style questions, nothing
    one ticket's planner would settle alone.
 2. Ask the questions with `AskUserQuestion`, at most 4 per call, header `#N` or `epic`, recommended
-   option first with `(Recommended)`.
+   option first with `(Recommended)`. Before the first call, run step 1 of the Check-command preflight
+   below; if the check is unresolved, its question is the first item of this batch (header `epic`).
 3. Draft a `## Direction (pre-pass, <date>)` section per affected issue (and one for the epic): the
    decisions and corrections that apply to it, each one line, stated as instructions. Attribute every
    line: tag it with the pre-pass question it answers and whose decision it records (`human answer to
@@ -117,9 +118,53 @@ version of them.
 4. Dependency changes the human made (e.g. "these two can run in parallel") are applied by editing
    the ticket list and re-running `init` (the old fleet dir is unused; delete nothing).
 
+## Check-command preflight (before Step 3)
+
+Every ticket needs a check command for verify and ship, and a ticket that finds none parks on a
+question. The fleet settles that question once, against `MAIN`, before any ticket is launched. Run this
+before the first Step 3 launch of each session and before each Step 4 launch; a resolved check makes it
+a no-op.
+
+1. Resolve the check, with `MAIN` as both the worktree and the main worktree:
+
+   ```bash
+   source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
+   PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks ensure-check --worktree "<MAIN>" --main-worktree "<MAIN>"
+   ```
+
+   A resolved command prints `check: <command> (<source>)` and the preflight is done. A `package.json`
+   `scripts.check` resolves on its own: `ensure-check` writes it to MAIN's `repo-cache.json` with its
+   provenance, and nobody is asked.
+2. If it prints `unresolved`, ask once, with the same question, options, and summary as the flow's
+   Check command question (`commands/expert-flow.md`): the CLAUDE.md suggestion labelled `(from CLAUDE.md,
+   unverified)` when one was printed (never saved unless the human picks it), `Type a command`, and
+   `Set checkOptOut`. With `--prepass` the question joins the pre-pass batch in Step 2.2 under header
+   `epic`, counted toward the 4-per-call limit. Without `--prepass` it is asked alone under header `epic`.
+3. Persist the answer, never a guess: a command runs `checks record-check-answer --main-worktree "<MAIN>"
+   --command '<command>'` and an opt-out runs the same with `--opt-out '<reason>'`. Pass one single-quoted
+   argument, and re-ask instead of passing a value with a newline or a single quote. Then re-run step 1.
+   No flow ledger exists yet, so the answer lives only in MAIN's configuration.
+4. **Refuse to launch** if the check still does not resolve (no answer, Cancel, or a refused persist).
+   Print the exact line to add to `MAIN/.claude/project.yaml`: `commands:` with `  check: "<command>"`
+   under it, or a top-level `checkOptOut: "<reason>"`. Do not run `fleet.py run` for any ticket. The
+   fleet directory stays as it is; `--resume` runs this preflight again.
+
+Once the check resolves from MAIN, tickets never park on this question: each ticket's worktree is cut
+from MAIN and seeds the answer. The answer is written before any worktree is created, so the snapshot
+semantics in `commands/expert-flow.md` hold.
+
+**Deps chore inside tickets.** Each `/expert-flow --fleet` ticket runs the deps chore unattended in its
+own worktree (the worktree step's `deps ensure`, then the Deps precondition before implement, fix, and
+verify). The install runs only for a detected lockfile or an explicit `commands.install` from MAIN's
+`project.yaml`, and it inherits the outcome of #382 (ADR-0023 amendment). A successful result
+(`installed`, `current`, `skipped`, or `ambiguous`) never parks. A `failed` or `manifest-changed` result
+parks the ticket as a `gate` (fail closed): the inbox shows the redacted failure tail or the changed
+packages, and the human answers there. When #370's Validate phase lands, this preflight moves there.
+
 ## Step 3: Launch
 
-Run `fleet.py ready FLEET`. For each listed issue, start
+Run the Check-command preflight above, then `fleet.py ready FLEET`. For each listed issue, start
 `python3 "$HOME/.claude/scripts/fleet.py" run FLEET <N>` with `run_in_background: true` (all in one
 message). Print `fleet: started #A #B #C — I'll come back when one of them needs you or finishes.`
 and end the turn.
@@ -196,4 +241,6 @@ each one is waiting on. `fleet: done` if every ticket is `done`, else
   its dependency merged (or is CLOSED).
 - Write into flow directories or worktrees. Its only writes are under `FLEET` (issue-body drafts in
   `FLEET/direction/<N>.md`, Step 2.3; delivery messages in `FLEET/messages/`, Step 4(b)) and the scratch
-  ticket list in `~/.claude/fleet-scratch/` (Step 1.6), which holds no fleet state.
+  ticket list in `~/.claude/fleet-scratch/` (Step 1.6), which holds no fleet state. The one other write
+  is the check answer that `checks record-check-answer` persists to MAIN's configuration (Check-command
+  preflight, step 3); the CLI writes it, never the orchestrator.
