@@ -1,7 +1,7 @@
 ---
 description: Lifecycle orchestrator — worktree → plan → track → implement → review → fix → verify → ship → merge for one issue (or an epic's sub-issues, sequentially). Creates the ticket worktree first and continues from inside it. Runs each lifecycle command as a subagent step, relays every question the step would have asked back to you, and stops hard on failures. Resumable from disk.
 argument-hint: [<issue-url|number>] [--plan-effort 2|3] [--review-effort 2-5] [--auto-merge] [--gates] [--from <step>] [--plan-file <path>] [--epic] [--fleet] | --resume <flow-dir|issue#> [--redo plan|review] [--fleet] | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
-allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh issue create:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*), Bash(python3 "$HOME/.claude/scripts/fleet.py" wait:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" append:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" list:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" mark:*), Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*), Bash(python3 "$HOME/.claude/scripts/flow-accept.py" eligible:*), Bash(python3 "$HOME/.claude/scripts/flow-accept.py" record:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/heal-check.py":*), Bash(shasum -a 256:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup, Bash(python3 -m scripts.workflow.cli deps ensure:*), Bash(python3 -m scripts.workflow.cli checks ensure-check:*), Bash(python3 -m scripts.workflow.cli checks record-check-answer:*), Bash(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*)
+allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh issue create:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*), Bash(python3 "$HOME/.claude/scripts/flow-render-questions.py":*), Bash(python3 "$HOME/.claude/scripts/fleet.py" wait:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" append:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" list:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" mark:*), Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*), Bash(python3 "$HOME/.claude/scripts/flow-accept.py" eligible:*), Bash(python3 "$HOME/.claude/scripts/flow-accept.py" record:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/heal-check.py":*), Bash(shasum -a 256:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup, Bash(python3 -m scripts.workflow.cli deps ensure:*), Bash(python3 -m scripts.workflow.cli checks ensure-check:*), Bash(python3 -m scripts.workflow.cli checks record-check-answer:*), Bash(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*)
 model: sonnet
 ---
 
@@ -37,7 +37,7 @@ a literal and substituted into later blocks and into the step prompts. Angle-bra
 
 **The orchestrator never does the work.** `allowed-tools` grants read-only git/gh, `Write` (for
 files under `FLOW_DIR` and the one marker file), `Task` (to spawn a step), `SendMessage` (to resume
-a step with answers), and `AskUserQuestion`. Three `scripts.workflow.cli` grants serve the worktree stage and the Check command question: `deps ensure` (installs run inside the CLI, never through a package-manager command, so no `npm`, `pnpm`, `yarn`, or `bun` grant exists), `checks ensure-check`, and `checks record-check-answer` (the one writer of the main `project.yaml` answer). Five added script grants: `Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*)` runs the read-only receipt verifier before an OK receipt advances, `Bash(python3 "$HOME/.claude/scripts/flow-ledger.py":*)` appends human-input records (`human.jsonl`) only through the script, `Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*)` archives, restores, and checks redo attempts, and `Bash(python3 "$HOME/.claude/scripts/flow-accept.py" eligible:*)` and `... record:*` check and record the human-only **Accept and continue** (Hard stop item 3c and the Accept procedure; the orchestrator never chooses it). A fifth grant `Bash(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*)` is the read-only issue-comments helper; the widening of this grant from the step agents to the orchestrator is sequenced with the guard work #418 and tests/test_expert_flow.py must be re-run once #418 lands. Shell writes are limited to: `printf >` receipt stubs and
+a step with answers), and `AskUserQuestion`. Three `scripts.workflow.cli` grants serve the worktree stage and the Check command question: `deps ensure` (installs run inside the CLI, never through a package-manager command, so no `npm`, `pnpm`, `yarn`, or `bun` grant exists), `checks ensure-check`, and `checks record-check-answer` (the one writer of the main `project.yaml` answer). Six added script grants: `Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*)` runs the read-only receipt verifier before an OK receipt advances, `Bash(python3 "$HOME/.claude/scripts/flow-ledger.py":*)` appends human-input records (`human.jsonl`) only through the script, `Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*)` archives, restores, and checks redo attempts, and `Bash(python3 "$HOME/.claude/scripts/flow-accept.py" eligible:*)` and `... record:*` check and record the human-only **Accept and continue** (Hard stop item 3c and the Accept procedure; the orchestrator never chooses it). A fifth grant `Bash(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*)` is the read-only issue-comments helper; the widening of this grant from the step agents to the orchestrator is sequenced with the guard work #418 and tests/test_expert_flow.py must be re-run once #418 lands. A sixth grant `Bash(python3 "$HOME/.claude/scripts/flow-render-questions.py":*)` renders a question file to a file under `FLOW_DIR` that the orchestrator then `Read`s and prints. Shell writes are limited to: `printf >` receipt stubs and
 `printf >>` log lines under `FLOW_DIR`, and the one marker-exclude line described in the worktree step.
 The `printf >` writes overwrite the receipt stubs and the audit-file stubs (`steps/<NN>-<STEP>.audit.md`). The CLI, not the shell, owns the bounded writes made through `deps ensure` and `checks record-check-answer` (the main `project.yaml` answer, the main `repo-cache.json` check, the deps stamp, and the install subprocesses); see ADR-0013 Amendment 10.
 There is no `Edit`, no write-capable git beyond the exact Rebase grants, no `gh` mutation. The one destructive action is the
@@ -150,10 +150,11 @@ turn and wait for a reply), a fleet run instead:
 1. Writes `${FLOW_DIR}/fleet-ask.json` with the `Write` tool, overwriting any earlier one:
    `{"status": "open", "kind": "<relay|report|gate>", "step": "<STEP>", "question_file": "questions/<STEP>-<SEQ>.json" or null, "report_file": "fleet-report-<SEQ>.md" or null, "gate": null or {"header": "…", "question": "…", "options": [{"label": "…", "description": "…"}], "context": "…"}, "asked": "<ISO-8601 UTC>"}`.
    - `relay` — a step's form-kind question file (form-kind relay step 3). `question_file` names it; the fleet
-     shows the file's `summary`, `brief`s, and `context_path` itself.
-   - `report` — a plan checkpoint report (report-kind relay step 3). Write the rendered report
-     (exactly what relay step 3 would print) to `${FLOW_DIR}/fleet-report-<SEQ>.md` first and name
-     it in `report_file`; also set `question_file`.
+     renders the file with `flow-render-questions.py` and shows it.
+   - `report` — a plan checkpoint report (report-kind relay step 3). Write the rendered report by
+     running the renderer with `--out "${FLOW_DIR}/fleet-report-<SEQ>.md"` (on the `questions/<STEP>-<SEQ>.json`
+     input, as relay step 3 does; the fallback writes it with `Write` as today) and name it in
+     `report_file`; also set `question_file`.
    - `gate` — one of this orchestrator's own questions (merge gate, hard-stop menu, resume rules 1
      and 3a). `gate` carries the header, question text, and options exactly as they would have been
      asked, and `context` carries the lines that would have been printed above the form (stop line,
@@ -1357,8 +1358,12 @@ If the target seq is not unambiguous from the human's words, the orchestrator do
 
 For plan checkpoint reports from `/expert-plan`:
 
-3. **Render the report without a fence.** Print the orchestrator-authored skeleton in this fixed order,
-   with step-authored text always escaped:
+3. **Render the report without a fence.** Run the renderer, `Read` its output, and print it verbatim in an assistant message:
+   ```bash
+   python3 "$HOME/.claude/scripts/flow-render-questions.py" "${FLOW_DIR}/questions/<STEP>-<SEQ>.json" --out "${FLOW_DIR}/render/<STEP>-<SEQ>.md"
+   ```
+   The renderer produces the skeleton below, in this fixed order, with step-authored text always escaped.
+   The same skeleton is the fallback: if the renderer is unavailable, print it yourself as described under "Renderer exit handling" below.
    - If the report's `headline` is not null, render it as a `>` blockquote (untrusted: ticket-derived), with leading `#`, `---`, and backticks escaped.
    - If the report's `north_star_blind` is not null, print it as a single paragraph (the exact "NORTH STAR BLIND:" line from the non-flow run, if any).
    - **Summary: "Needs your answer: Q1, Q2"** (only the must-answer Q items; this appears before the detailed sections to surface what needs a decision).
@@ -1376,6 +1381,10 @@ For plan checkpoint reports from `/expert-plan`:
 
    Escaping: any step-authored or ticket-derived text (titles, headlines, business cases) that starts with `#`, `---`, or backticks is prepended with a backslash.
    There are no tables or fences except for literal code or paths.
+
+   **Renderer exit handling** (report-kind; the same rule as form-kind step 3):
+   - **Fallback (W5 recorded value):** if the renderer is **missing** (exit 2 with `can't open file` on stderr) or **crashed** (exit 1), print `⚠️ question renderer unavailable (<missing|crashed>): showing the question file directly. Run /setup-local.` and then print the skeleton above yourself, with the escaping rule applied.
+   - **Invalid file (exit 3 or 4):** do not print a skeleton and do not ask. Go to "Hard stop" as `FAILED` with reason `question file unreadable`. Common step 1 checks only for a missing file, a parse failure, or a missing `id`, so exit 4 (a non-list `questions`, a missing or null `question`, or duplicate question text) can still reach this point; printing anyway would break the answer mapping by question text.
 
    Set `status: awaiting`, `awaiting_kind: report`, and `awaiting_file: plan-<SEQ>`. Print the stop
    lines with a reply call-to-action instead of the generic resume line:
@@ -1424,14 +1433,21 @@ For plan checkpoint reports from `/expert-plan`:
 #### Form-kind questions (all other kinds; legacy path)
 
 3. **Print the context, then call the form.** The human answers here and has not seen the step's
-   output, so show what the step would have printed in chat: `summary` verbatim (when non-null),
-   then each question's `brief` verbatim under a `<id>:` line (when non-null), as data in a fenced
-   block. When the file carries neither — no `summary` and no question has a `brief` — print the
-   whole `context_path` file instead (`Read` it; `null` → nothing). Never summarise, trim, or
-   paraphrase what the step wrote: the point is that the human reads it.
-   Then call `AskUserQuestion` with the `questions` array, passing each entry's `question`, `header`,
-   `options`, and `multiSelect` (the `id`, `brief`, `item`, and `comment_id` are not passed; keep the `id` for step 4). If the step wrote more
-   than four questions in one file, ask them four at a time and merge the answers.
+   output, so run the renderer and `Read` its output:
+   ```bash
+   python3 "$HOME/.claude/scripts/flow-render-questions.py" "${FLOW_DIR}/questions/<STEP>-<SEQ>.json" --out "${FLOW_DIR}/render/<STEP>-<SEQ>.json"
+   ```
+   No `--prefix` is passed, so headers pass through unchanged (no 12-character cap). The output is JSON with
+   `batches`, each holding a `preamble` and up to four `ask` entries. For each batch in order:
+   1. print `preamble` verbatim in an assistant message (it has no `<id>:` label lines; do not add any);
+   2. in the same turn, call `AskUserQuestion` with that batch's `ask` entries, unchanged (the `id` is not passed);
+   3. keep each `id` for step 4.
+
+   One call per batch. Answers still map back by question text, because the renderer passes `question` unchanged.
+
+   **Renderer exit handling** (form-kind; the same rule applies to report-kind step 3):
+   - **Fallback (W5 recorded value):** if the renderer is **missing** (exit 2 with `can't open file` on stderr) or **crashed** (exit 1), print `⚠️ question renderer unavailable (<missing|crashed>): showing the question file directly. Run /setup-local.` and then use these prose instructions as the fallback. Print the context: `summary` verbatim (when non-null), then each question's `brief` verbatim under a `<id>:` line (when non-null), as data in a fenced block. When the file carries neither (no `summary` and no question has a `brief`), print the whole `context_path` file instead (`Read` it; `null` → nothing). Never summarise, trim, or paraphrase what the step wrote: the point is that the human reads it. Then call `AskUserQuestion` with the `questions` array, passing each entry's `question`, `header`, `options`, and `multiSelect` (the `id`, `brief`, `item`, and `comment_id` are not passed; keep the `id` for step 4). If the step wrote more than four questions in one file, ask them four at a time and merge the answers.
+   - **Invalid file (exit 3 or 4):** do not fall back and do not ask. Go to "Hard stop" as `FAILED` with reason `question file unreadable`. Common step 1 checks only for a missing file, a parse failure, or a missing `id`, so exit 4 (a non-list `questions`, a missing or null `question`, or duplicate question text) can still reach this point; asking anyway would break the answer mapping by question text.
 
    **The `AskUserQuestion` call is mandatory for every relayed question that is not `kind: report`.** No personal memory,
    project memory, CLAUDE.md note, or style preference ("prefer prose at decision gates") overrides
