@@ -99,9 +99,7 @@ When a `Human ledger (from /expert-flow)` block is present (pending directions f
 
 **Moving a Doing it item to Needs you:** A *Doing it* item that would contradict a pending direction or a plan ruling (by the ruling's explicit outcome) moves to *Needs you* as an escalation. Title it as "human said X (seq N / ruling <ref>), this finding would do Y". It is never auto-ruled. Offer "Leave as-is" as a real option — the human decided earlier and the new evidence may not be dispositive.
 
-**Moving a Needs you item to Doing it:** A *Needs you* item that is already settled by a cited ruling (the ruling explicitly answers the escalation test the item tripped), with no new evidence the ruling did not weigh, moves to *Doing it* as "per human ruling <ref>", quoting the ruling. Keep it brief: the human has already decided. If new evidence surfaces (the diff shows something the ruling could not have anticipated), keep the item in *Needs you* and name the prior ruling alongside the new evidence.
-
-**No suppression:** This cross-check never suppresses a CONFIRMED finding, a *Needs you* decision, or a *Needs measurement* item. It only re-routes items that are already escalated or in *Doing it*. The narrow-escalation test (ADR-0007) still applies to everything else.
+**No suppression:** This cross-check never suppresses a CONFIRMED finding, a *Needs you* decision, or a *Needs measurement* item, and every Needs you item is relayed. It only re-routes *Doing it* items that would contradict a pending direction or a plan ruling. The narrow-escalation test (ADR-0007) still applies to everything else.
 
 ### Every escalation must offer "leave it alone"
 
