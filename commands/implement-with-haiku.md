@@ -1,6 +1,6 @@
 ---
 description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
-allowed-tools: Read, Write, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*), Bash(python3 "$HOME/.claude/scripts/primary-checkout-drift.py":*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks:*), Bash(cd:*), Bash(jq:*), Agent
+allowed-tools: Read, Write, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/primary-checkout-drift.py":*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks:*), Bash(cd:*), Bash(jq:*), Agent
 ---
 
 # Implement with Haiku
@@ -1221,10 +1221,17 @@ Never wrap any gate or check command in `timeout` or `gtimeout`. Any command tha
 
 The implementer is forbidden from touching test files or neutering the verify pipeline. Scan now.
 
+Run the shared scan script (substitute the literal `TICKET_WT_PATH` recorded in Step 2). It runs
+`git diff` itself, prints `{"verdict": "pass"|"fail", "reasons": [...]}` on stdout, and exits 1 on
+fail (a bad ref or unreadable diff also fails closed):
+
 ```bash
-# Files changed in round 1
-git diff --name-only "$START_SHA"..HEAD
+python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <TICKET_WT_PATH> --base "$START_SHA" --head HEAD --profile implement
 ```
+
+Any `fail` verdict is a gate failure; each reason names the check and the file/line. The three
+paragraphs below document what the `implement` profile checks mechanically. "Wired but never
+called" is not scripted and stays your judgment.
 
 **Test-file tampering:** Flag any changed file matching test-path globs:
 - `*.test.*`, `*.spec.*`, `*_test.*`, `test_*.{ts,js,py,rs,swift}`, `tests/**`, `__tests__/**`, `spec/**`

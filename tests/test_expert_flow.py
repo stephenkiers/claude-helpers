@@ -87,6 +87,11 @@ READ_ONLY_BASH = (
     # procedure; ADR-0023 2026-10-29 amendment). Narrow on purpose: only the `eligible` read and the
     # `record` trail append, not the whole script. The orchestrator never chooses Accept itself.
     r"python3 \"\$HOME/\.claude/scripts/flow-accept\.py\" (?:eligible|record)(?: .*)?",
+    # Named exceptions for the bounded check heal (#380, ADR-0023 2026-10-29 amendment): the two
+    # read-only classifier/scan scripts and the tools-hash step; the healer's own grants live in
+    # agents/flow-healer.md, not here.
+    r"python3 \"\$HOME/\.claude/scripts/(?:anti-cheat-scan|heal-check)\.py\"(?::\*)?",
+    r"shasum -a 256(?::\*)?",
 )
 ORCHESTRATOR_TOOLS = {"Read", "Write", "Task", "SendMessage", "AskUserQuestion", "ScheduleWakeup"}
 

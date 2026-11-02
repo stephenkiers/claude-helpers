@@ -325,6 +325,7 @@ non-fast-forward; **ask the user before force-pushing** (`git push --force-with-
 **On any non-zero exit (1 or 2) that wasn't healed above:** Stop immediately, report error (including `$CHECK_EXECUTED` so the
 user can see what did run), record gotcha in cache. Do NOT commit. In a flow, write the FAILED
 receipt with Reason `check gate failed (exit <CHECK_EXIT>, status <CHECK_STATUS>; ran: <CHECK_EXECUTED>)`.
+In a flow, `/expert-flow`'s orchestrator may route that failure through its own check heal and then re-spawn ship (ADR-0023, #380 amendment); `/shipit` itself never heals a failing check, so this gate stays stop-and-report. The check gate runs before Commit and Push & PR, so a failed ship has created no PR and a re-spawn is safe.
 
 ```bash
 if [ "$CHECK_EXIT" != "0" ]; then
@@ -806,7 +807,7 @@ failure still stands, write the FAILED receipt (Step 0.5) with Reason naming wha
 | Cache exists | Use cached commands directly |
 | Dependencies missing | Run install command |
 | Checks ran earlier in session | Skip, trust prior results |
-| Check fails | Stop, report, record gotcha, don't commit |
+| Check fails | Stop, report, record gotcha, don't commit (in a flow the orchestrator may heal and re-spawn ship; `/shipit` itself never heals) |
 | No changes | Report "nothing to commit" |
 | PR exists | Refresh title and body (preserving novel content), report URL |
 | On main branch | Warn, suggest branching |

@@ -544,12 +544,28 @@ and verify they lie under their expected roots: `FINAL_PLAN_PATH` under `$HOME/.
 | implement | the existing `ROUND 1`…`ROUND 4` lines, and `OUTSTANDING: <line>` on OK receipts | the summary block is copied verbatim from `ROUND SIZING:` to the end; `OUTSTANDING: none` or `OUTSTANDING: <unit id> (<reason>) [self-report\|both]` |
 | fix | the existing `ROUND 1`…`ROUND 4` lines, `ACTION PLAN SOURCE: …`, and `OUTSTANDING: <line>` on OK receipts | the summary block is copied verbatim from `ROUND SIZING:` to the end (the source is the review's `claude-action-plan.md`); `OUTSTANDING: none` or `OUTSTANDING: D<n> (<reason>) [self-report\|both]` |
 | review | `REVIEW_DIR: <abs path>` and `CONFIRMED: critical=<n> high=<n> medium=<n> low=<n>` | counts of CONFIRMED findings by severity from `claude-action-plan.md` |
-| verify | `CHECK: <command>` and `CHECK_EXIT: <n>` | written by the orchestrator itself |
+| verify | `CHECK: <command>`, `CHECK_EXIT: <n>` and `CHECK_SHA: <40-hex>` (the orchestrator's own `git rev-parse HEAD` in `WORKTREE`) | written by the orchestrator itself; a FAILED receipt also carries `HEAL_CANDIDATE: <class> <signature>`; the re-run after a heal carries `HEALED: <heal id>` |
 | assess | `ASSESSED: <n>` on OK receipts | `ASSESSED: 0` for no outstanding items; orchestrator-written |
 | ship | `PR_URL: <url>` | `PR_URL: https://github.com/o/r/pull/123` |
 | merge | `MERGED: yes` | from `gh pr view --json state`; written only when the state is `MERGED`, otherwise the line is omitted |
 
 **Assess records.** `steps/07-assess.md` holds `ASSESSED: <n>`, one line per item (`<id> | status= | kind= | scope= | leave_as_is_safe= | cause= | evidence= | finish_plan= | verification_proof= | options=`), then `<!-- assessment-end -->`. The disposition marker `steps/08-ship.outstanding.md` (`07-ship.outstanding.md` in a flow without `outstanding_format`) starts with `format: 2`, `assessment: assessor|taken-over`, `<!-- outstanding-pending -->`, then `<id> | disposition= | by= | answer_ref= | option= | route= | url= | reason=` lines, and `<!-- outstanding-end -->` only when complete. The grammar and gate rules are in ADR-0023 (2026-10-27 amendment, section 10); `scripts/flow-verify-receipt.py --outstanding-gate` is the enforcement point. Assess questions carry `item: <id>`; the free-text Drop reason lives in `annotations.<qid>.notes` of the answers file.
+
+**Heal records (#380).** A heal leaves a durable record the verifier checks (`flow-verify-receipt.py --step heal`):
+`steps/<NN>-verify.heal.md` (check heal) or `steps/<NN>-ship.fixnow.md` (Fix now). Each holds a `HEAL:` line of
+space-separated `key=value` tokens (the verifier reads the LAST `HEAL:` line in the file):
+`HEAL: id=<id> source=<check|fix-now> state=<started|converged|rejected:<reason>|needs-human|not-converged|interrupted> sha_before=<sha> [sha_after=<sha>]`.
+Common fields: `id`, `source`, `state`, `sha_before` (an unknown `source` or a malformed line fails closed).
+`source=check` also requires `signature`, `class` (`lint|test`) and, in every state except `interrupted`, `tools_sha`; a
+converged check heal needs `sha_after`, exactly one `Flow-Heal: <id>` commit in `sha_before..sha_after` whose only parent is
+`sha_before`, `SCAN:` and `COMPLEXITY:` lines, and a healer receipt (`steps/<NN>-verify.heal-<n>.md`, `HEAL_ID: <id>`).
+`source=fix-now` also requires `units` (and optionally `review`, `reasons`, `fixed`, `outstanding`); no `signature`, `class`,
+`tools_sha` or trailer; `sha_before` must be an ancestor of `sha_after`; a converged record's `sha_after` equals the following
+verify receipt's `CHECK_SHA`, and a unit marked `fix-now: fixed` may not be uncovered, declared or unknown in the re-run's coverage table.
+The verify receipt after a converged check heal carries `HEALED: <id>` and `CHECK_SHA: <sha_after>`; any `Flow-Heal:` commit
+without a `HEAL:` record fails verify. Any `HEAL:` record, `healed: true` in `state.json`, or `Flow-Heal:` commit in range requires
+a human `gate_passed` at merge. A Fix now unit that needs intent, credentials or a product decision is reported as
+`OUTSTANDING: <id> (needs-human: <reason>) [self-report]`.
 
 **Artifact verification.** A receipt is a claim. On `OK`, the orchestrator verifies the step's on-disk artifacts with
 `scripts/flow-verify-receipt.py`. For plan, that is the session dir named by `FINAL_PLAN_PATH`'s

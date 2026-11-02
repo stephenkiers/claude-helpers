@@ -46,9 +46,10 @@ path-scoped; the intended scope is files under the flow directory and the one ma
 prompt-level rule, see Consequences). **Implement, fix and review steps run restricted agents** (`flow-implement`, `flow-review`; see ADR-0008 2026-10-26 amendment): they carry `tools:` restrictions and machine-enforced controls including model pins, tool omissions (no `Edit` on implement), Bash/Skill guards, and step-contract enforcement. **Other steps** (worktree, plan, track, verify, ship, merge) spawn `general-purpose` Task subagents and run with full capability (pending #359/#360). A step that fails produces a
 hard stop with three options — Retry (capped at two attempts per step), Take over, Abort — and
 nothing else, except that base-stale verify failures also offer a fourth, human-gated option, Rebase
-(see the gated Rebase amendment below), and single-unit implement/fix shortfalls offer a bounded automatic Sonnet escalation followed by the same menu (see the 2026-10-16 amendment). `/expert-rebase` is suggested in the stop message when a step's receipt suggests it,
+(see the gated Rebase amendment below), and single-unit implement/fix shortfalls offer a fourth option, `Retry with sonnet`, for manual escalation (live; the automatic escalation path is dormant per the 2026-10-16 and 2026-10-25 amendments). `/expert-rebase` is suggested in the stop message when a step's receipt suggests it,
 never invoked. This is the same stance ADR-0021 took for the merge queue: no auto-remediation,
 because remediation is where an orchestrator starts making engineering decisions nobody reviewed.
+There are three bounded exceptions: (1) the automatic base-stale Rebase (2026-10-14 amendment); (2) the single-unit implement/fix Sonnet escalation (manual `Retry with sonnet` live, automatic path dormant); (3) the bounded self-heal for check failures and Fix now (2026-10-29 amendment, #380). The rationale still holds, and the bounded heal does not violate it: the orchestrator never edits code. A step subagent does the edits, the result is mechanically scanned, and the human merge gate always stays.
 
 ### 2. The question relay: a file, a turn boundary, and a resume
 
@@ -1023,3 +1024,32 @@ An OK implement/fix receipt now carries `RUN_KEY:` and `RECEIPT_CONTRACT: 1` in 
 - **Marker is agent-written.** An agent that drops both lines gets the fallback, exactly as a receipt that predates the contract does. The fallback is never silent (verifier prints it, auditor prompt names it, telemetry records it), but the fallback still runs the same code. Retiring the fallback when telemetry shows no `ledger_lookup: "locate-fallback"` rows for a period is a follow-up decision.
 
 **In-flight consequence.** None. Marker-less receipts (all existing ones) are grandfathered and fall back unchanged. The amendment strands no in-flight flow.
+
+## Amendment (2026-10-29): bounded self-heal for check failures and Fix now (#380)
+
+This amendment adds the third bounded exception to the no-auto-remediation stance in §1. A failed verify check, or outstanding units at ship time, can be healed once by a step subagent, under mechanical checks, with the human merge gate unchanged.
+
+**Decision.**
+
+- **Bounded and non-orchestrator.** Edits happen only in a step subagent. The orchestrator still never edits code, and gains no git or check-running grant.
+- **Healable classes:** `lint`, and deterministic `test` failures (the failure signature recurs on a probe re-run).
+- **Non-healable classes:** base-stale (the existing auto-Rebase handles it), infra/environment (unset env vars, missing binaries, permission errors, locks such as `another cleanup is validating main`, network), timeout, `check_not_run`, `check_not_configured`, and `unknown`. The default is fail closed.
+- **Mechanism.** The dedicated `flow-healer` agent (`agents/flow-healer.md`) for check heals. The `--only-units` fix/implement re-spawn for Fix now, relayed before ship only. Fix now is a stopgap; #383 proposes a longer-term mechanism. The sequencing: Fix now lands in this amendment (2026-10-29, #380); #383 is absorbed into the flow's `fix` step design (post-2026-10-29 RFC).
+- **Budget.** `failures[verify]` bounds the check heal, so there is at most one check heal per flow. `failures[ship]` bounds Fix now plus ship attempts (two counters, which do not stack). A non-converging heal goes to Take over / Abort only: no Retry and no `Retry with sonnet`. Worst-case automatic spawns: 8 (4 verify-type, 1 `flow-healer`, 1 Fix now re-spawn, 2 ship).
+- **Required checks.**
+  - The mechanical anti-cheat scan (`scripts/anti-cheat-scan.py`): no test edits, the path lock on tests, config and CI, and the new-suppression ban on a check heal (the revert-to-pass rule was dropped, so test-only failures escalate to a human); Fix now's scan is no stricter than an ordinary `fix` (it omits the test-edit rule but keeps `test-removed`, so Fix now cannot delete tests).
+  - Healer integrity checks: a single commit whose parent is `sha_before`; the judging scripts unchanged.
+  - The complexity floor and behaviour check (`scripts/heal-check.py complexity`), run outside the healer.
+  - The `HEAL:` record, plus the verifier and fidelity-audit requirements on it.
+  - The merge gate always stops when any `HEAL:` record (any source or state) exists, `healed: true` is in `state.json`, or any commit matches `git log --grep '^Flow-Heal:' <bases[implement]>..HEAD`, even under `--auto-merge`.
+  - The per-repo `$FLOWS_ROOT/heals.jsonl` log (for #367). The escalation rate of heals is read from it as the share of rows with `state=needs-human` (or `rejected:*`) among all rows; no extra logging is needed.
+  - `/shipit`'s own gate stays stop-and-report.
+  - The `NEEDS_HUMAN` escalation exit: the healer may decline, and declining is encouraged over a risky edit.
+- **Grant diff.** The orchestrator's `allowed-tools` gains exactly these three lines and nothing else:
+  - `Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*)`
+  - `Bash(python3 "$HOME/.claude/scripts/heal-check.py":*)`
+  - `Bash(shasum -a 256:*)`
+
+  The `flow-healer` agent's tools are exactly: `Read, Edit, Grep, Glob, Bash(git diff:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git add:*), Bash(git commit:*), Bash(git checkout HEAD -- *)`. It has no `Write`, push, fetch, WebFetch, WebSearch, Task, or generic Bash.
+
+**Consequences.** `flow-healer` is a capability-restricted agent, narrower than the ADR-0008 standing exception for general-purpose step agents. Its `Edit` is not path-scoped, and `git commit:*` admits `--amend`; the prompt forbids both misuses, and the orchestrator mechanically checks only the commit count, single parent, trailer, clean worktree, the three script hashes, `.claude/repo-cache.json` hash, and resolved check command hash after the healer returns (an edit outside the worktree is not detected, nor can the orchestrator verify that the healer did not maliciously edit `.claude/repo-cache.json`). These are residual risks, not eliminated ones. A healed run never auto-merges: the human merge gate always fires.
