@@ -370,7 +370,8 @@ def _strip_one(kind, name, tokens):
 def strip_command_prefix(tokens):
     """Remove transparent prefixes from the front of a segment's tokens.
 
-    Loops over TRANSPARENT_PREFIXES until none applies. Then applies the zsh =name rule once.
+    Loops over TRANSPARENT_PREFIXES until none applies. Then applies the zsh =name rule once,
+    but only when ("zsh-equals", None) is present in TRANSPARENT_PREFIXES (read at call time).
     Returns a new list. Only the closed set in TRANSPARENT_PREFIXES is stripped; any other
     prefix (for example `exec -a name` or `command -p`) is left in place.
     """
@@ -386,7 +387,7 @@ def strip_command_prefix(tokens):
                 tokens = stripped
                 changed = True
                 break
-    if tokens and tokens[0].startswith("=") and len(tokens[0]) > 1:
+    if ("zsh-equals", None) in TRANSPARENT_PREFIXES and tokens and tokens[0].startswith("=") and len(tokens[0]) > 1:
         tokens = [tokens[0][1:]] + tokens[1:]
     return tokens
 
@@ -665,7 +666,7 @@ def check_command(command):
     try:
         segments = split_segments(command)
     except UnparseableCommand as exc:
-        return True, f"unparseable: {exc}"
+        return True, f"Unparseable command: {exc}"
 
     for segment in segments:
         if not segment:
