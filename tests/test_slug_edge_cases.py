@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Edge-case pins for the /expert-plan slug pipeline and the stray `--model` flag arm (#377).
+Edge-case pins for the /expert-plan slug pipeline and the stray `--model` flag arm (#377, #389).
 
 The slug lines and the flag loop are read from the real command docs at run time; nothing here
-re-types the pipeline. Every case runs the extracted `SLUG=$(printf ...)` line plus its
-`[ -n "$SLUG" ] || SLUG="plan"` fallback through `bash -c`, with the title passed as the
-TICKET_TITLE environment variable (never interpolated into the script).
+re-types the pipeline. Inline-pipeline sites (v2) run the extracted `SLUG=$(printf ...)` line
+with TICKET_TITLE env variable and sed under /usr/bin. Slugify sites (expert-plan.md) run through
+the scripts/slugify.sh script.
 
 Sed: when /usr/bin/sed exists, PATH puts /usr/bin first so a Homebrew gnubin sed cannot mask the
 BSD behaviour. Otherwise the host's native sed is used and a notice says so.
@@ -16,8 +16,8 @@ non-[a-z0-9] to one dash, cut to 50 bytes, strip leading and trailing dashes, fa
 Covered here, beyond the cases in the slug test file: non-ASCII letters and non-ASCII-only titles,
 an all-dash title, mixed case, tabs and newlines, underscores and digits, a cut that lands on a
 dash inside a long title, a cut at exactly 50 characters, and a BSD-unsafe-construct check on the
-extracted slug lines. Also a flag-loop boundary: `--model-foo` must fall through to the generic
-unknown-flag arm, not the `--model` did-you-mean arm.
+extracted inline slug lines and slugify sites. Also a flag-loop boundary: `--model-foo` must fall
+through to the generic unknown-flag arm, not the `--model` did-you-mean arm.
 
 Run with: python3 tests/test_slug_edge_cases.py
 """
@@ -37,12 +37,15 @@ from _test_harness import (
     detect_sed_flavor,
     sed_path_env,
     run_slug,
+    run_slugify,
     extract_slug_sites_edge_cases,
+    extract_slugify_sites,
     extract_flag_loop,
     run_flag_loop,
 )
 
-SLUG_DOCS = [EXPERT_PLAN, EXPERT_PLAN_V2]
+INLINE_SLUG_DOCS = [EXPERT_PLAN_V2]
+SLUGIFY_DOCS = [EXPERT_PLAN]
 
 # Backslash escapes that BSD sed (basic regex) does not share with GNU sed.
 BSD_UNSAFE = re.compile(r"\\[+|?<>bBwWsS]")
@@ -91,34 +94,73 @@ def main():
 
     print("[Section 1] Extracted slug lines exist and avoid BSD-unsafe sed constructs")
     sites = extract_slug_sites_edge_cases()
-    for doc in SLUG_DOCS:
+
+    # Check inline-pipeline sites from v2
+    for doc in INLINE_SLUG_DOCS:
         rel = doc.relative_to(REPO_ROOT)
         doc_sites = [line for path, line in sites if path == rel and line is not None]
         h.test_result(
-            f"{rel}: at least one SLUG line followed by the fallback line",
+            f"{rel}: at least one inline SLUG line followed by the fallback line",
             len(doc_sites) >= 1,
             "no extractable SLUG line" if not doc_sites else "",
         )
+
+    # Check slugify sites from expert-plan.md
+    for doc in SLUGIFY_DOCS:
+        rel = doc.relative_to(REPO_ROOT)
+        slugify_sites = extract_slugify_sites(doc)
+        h.test_result(
+            f"{rel}: at least one slugify SLUG site",
+            len(slugify_sites) >= 1,
+            "no extractable slugify SLUG line" if len(slugify_sites) == 0 else "",
+        )
+
+    # Check BSD-unsafe constructs in inline sites
     for path, line in sites:
         if line is None:
             continue
         h.test_result(
-            f"{path}: slug line has no BSD-unsafe sed escape (\\+ \\| \\? \\< \\> \\b \\w \\s)",
+            f"{path}: inline slug line has no BSD-unsafe sed escape (\\+ \\| \\? \\< \\> \\b \\w \\s)",
             not BSD_UNSAFE.search(line),
             f"found in: {line}" if BSD_UNSAFE.search(line) else "",
         )
 
+    # Check BSD-unsafe constructs in slugify sites (script itself)
+    slugify_script = REPO_ROOT / "scripts" / "slugify.sh"
+    if slugify_script.exists():
+        script_text = slugify_script.read_text()
+        h.test_result(
+            "scripts/slugify.sh has no BSD-unsafe sed escape",
+            not BSD_UNSAFE.search(script_text),
+            "found in script" if BSD_UNSAFE.search(script_text) else "",
+        )
+
     print()
-    print("[Section 2] Slug edge cases, run at every extracted site")
-    live_sites = [(path, line) for path, line in sites if line is not None]
+    print("[Section 2] Slug edge cases, run at every inline and slugify site")
+    live_inline_sites = [(path, line) for path, line in sites if line is not None]
+
+    # Run cases at inline sites
     for name, title, expected in SLUG_CASES:
-        for path, line in live_sites:
+        for path, line in live_inline_sites:
             rc, out, err = run_slug(line, title, env)
             passed = rc == 0 and out == expected
             detail = ""
             if not passed:
                 detail = f"expected {expected!r}, got rc={rc} stdout={out!r} stderr={err.strip()!r}"
-            h.test_result(f"{path}: {name} -> {expected!r}", passed, detail)
+            h.test_result(f"{path}: inline {name} -> {expected!r}", passed, detail)
+
+    # Run cases at slugify sites
+    for name, title, expected in SLUG_CASES:
+        for doc in SLUGIFY_DOCS:
+            for line_no, _slug_line, _following in extract_slugify_sites(doc):
+                rel = doc.relative_to(REPO_ROOT)
+                rc, out, err = run_slugify(title, env)
+                slug_output = out.strip() if out else ""
+                passed = rc == 0 and slug_output == expected
+                detail = ""
+                if not passed:
+                    detail = f"expected {expected!r}, got rc={rc} stdout={slug_output!r} stderr={err.strip()!r}"
+                h.test_result(f"{rel}:{line_no} slugify {name} -> {expected!r}", passed, detail)
 
     print()
     print("[Section 3] Flag loop boundary: --model-foo is not the --model did-you-mean arm")

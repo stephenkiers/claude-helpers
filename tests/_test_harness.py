@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import NoReturn, Optional, Tuple
 
@@ -17,7 +18,9 @@ FLAG_LOOP_HEAD = "while [ $# -gt 0 ]; do"
 
 EXPERT_PLAN = REPO_ROOT / "commands" / "expert-plan.md"
 EXPERT_PLAN_V2 = REPO_ROOT / "commands" / "expert-plan-deprecated-v2.md"
-EXPECTED_SITES = {EXPERT_PLAN: 2, EXPERT_PLAN_V2: 1}
+EXPECTED_SITES = {EXPERT_PLAN_V2: 1}
+SLUGIFY_SCRIPT = REPO_ROOT / "scripts" / "slugify.sh"
+EXPECTED_SLUGIFY_SITES = {EXPERT_PLAN: 2}
 
 USR_BIN_SED = Path("/usr/bin/sed")
 
@@ -83,13 +86,27 @@ def sed_path_env() -> Tuple[dict, Optional[str]]:
 
 def extract_slug_sites(path: Path) -> list:
     """
-    Return [(line_number, slug_line, following)] for each SLUG=$(printf line in path.
-    Does not filter by fallback line; all SLUG= lines are returned.
+    Return [(line_number, slug_line, following)] for each inline-pipeline SLUG=$( line in path.
+    An inline site contains both SLUG=$( and tr '[:upper:]' in the same line.
+    Does not filter by fallback line; all inline SLUG= lines are returned.
     """
     lines = path.read_text().splitlines()
     sites = []
     for index, line in enumerate(lines):
-        if line.startswith(SLUG_PREFIX):
+        if line.startswith(SLUG_PREFIX) and "tr '[:upper:]'" in line:
+            following = lines[index + 1] if index + 1 < len(lines) else ""
+            sites.append((index + 1, line, following))
+    return sites
+
+
+def extract_slugify_sites(path: Path) -> list:
+    """
+    Return [(line_number, slug_line, following)] for each SLUG=$( line invoking bash ~/.claude/scripts/slugify.sh in path.
+    """
+    lines = path.read_text().splitlines()
+    sites = []
+    for index, line in enumerate(lines):
+        if 'SLUG=$(' in line and 'bash ~/.claude/scripts/slugify.sh' in line:
             following = lines[index + 1] if index + 1 < len(lines) else ""
             sites.append((index + 1, line, following))
     return sites
@@ -97,19 +114,45 @@ def extract_slug_sites(path: Path) -> list:
 
 def extract_slug_sites_edge_cases() -> list:
     """
-    Return [(doc relative path, SLUG line)] for every SLUG line followed by the fallback line.
+    Return [(doc relative path, SLUG line)] for every inline SLUG line in EXPECTED_SITES.
     For each doc in EXPECTED_SITES, includes an entry with None if no SLUG line is found.
     """
     sites = []
     for doc in EXPECTED_SITES.keys():
         doc_sites = []
+        lines = doc.read_text().splitlines()
         for line_no, slug_line, following in extract_slug_sites(doc):
-            if following == FALLBACK_LINE:
+            # Check if fallback line exists within 5 lines after this SLUG site
+            has_fallback = False
+            for i in range(line_no, min(line_no + 5, len(lines))):
+                if FALLBACK_LINE in lines[i]:
+                    has_fallback = True
+                    break
+            if has_fallback:
                 sites.append((doc.relative_to(REPO_ROOT), slug_line))
                 doc_sites.append((doc.relative_to(REPO_ROOT), slug_line))
         if not doc_sites:
             sites.append((doc.relative_to(REPO_ROOT), None))
     return sites
+
+
+def run_slugify(title: str, env: dict) -> Tuple[int, str, str]:
+    """Run the script with title on stdin. Returns (returncode, stdout, stderr)."""
+    if not SLUGIFY_SCRIPT.exists():
+        return 127, "", f"slugify.sh not found at {SLUGIFY_SCRIPT}"
+
+    # Do not force LC_ALL so the script's internal handling is tested
+    run_env = dict(os.environ)
+    if env:
+        run_env.update(env)
+    result = subprocess.run(
+        ["bash", str(SLUGIFY_SCRIPT)],
+        input=title.encode(),
+        capture_output=True,
+        cwd=tempfile.gettempdir(),
+        env=run_env,
+    )
+    return result.returncode, result.stdout.decode(), result.stderr.decode()
 
 
 def run_slug(site_line: str, title: str, env: dict) -> Tuple[int, str, str]:
@@ -140,6 +183,29 @@ def run_pipeline(slug_line: str, fallback_line: str, title: str, env: dict) -> T
         text=True,
     )
     return result.returncode, result.stdout, result.stderr
+
+
+def extract_step1_slug_block(doc_text):
+    """
+    Extract the Step 1 slug block from the doc.
+    Starts at the TITLE_FILE= line and ends at the fallback line.
+    Returns the extracted text or None if not found.
+    """
+    lines = doc_text.splitlines()
+    start_idx = None
+    end_idx = None
+
+    for i, line in enumerate(lines):
+        if 'TITLE_FILE=' in line and 'ticket-title.txt' in line:
+            start_idx = i
+        if start_idx is not None and '[ -n "$SLUG" ] || SLUG="plan"' in line:
+            end_idx = i
+            break
+
+    if start_idx is not None and end_idx is not None:
+        return "\n".join(lines[start_idx:end_idx + 1])
+
+    return None
 
 
 def extract_flag_loop(text: str) -> Optional[str]:
