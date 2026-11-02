@@ -3031,8 +3031,8 @@ def validate_split_basis_fields(receipt: str, decision: Optional[str]) -> Option
         # Reject 'none' on OK receipt
         if split_basis_val == "none":
             return f"OK receipt has {SPLIT_BASIS_FIELD}: none (must be parallel, sequential, or single)"
-        # Basis must be valid
-        if split_basis_val not in SPLIT_BASIS_VALUES:
+        # Basis must be valid (single(<reason>) is checked in detail below)
+        if split_basis_val not in SPLIT_BASIS_VALUES and not (split_basis_val or "").startswith("single("):
             return f"invalid {SPLIT_BASIS_FIELD}: {split_basis_val!r}"
 
     # If FAILED receipt, check field presence rules
@@ -3045,8 +3045,8 @@ def validate_split_basis_fields(receipt: str, decision: Optional[str]) -> Option
             return f"FAILED receipt has {fields_present} of 3 split-basis fields (must have all 3 or none)"
 
         # All three present: validate their values
-        # Basis value must be valid
-        if split_basis_val not in SPLIT_BASIS_VALUES:
+        # Basis value must be valid (single(<reason>) is checked in detail below)
+        if split_basis_val not in SPLIT_BASIS_VALUES and not (split_basis_val or "").startswith("single("):
             return f"invalid {SPLIT_BASIS_FIELD}: {split_basis_val!r}"
 
     # Validate split_basis_val if present (both OK and FAILED cases with values)

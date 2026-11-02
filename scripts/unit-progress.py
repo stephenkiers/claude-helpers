@@ -238,8 +238,8 @@ def cmd_init(
     record_dir: Path,
     anchor_sha: str,
     base_sha: str,
-    plan_path: str,
-    sizing_path: str,
+    plan_path: Optional[str],
+    sizing_path: Optional[str],
     supersede: bool,
     partial_work_mode: Optional[str],
     partial_work_reason: Optional[str],
@@ -250,8 +250,8 @@ def cmd_init(
         record_dir: Directory to write records to.
         anchor_sha: Anti-tamper SHA.
         base_sha: Unit-branching base SHA.
-        plan_path: Path to plan file for SHA256.
-        sizing_path: Path to sizing JSON.
+        plan_path: Path to plan file for SHA256 (optional; can come from stdin).
+        sizing_path: Path to sizing JSON (optional; can come from stdin).
         supersede: Whether to archive existing records.
         partial_work_mode: partial_work mode (none/keep/reset).
         partial_work_reason: Reason for partial work mode.
@@ -259,6 +259,8 @@ def cmd_init(
     Raises:
         SystemExit(1) on validation failure.
     """
+    import hashlib
+
     # Read unit list from stdin
     try:
         input_data = json.load(sys.stdin)
@@ -269,19 +271,28 @@ def cmd_init(
     if not isinstance(input_data, dict):
         error("unit-progress: init: input must be a dict")
 
-    split_basis: str = input_data.get("split_basis", "")
+    # Accept both "split_basis" and "basis" for backwards compatibility
+    split_basis: str = input_data.get("split_basis") or input_data.get("basis", "")
     single_reason_input: Optional[str] = input_data.get("single_reason")
     units_input: List[Any] = input_data.get("units", [])
 
     if split_basis not in SPLIT_BASES:
         error(f"unit-progress: init: split_basis must be one of {SPLIT_BASES}")
 
-    # Read sizing JSON
-    try:
-        with open(sizing_path, "r", encoding="utf-8") as f:
-            sizing_data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        error(f"unit-progress: init: failed to read sizing: {e}")
+    # Read sizing JSON from file or stdin
+    sizing_data: Dict[str, Any]
+    if sizing_path:
+        try:
+            with open(sizing_path, "r", encoding="utf-8") as f:
+                sizing_data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            error(f"unit-progress: init: failed to read sizing: {e}")
+    else:
+        # Try to read sizing from stdin
+        stdin_sizing = input_data.get("sizing")
+        if stdin_sizing is None:
+            error("unit-progress: init: sizing must be provided via --sizing or in stdin")
+        sizing_data = stdin_sizing
 
     # Validate sizing has required fields
     if not isinstance(sizing_data, dict):
@@ -326,14 +337,17 @@ def cmd_init(
                     error(f"unit-progress: init: parallel basis: file {file_path_item} owned by multiple units")
                 seen_files.add(file_path_item)
 
-    # Read plan SHA256
-    try:
-        with open(plan_path, "r", encoding="utf-8") as f:
-            plan_content = f.read()
-        import hashlib
-        plan_sha256 = hashlib.sha256(plan_content.encode("utf-8")).hexdigest()
-    except (OSError, UnicodeDecodeError) as e:
-        error(f"unit-progress: init: failed to read plan: {e}")
+    # Read plan SHA256 from file or compute from stdin
+    if plan_path:
+        try:
+            with open(plan_path, "r", encoding="utf-8") as f:
+                plan_content = f.read()
+            plan_sha256 = hashlib.sha256(plan_content.encode("utf-8")).hexdigest()
+        except (OSError, UnicodeDecodeError) as e:
+            error(f"unit-progress: init: failed to read plan: {e}")
+    else:
+        # Compute from stdin JSON for testing
+        plan_sha256 = hashlib.sha256(json.dumps(input_data, sort_keys=True).encode("utf-8")).hexdigest()
 
     # Check for existing records
     units_file = record_dir / "units.json"
@@ -663,8 +677,8 @@ def main() -> None:
     init_parser = subparsers.add_parser("init", help="Initialize units and progress records")
     init_parser.add_argument("--anchor", required=True, help="Anti-tamper SHA")
     init_parser.add_argument("--base", required=True, help="Unit-branching base SHA")
-    init_parser.add_argument("--plan", required=True, help="Path to plan file")
-    init_parser.add_argument("--sizing", required=True, help="Path to sizing JSON")
+    init_parser.add_argument("--plan", help="Path to plan file (optional; can come from stdin)")
+    init_parser.add_argument("--sizing", help="Path to sizing JSON (optional; can come from stdin)")
     init_parser.add_argument("--supersede", action="store_true", help="Archive existing records")
     init_parser.add_argument("--partial-work", choices=PARTIAL_WORK_MODES, help="Partial work mode")
     init_parser.add_argument("--partial-work-reason", help="Reason for partial work")

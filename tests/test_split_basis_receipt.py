@@ -19,7 +19,7 @@ Tests verify:
 Run with: python3 tests/test_split_basis_receipt.py
 """
 
-import json
+import importlib.util as _ilu
 import os
 import subprocess
 import sys
@@ -30,6 +30,19 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
+
+_spec = _ilu.spec_from_file_location("flow_verify_receipt", str(VERIFIER))
+assert _spec is not None and _spec.loader is not None
+_fvr = _ilu.module_from_spec(_spec)
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+_spec.loader.exec_module(_fvr)
+
+
+def split_error(receipt_path: str):
+    """Run only the split-basis validation (the CLI exits early on FAILED receipts,
+    printing the Reason, so the field rules for FAILED are checked directly)."""
+    text = Path(receipt_path).read_text()
+    return _fvr.validate_split_basis_fields(text, _fvr.parse_receipt_field(text, "Decision"))
 
 
 def create_git_repo(repo_path: str) -> None:
@@ -85,6 +98,7 @@ def main() -> None:
 
         receipt_path = f"{tmp}/receipt1.md"
         Path(receipt_path).write_text(
+            "ROUND 1\n"
             "CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\n"
             "CHECK_SHA: " + head_sha + "\n"
             "SPLIT_BASIS: parallel\nMIN_UNITS: 2\nPRIOR_SPLIT_BASIS: none\nUNITS: 2\n"
@@ -102,8 +116,9 @@ def main() -> None:
         print("\n[Test 2] OK receipt with sequential basis and valid UNITS passes")
         receipt_path = f"{tmp}/receipt2.md"
         Path(receipt_path).write_text(
+            "ROUND 1\n"
             "CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\n"
-            "CHECK_SHA: " + base_sha + "\n"
+            "CHECK_SHA: " + head_sha + "\n"
             "SPLIT_BASIS: sequential\nMIN_UNITS: 3\nPRIOR_SPLIT_BASIS: parallel\nUNITS: 3\n"
             "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->"
         )
@@ -113,8 +128,9 @@ def main() -> None:
         print("\n[Test 3] OK receipt with single basis passes")
         receipt_path = f"{tmp}/receipt3.md"
         Path(receipt_path).write_text(
+            "ROUND 1\n"
             "CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\n"
-            "CHECK_SHA: " + base_sha + "\n"
+            "CHECK_SHA: " + head_sha + "\n"
             "SPLIT_BASIS: single(coupled work)\nMIN_UNITS: unknown\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\n"
             "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->"
         )
@@ -124,8 +140,9 @@ def main() -> None:
         print("\n[Test 4] OK receipt with SPLIT_BASIS: none is rejected")
         receipt_path = f"{tmp}/receipt4.md"
         Path(receipt_path).write_text(
+            "ROUND 1\n"
             "CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\n"
-            "CHECK_SHA: " + base_sha + "\n"
+            "CHECK_SHA: " + head_sha + "\n"
             "SPLIT_BASIS: none\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\n"
             "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->"
         )
@@ -135,12 +152,14 @@ def main() -> None:
         print("\n[Test 5] OK receipt missing split_basis fields is rejected")
         receipt_path = f"{tmp}/receipt5.md"
         Path(receipt_path).write_text(
+            "ROUND 1\n"
             "CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\n"
-            "CHECK_SHA: " + base_sha + "\n"
+            "CHECK_SHA: " + head_sha + "\n"
             "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->"
         )
-        code, _, err = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp, repo=repo_path, branch="HEAD", base=base_sha)
-        h.test_result("OK missing split fields rejected", code != 0 and ("missing" in err or "split" in err.lower()), err)
+        code, out, err = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp, repo=repo_path, branch="HEAD", base=base_sha)
+        # The verifier prints its rejection reason on stdout.
+        h.test_result("OK missing split fields rejected", code != 0 and ("missing" in out or "split" in out.lower()), out or err)
 
         print("\n[Test 6] FAILED receipt with SPLIT_BASIS: none (pre-split) passes")
         receipt_path = f"{tmp}/receipt6.md"
@@ -150,8 +169,8 @@ def main() -> None:
             "IMPLEMENTER_MODEL: haiku\nUNITS: 1\nTURNS_USED: unknown\nMAX_TURNS: 40\nTURNS_EXHAUSTED: unknown\n"
             "<!-- step-end -->"
         )
-        code, _, _ = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp)
-        h.test_result("FAILED with none basis passes", code == 0, f"exit {code}")
+        err = split_error(receipt_path)
+        h.test_result("FAILED with none basis passes", err is None, str(err))
 
         print("\n[Test 7] FAILED receipt with real basis and UNITS passes")
         receipt_path = f"{tmp}/receipt7.md"
@@ -161,8 +180,8 @@ def main() -> None:
             "IMPLEMENTER_MODEL: sonnet\nUNITS: 2\nTURNS_USED: unknown\nMAX_TURNS: 40\nTURNS_EXHAUSTED: unknown\n"
             "<!-- step-end -->"
         )
-        code, _, _ = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp)
-        h.test_result("FAILED with real basis passes", code == 0, f"exit {code}")
+        err = split_error(receipt_path)
+        h.test_result("FAILED with real basis passes", err is None, str(err))
 
         print("\n[Test 8] FAILED receipt without split fields (old writer) passes (lenient)")
         receipt_path = f"{tmp}/receipt8.md"
@@ -171,8 +190,8 @@ def main() -> None:
             "FAILURE_CLASS: other\nIMPLEMENTER_MODEL: haiku\nUNITS: 1\nTURNS_USED: unknown\n"
             "<!-- step-end -->"
         )
-        code, _, _ = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp)
-        h.test_result("FAILED without split fields passes", code == 0, f"exit {code}")
+        err = split_error(receipt_path)
+        h.test_result("FAILED without split fields passes", err is None, str(err))
 
         print("\n[Test 9] sequential with UNITS: 1 is rejected")
         receipt_path = f"{tmp}/receipt9.md"
@@ -182,8 +201,8 @@ def main() -> None:
             "IMPLEMENTER_MODEL: haiku\nUNITS: 1\nTURNS_USED: unknown\n"
             "<!-- step-end -->"
         )
-        code, _, err = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp)
-        h.test_result("sequential with UNITS: 1 rejected", code != 0, f"exit {code}")
+        err = split_error(receipt_path)
+        h.test_result("sequential with UNITS: 1 rejected", err is not None, str(err))
 
         print("\n[Test 10] single with MIN_UNITS: unknown and reason passes")
         receipt_path = f"{tmp}/receipt10.md"
@@ -193,8 +212,8 @@ def main() -> None:
             "IMPLEMENTER_MODEL: haiku\nUNITS: 1\nTURNS_USED: unknown\n"
             "<!-- step-end -->"
         )
-        code, _, _ = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp)
-        h.test_result("single with unknown and reason passes", code == 0, f"exit {code}")
+        err = split_error(receipt_path)
+        h.test_result("single with unknown and reason passes", err is None, str(err))
 
         print("\n[Test 11] single with MIN_UNITS: 2 (known, >1) is rejected")
         receipt_path = f"{tmp}/receipt11.md"
@@ -204,8 +223,8 @@ def main() -> None:
             "IMPLEMENTER_MODEL: haiku\nUNITS: 1\nTURNS_USED: unknown\n"
             "<!-- step-end -->"
         )
-        code, _, err = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp)
-        h.test_result("single with MIN_UNITS: 2 rejected", code != 0, f"exit {code}")
+        err = split_error(receipt_path)
+        h.test_result("single with MIN_UNITS: 2 rejected", err is not None, str(err))
 
         print("\n[Test 12] UNITS < MIN_UNITS is rejected")
         receipt_path = f"{tmp}/receipt12.md"
@@ -215,15 +234,16 @@ def main() -> None:
             "IMPLEMENTER_MODEL: haiku\nUNITS: 2\nTURNS_USED: unknown\n"
             "<!-- step-end -->"
         )
-        code, _, err = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp)
-        h.test_result("UNITS < MIN_UNITS rejected", code != 0, f"exit {code}")
+        err = split_error(receipt_path)
+        h.test_result("UNITS < MIN_UNITS rejected", err is not None, str(err))
 
         print("\n[Test 13] Reason parsing handles ) in the text (takes last ) on the line)")
         receipt_path = f"{tmp}/receipt13.md"
         Path(receipt_path).write_text(
+            "ROUND 1\n"
             "Decision: OK\n"
             "CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\n"
-            "CHECK_SHA: " + base_sha + "\n"
+            "CHECK_SHA: " + head_sha + "\n"
             "SPLIT_BASIS: single(reason with ) paren)\nMIN_UNITS: unknown\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\n"
             "OUTSTANDING: none\n<!-- step-end -->"
         )
@@ -238,14 +258,15 @@ def main() -> None:
             "IMPLEMENTER_MODEL: haiku\nUNITS: 1\nTURNS_USED: unknown\n"
             "<!-- step-end -->"
         )
-        code, _, err = run_verifier("implement", receipt_path, "2026-10-13T00:00:00Z", tmp)
-        h.test_result("single with empty reason rejected", code != 0, f"exit {code}")
+        err = split_error(receipt_path)
+        h.test_result("single with empty reason rejected", err is not None, str(err))
 
         print("\n[Test 15] PRIOR_SPLIT_BASIS: sequential is accepted on retry")
         receipt_path = f"{tmp}/receipt15.md"
         Path(receipt_path).write_text(
+            "ROUND 1\n"
             "CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\n"
-            "CHECK_SHA: " + base_sha + "\n"
+            "CHECK_SHA: " + head_sha + "\n"
             "SPLIT_BASIS: parallel\nMIN_UNITS: 2\nPRIOR_SPLIT_BASIS: sequential\nUNITS: 3\n"
             "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->"
         )

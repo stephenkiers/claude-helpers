@@ -14,7 +14,6 @@ Tests verify:
 Run with: python3 tests/test_unit_sizing.py
 """
 
-import importlib.util
 import json
 import subprocess
 import sys
@@ -47,7 +46,7 @@ def create_plan(step_count: int, files_per_step: int) -> str:
     lines = ["# Plan\n"]
     for i in range(1, step_count + 1):
         lines.append(f"\n### Step {i}\n")
-        lines.append(f"**Files:** " + ",".join([f"file{i}_{j}.py" for j in range(files_per_step)]))
+        lines.append("**Files:** " + ",".join([f"file{i}_{j}.py" for j in range(files_per_step)]))
     return "".join(lines)
 
 

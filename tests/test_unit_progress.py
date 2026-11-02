@@ -63,7 +63,7 @@ def create_unit_list(basis: str, count: int) -> list:
         units.append({
             "unit_id": f"u{i+1}",
             "sub_task": f"Unit {i+1}",
-            "owned_files": [f"file{i}.py"] if basis != "parallel_overlap" else [f"file_shared.py"]
+            "owned_files": [f"file{i}.py"] if basis != "parallel_overlap" else ["file_shared.py"]
         })
     return units
 
@@ -138,7 +138,7 @@ def main() -> None:
         sizing = create_minimal_sizing_result()
         sizing["min_units"] = "unknown"
         flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "single", "single_reason": "coupled"})
-        code, out, err = run_progress_cmd(["init", "--anchor", sha1, "--base", sha1], stdin_data=flow_input, scratch=str(scratch))
+        code, out, err = run_progress_cmd(["init", "--supersede", "--anchor", sha1, "--base", sha1], stdin_data=flow_input, scratch=str(scratch))
         h.test_result("init accepts single with unknown and reason", code == 0, f"exit {code}: {err}")
 
         print("\n[Test 8] mark rejects invalid transitions")
@@ -146,7 +146,7 @@ def main() -> None:
         units = create_unit_list("parallel", 2)
         sizing = create_minimal_sizing_result()
         flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "parallel", "single_reason": None})
-        code, _, _ = run_progress_cmd(["init", "--anchor", sha1, "--base", sha1], stdin_data=flow_input, scratch=str(scratch))
+        code, _, _ = run_progress_cmd(["init", "--supersede", "--anchor", sha1, "--base", sha1], stdin_data=flow_input, scratch=str(scratch))
         h.test_result("init succeeds", code == 0)
 
         # Try to mark without SHA

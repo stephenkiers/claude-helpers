@@ -32,15 +32,21 @@ from _git_fixture import GitFixture
 
 PROGRESS_SCRIPT = REPO_ROOT / "scripts" / "unit-progress.py"
 
+# A real plan file: init hashes it and check re-hashes it, so both must see the same bytes.
+_PLAN_FILE = Path(tempfile.mkdtemp(prefix="unit-resume-plan-")) / "plan.md"
+_PLAN_FILE.write_text("# plan\n", encoding="utf-8")
 
-def run_progress_cmd(cmd_args: list, stdin_data: str = None, flow_dir: str = None) -> tuple:
+
+def run_progress_cmd(cmd_args: list, stdin_data: str = None, flow_dir: str = None, cwd: str = None) -> tuple:
     """Run unit-progress with given args. Returns (exit_code, stdout, stderr)."""
     base_cmd = [sys.executable, str(PROGRESS_SCRIPT), "--step", "implement"]
     if flow_dir:
-        base_cmd.extend(["--flow-dir", flow_dir])
+        base_cmd.extend(["--scratch", flow_dir])
 
+    if cmd_args and cmd_args[0] == "init" and "--plan" not in cmd_args:
+        cmd_args = cmd_args + ["--plan", str(_PLAN_FILE)]
     cmd = base_cmd + cmd_args
-    result = subprocess.run(cmd, capture_output=True, text=True, input=stdin_data)
+    result = subprocess.run(cmd, capture_output=True, text=True, input=stdin_data, cwd=cwd)
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
@@ -90,7 +96,7 @@ def main() -> None:
         h.test_result("pending has u2, u3 before retry", code == 0 and "u2" in out and "u3" in out, out)
 
         # Simulate retry: check with same anchor
-        code, out, err = run_progress_cmd(["check", "--plan", "/tmp/dummy.md", "--anchor", base_sha, "--head", base_sha], flow_dir=str(flow_dir))
+        code, out, err = run_progress_cmd(["check", "--plan", str(_PLAN_FILE), "--anchor", base_sha, "--head", base_sha], flow_dir=str(flow_dir), cwd=str(git.repo_root))
         h.test_result("check passes on retry", code == 0, err)
 
         # Pending still has u2, u3
@@ -224,7 +230,7 @@ def main() -> None:
         h.test_result("init single", code == 0)
 
         # check should tolerate uncommitted changes (per plan)
-        code, _, _ = run_progress_cmd(["check", "--plan", "/tmp/dummy.md", "--anchor", base_sha7, "--head", base_sha7], flow_dir=str(flow_dir7))
+        code, _, _ = run_progress_cmd(["check", "--plan", str(_PLAN_FILE), "--anchor", base_sha7, "--head", base_sha7], flow_dir=str(flow_dir7), cwd=str(git7.repo_root))
         h.test_result("check tolerates dirty tree", code == 0)
 
         print("\n[Scenario 8] Coverage retry: scoped record chain")
@@ -287,7 +293,7 @@ def main() -> None:
 
         # Try check with different anchor
         wrong_sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-        code, _, err = run_progress_cmd(["check", "--plan", "/tmp/dummy.md", "--anchor", wrong_sha, "--head", base_sha10], flow_dir=str(flow_dir10))
+        code, _, err = run_progress_cmd(["check", "--plan", str(_PLAN_FILE), "--anchor", wrong_sha, "--head", base_sha10], flow_dir=str(flow_dir10), cwd=str(git10.repo_root))
         h.test_result("check fails on anchor mismatch", code != 0, err)
 
     h.summarize_and_exit()

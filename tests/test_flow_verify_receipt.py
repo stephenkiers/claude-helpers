@@ -175,7 +175,7 @@ def check_lines(head_sha: str) -> str:
 
 def split_basis_lines() -> str:
     """The split-basis fields an OK implement/fix receipt must carry."""
-    return f"SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\n"
+    return "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\n"
 
 
 def run_verifier_argv(args: list, env_home: str) -> tuple:

@@ -23,7 +23,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, NamedTuple, Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple, Union
 
 ISO_UTC_Z_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 STEP_RE = re.compile(r"[a-z][a-z-]*")
@@ -186,7 +186,7 @@ class SplitAttemptRecord(NamedTuple):
     units: int
     partial_work: str
     decision: str
-    failure_class: str
+    failure_class: Optional[str]
     turns_exhausted: bool
     committed_units: List[str]
     pending_units: List[str]
@@ -203,7 +203,7 @@ class ParseSplitAttemptResult(NamedTuple):
     malformed_lines: List[str]
 
 
-def parse_split_attempt_lines(log_path: Path) -> ParseSplitAttemptResult:
+def parse_split_attempt_lines(log_path: Union[str, Path]) -> ParseSplitAttemptResult:
     """Parse SPLIT_ATTEMPT lines from a log.md file.
 
     Line format: `<ISO-8601 UTC Z> <step> SPLIT_ATTEMPT {json}`
@@ -216,6 +216,10 @@ def parse_split_attempt_lines(log_path: Path) -> ParseSplitAttemptResult:
     """
     records: List[SplitAttemptRecord] = []
     malformed_lines: List[str] = []
+
+    # Convert string to Path if needed
+    if isinstance(log_path, str):
+        log_path = Path(log_path)
 
     if not log_path.exists():
         return ParseSplitAttemptResult(records, malformed_lines)
@@ -266,7 +270,7 @@ def parse_split_attempt_lines(log_path: Path) -> ParseSplitAttemptResult:
                 units=int(data.get("units", 0)),
                 partial_work=str(data.get("partial_work", "")),
                 decision=str(data.get("decision", "")),
-                failure_class=str(data.get("failure_class", "")),
+                failure_class=(None if data.get("failure_class") is None else str(data["failure_class"])),
                 turns_exhausted=bool(data.get("turns_exhausted", False)),
                 committed_units=list(data.get("committed_units", [])),
                 pending_units=list(data.get("pending_units", [])),

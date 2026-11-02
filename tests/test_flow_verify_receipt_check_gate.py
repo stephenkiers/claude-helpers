@@ -74,7 +74,7 @@ def passing_lines(head_sha: str, command: str = "just check", source: str = "rep
 
 
 def receipt_text(check_block: str) -> str:
-    return "ROUND 1\n" + check_block + "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->"
+    return "ROUND 1\n" + check_block + "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->"
 
 
 def run_verify(receipt_path: str, repo: str, base_sha: str, home: str, main_worktree=None) -> tuple:
@@ -112,6 +112,7 @@ if __name__ == "__main__":
         write_cache(repo)
         # #293: the receipt claims a build/type-check pass in prose and carries no CHECK lines.
         receipt = write_receipt(home, "ROUND 1\nBuild/type-check: pass (ruff, doc tests)\n"
+                                      "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\n"
                                       "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
         exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
         test_result(

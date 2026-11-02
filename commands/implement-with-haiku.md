@@ -707,7 +707,7 @@ if [[ $CHECK_EXIT -eq 0 ]]; then
   else
     # Re-run pending units on persisted basis; use saved units.json
     PERSISTED_UNITS=$(cat "<SCRATCH_PATH>/units/implement/units.json" 2>/dev/null)
-    SPLIT_BASIS=$(echo "$PERSISTED_UNITS" | jq -r '.split_basis // "unknown"' 2>/dev/null || echo "unknown")
+    SPLIT_BASIS=$(printf '%s' "$PERSISTED_UNITS" | jq -r '.split_basis // "unknown"' 2>/dev/null || echo "unknown")
     # Continue to Steps 4a–4d with the persisted basis and PENDING_UNITS
   fi
 elif [[ $CHECK_EXIT -eq 1 ]]; then
@@ -728,34 +728,45 @@ On success with nothing pending, skip Steps 4a–4d and proceed directly to the 
 
 **Rules:**
 - Emit at least `MIN_UNITS` units when known; when `MIN_UNITS` is unknown, emit at least 1 unit and write the reason in the split decision.
-- **Independent seams → `parallel`**: independent work with no shared mutable state; exclusive file ownership (each shared file belongs to exactly one unit; each unit's forbidden files are all other units' owned files).
-- **Coupled work → `sequential`**: ordered so each prefix builds; explicitly different ownership (a later unit may modify files owned by earlier, already-committed units, so owned_files may overlap across sequential units and the record allows it; each sequential unit's forbidden files are files owned ONLY by later units).
-- **`single(<reason>)` only when `MIN_UNITS` is 1**, or when `MIN_UNITS` is unknown and the plan is genuinely too coupled to split safely — always write the reason.
+- **Independent seams → `parallel`**: independent work with no shared mutable state; exclusive file ownership (each shared file belongs to exactly one unit; each unit's forbidden files are all other units' owned files). Receipt carries `SPLIT_BASIS: parallel`.
+- **Coupled work → `sequential`**: ordered so each prefix builds; explicitly different ownership (a later unit may modify files owned by earlier, already-committed units, so owned_files may overlap across sequential units and the record allows it; each sequential unit's forbidden files are files owned ONLY by later units). Receipt carries `SPLIT_BASIS: sequential`.
+- **`single(<reason>)` only when `MIN_UNITS` is 1**, or when `MIN_UNITS` is unknown and the plan is genuinely too coupled to split safely — always write the reason. Receipt carries `SPLIT_BASIS: single(<reason>)`.
 - Extract shared contracts/interfaces (types, enums, constants) into the sub-task text given to *all* units.
 - When a work unit's sub-task text includes a `[decided: ruling recorded]` or `[accepted: doing-it]` directive, carry that tag through verbatim into the sub-task text.
 - Every **shared file** (barrel/index exports, `package.json`, route registries, migration registries) must be assigned to **exactly one** unit — never left unassigned.
 
-**3. Call `unit-progress.py init`.** Once the split is decided (basis, units, owned-files), call:
+**3. Call `unit-progress.py init`.** Once the split is decided (basis, units, owned-files):
+
+Write the unit-list JSON to `<SCRATCH_PATH>/split-input.json` (with `Write`), then run `init` from that file.
+The refusal loop is bounded: `init` refuses with exit 1 and a one-line reason on stderr when the split is invalid
+(wrong unit count for `MIN_UNITS`, overlapping owned files on a parallel split, a bad `single` reason). Each
+refusal is a signal to repair the split, not to bypass `init`:
 
 ```bash
-printf '%s\n' "$(cat <<'EOF'
-{"split_basis":"<parallel|sequential|single>","single_reason":"<reason if single>","units":[...]}
-EOF
-)" | python3 "$HOME/.claude/scripts/unit-progress.py" --step implement --scratch "<SCRATCH_PATH>" init --anchor "$START_SHA" --base "$START_SHA" --plan "<PLAN_PATH>" --sizing "<SCRATCH_PATH>/sizing.json"
-INIT_EXIT=$?
-if [[ $INIT_EXIT -eq 0 ]]; then
-  # Success: units.json persisted; continue
-  :
-elif [[ $INIT_EXIT -eq 1 ]]; then
-  # Refusal: one-line reason on stderr. Try up to 2 more times (3 total calls); if all refuse, stop.
-  # (Implement retry logic here, capped at 3 calls total)
-  # On final refusal, write FAILED receipt with Reason "unit-split-refused: <init's reason>" and stop.
-  :
-else
-  # Unknown error: stop.
-  exit 1
-fi
+INIT_TRIES=0
+INIT_REASON=""
+while :; do
+  INIT_TRIES=$((INIT_TRIES + 1))
+  INIT_REASON=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement --scratch "<SCRATCH_PATH>" \
+    init --anchor "$START_SHA" --base "$START_SHA" --plan "<PLAN_PATH>" --sizing "<SCRATCH_PATH>/sizing.json" \
+    < "<SCRATCH_PATH>/split-input.json" 2>&1 >/dev/null)
+  INIT_EXIT=$?
+  [[ $INIT_EXIT -eq 0 ]] && break
+  # exit 1 is a refusal (repair split-input.json from INIT_REASON and retry); anything else is a hard error.
+  if [[ $INIT_EXIT -ne 1 || $INIT_TRIES -ge 3 ]]; then
+    printf '%s\n' "unit-split-refused: $INIT_REASON" >&2
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class other 2>/dev/null || true
+    break
+  fi
+  # Repair <SCRATCH_PATH>/split-input.json per INIT_REASON (orchestrator edits via Write), then loop.
+  break  # the orchestrator re-enters this block after repairing; INIT_TRIES is carried forward as a literal
+done
 ```
+
+The orchestrator carries `INIT_TRIES` forward as a literal across repairs: at most 3 `init` calls in total. After the
+third refusal, or on any exit other than 0 or 1, write the FAILED receipt (when `FLOW_DIR` is set) with
+`Reason: unit-split-refused: <the last refusal line>`, `FAILURE_CLASS: other`, `SPLIT_BASIS: none`, the known
+`MIN_UNITS` (or `unknown`), `PRIOR_SPLIT_BASIS: none` and `UNITS: <n>`, then stop.
 
 **4. Handle `--split-finer`.** When `--split-finer` is set (requires `--partial-base`):
 - Force `MIN_UNITS = max(sizing min_units, 2)` and a non-single basis (parallel or sequential).
@@ -777,7 +788,7 @@ fi
 ```bash
 > "<SCRATCH_PATH>/planned-paths.txt"
 # Get owned files from the persisted units.json
-jq -r '.units[] | .["owned-files"][]' "<SCRATCH_PATH>/units/implement/units.json" 2>/dev/null >> "<SCRATCH_PATH>/planned-paths.txt"
+jq -r '.units[] | .owned_files[]' "<SCRATCH_PATH>/units/implement/units.json" 2>/dev/null >> "<SCRATCH_PATH>/planned-paths.txt"
 # Add files changed in the ticket branch since START_SHA
 git diff --name-only "$START_SHA" >> "<SCRATCH_PATH>/planned-paths.txt"
 # Sort and deduplicate
@@ -1010,8 +1021,8 @@ When a drifted agent's work is in the primary checkout (not the unit's own workt
    ```bash
    python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 1 \
      --label "(overlap, unit <unit-id>)" --reason "primary-checkout-drift: overlap <unit-id>" \
-     --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "none" \
      --overlap-files "<comma-separated overlapping files>" \
+     --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "none" \
      ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
      --units "<n>" --max-turns "<n>"
    exit $?
@@ -1034,9 +1045,9 @@ it emits the `cwd_drift` telemetry and writes `FAILURE_CLASS: cwd-drift`, the pa
 ```bash
 python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 1 \
   --label "(unit <unit-id>)" --reason "primary-checkout-drift: unit <unit-id>" \
-  --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "none" \
   --patch-path "<SCRATCH_PATH>/unit-${UNIT_ID}-drifted.patch" \
   --drifted-files "<comma-separated drifted files>" --untracked-files "<comma-separated untracked files or empty>" \
+  --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "none" \
   ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
   --units "<n>" --max-turns "<n>"
 exit $?
@@ -1113,7 +1124,7 @@ EOF
 )"
 python3 "$HOME/.claude/scripts/unit-progress.py" --step implement --scratch "<SCRATCH_PATH>" mark --unit-id "<unit-id>" --status committed --sha "$(git rev-parse HEAD)"
 ```
-Committing here — in the ticket worktree — is what lets pre-commit hooks run correctly; this is
+The `Unit-Id: <unit-id>` trailer is recorded in the commit message for human readability and is log-only; no script reads it, and the true unit record is in the persisted `units.json` file maintained by `unit-progress.py`. Committing here — in the ticket worktree — is what lets pre-commit hooks run correctly; this is
 the fix for the nested-worktree hook-resolution failures seen historically.
 
 - **Clean apply (parallel mode)** → tear down the worktree:
@@ -1122,7 +1133,7 @@ the fix for the nested-worktree hook-resolution failures seen historically.
   git worktree prune
   git branch -D "$WT_BRANCH"
   ```
-  Mark unit `merged`. Append the ledger row for this unit.
+  The unit was already recorded `committed` by the `mark` call above (the record has no `merged` status). Append the ledger row for this unit.
 
 - **Clean apply (sequential mode)** → tear down the worktree and launch the next pending unit:
   ```bash
@@ -1130,11 +1141,11 @@ the fix for the nested-worktree hook-resolution failures seen historically.
   git worktree prune
   git branch -D "$WT_BRANCH"
   ```
-  Mark unit `merged`. Get the next pending unit id; if any remain, create its worktree (branched from current ticket HEAD) and launch it (wait for completion). Once all units are terminal, proceed to the join barrier.
+  The unit is already recorded `committed`. Get the next pending unit id (`unit-progress.py ... pending`, first id listed); if any remain, create its worktree (branched from current ticket HEAD) and launch it (wait for completion). Once all units are terminal, proceed to the join barrier.
 
 - **`git apply` fails (conflict)** — same rules as a merge conflict, since that's what this is:
   - **Conflict on an owned file** → resolve it yourself using full plan knowledge (you know both
-    units' intent). Apply the resolved changes and commit. Tear down the worktree. Mark unit `merged`.
+    units' intent). Apply the resolved changes and commit, then run the same `mark --status committed --sha "$(git rev-parse HEAD)"` call. Tear down the worktree.
   - **Conflict on an unassigned/shared file** → **stop and ask the human** before resolving.
     Leave the worktree in place until resolved. In a flow (`FLOW_DIR` set) this is a hard stop,
     not a relayed question: write the FAILED receipt with Reason
@@ -1155,10 +1166,10 @@ The script fixes the Reason values and class: drift writes `Reason: primary-chec
 
 ## Step 4d: Join barrier
 
-**Do not advance to the Integration Gate until every unit is in a terminal state** (`merged`,
-`conflict-resolved`, or `failed`). Track state per `id` — never count notifications (they interleave); a notification for a unit id moves that id to returned/terminal, and the ban is on a running tally.
+**Do not advance to the Integration Gate until every unit is in a terminal state** (recorded `committed`,
+`failed`, or `skipped` in the unit record; a conflict-resolved unit is `committed` once its resolved commit lands). Track state per `id` — never count notifications (they interleave); a notification for a unit id moves that id to returned/terminal, and the ban is on a running tally.
 
-Unit outcomes map to join-barrier states: `merged` or `conflict-resolved` → `ok`; `failed` → `bad`. Units do not automatically retry; they use the existing Incomplete-report menu (Re-run / Inspect / Skip / Abort) if a unit's report or diff is incomplete, rather than the join-barrier's automatic retry mechanism.
+Unit outcomes map to join-barrier states: `committed` (including conflict-resolved) or `skipped` → `ok`; `failed` → `bad`. Units do not automatically retry; they use the existing Incomplete-report menu (Re-run / Inspect / Skip / Abort) if a unit's report or diff is incomplete, rather than the join-barrier's automatic retry mechanism.
 
 **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
@@ -1698,6 +1709,7 @@ COMPARE_EXIT=$?
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
+    --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "${PRIOR_SPLIT_BASIS:-none}" \
     --label "in Round 2" \
     ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
     --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \
@@ -1923,6 +1935,7 @@ COMPARE_EXIT=$?
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
+    --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "${PRIOR_SPLIT_BASIS:-none}" \
     --label "in Round 3 follow-up" \
     ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
     --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \
@@ -2318,6 +2331,7 @@ COMPARE_EXIT=$?
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
+    --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "${PRIOR_SPLIT_BASIS:-none}" \
     --label "(end-of-run)" \
     ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
     --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \

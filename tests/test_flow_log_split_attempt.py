@@ -68,7 +68,7 @@ Some prose with JSON that looks like {json.dumps({"key": "value"})}
 """
         log_path.write_text(log_content)
 
-        lines = flow_log.parse_split_attempt_lines(str(log_path))
+        lines = flow_log.parse_split_attempt_lines(str(log_path)).records
         h.test_result("returns 1 line", len(lines) == 1, f"got {len(lines)} lines")
         h.test_result("contains the attempt", lines[0] and attempt_data["trigger"] in str(lines[0]), str(lines[0]) if lines else None)
 
@@ -81,7 +81,7 @@ Some prose with JSON that looks like {json.dumps({"key": "value"})}
 """
         log_path.write_text(log_content)
 
-        lines = flow_log.parse_split_attempt_lines(str(log_path))
+        lines = flow_log.parse_split_attempt_lines(str(log_path)).records
         h.test_result("returns 2 lines", len(lines) == 2, f"got {len(lines)}")
 
         print("\n[Test 3] parse_split_attempt_lines ignores non-SPLIT_ATTEMPT tagged lines")
@@ -94,7 +94,7 @@ Some prose with JSON that looks like {json.dumps({"key": "value"})}
 """
         log_path.write_text(log_content)
 
-        lines = flow_log.parse_split_attempt_lines(str(log_path))
+        lines = flow_log.parse_split_attempt_lines(str(log_path)).records
         h.test_result("returns 1 line (ignores OTHER_TAG)", len(lines) == 1, f"got {len(lines)}")
 
         print("\n[Test 4] Malformed JSON in SPLIT_ATTEMPT line is handled gracefully")
@@ -105,7 +105,7 @@ Some prose with JSON that looks like {json.dumps({"key": "value"})}
         log_path.write_text(log_content)
 
         try:
-            lines = flow_log.parse_split_attempt_lines(str(log_path))
+            lines = flow_log.parse_split_attempt_lines(str(log_path)).records
             # Should either return empty or raise; either is acceptable
             h.test_result("handles malformed JSON", True, "Did not crash")
         except (json.JSONDecodeError, ValueError):
@@ -151,18 +151,18 @@ Some prose with JSON that looks like {json.dumps({"key": "value"})}
 """
         log_path.write_text(log_content)
 
-        lines = flow_log.parse_split_attempt_lines(str(log_path))
+        lines = flow_log.parse_split_attempt_lines(str(log_path)).records
         h.test_result("complex SPLIT_ATTEMPT parses", len(lines) == 1 and lines[0], str(lines[0]) if lines else None)
 
         print("\n[Test 7] Empty log returns empty list")
         log_path.write_text("")
-        lines = flow_log.parse_split_attempt_lines(str(log_path))
+        lines = flow_log.parse_split_attempt_lines(str(log_path)).records
         h.test_result("empty log returns empty list", lines == [], str(lines))
 
         print("\n[Test 8] Non-existent log path returns empty list or raises")
         nonexistent = Path(tmp) / "nonexistent.md"
         try:
-            lines = flow_log.parse_split_attempt_lines(str(nonexistent))
+            lines = flow_log.parse_split_attempt_lines(str(nonexistent)).records
             h.test_result("nonexistent log handled", True, "Did not crash")
         except FileNotFoundError:
             h.test_result("nonexistent log raises", True, "Raised as expected")
