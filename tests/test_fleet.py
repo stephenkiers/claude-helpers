@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -225,7 +226,7 @@ def main():
         h.test_result("heal_write_ahead works for different cause", result3 is True)
 
         # heal_finish updates the record
-        fl.heal_finish(t, "missing-deps", "install", "healed", "retry-recommended", "stop-abc")
+        fl.heal_finish(t, "missing-deps", "install", "healed", "retry-recommended", "0a1b2c3d4e5f6071")
         h.test_result(
             "heal_finish updates tool name",
             t["heals"]["missing-deps"]["tool"] == "install",
@@ -240,7 +241,7 @@ def main():
         )
         h.test_result(
             "heal_finish updates stop_key",
-            t["heals"]["missing-deps"]["stop_key"] == "stop-abc",
+            t["heals"]["missing-deps"]["stop_key"] == "0a1b2c3d4e5f6071",
         )
 
         # Attempted outcome (crashed heal)
@@ -251,15 +252,106 @@ def main():
             t2["heals"]["missing-deps"]["outcome"] == "attempted",
         )
 
-        # heal_note for diagnosis or probe refusal
+        # A non-dict heals value is replaced rather than crashing the write-ahead
+        t4 = {"issue": 45, "heals": "garbage"}
+        h.test_result("heal_write_ahead recovers from a non-dict heals value",
+                      fl.heal_write_ahead(t4, "missing-deps", "implement") is True
+                      and t4["heals"]["missing-deps"]["outcome"] == "attempted")
+
+        # heal_note for diagnosis or probe refusal, written through the real function
         t3 = {"issue": 44}
-        t3["heal_note"] = {
-            "stop_key": "note-xyz",
-            "at": "2026-11-02T00:00:00Z",
-            "line": "Manifest changed; needs approval.",
-        }
-        h.test_result("heal_note has stop_key", t3["heal_note"]["stop_key"] == "note-xyz")
+        fl.heal_set_note(t3, "f0e1d2c3b4a59687", "Manifest changed; needs approval.")
+        h.test_result("heal_note has stop_key", t3["heal_note"]["stop_key"] == "f0e1d2c3b4a59687")
         h.test_result("heal_note has line", "Manifest changed" in t3["heal_note"]["line"])
+        fl.heal_set_note(t3, "f0e1d2c3b4a59687", "x" * 300)
+        h.test_result("heal_note line is bounded to 160 chars", len(t3["heal_note"]["line"]) == 160)
+
+        # matching_heal: a record older than the latest run describes an earlier attempt
+        K = "0a1b2c3d4e5f6071"
+        stale = {"runs": [{"ended": "2026-11-02T10:00:00Z"}],
+                 "heals": {"missing-deps": {"stop_key": K, "at": "2026-11-02T09:00:00Z", "outcome": "healed"}},
+                 "heal_note": {"stop_key": K, "at": "2026-11-02T09:00:00Z", "line": "old"}}
+        h.test_result("matching_heal ignores a heal older than the latest run",
+                      fl.matching_heal(stale, K) == (None, None))
+        current = {"runs": [{"ended": "2026-11-02T10:00:00Z"}],
+                   "heals": {"missing-deps": {"stop_key": K, "at": "2026-11-02T11:00:00Z", "outcome": "healed"}},
+                   "heal_note": {"stop_key": K, "at": "2026-11-02T11:00:00Z", "line": "new"}}
+        h.test_result("matching_heal returns a heal newer than the latest run",
+                      fl.matching_heal(current, K)[0] is current["heals"]["missing-deps"]
+                      and fl.matching_heal(current, K)[1] is current["heal_note"])
+        h.test_result("matching_heal with no runs accepts any record for the key",
+                      fl.matching_heal({"heals": {"missing-deps": {"stop_key": K, "at": "2026-11-02T09:00:00Z"}}}, K)[0]
+                      is not None)
+        h.test_result("matching_heal with a different key matches nothing",
+                      fl.matching_heal(current, "ffffffffffffffff") == (None, None))
+
+        # Project override: an absent .claude/project.yaml means no override and no diagnosis
+        sys.path.insert(0, str(REPO_ROOT))
+        from scripts.workflow import heal as heal_mod
+        h.test_result("absent project.yaml gives an empty override with no diagnosis",
+                      heal_mod._read_project_override(Path(tmp)) == ({}, None))
+
+    # heal_child_alive: a recorded heal child is alive only while its pid and start time both still match
+    print()
+    print("### Heal child identity and resume refusal")
+    with tempfile.TemporaryDirectory() as tmp:
+        child = subprocess.Popen(["sleep", "30"])
+        try:
+            started = fl._proc_start(child.pid)
+            h.test_result("live child with matching start time counts as alive",
+                          fl.heal_child_alive({"heal_child": {"pid": child.pid, "started": started}}) is True)
+            h.test_result("live pid with a different start time (reuse) does not count",
+                          fl.heal_child_alive({"heal_child": {"pid": child.pid,
+                                                              "started": "Mon Jan  1 00:00:00 2000"}}) is False)
+            h.test_result("no heal_child recorded does not count",
+                          fl.heal_child_alive({}) is False)
+        finally:
+            child.kill()
+            child.wait()
+        h.test_result("reaped child no longer counts as alive",
+                      fl.heal_child_alive({"heal_child": {"pid": child.pid, "started": started}}) is False)
+
+        # run() refuses to resume while the recorded heal child lives, and launches nothing
+        fleet_dir = Path(tmp) / "fleet"
+        fleet_dir.mkdir()
+        live = subprocess.Popen(["sleep", "30"])
+        try:
+            (fleet_dir / "fleet.json").write_text(json.dumps({
+                "repo": REPO, "main_worktree": tmp, "tickets": [
+                    {"issue": 8, "heal_child": {"pid": live.pid, "started": fl._proc_start(live.pid)}}]}))
+            real_launch = fl._launch
+            launched: list = []
+            fl._launch = lambda *a, **k: launched.append(a)
+            try:
+                import io as _io
+                import contextlib as _ctx
+                buf = _io.StringIO()
+                with _ctx.redirect_stdout(buf):
+                    rc = fl.run(fleet_dir, 8, None)
+            finally:
+                fl._launch = real_launch
+            h.test_result("run refuses to resume while the heal child is alive", rc == 2,
+                          f"rc={rc}")
+            h.test_result("refusal says heal still running", "heal still running" in buf.getvalue(),
+                          f"stdout={buf.getvalue()!r}")
+            h.test_result("refusal launches no claude", launched == [])
+        finally:
+            live.kill()
+            live.wait()
+
+        # _run_cli is bounded: a grandchild holding stdout must not wedge the supervisor
+        real_grace = fl.HEAL_TERM_GRACE_SECS
+        fl.HEAL_TERM_GRACE_SECS = 0.3
+        spawned: list = []
+        try:
+            t0 = time.monotonic()
+            out = fl._run_cli(["sh", "-c", "sleep 5 & sleep 5"], Path(tmp), 0.3, on_spawn=spawned.append)
+            elapsed = time.monotonic() - t0
+        finally:
+            fl.HEAL_TERM_GRACE_SECS = real_grace
+        h.test_result("_run_cli returns None on timeout", out is None)
+        h.test_result("_run_cli timeout is bounded under 4 seconds", elapsed < 4, f"elapsed={elapsed:.2f}s")
+        h.test_result("_run_cli reports the child pid to on_spawn", len(spawned) == 1 and isinstance(spawned[0], int))
 
     h.summarize_and_exit()
 

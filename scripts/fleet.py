@@ -106,11 +106,15 @@ def ticket(data: Dict[str, Any], issue: int) -> Dict[str, Any]:
 
 
 # Closed sets for the heal record. Anything outside them is treated as failed / take-over.
+# These mirror scripts/workflow/heal.py (HEAL_STEPS = KNOWN_STEPS, HEAL_STATUSES = _STATUS_VALUES,
+# HEAL_TOOL_CAUSES = {tool.name: tool.cause for tool in TOOLS}) and are pinned by tests/test_fleet_invariants.py.
 HEAL_STEPS = ("worktree", "plan", "track", "implement", "review", "fix", "verify", "assess", "ship", "merge")
 HEAL_TOOL_CAUSES = {"install": "missing-deps"}
 HEAL_STATUSES = ("no-op", "healed", "refused", "failed")
 HEAL_RECOMMENDATIONS = ("retry-recommended", "take-over")
 HEAL_PROBE_TIMEOUT_SECS = 30
+# The run call's wall-clock budget is the probe's timeout_secs plus this margin. timeout_secs is capped at
+# HEAL_MAX_TIMEOUT_SECS, so one run is bounded by at most 900 + 60 = 960 seconds.
 HEAL_RUN_MARGIN_SECS = 60
 HEAL_TERM_GRACE_SECS = 15
 HEAL_MAX_TIMEOUT_SECS = 900  # mirrors deps.DEPS_TIMEOUT_SECS; a larger probe value is rejected
@@ -138,11 +142,13 @@ def current_stop_key(flow_dir: Optional[Path]) -> Optional[str]:
             v = json.loads(raw)
             if isinstance(v, dict) and v.get("status") == "open":
                 return hashlib.sha256(raw).hexdigest()[:16]
+        step = st.get("step")
+        # A non-string step cannot index stop_reason (dict.get on a list raises TypeError); it gets no reason.
         reasons = st.get("stop_reason")
-        reason = reasons.get(st.get("step")) if isinstance(reasons, dict) else ""
-        text = f"{st.get('step')}\n{st.get('status')}\n{reason if isinstance(reason, str) else ''}"
+        reason = reasons.get(step) if isinstance(reasons, dict) and isinstance(step, str) else ""
+        text = f"{step}\n{st.get('status')}\n{reason if isinstance(reason, str) else ''}"
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-    except (OSError, ValueError):
+    except (OSError, TypeError, ValueError):
         return None
 
 
@@ -184,19 +190,38 @@ def heal_set_note(t: Dict[str, Any], stop_key: Optional[str], line: str) -> None
     t["heal_note"] = {"stop_key": stop_key, "at": now_iso(), "line": _fixed_line(line)}
 
 
+def _last_run_ended(t: Dict[str, Any]) -> str:
+    """The latest run's end time (ISO-8601 Z, so string order is time order); '' when there are no runs."""
+    ended = [r.get("ended") for r in t.get("runs") or []
+             if isinstance(r, dict) and isinstance(r.get("ended"), str)]
+    return max(ended, default="")
+
+
 def matching_heal(t: Dict[str, Any], key: Optional[str]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """(heal entry, heal_note) whose stop_key equals the current stop's key; (None, None) otherwise."""
+    """
+    (heal entry, heal_note) whose stop_key equals the current stop's key; (None, None) otherwise.
+
+    The stop key cannot tell two identical failures apart, so a record also has to be newer than the
+    ticket's latest run: any run after the heal (a retry, an answer) means the stop has been revisited
+    and the record describes an earlier attempt. The heal cap itself is unaffected (one per cause).
+    """
     if not key:
         return None, None
+    last = _last_run_ended(t)
+
+    def current(entry: Dict[str, Any]) -> bool:
+        at = entry.get("at")
+        return isinstance(at, str) and at >= last
+
     heal = None
     heals = t.get("heals")
     if isinstance(heals, dict):
         for entry in heals.values():
-            if isinstance(entry, dict) and entry.get("stop_key") == key:
+            if isinstance(entry, dict) and entry.get("stop_key") == key and current(entry):
                 heal = entry
                 break
     note = t.get("heal_note")
-    if not (isinstance(note, dict) and note.get("stop_key") == key):
+    if not (isinstance(note, dict) and note.get("stop_key") == key and current(note)):
         note = None
     return heal, note
 
@@ -270,6 +295,35 @@ def pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _proc_start(pid: int) -> Optional[str]:
+    """A process's start time from ps, which identifies a pid across reuse; None when ps cannot say."""
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    text = out.stdout.strip()
+    return text if out.returncode == 0 and text else None
+
+
+def heal_child_alive(t: Dict[str, Any]) -> bool:
+    """
+    True while the heal CLI recorded for this ticket may still be running (an installer may outlive a killed
+    supervisor). A recorded pid that is alive but has a different start time was reused, so it does not count.
+    Unknown identity counts as alive: refusing to resume is the safe side.
+    """
+    child = t.get("heal_child")
+    if not isinstance(child, dict):
+        return False
+    pid = child.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or not pid_alive(pid):
+        return False
+    recorded = child.get("started")
+    if not isinstance(recorded, str) or not recorded:
+        return True
+    now = _proc_start(pid)
+    return now is None or now == recorded
+
+
 def open_ask(flow_dir: Path) -> Optional[Dict[str, Any]]:
     """The flow's parked question, when one is open."""
     ask = read_json(flow_dir / "fleet-ask.json")
@@ -301,17 +355,26 @@ def _reserve_tail(heals: Path, issue: int) -> Optional[Path]:
     return None
 
 
-def _run_cli(argv: List[str], cwd: Path, timeout: float) -> Optional[Dict[str, Any]]:
+def _run_cli(argv: List[str], cwd: Path, timeout: float,
+             on_spawn: Optional[Callable[[int], None]] = None) -> Optional[Dict[str, Any]]:
     """
     Run the heal CLI with a fixed argv and no shell. On timeout, SIGTERM first (so ensure_deps' cleanup
-    kills the installer's process group), wait HEAL_TERM_GRACE_SECS, then SIGKILL. Returns the parsed JSON
-    object, or None on a timeout, OSError, non-zero exit, unparseable output or non-object JSON.
+    kills the installer's process group), wait HEAL_TERM_GRACE_SECS, then SIGKILL. `on_spawn` receives the
+    child's pid before anything else happens, so the caller can record it. Returns the parsed JSON object,
+    or None on a timeout, OSError, non-zero exit, unparseable output or non-object JSON. Every wait after a
+    kill is bounded: a grandchild that still holds stdout must not wedge the supervisor.
     """
     try:
         proc = subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     except OSError:
         return None
+    if on_spawn is not None:
+        try:
+            on_spawn(proc.pid)
+        except Exception:
+            proc.kill()  # never leave an unrecorded child running
+            raise
     try:
         stdout, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -320,7 +383,10 @@ def _run_cli(argv: List[str], cwd: Path, timeout: float) -> Optional[Dict[str, A
             proc.communicate(timeout=HEAL_TERM_GRACE_SECS)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.communicate()
+            try:
+                proc.communicate(timeout=HEAL_TERM_GRACE_SECS)
+            except subprocess.TimeoutExpired:
+                pass  # a grandchild still holds stdout; give up on its output rather than block
         return None
     except OSError:
         return None
@@ -334,7 +400,14 @@ def _run_cli(argv: List[str], cwd: Path, timeout: float) -> Optional[Dict[str, A
 
 
 def _default_base(repo: str, main_worktree: Path) -> Optional[str]:
-    """origin/<default branch> from `gh repo view`, or None. No fallback guess."""
+    """
+    origin/<default branch> from `gh repo view`, or None. No fallback guess.
+
+    The branch name comes from GitHub, but the ref returned is the local remote-tracking origin/<name> in the
+    main worktree, which this function does not fetch. It can therefore lag the remote's default branch. The
+    heal tools resolve the ref themselves and fail closed when it is missing (heal.py: "No base ref"), so a
+    lagging ref changes what the heal compares against; it is never treated as the remote's current state.
+    """
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
         return None
     try:
@@ -358,18 +431,28 @@ def heal_pass(fleet_dir: Path, issue: int, repo: str, flow_dir: Optional[Path],
               main_worktree: Path) -> None:
     """
     Run the heal harness once for a ticket that has just stopped. Never raises: it must not prevent the
-    pid clear or the FLEET line. Skips quickly for tickets that are done, running, or parked on anything
-    other than a Flow stop gate.
+    pid clear or the FLEET line. A failure is reported on stderr with the stage it happened in, and the
+    exception's message is left out (it may carry paths or tool output). Skips quickly for tickets that are
+    done, running, or parked on anything other than a Flow stop gate.
     """
     if not flow_dir:
         return
+    stage = ["start"]
     try:
-        _heal_pass(fleet_dir, issue, repo, flow_dir, main_worktree)
-    except Exception:
-        pass
+        _heal_pass(fleet_dir, issue, repo, flow_dir, main_worktree, stage)
+    except Exception as e:
+        sys.stderr.write(f"FLEET #{issue} heal failed at stage {stage[0]} ({type(e).__name__})\n")
 
 
-def _heal_pass(fleet_dir: Path, issue: int, repo: str, flow_dir: Path, main_worktree: Path) -> None:
+def _cap_spent(fleet_dir: Path, issue: int, cause: str) -> bool:
+    """Read-only: True when the cause already has a heal entry. Checked before any tail is reserved."""
+    heals = ticket(load_fleet(fleet_dir), issue).get("heals")
+    return isinstance(heals, dict) and cause in heals
+
+
+def _heal_pass(fleet_dir: Path, issue: int, repo: str, flow_dir: Path, main_worktree: Path,
+               stage: List[str]) -> None:
+    stage[0] = "precheck"
     st = read_json(flow_dir / "state.json") or {}
     if st.get("status") not in ("failed", "paused", "awaiting"):
         return
@@ -400,6 +483,7 @@ def _heal_pass(fleet_dir: Path, issue: int, repo: str, flow_dir: Path, main_work
               "--flow-dir", str(flow_dir), "--issue", str(issue)]
     cli = ["python3", "-m", "scripts.workflow.cli", "heal"]
 
+    stage[0] = "probe"
     probe = _run_cli(cli + ["probe"] + common, helpers_dir, HEAL_PROBE_TIMEOUT_SECS)
     if probe is None:
         note("Heal probe failed.")
@@ -423,24 +507,43 @@ def _heal_pass(fleet_dir: Path, issue: int, repo: str, flow_dir: Path, main_work
         return
     cause = HEAL_TOOL_CAUSES[tool]
 
+    # The cap is checked before anything is reserved, so a capped cause leaves no .seq behind.
+    if _cap_spent(fleet_dir, issue, cause):
+        return
+
+    stage[0] = "reserve"
     heals = _heals_dir(fleet_dir)
     tail_path = _reserve_tail(heals, issue) if heals else None
     if tail_path is None:
         note("Heal tail directory is unsafe.")
         return
 
+    stage[0] = "record"
     spent = [False]
 
     def upd_attempt(d: Dict[str, Any]) -> None:
         spent[0] = heal_write_ahead(ticket(d, issue), cause, str(step), tool, probe_key)
     update_fleet(fleet_dir, upd_attempt)
     if not spent[0]:
+        # Lost a race for the cap after the check: release the reservation so it does not leak.
+        tail_path.with_suffix(".seq").unlink(missing_ok=True)
         return
 
+    child: List[int] = []
+
+    def on_spawn(pid: int) -> None:
+        child.append(pid)
+        started = _proc_start(pid)
+
+        def upd_child(d: Dict[str, Any]) -> None:
+            ticket(d, issue)["heal_child"] = {"pid": pid, "started": started}
+        update_fleet(fleet_dir, upd_child)
+
     outcome, recommendation = "failed", "take-over"
+    stage[0] = "run"
     try:
         result = _run_cli(cli + ["run"] + common + ["--tool", tool, "--tail-file", str(tail_path)],
-                          helpers_dir, timeout_secs + HEAL_RUN_MARGIN_SECS)
+                          helpers_dir, timeout_secs + HEAL_RUN_MARGIN_SECS, on_spawn=on_spawn)
         if (result is not None and result.get("tool") == tool and result.get("status") in HEAL_STATUSES
                 and result.get("recommendation") in HEAL_RECOMMENDATIONS):
             outcome = str(result["status"])
@@ -451,6 +554,11 @@ def _heal_pass(fleet_dir: Path, issue: int, repo: str, flow_dir: Path, main_work
         def upd_finish(d: Dict[str, Any]) -> None:
             heal_finish(ticket(d, issue), cause, tool, outcome, recommendation, probe_key)
         update_fleet(fleet_dir, upd_finish)
+        # Clear the child record only once that child has exited; a live one keeps the ticket refusing resume.
+        if child and not pid_alive(child[0]):
+            def upd_clear(d: Dict[str, Any]) -> None:
+                ticket(d, issue).pop("heal_child", None)
+            update_fleet(fleet_dir, upd_clear)
 
 
 def flow_status(t: Dict[str, Any], flow_dir: Optional[Path]) -> str:
@@ -570,7 +678,7 @@ def inbox(data: Dict[str, Any], flows_root: Optional[Path] = None) -> List[Dict[
     """Every open parked question, with the question file or report inlined (read as data)."""
     items = []
     for t in data["tickets"]:
-        # Skip if ticket has a live process (mid-heal)
+        # A live run process owns the ticket and runs its heal pass inside itself, so a parked state is not final yet.
         if pid_alive(t.get("pid")):
             continue
         fd = find_flow(data["repo"], t["issue"], flows_root)
@@ -652,6 +760,11 @@ def run(fleet_dir: Path, issue: int, message_file: Optional[Path]) -> int:
     except BlockingIOError:
         print(f"FLEET #{issue} already running")
         return 2
+    # A supervisor killed mid-heal leaves its installer running. Resuming now would race that installer for
+    # the same worktree, so the resume waits until the recorded heal process has exited.
+    if heal_child_alive(ticket(load_fleet(fleet_dir), issue)):
+        print(f"FLEET #{issue} heal still running; not resuming until it exits")
+        return 2
 
     def set_pid(pid: Optional[int]) -> Callable[[Dict[str, Any]], None]:
         def f(d: Dict[str, Any]) -> None:
@@ -717,7 +830,7 @@ def cmd_init(a: argparse.Namespace) -> int:
         for d in t.get("deps") or []:
             parse_dep(d, a.repo)  # validates
         norm.append({"issue": t["issue"], "title": str(t.get("title", "")), "deps": t.get("deps") or [],
-                     "pid": None, "session": None, "session_cwd": None, "runs": []})
+                     "pid": None, "session": None, "session_cwd": None, "runs": [], "heals": {}})
     epic_n = a.epic.rstrip("/").rsplit("/", 1)[-1]
     fleet_dir = FLEET_ROOT / repo_key(a.repo) / f"{epic_n}-{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}"
     fleet_dir.mkdir(parents=True)

@@ -10,10 +10,13 @@ These tests assert three hard constraints:
 4. The Accept and continue label is relayed unchanged through the resume argv, and fleet.py
    hard-codes no gate option labels (#365).
 """
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -188,60 +191,112 @@ def main():
                 f"found {hard_coded!r} in scripts/fleet.py"
             )
 
-    # Case 5: heal_pass never raises (Step 8, D1)
+    # Case 5: heal_pass never raises (Step 8, D1). The fixture has a real worktree and a stubbed heal CLI,
+    # so the probe, the tail reservation and the run all execute for real up to the CLI boundary.
     print()
     print("### heal_pass() never raises and tail file permissions")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        home = Path(tmp) / "home"
-        home.mkdir()
-        fleet_dir = Path(tmp) / "fleet"
+    def heal_fixture(root: Path, raise_in_run: bool = False):
+        fleet_dir = root / "fleet"
         fleet_dir.mkdir()
-        main_wt = Path(tmp) / "main"
+        wt = root / "wt"
+        wt.mkdir()
+        main_wt = root / "main"
         main_wt.mkdir()
-
-        # Create a minimal fleet.json
-        fleet_data = {"repo": "test/repo", "tickets": [{"issue": 1, "heals": {}}]}
-        (fleet_dir / "fleet.json").write_text(json.dumps(fleet_data))
-
-        # Create a flow directory with minimal state
-        flow_dir = Path(tmp) / "flow"
+        (fleet_dir / "fleet.json").write_text(json.dumps(
+            {"repo": "test/repo", "main_worktree": str(main_wt), "tickets": [{"issue": 1, "heals": {}}]}))
+        flow_dir = root / "flow"
         flow_dir.mkdir()
         (flow_dir / "state.json").write_text(json.dumps({
-            "issue": 1,
-            "step": "implement",
-            "status": "failed",
-            "failures": {"implement": 1},
+            "issue": 1, "step": "implement", "status": "failed", "failures": {"implement": 1},
+            "worktree": str(wt),
         }))
+        calls: list = []
+        seen_child: list = []
 
-        # heal_pass should never raise, even with invalid inputs
-        try:
+        def fake_cli(argv, cwd, timeout, on_spawn=None):
+            calls.append(argv)
+            if "probe" in argv:
+                return {"tool": "install", "timeout_secs": 30, "stop_key": fl.current_stop_key(flow_dir)}
+            # Stand in for the installer child: record it the way the real spawn hook does, then let it exit.
+            child = subprocess.Popen([sys.executable, "-c", "pass"])
+            on_spawn(child.pid)
+            child.wait()
+            seen_child.append(json.loads((fleet_dir / "fleet.json").read_text())["tickets"][0].get("heal_child"))
+            if raise_in_run:
+                raise RuntimeError("injected failure")
+            return {"tool": "install", "status": "healed", "recommendation": "retry-recommended"}
+
+        return fleet_dir, flow_dir, main_wt, calls, seen_child, fake_cli
+
+    real_cli, real_base = fl._run_cli, fl._default_base
+    fl._default_base = lambda repo, main_worktree: "origin/main"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            fleet_dir, flow_dir, main_wt, calls, seen_child, fake_cli = heal_fixture(Path(tmp))
+            fl._run_cli = fake_cli
+            try:
+                fl.heal_pass(fleet_dir, 1, "test/repo", flow_dir, main_wt)
+                h.test_result("heal_pass does not raise with valid inputs", True)
+            except Exception as e:
+                h.test_result("heal_pass does not raise with valid inputs", False, f"raised {e}")
+
+            h.test_result("heal_pass reached the run call", bool(calls) and "run" in calls[-1],
+                          f"calls={calls}")
+            heals_dir = fleet_dir / "heals"
+            h.test_result("heals directory is 0700", stat.S_IMODE(heals_dir.stat().st_mode) == 0o700,
+                          f"Got mode {oct(stat.S_IMODE(heals_dir.stat().st_mode))}")
+            tail_arg = Path(calls[-1][calls[-1].index("--tail-file") + 1])
+            seq = tail_arg.with_suffix(".seq")
+            h.test_result("tail file lives in heals and ends .tail",
+                          tail_arg.parent == heals_dir and tail_arg.suffix == ".tail", f"tail={tail_arg}")
+            h.test_result("tail reservation has mode 0600",
+                          seq.exists() and stat.S_IMODE(seq.stat().st_mode) == 0o600,
+                          f"seq={seq}")
+            h.test_result("heal_child recorded while the installer ran",
+                          bool(seen_child) and isinstance(seen_child[0], dict) and isinstance(seen_child[0].get("pid"), int),
+                          f"seen={seen_child}")
+            fdata = json.loads((fleet_dir / "fleet.json").read_text())["tickets"][0]
+            h.test_result("heal outcome recorded", fdata["heals"]["missing-deps"]["outcome"] == "healed")
+            h.test_result("heal_child cleared once the child exited", "heal_child" not in fdata)
+
+            # A second pass for the same capped cause runs nothing and leaves no new reservation behind.
+            seq_count = len(list(heals_dir.glob("*.seq")))
             fl.heal_pass(fleet_dir, 1, "test/repo", flow_dir, main_wt)
-            h.test_result("heal_pass does not raise with valid inputs", True)
-        except Exception as e:
-            h.test_result("heal_pass does not raise with valid inputs", False, f"raised {e}")
+            h.test_result("capped cause: probe only, no second run and no leaked reservation",
+                          len(calls) == 3 and "probe" in calls[2] and "run" not in calls[2]
+                          and len(list(heals_dir.glob("*.seq"))) == seq_count,
+                          f"calls={calls}")
 
+        # heal_pass should never raise on an injected failure; the stage and class go to stderr.
+        with tempfile.TemporaryDirectory() as tmp:
+            fleet_dir, flow_dir, main_wt, calls, seen_child, fake_cli = heal_fixture(Path(tmp), raise_in_run=True)
+            fl._run_cli = fake_cli
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    fl.heal_pass(fleet_dir, 1, "test/repo", flow_dir, main_wt)
+                h.test_result("heal_pass does not raise on an injected run failure", True)
+            except Exception as e:
+                h.test_result("heal_pass does not raise on an injected run failure", False, f"raised {e}")
+            h.test_result("failure names the stage and class on stderr",
+                          "heal failed at stage run (RuntimeError)" in err.getvalue(), f"stderr={err.getvalue()!r}")
+            fdata = json.loads((fleet_dir / "fleet.json").read_text())["tickets"][0]
+            h.test_result("failed run still finishes its record as take-over",
+                          fdata["heals"]["missing-deps"]["outcome"] == "failed"
+                          and fdata["heals"]["missing-deps"]["recommendation"] == "take-over")
+    finally:
+        fl._run_cli, fl._default_base = real_cli, real_base
+
+    with tempfile.TemporaryDirectory() as tmp:
         # heal_pass with None flow_dir should return silently
         try:
-            fl.heal_pass(fleet_dir, 1, "test/repo", None, main_wt)
+            fl.heal_pass(Path(tmp), 1, "test/repo", None, Path(tmp))
             h.test_result("heal_pass returns silently when flow_dir is None", True)
         except Exception as e:
             h.test_result("heal_pass returns silently when flow_dir is None", False, f"raised {e}")
 
-        # Tail files should be created with mode 0600 (rw-------)
-        tails_dir = fleet_dir / "heals"
-        if tails_dir.exists():
-            tail_files = list(tails_dir.glob("*.tail"))
-            if tail_files:
-                for tail in tail_files:
-                    mode = tail.stat().st_mode & 0o777
-                    h.test_result(
-                        f"Tail file {tail.name} has mode 0600",
-                        mode == 0o600,
-                        f"Got mode {oct(mode)}"
-                    )
-
-    # Stop-key mirror: fleet.current_stop_key must equal heal.stop_key_for for both stop shapes
+    # Stop-key mirror: fleet.current_stop_key must equal heal.stop_key_for for every stop shape
     sys.path.insert(0, str(REPO_ROOT))
     from scripts.workflow import heal as heal_mod
     with tempfile.TemporaryDirectory() as tmp:
@@ -258,6 +313,27 @@ def main():
             "stop key mirror: open ask",
             fl.current_stop_key(fd) == heal_mod.stop_key_for(ask, "verify", "failed", "lint failed"),
         )
+        (fd / "fleet-ask.json").unlink()
+        (fd / "state.json").write_text(json.dumps({"step": "implement", "status": "paused"}))
+        h.test_result(
+            "stop key mirror: no stop_reason recorded",
+            fl.current_stop_key(fd) == heal_mod.stop_key_for(None, "implement", "paused", ""),
+        )
+        (fd / "state.json").write_text(json.dumps({"step": ["implement"], "status": "failed", "stop_reason": {}}))
+        h.test_result(
+            "stop key: non-string step returns a key instead of raising",
+            isinstance(fl.current_stop_key(fd), str),
+        )
+
+    # Mirrored constants: fleet.py carries copies of heal.py / deps.py values. These pins fail when either moves.
+    h.test_result("HEAL_STEPS mirrors heal.KNOWN_STEPS", fl.HEAL_STEPS == heal_mod.KNOWN_STEPS)
+    h.test_result("HEAL_STATUSES mirrors heal._STATUS_VALUES", fl.HEAL_STATUSES == heal_mod._STATUS_VALUES)
+    h.test_result("HEAL_TOOL_CAUSES mirrors heal.TOOLS",
+                  fl.HEAL_TOOL_CAUSES == {t.name: t.cause for t in heal_mod.TOOLS})
+    h.test_result("HEAL_MAX_TIMEOUT_SECS mirrors deps.DEPS_TIMEOUT_SECS",
+                  fl.HEAL_MAX_TIMEOUT_SECS == heal_mod.deps.DEPS_TIMEOUT_SECS)
+    h.test_result("HEAL_MAX_TIMEOUT_SECS equals the heal timeout_secs upper bound",
+                  fl.HEAL_MAX_TIMEOUT_SECS == heal_mod.PARAM_BOUNDS["timeout_secs"][1])
 
     h.summarize_and_exit()
 
