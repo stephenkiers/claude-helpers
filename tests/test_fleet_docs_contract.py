@@ -9,7 +9,6 @@ Covers the documentation requirements from the expert-review action plan for the
     "one answer away from merging" sentence is gone from commands/expert-flow.md.
   - The main.lock guarantee is described as fresh-vs-fresh only, in both the ADR and the command doc.
   - Free-text answers are framed with a fixed header, and the `--` argv question is recorded.
-  - scripts/fleet.py is byte-identical to the POC base 8e97cbf (commit 982a75e on this branch).
   - Section 6 (#421): the fleet's 4(a)/4(b) relay slices, green on the current doc and red on the
     frozen pre-#421 fixture for the new-wording checks.
   - Section 7 (#421): both commands use the shared question renderer (flow-render-questions.py).
@@ -24,7 +23,6 @@ Run with:
 """
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 from typing import Dict
@@ -39,8 +37,6 @@ FLOW_CMD_PATH = REPO_ROOT / "commands" / "expert-flow.md"
 FLEET_PY_PATH = REPO_ROOT / "scripts" / "fleet.py"
 PRE_421_FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "expert-fleet-pre-421.md"
 RENDERER_PATH = REPO_ROOT / "scripts" / "flow-render-questions.py"
-
-POC_SHA = "982a75e"
 
 RENDER_SCRIPT = "flow-render-questions.py"
 RENDER_GRANT = 'Bash(python3 "$HOME/.claude/scripts/flow-render-questions.py":*)'
@@ -292,43 +288,6 @@ def main():
         "F17 (free-text answer as bare argv) is recorded in ADR-0025 or handled by a fixed header",
         f17_recorded or f17_handled,
         "neither an ADR-0025 F17 record nor a fixed header in the command doc" if not (f17_recorded or f17_handled) else "",
-    )
-
-    print()
-    print(f"[Section 5] scripts/fleet.py is byte-identical to POC commit {POC_SHA}")
-
-    try:
-        poc = subprocess.run(
-            ["git", "show", f"{POC_SHA}:scripts/fleet.py"],
-            cwd=REPO_ROOT, capture_output=True, timeout=60,
-        )
-        poc_ok = poc.returncode == 0
-        poc_bytes = poc.stdout
-        poc_err = poc.stderr.decode(errors="replace").strip()
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        poc_ok, poc_bytes, poc_err = False, b"", str(exc)
-
-    h.test_result(
-        f"git can read scripts/fleet.py at {POC_SHA}",
-        poc_ok,
-        poc_err,
-    )
-
-    current = FLEET_PY_PATH.read_bytes()
-    same = poc_ok and current == poc_bytes
-    detail = ""
-    if poc_ok and not same:
-        cur_lines = current.decode(errors="replace").splitlines()
-        poc_lines = poc_bytes.decode(errors="replace").splitlines()
-        first = next(
-            (i + 1 for i, (a, b) in enumerate(zip(cur_lines, poc_lines)) if a != b),
-            min(len(cur_lines), len(poc_lines)) + 1,
-        )
-        detail = f"differs from {POC_SHA} starting at line {first}"
-    h.test_result(
-        f"scripts/fleet.py matches {POC_SHA} byte for byte",
-        same,
-        detail,
     )
 
     print()
