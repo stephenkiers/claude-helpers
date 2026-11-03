@@ -4954,6 +4954,7 @@ def coverage_mode(
                 ["git", "-C", repo, "merge-base", "--is-ancestor", base, branch],
                 capture_output=True,
                 timeout=GIT_TIMEOUT_SECS,
+                text=True,
             )
             is_ancestor = result.returncode == 0
         except Exception:
