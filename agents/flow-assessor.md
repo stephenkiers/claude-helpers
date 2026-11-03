@@ -18,8 +18,11 @@ id: <id>
 provenance: <self-report|both|verifier>
 coverage: <declared|uncovered|unknown>
 coverage_reason: <reason text from the outstanding set>
+range_overlap: <overlap|no-overlap|unavailable>
 <<<
 ```
+
+The `range_overlap` field is present only for `fix:` items with coverage `unknown`. It records whether the item's File-cell range overlaps a changed hunk (within `RANGE_OVERLAP_SLACK = 3` lines).
 
 Your prompt also inlines:
 - `bases[implement]` — the `git` base SHA for the implement step (the commit where `steps/03-implement.md` records its attempt started)
@@ -81,21 +84,25 @@ For example:
 
 Labels must not equal any of these fixed choices: `Open an issue`, `Leave as-is`, `Pause to finish by hand`, `Drop`, `Confirm already done`.
 
-### Unknown Coverage: Always Decision
+### Unknown Coverage: Decision Unless Both Anchors Hold
 
-If the item carries coverage `unknown`, assess it as:
+An unknown item may be `already-done` only when it is a `fix:` item whose new optional `range_overlap:` input reads `overlap`, and when its `evidence` cites at least one anchor in the checkable grammar: a `path:line` or `path:start-end` in a file the fix changed, or a fix-step commit SHA (7-40 hex).
+
+In every other case — including `no-overlap`, `unavailable`, implement items, and `coverage-unavailable` — the item is:
 - `status: unfinished`
 - `kind: decision`
 
 The question will ask the human to clarify whether it is really unfinished or what to do about it.
 
+The check proves only that the location was touched, not that the finding is fixed. Evidence must be citable and verifiable.
+
 ## Evidence Is Required
 
 Every item, whether `already-done` or `unfinished`, must cite its evidence:
-- For `already-done` items: cite the path and line number (`src/foo.py:123`) or the commit SHA where the fix landed.
+- For `already-done` items: cite an anchor in the checkable grammar — a `path:line` or `path:start-end` in a file the fix changed (`src/foo.py:123` or `src/foo.py:123-145`), or a fix-step commit SHA (7-40 hex characters). Prose alone does not pass verification.
 - For `unfinished` items: state what you checked (which files, which symbols, which diffs) and what you did not find.
 
-An empty `evidence` field will fail the gate.
+An empty `evidence` field will fail the gate. For `already-done` fix items, evidence that does not parse as an anchor will be rejected by the script.
 
 ## Output Contract
 

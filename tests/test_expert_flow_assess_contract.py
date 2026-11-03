@@ -138,6 +138,46 @@ def main():
     h.test_result("flow-reference mentions the item field for questions and answers",
                   re.search(r"\bitem\b", flow_ref) is not None)
 
+    print()
+    print("[#435 amendment: resolved File-cell basenames and script-anchored already-done]")
+
+    h.test_result("ADR amendment 2026-11-02 exists with correct heading",
+                  "Amendment (2026-11-02): resolved File-cell basenames" in adr)
+    h.test_result("ADR amendment mentions frozen artifact evidence.json",
+                  "steps/<NN>-fix.evidence.json" in adr)
+    h.test_result("ADR amendment documents RANGE_OVERLAP_SLACK = 3",
+                  "RANGE_OVERLAP_SLACK = 3" in adr)
+    h.test_result("ADR amendment mentions both B and A conditions",
+                  "(B)" in adr and "(A)" in adr and "both of these pass" in adr)
+    h.test_result("ADR amendment mentions Q1, Q2, Q3, D1, D2 decisions",
+                  all(d in adr for d in ("Q1 = BOTH", "Q2 = C", "Q3 = A", "D1 (accepted", "D2 (accepted")))
+    h.test_result("flow-assessor.md does not contain 'Unknown Coverage: Always Decision'",
+                  "Unknown Coverage: Always Decision" not in assessor)
+    h.test_result("flow-assessor.md documents range_overlap field",
+                  "range_overlap:" in assessor and "overlap|no-overlap|unavailable" in assessor)
+    h.test_result("flow-assessor.md describes anchor grammar for already-done fix items",
+                  "path:line" in assessor and "path:start-end" in assessor and "7-40 hex" in assessor)
+    h.test_result("expert-flow.md assess section calls --assess-anchors",
+                  "--assess-anchors" in assess_sec)
+    h.test_result("expert-flow.md assess section mentions range_overlap in ITEM block",
+                  "range_overlap:" in assess_sec)
+    h.test_result("expert-flow.md assess item 10 mentions forms of at most items",
+                  "forms of at most" in assess_sec)
+    h.test_result("expert-flow.md assess item 10 uses --match-outstanding-issue",
+                  "--match-outstanding-issue" in assess_sec)
+    h.test_result("expert-flow.md assess item 10 describes per-form persistence",
+                  "answers/assess-<SEQ>" in assess_sec and "Write the answers file" in assess_sec)
+    h.test_result("expert-flow.md assess item 10 describes Pause-once logic",
+                  "after the last form" in assess_sec and "log `assess paused`" in assess_sec)
+    h.test_result("expert-flow.md fix section mentions fix-audit coverage call",
+                  "--coverage-out" in ef and "--evidence-out" in ef)
+    h.test_result("expert-flow.md fix section mentions evidence.json artifact",
+                  "steps/06-fix.evidence.json" in ef or "steps/<NN>-fix.evidence.json" in ef)
+    h.test_result("expert-flow.md assess item 9 mentions unknown with range_overlap",
+                  "coverage `unknown` and `range_overlap: overlap`" in assess_sec)
+    h.test_result("expert-flow.md uses printf '%s' with issue list JSON piping",
+                  'printf \'%s\' "$VAR"' in assess_sec)
+
     h.summarize_and_exit()
 
 

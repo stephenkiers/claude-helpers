@@ -1275,3 +1275,38 @@ Evidence: three flows stopped with `skill invocation failed: Unknown skill: <nam
 - **Why it is safe to automate.** The error is returned before the command body runs, so there is no partial work to repair and nothing for the orchestrator to judge. A different skill name (a nested call failing inside a command that already ran) is never retried. It edits no code, runs no check, answers no gate, sets no `healed`, and does not suspend `--auto-merge`.
 - **Bound.** One retry per step per flow (`skill_retries[STEP]`), only while `failures[STEP] < 2`. A second failure of any kind goes to the ordinary Retry / Take over / Abort menu, so the two-attempt cap is not widened.
 - **Not a fix for the cause.** If the registry gap also hits the retry, the human sees the same hard stop as before. Reporting it upstream remains open.
+
+## Amendment (2026-11-02): resolved File-cell basenames and script-anchored already-done for unknown fix rows (#435)
+
+This amendment narrows the rules for unknown coverage rows in the assess stage by adding a frozen evidence artifact at fix-audit time, enabling the script to verify that a fix touched an area cited in an assessment, and allowing some unknown rows to be dispositioned `already-done` without reaching the human.
+
+**Decisions.**
+
+- **Q1 = BOTH (confirmed round 2).** An `unknown` fix row may close as `already-done` and `assessor-verified` only when both of these pass against the frozen artifact. (B) The row's own File-cell range is in bounds and overlaps an old-side hunk within `RANGE_OVERLAP_SLACK = 3` lines. (A) The assessor's evidence cites an anchor that the script verifies. Otherwise the row stays `unfinished`+`decision` for the human.
+
+- **Q2 = C.** In fix mode, a File-cell token resolves by exact match first, then by a unique whole-path-component suffix match against the changed set. A match against more than one changed file is ambiguous and stays `unknown`. Owners are keyed on the resolved path. Globs, `..`, absolute paths and trailing-`/` tokens never resolve. A resolved token whose cited range ends past the file's line count at `bases[fix]` is misattributed and makes the row `unknown`. The suffix match is blind to unchanged same-name twins (Q2 option B was rejected).
+
+- **Q3 = A.** Issue filing searches by `FLOW_ID` with a local exact body-line match. The filing id grammar widens to admit real ids like `fix:D1` and `fix:round3-pass1 finding 2`. The raw id never enters a search string.
+
+- **D1 (accepted, round 1).** The fix step's changed files and old-side hunks are frozen at fix-audit time in `steps/<NN>-fix.evidence.json`. `check_assess` reads only that artifact and never recomputes `bases[fix]..HEAD`. This prevents a rebase from changing the verdict after a Pause.
+
+- **D2 (accepted, round 1).** On a Pause, finish all forms and pause once. Each form is its own `assess-<SEQ>` pair with its own answers file and ledger record. A resumed flow replays every answers file not yet reflected in the marker, not just one.
+
+**Narrows the 2026-10-27 rule** "`unknown` coverage rows are always asked" and the 2026-11-01 classification sentence ("Matching is exact string equality, with no suffix matching"). When a `fix:` item carries coverage `unknown` and its File-cell can be resolved to a single changed file, the assessor receives the resolved path. In fix mode a token resolves by exact match first, then by a unique whole-path-component suffix match against the changed set (`deps.py` matches `scripts/workflow/deps.py` when that is the only changed match, but is ambiguous when there are two). Ambiguous tokens, shared files, and ranges past the line count each stay `unknown` with specific evidence text.
+
+**The frozen artifact.** At fix-audit time, after the fix coverage run classifies the Doing-it rows, a frozen artifact is written: `steps/<NN>-fix.evidence.json`. It contains the base and tip SHAs, the changed files, old-side hunks (per file: `[start, count]` from `git diff -U0`), line counts for each file at base and tip, fix commits, and for each Doing-it unit, its resolved path and cited ranges. Classification, bound checks, and the verify receipt's `check_assess` rule 5 all read only this artifact, so the verdict does not depend on rebases or live `git diff` recomputes. When the artifact is missing or unreadable, the relaxation never applies, and `unknown` rows are asked. The coverage table is written at the same time to `steps/<NN>-fix.coverage.txt` with a SHA256 hash; both STUB sites (fix-audit supersede and Fix now re-run supersede) overwrite the artifact with `{"format":1,"available":false,"reason":"superseded"}` so a superseded attempt's evidence is never read. A Fix now re-run also writes a fresh artifact. If `git merge-base --is-ancestor` fails or any git call fails, the artifact writes `{"format":1,"available":false,"reason":...}` and the relaxation never applies.
+
+**What it proves.** The check proves that a cited location was touched by the fix step, not that the finding was fixed. Under `--auto-merge` these rows receive only a printed notice, which widens the residual risk at §11. The widening is bounded by requiring both anchors: a range that overlaps a hunk and evidence that cites a location in that changed file.
+
+**Issue filing.** The search is by `FLOW_ID` with a local exact body-line match on `flow-outstanding: <FLOW_ID> <id>`. The id grammar now admits `<step>:<unit>` where `<step>` is `[a-z]+` and `<unit>` is 1-200 printable characters excluding newlines, control characters, and the shell-breaking set (`'`, `"`, `` ` ``, `$`, `\`, `|`). Real ids like `fix:D1` and `fix:round3-pass1 finding 2` are now acceptable.
+
+**Pause.** A Pause in any form is applied once, after every form of the attempt has been asked and persisted. Each form is its own `assess-<SEQ>` pair with its own ledger record. On Pause, all persisted answers are kept; they are not replayed on the next ask.
+
+**Consequences.** Coverage files written before this amendment are not recomputed; they stay all-`unknown`. A resumed older flow has no artifact, so its unknown rows are still asked. Downstream readers of fix coverage (#380 Fix now, #429 verify-queue, #409) may see rows move from `unknown` to `covered`. Implement-sourced unknowns, `<step>:coverage-unavailable`, and flows with no or unavailable artifact remain always-asked; relaxing implement-sourced unknowns is an explicit follow-up.
+
+**Hand-offs closed.**
+
+- `:2107-2160` (assess relay changes): Steps 6, 7, 8 (range overlap input, --assess-anchors call, issue filing by FLOW_ID, per-form persistence).
+- `:1099-1100` (narrow the 2026-11-01 classification sentence): Step 1 (ADR amendment), Step 2 (resolver).
+
+**Required by the Q1 round-2 confirmation:** The negative test case where A passes (anchor verified) and B fails (range does not overlap) → receipt fails with `range-overlap` reason, row stays unknown.
