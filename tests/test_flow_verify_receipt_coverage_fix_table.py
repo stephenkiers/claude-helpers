@@ -240,7 +240,8 @@ def case_f_token_classification() -> Tuple[bool, str]:
         ("commands/expert-flow.md:~971, ~1350, ~1648", set(), ["commands/expert-flow.md"]),
         ("scripts/flow-bash-guard.py:~70-80", set(), ["scripts/flow-bash-guard.py"]),
         ("`scripts/flow-agent-guard.py:~625-660`", set(), ["scripts/flow-agent-guard.py"]),
-        ("flow-review.md", {"agents/flow-review.md"}, []),
+        # Bare basename: a unique whole-component suffix match in the changed set resolves to the changed path
+        ("flow-review.md", {"agents/flow-review.md"}, ["agents/flow-review.md"]),
         ("", set(), []),
         # Leading ./ normalization: ./scripts/x.py matches scripts/x.py in diff
         ("./scripts/flow-bash-guard.py", {"scripts/flow-bash-guard.py"}, ["scripts/flow-bash-guard.py"]),
@@ -250,7 +251,7 @@ def case_f_token_classification() -> Tuple[bool, str]:
         ("../scripts/x.py", set(), ["../scripts/x.py"]),
     ]
     for cell, diff, want in cases:
-        got = fvr._doing_it_path_tokens(cell, diff)
+        got = [t.resolved_path for t in fvr._doing_it_path_tokens(cell, diff)]
         if got != want:
             return (False, f"cell {cell!r} with diff {sorted(diff)}: want {want}, got {got}")
     plan_rows = fvr._parse_doing_it_rows(PLAN.read_text(encoding="utf-8"))
