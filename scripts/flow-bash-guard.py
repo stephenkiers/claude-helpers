@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-PreToolUse hook for flow-implement agent: best-effort Bash command guard.
+PreToolUse hook for flow-implement, flow-review, flow-ship, and flow-merge agents:
+best-effort Bash command guard with per-agent rules.
 
 Threat model: prevent accidental shell wrappers and publishing commands.
 Best-effort control, not a sandbox: write-a-script-then-run, a nested general-purpose agent,
@@ -21,6 +22,15 @@ A heredoc (<<) or a word-start # comment switches to a quote-blind split, which 
 conservative pre-change behaviour, because those constructs can desynchronise the quote
 tracking.
 
+Per-agent behavior:
+  - flow-implement: full wrapper and publishing-verb checks (existing behavior)
+  - flow-review: pass-through (allow all Bash commands)
+  - flow-ship: restricted wrappers, allowed python3/eval forms, restricted git push forms,
+    gh stack sync allowed, gh pr merge (any flags) denied
+  - flow-merge: restricted wrappers, allowed python3/eval forms, allowed git push forms,
+    gh stack sync allowed, gh pr merge --admin denied, gh pr merge --squash allowed only
+    when no merge-queue config exists
+
 Exit codes:
   - 0: allow (command is safe)
   - 2: block (command violates a rule or is unparseable)
@@ -30,7 +40,16 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
+from pathlib import Path
+from typing import Optional, Tuple, List
+
+# Known flow agents that are governed by this guard.
+KNOWN_FLOW_AGENTS = ("flow-implement", "flow-review", "flow-ship", "flow-merge", "flow-healer")
+
+# Escalation hint for denied push/merge commands: tells the agent to surface via Ask block.
+ESCALATION_HINT = "If this command is legitimate, do not retry a variant: surface it to the human through the Ask block (prompts/flow-reference.md) instead."
 
 # The wrapper forms refused by this guard. Mirrored in ADR-0008 amendment (drift guard).
 WRAPPER_FORMS = (
@@ -389,7 +408,7 @@ def split_segments(command):
     return [s for s in out if s]
 
 
-def tokenize_segment(segment):
+def tokenize_segment(segment: str) -> Optional[List[str]]:
     """Tokenize a single shell command segment using shlex.
 
     Fails closed on ValueError (unparseable). Returns None on parse failure.
@@ -473,7 +492,81 @@ def strip_command_prefix(tokens):
     return tokens
 
 
-def skip_global_options(tokens, start=0):
+def find_subcommand(tokens: List[str], tool: str) -> Optional[str]:
+    """Find the subcommand (git verb or gh noun+verb) after skipping global options.
+
+    For git: returns the verb (e.g., "push", "pr").
+    For gh: returns a space-separated noun+verb (e.g., "pr merge").
+
+    Fails closed (returns None) on unknown global options. Returns None if subcommand not found.
+
+    Known git global options:
+      -C <path>, --git-dir=..., --exec-path=..., --config-env=..., --git-common-dir=...,
+      --namespace=..., --work-tree=..., --super-prefix=..., -c <name=value>, --no-pager, -p,
+      --paginate, --no-replace-objects, --literal-pathspecs, --bare
+
+    Known gh global options:
+      -R <repo>, --repo <repo>, --repo=..., --json <fields>
+    """
+    if not tokens:
+        return None
+
+    tool_name = os.path.basename(tokens[0].strip('\'"')).lower()
+    i = 1
+
+    while i < len(tokens):
+        tok = tokens[i]
+
+        # Stop on non-option token (the subcommand)
+        if not tok.startswith("-"):
+            break
+
+        # Git options that take a separate value token
+        if tok in ("-C", "--git-dir", "--exec-path", "--config-env", "--git-common-dir",
+                   "--namespace", "--work-tree", "--super-prefix", "-c"):
+            # Skip the option and its value
+            i += 2
+            continue
+
+        # Git options with = form
+        if tok.startswith(("--git-dir=", "--exec-path=", "--config-env=", "--git-common-dir=",
+                          "--namespace=", "--work-tree=", "--super-prefix=")):
+            i += 1
+            continue
+
+        # Git flags without value
+        if tok in ("--no-pager", "-p", "--paginate", "--no-replace-objects", "--literal-pathspecs", "--bare"):
+            i += 1
+            continue
+
+        # gh options with value
+        if tok in ("-R", "--repo", "--json"):
+            i += 2
+            continue
+
+        # gh options with = form
+        if tok.startswith(("--repo=", "--json=")):
+            i += 1
+            continue
+
+        # Unknown option: fail closed
+        return None
+
+    # Found the subcommand
+    if i < len(tokens):
+        if tool_name == "git":
+            return tokens[i].lower()
+        elif tool_name == "gh":
+            # For gh, the subcommand is noun verb (e.g., "pr merge")
+            if i + 1 < len(tokens):
+                return f"{tokens[i].lower()} {tokens[i + 1].lower()}"
+            else:
+                return tokens[i].lower()
+
+    return None
+
+
+def skip_global_options(tokens: List[str], start: int = 0) -> int:
     """Skip git/gh global options and return the index of the first non-option token.
 
     Handles known git/gh global options. For unknown global options, uses fail-closed
@@ -482,8 +575,8 @@ def skip_global_options(tokens, start=0):
 
     Handles:
       - git: -C <dir>, --git-dir=, --exec-path=, --config-env=, --git-common-dir=,
-             --namespace=, --work-tree=, and other -X= or -X value forms
-      - gh: -R <repo>, --repo <repo>
+             --namespace=, --work-tree=, -c <name=value>, and other -X= or -X value forms
+      - gh: -R <repo>, --repo <repo>, --json <fields>
 
     For git, skips -C and its argument but does NOT skip -c (which is in the deny list).
     """
@@ -503,14 +596,19 @@ def skip_global_options(tokens, start=0):
             i += 1
             continue
 
-        # gh -R <repo> or gh --repo <repo>
-        if (tok == "-R" or tok == "--repo") and i + 1 < len(tokens):
+        # gh -R <repo> or gh --repo <repo> or gh --json <fields>
+        if (tok == "-R" or tok == "--repo" or tok == "--json") and i + 1 < len(tokens):
             i += 2
+            continue
+
+        # gh --repo=... or gh --json=...
+        if tok.startswith("--repo=") or tok.startswith("--json="):
+            i += 1
             continue
 
         # git global options that take a separate value token
         if tok in ("--git-dir", "--work-tree", "--namespace", "--exec-path",
-                   "--config-env", "--super-prefix", "--git-common-dir") and i + 1 < len(tokens):
+                   "--config-env", "--super-prefix", "--git-common-dir", "-c") and i + 1 < len(tokens):
             i += 2
             continue
 
@@ -526,7 +624,7 @@ def skip_global_options(tokens, start=0):
     return i
 
 
-def is_wrapper_form(tokens):
+def is_wrapper_form(tokens: List[str]) -> bool:
     """Check if tokens match a forbidden wrapper form.
 
     Returns True if any WRAPPER_FORMS pattern is detected.
@@ -633,7 +731,7 @@ def is_wrapper_form(tokens):
     return False
 
 
-def is_publishing_verb(tokens):
+def is_publishing_verb(tokens: List[str]) -> bool:
     """Check if tokens match a forbidden publishing verb (multi-word tuple).
 
     Skips global options before checking. Returns True if forbidden verb is detected.
@@ -778,20 +876,171 @@ def is_interpreter_verb_pair(tokens):
     return False
 
 
-def check_command(command):
-    """Check if a command violates wrapper or verb rules.
+def check_push_form(tokens: List[str]) -> Tuple[bool, str]:
+    """Check if tokens match an allowed git push form.
 
-    Returns: (is_blocked: bool, reason: str)
-    - (True, reason): command is blocked
-    - (False, ""): command is allowed
+    Allowed forms (flow-bash-push-allowlist:begin/end marked block):
+    - git push [-u] origin <branch>  (exactly one branch arg, no special chars)
+    - git push --force-with-lease --force-if-includes origin HEAD  (exact flags)
+    - git -C <wt> push --force-with-lease  (with optional -C option)
+    - git push --force-with-lease=<branch>:<40-hex> origin <40-hex>:refs/heads/<branch>
+      (exact form with 40-hex SHAs and matching branch names)
+
+    Denied: any --force (bare or -f), --mirror, --delete, +refspec, :branch deletion,
+    extra flags, extra positionals, short SHAs, or any other variant.
+    Known wrapper bypasses (python3 -c, eval) are separate checks.
+
+    Returns: (is_allowed: bool, reason: str if denied)
     """
+    if not tokens or tokens[0].lower() != "git":
+        return False, ""
+
+    # Find the push subcommand using the helper
+    if find_subcommand(tokens, "git") != "push":
+        return False, ""
+
+    # Skip past tool and global options to find push using the shared helper
+    i = skip_global_options(tokens, 1)
+
+    # Now we should be at "push"
+    if i >= len(tokens) or tokens[i].lower() != "push":
+        return False, ""
+
+    i += 1  # Move past "push"
+    push_tokens = tokens[i:]
+
+    if not push_tokens:
+        return False, "git push with no arguments"
+
+    # Form 1: git push [-u] origin <branch>
+    # Must have: optional -u/--set-upstream, then "origin", then exactly one branch
+    # with no -, +, or : in it
+    optional_flag_count = 0
+    filtered = []
+    for t in push_tokens:
+        if t in ("-u", "--set-upstream"):
+            optional_flag_count += 1
+        else:
+            filtered.append(t)
+
+    if len(filtered) == 2 and filtered[0].lower() == "origin":
+        branch = filtered[1]
+        # Reject branches with -, +, or : (invalid branch names)
+        if not (branch.startswith("-") or branch.startswith("+") or ":" in branch):
+            return True, ""
+
+    # Form 2: git push --force-with-lease --force-if-includes origin HEAD
+    # Must be EXACTLY these flags and EXACTLY origin HEAD (no other tokens)
+    flags = [t for t in push_tokens if t.startswith("-")]
+    non_flags = [t for t in push_tokens if not t.startswith("-")]
+
+    # Check for exact flag set
+    if sorted(flags) == ["--force-if-includes", "--force-with-lease"]:
+        # Must have exactly origin HEAD and nothing else
+        if len(non_flags) == 2 and non_flags[0].lower() == "origin" and non_flags[1].upper() == "HEAD":
+            return True, ""
+
+    # Form 3: git -C <wt> push --force-with-lease (only flag, no other args)
+    if flags == ["--force-with-lease"] and len(non_flags) == 0:
+        return True, ""
+
+    # Form 4: git push --force-with-lease=<branch>:<40-hex> origin <40-hex>:refs/heads/<branch>
+    # Must be EXACTLY one --force-with-lease=<branch>:<40hex> token, then origin, then refspec
+    # with matching branch names
+    sha_40_pattern = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
+
+    for token in push_tokens:
+        if token.startswith("--force-with-lease="):
+            lease_part = token[len("--force-with-lease="):]
+            if ":" not in lease_part:
+                continue
+            parts = lease_part.split(":")
+            if len(parts) != 2:
+                continue
+            lease_branch, lease_sha = parts
+            # Verify lease_sha is exactly 40 hex
+            if not sha_40_pattern.match(lease_sha):
+                continue
+
+            # Collect all other flags (should be none)
+            other_flags = [t for t in push_tokens if t.startswith("-") and t != token]
+            if other_flags:
+                continue
+
+            # Collect non-flag tokens
+            non_flag_tokens = [t for t in push_tokens if not t.startswith("-")]
+            if len(non_flag_tokens) != 2:
+                continue
+
+            remote, refspec = non_flag_tokens
+            if remote.lower() != "origin":
+                continue
+
+            # Parse refspec: must be <40-hex>:refs/heads/<branch>
+            if ":" not in refspec:
+                continue
+            refspec_parts = refspec.split(":", 1)
+            if len(refspec_parts) != 2:
+                continue
+            refspec_sha, refspec_ref = refspec_parts
+
+            # Verify sha is 40 hex
+            if not sha_40_pattern.match(refspec_sha):
+                continue
+
+            # Verify refspec matches: refs/heads/<branch> where <branch> == lease_branch
+            if not refspec_ref.startswith("refs/heads/"):
+                continue
+            refspec_branch = refspec_ref[len("refs/heads/"):]
+
+            # Both branches must match
+            if lease_branch == refspec_branch:
+                return True, ""
+
+    return False, "unknown or disallowed git push form"
+
+
+def check_command_for_agent(command: str, agent: str) -> Tuple[bool, str, str]:
+    """Check command against agent-specific rules.
+
+    Per-agent rules:
+    - flow-implement: full checks (wrappers and publishing verbs)
+    - flow-review: pass through (allow all)
+    - flow-healer: pass through (its tools list already restricts Bash to scoped git)
+    - flow-ship: restricted wrappers, allowed git push forms, all gh pr merge denied
+    - flow-merge: restricted wrappers, allowed git push forms, gh pr merge --admin denied,
+      gh pr merge --squash allowed only if no merge-queue config exists
+
+    Returns: (is_blocked: bool, reason: str if blocked, rule_id: str)
+    """
+    if agent in ("flow-review", "flow-healer"):
+        # flow-review: pass through. flow-healer: pass through too; its Bash is already limited
+        # by its tools list to git diff/status/rev-parse/add/commit/checkout HEAD -- (no push,
+        # no gh), so this guard adds nothing (#380; ADR-0023 2026-10-29 amendment).
+        return False, "", ""
+
+    # Fail closed on unknown flow-* agents; allow non-flow agents (e.g., general-purpose)
+    if agent.startswith("flow-") and agent not in KNOWN_FLOW_AGENTS:
+        return True, f"unknown flow agent: {agent}", "unknown-agent"
+
+    if agent not in KNOWN_FLOW_AGENTS:
+        return False, "", ""
+
     if not command or not isinstance(command, str):
-        return True, "Empty or invalid command"
+        return True, "Empty or invalid command", "invalid-input"
+
+    if agent in ("flow-ship", "flow-merge") and check_cmd_assignment_denied(command):
+        return True, "CHECK_CMD may only be assigned from the cached check command", "wrapper-form"
 
     try:
         segments = split_segments(command)
     except UnparseableCommand as exc:
-        return True, f"Unparseable command: {exc}"
+        return True, f"Unparseable command: {exc}", "parse-error"
+    cwd = None
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        pass
 
     for segment in segments:
         if not segment:
@@ -800,20 +1049,295 @@ def check_command(command):
         tokens = tokenize_segment(segment)
         if tokens is None:
             # Parse error (e.g., unbalanced quotes) -> block
-            return True, f"Unparseable command: {segment}"
+            return True, f"Unparseable command: {segment}", "parse-error"
 
+        # Transparent prefixes (command, exec, nohup, time, timeout, nice, VAR=value) are
+        # stripped so the rules below see the real command.
         tokens = strip_command_prefix(tokens)
 
-        if is_wrapper_form(tokens):
-            return True, "shell wrappers (sh -c, bash -c, eval, etc.) are not allowed"
+        if agent == "flow-implement":
+            # flow-implement: full checks
+            if is_wrapper_form(tokens):
+                return True, "shell wrappers (sh -c, bash -c, eval, etc.) are not allowed", "wrapper-form"
 
-        if is_publishing_verb(tokens):
-            return True, "publishing commands (git push, gh pr create, etc.) are not allowed"
+            if is_publishing_verb(tokens):
+                return True, "publishing commands (git push, gh pr create, etc.) are not allowed", "publishing-verb"
 
-        if is_interpreter_verb_pair(tokens):
-            return True, "interpreter -c/-e program runs a publishing command (git push, gh pr create, etc.)"
+            if is_interpreter_verb_pair(tokens):
+                return True, "interpreter -c/-e program runs a publishing command (git push, gh pr create, etc.)", "publishing-verb"
 
-    return False, ""
+        elif agent in ("flow-ship", "flow-merge"):
+            # flow-ship and flow-merge: restricted rules
+
+            # Check for wrapper forms, but allow specific python3 -c and eval forms
+            if is_wrapper_form_restricted(tokens, agent):
+                return True, "restricted wrapper form not allowed", "wrapper-form"
+
+            # For git/gh commands, fail closed if subcommand cannot be determined (unknown option)
+            cmd_basename = os.path.basename(tokens[0].strip('\'"')).lower() if tokens else ""
+            if cmd_basename in ("git", "gh"):
+                tool = "git" if cmd_basename == "git" else "gh"
+                subcommand = find_subcommand(tokens, tool)
+                # If subcommand is None, it means an unknown option was encountered: fail closed
+                if subcommand is None:
+                    msg = f"Unable to parse {cmd_basename} command (unknown option). {ESCALATION_HINT}"
+                    return True, msg, "unknown-option"
+
+            # Check git push specifically using the shared helper
+            if find_subcommand(tokens, "git") == "push":
+                is_allowed, reason = check_push_form(tokens)
+                if not is_allowed:
+                    msg = f"{reason} {ESCALATION_HINT}"
+                    return True, msg, "push-form"
+
+            # Check gh pr merge rules
+            if find_subcommand(tokens, "gh") == "pr merge":
+                # flow-ship: deny ALL gh pr merge (any flags)
+                if agent == "flow-ship":
+                    msg = f"gh pr merge is not allowed for flow-ship. {ESCALATION_HINT}"
+                    return True, msg, "gh-pr-merge-ship"
+
+                # flow-merge: deny --admin, check merge-queue for --squash
+                if agent == "flow-merge":
+                    # Check for --admin flag (denied for flow-merge)
+                    if "--admin" in tokens:
+                        msg = f"gh pr merge --admin is not allowed for flow-merge. {ESCALATION_HINT}"
+                        return True, msg, "gh-pr-merge-admin"
+
+                    # Check for --squash flag: only allowed if no merge-queue config
+                    if "--squash" in tokens:
+                        if has_merge_queue_config(cwd):
+                            msg = f"gh pr merge --squash is not allowed when a merge-queue config exists. {ESCALATION_HINT}"
+                            return True, msg, "gh-pr-merge-queue"
+                        # If no merge-queue, --squash is allowed
+
+            # gh stack sync is allowed
+            # gh pr create/edit are not blocked
+
+    return False, "", ""
+
+
+def _is_allowed_eval(tokens: List[str]) -> bool:
+    """True only for the exact eval literals in the Skill closure.
+
+    - eval "$CHECK_CMD"                  (worktree-reference.md Restack-a-child gate)
+    - eval ls -d "${PATTERN}/" [2>/dev/null]   (cleanup.md glob expansion)
+    Anything else, including other variables or extra arguments, is denied.
+    """
+    if tokens == ["eval", "$CHECK_CMD"]:
+        return True
+    if tokens[:4] == ["eval", "ls", "-d", "${PATTERN}/"]:
+        return all(t.startswith(("2>", ">")) for t in tokens[4:])
+    return False
+
+
+# CHECK_CMD may only be assigned from the project's cached check command. An assignment from
+# anything else, followed by the allowed `eval "$CHECK_CMD"`, would run arbitrary text.
+# Acceptable forms:
+#   $(jq -r '.commands.check // .commands.test // empty' <file>)
+#   $(jq -r '.commands.check // .commands.test // empty' <file> 2>/dev/null)
+#   $(jq -r '.command // empty' <file>)
+# where <file> is a variable placeholder or quoted path
+_CHECK_CMD_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])CHECK_CMD=(.*)$", re.MULTILINE)
+_CHECK_CMD_OK_PATTERN = re.compile(
+    r"^\$\(jq\s+-r\s+'\.commands\.check // .commands\.test // empty'\s+(?:'[^']*'|[^'\s)]+|<[^>]+>)\s*(?:2>/dev/null)?\)$"
+    r"|^\$\(jq\s+-r\s+'\.command // empty'\s+(?:'[^']*'|[^'\s)]+|<[^>]+>)\s*(?:2>/dev/null)?\)$"
+)
+
+
+def check_cmd_assignment_denied(command: str) -> bool:
+    """True when the command assigns CHECK_CMD from anything but the cached check command."""
+    if "eval" not in command:
+        return False
+    for line in command.splitlines():
+        for m in _CHECK_CMD_ASSIGN_RE.finditer(line):
+            assigned_value = m.group(1).strip()
+            if not _CHECK_CMD_OK_PATTERN.match(assigned_value):
+                return True
+    return False
+
+
+def has_merge_queue_config(cwd: Optional[str] = None) -> bool:
+    """Check if a merge-queue.json config exists for the repo.
+
+    Uses the same lookup logic as scripts/workflow/merge_queue.py:resolve_config_path().
+    Returns True if config exists, False if not found or if resolution fails.
+    """
+    if cwd is None:
+        cwd = os.getcwd()
+
+    try:
+        cwd_path = Path(cwd).resolve()
+
+        # Try to determine git common dir
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(cwd_path), "rev-parse", "--git-common-dir"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode != 0:
+                return False
+            git_common_dir_str = result.stdout.strip()
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+        # Resolve the git common dir path
+        if not Path(git_common_dir_str).is_absolute():
+            git_common_dir = (cwd_path / git_common_dir_str).resolve()
+        else:
+            git_common_dir = Path(git_common_dir_str).resolve()
+
+        # Check for .bare layout (bare-repo + worktrees)
+        if git_common_dir.name == ".bare" and (git_common_dir.parent / "worktrees").is_dir():
+            config_path = git_common_dir.parent / "merge-queue.json"
+            return config_path.exists()
+
+        # Check for /setup-repo layout (worktrees/main/.git)
+        if git_common_dir.parent.parent.name == "worktrees":
+            container = git_common_dir.parent.parent.parent
+            config_path = container / "merge-queue.json"
+            return config_path.exists()
+
+        # Unknown layout
+        return False
+
+    except Exception:
+        # On any error, conservatively return False (no queue found)
+        return False
+
+
+def is_wrapper_form_restricted(tokens: List[str], agent: str) -> bool:
+    """Check if tokens match a forbidden wrapper form for flow-ship/flow-merge agents.
+
+    Allows any python3 -c form (known bypass per ADR-0008) and specific eval literals.
+    Denies:
+    - sh -c, bash -c, zsh -c
+    - xargs git, xargs gh
+    - env git, env gh
+    - git -c, git --git-dir, git --exec-path
+    - gh api -X non-GET
+
+    Allows (exact eval matches):
+    - eval ls -d "${PATTERN}/" (cleanup.md)
+    - eval "$CHECK_CMD" (worktree-reference.md)
+
+    Also denies variable-assignment forms that expand allowed eval.
+    """
+    if not tokens:
+        return False
+
+    # Check for python3 -c forms (allowed)
+    if len(tokens) >= 2 and tokens[0] == "python3" and tokens[1] == "-c":
+        # These forms are allowed, don't block
+        return False
+
+    # Check for eval forms: only the two exact literals the closure uses are allowed
+    if tokens[0] == "eval":
+        return not _is_allowed_eval(tokens)
+
+    # Check for standard denied wrapper forms (using WRAPPER_FORMS list)
+    for wrapper in WRAPPER_FORMS:
+        parts = wrapper.split()
+
+        # Special handling for env git/gh and xargs git/gh
+        if wrapper == "env git":
+            for i in range(len(tokens)):
+                if tokens[i].lower() == "env":
+                    for j in range(i + 1, len(tokens)):
+                        if tokens[j].lower() == "git":
+                            return True  # Denied
+            continue
+
+        if wrapper == "env gh":
+            for i in range(len(tokens)):
+                if tokens[i].lower() == "env":
+                    for j in range(i + 1, len(tokens)):
+                        if tokens[j].lower() == "gh":
+                            return True  # Denied
+            continue
+
+        if wrapper == "xargs git":
+            for i in range(len(tokens)):
+                if tokens[i].lower() == "xargs":
+                    for j in range(i + 1, len(tokens)):
+                        if tokens[j].lower() == "git":
+                            return True  # Denied
+            continue
+
+        if wrapper == "xargs gh":
+            for i in range(len(tokens)):
+                if tokens[i].lower() == "xargs":
+                    for j in range(i + 1, len(tokens)):
+                        if tokens[j].lower() == "gh":
+                            return True  # Denied
+            continue
+
+        # gh api -X non-GET check
+        if wrapper == "gh api -X non-GET":
+            for i in range(len(tokens)):
+                if tokens[i].lower() == "gh" and i + 1 < len(tokens) and tokens[i + 1].lower() == "api":
+                    j = i + 2
+                    while j < len(tokens):
+                        tok = tokens[j]
+                        if tok == "-X":
+                            if j + 1 < len(tokens):
+                                method = tokens[j + 1].upper()
+                                if method != "GET":
+                                    return True  # Denied
+                            break
+                        elif tok.startswith("-X"):
+                            method = tok[2:].upper()
+                            if method != "GET":
+                                return True  # Denied
+                            break
+                        elif tok.startswith("-"):
+                            j += 1
+                        else:
+                            break
+                        j += 1
+            continue
+
+        # Standard exact-sequence matching for other wrappers
+        for i in range(len(tokens)):
+            if tokens[i].lower() == parts[0]:
+                match = True
+                for j, part in enumerate(parts[1:], 1):
+                    if i + j >= len(tokens):
+                        match = False
+                        break
+                    # Special handling for git -c (not -C which is a global option)
+                    if parts[0] == "git" and part == "-c":
+                        tok = tokens[i + j]
+                        if tok == "-c":
+                            match = True
+                            break
+                        else:
+                            match = False
+                            break
+                    if tokens[i + j].lower() != part:
+                        match = False
+                        break
+
+                if match:
+                    return True  # Denied
+
+    return False
+
+
+# flow-bash-push-allowlist:begin
+# Git push forms allowed for flow-ship and flow-merge agents.
+# All other git push forms are denied. Forms matched on parsed argv, never substrings.
+#
+# Allowed forms:
+# - git push [-u] origin <branch>
+# - git push --force-with-lease --force-if-includes origin HEAD
+# - git -C <wt> push --force-with-lease ...
+# - git push --force-with-lease=<branch>:<40-hex> origin <40-hex>:refs/heads/<branch>
+# - gh stack sync
+#
+# Denied forms include: bare --force, -f, combined short flags with f, abbreviated
+# long options (--forc), +refspec, :branch deletion, --mirror, --delete/-d, --prune.
+# flow-bash-push-allowlist:end
 
 
 def main():
@@ -825,11 +1349,11 @@ def main():
     try:
         # Parse CLI argument
         if len(sys.argv) < 3 or sys.argv[1] != "--agent":
-            print("Usage: flow-bash-guard.py --agent <flow-implement|flow-review|auto>", file=sys.stderr)
+            print("Usage: flow-bash-guard.py --agent <flow-implement|flow-review|flow-ship|flow-merge|flow-healer|auto>", file=sys.stderr)
             sys.exit(2)
 
         agent = sys.argv[2]
-        if agent not in ("flow-implement", "flow-review", "auto"):
+        if agent not in KNOWN_FLOW_AGENTS + ("auto",):
             print(f"Unknown --agent value: {agent}", file=sys.stderr)
             sys.exit(2)
 
@@ -845,16 +1369,26 @@ def main():
         if agent == "auto":
             agent_type = payload.get("agent_type")
 
-            # If agent_type is missing or not a flow agent, allow
-            if not agent_type or agent_type not in ("flow-implement", "flow-review"):
+            # If agent_type is missing or not flow-*, allow
+            if not agent_type or not agent_type.startswith("flow-"):
                 print(f"Auto mode: agent_type '{agent_type}' is not a flow agent, allowing", file=sys.stderr)
                 sys.exit(0)
 
+            # If agent_type starts with flow- but not in known set, fail closed
+            if agent_type not in KNOWN_FLOW_AGENTS:
+                print(f"Auto mode: agent_type '{agent_type}' is unknown, denying", file=sys.stderr)
+                sys.exit(2)
+
             # Use the agent_type from payload
             agent = agent_type
+        else:
+            # Explicit agent specified; if it's flow-* and unknown, fail closed
+            if agent.startswith("flow-") and agent not in KNOWN_FLOW_AGENTS:
+                print(f"Explicit agent '{agent}' is unknown, denying", file=sys.stderr)
+                sys.exit(2)
 
-        # Only guard flow-implement; pass through other agents
-        if agent != "flow-implement":
+        # flow-review and flow-healer have no Bash restrictions here; pass through before payload checks
+        if agent in ("flow-review", "flow-healer"):
             sys.exit(0)
 
         tool_name = payload.get("tool_name")
@@ -875,10 +1409,14 @@ def main():
             print("Invalid command: not a non-empty string", file=sys.stderr)
             sys.exit(2)
 
-        # Check for wrapper forms and publishing verbs
-        is_blocked, reason = check_command(command)
+        # Check command against agent-specific rules
+        is_blocked, reason, rule_id = check_command_for_agent(command, agent)
         if is_blocked:
-            print(f"BLOCKED: {reason}", file=sys.stderr)
+            if rule_id and rule_id in ("push-form", "gh-pr-merge-admin", "gh-pr-merge-ship", "gh-pr-merge-queue"):
+                # Denied push/merge forms: print with agent and rule id for Ask block escalation
+                print(f"{agent}: rule {rule_id}: {reason}", file=sys.stderr)
+            else:
+                print(f"BLOCKED: {reason}", file=sys.stderr)
             sys.exit(2)
 
         sys.exit(0)

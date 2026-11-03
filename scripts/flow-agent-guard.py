@@ -12,6 +12,9 @@ import sys
 ALLOWED_SUBAGENT_TYPES = {
     "flow-implement": {"plan-implementer"},
     "flow-review": {"expert-reviewer", "expert-scout"},
+    "flow-ship": set(),
+    "flow-merge": set(),
+    "flow-healer": set(),  # no Agent/Task at all; spawned only by the orchestrator verify check-heal
 }
 
 
@@ -60,7 +63,7 @@ def main():
     try:
         # Parse CLI argument
         if len(sys.argv) < 3 or sys.argv[1] != "--agent":
-            print("Usage: flow-agent-guard.py --agent <flow-implement|flow-review|auto>", file=sys.stderr)
+            print("Usage: flow-agent-guard.py --agent <flow-implement|flow-review|flow-ship|flow-merge|flow-healer|auto>", file=sys.stderr)
             sys.exit(2)
 
         agent = sys.argv[2]
@@ -78,7 +81,7 @@ def main():
             agent_type = payload.get("agent_type")
 
             # If agent_type is missing or not a flow agent, allow
-            if not agent_type or agent_type not in ("flow-implement", "flow-review"):
+            if not agent_type or agent_type not in ("flow-implement", "flow-review", "flow-ship", "flow-merge", "flow-healer"):
                 print(f"Auto mode: agent_type '{agent_type}' is not a flow agent, allowing", file=sys.stderr)
                 sys.exit(0)
 

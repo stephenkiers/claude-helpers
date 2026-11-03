@@ -121,8 +121,8 @@ def replaced(mod, name, value):
 
 
 def is_blocked(mod, command):
-    """Ask the guard, reading mod.check_command at call time so patches take effect."""
-    blocked, _reason = mod.check_command(command)
+    """Ask the guard, reading mod.check_command_for_agent at call time so patches take effect."""
+    blocked, _reason, _rule = mod.check_command_for_agent(command, "flow-implement")
     return blocked
 
 
@@ -223,17 +223,17 @@ def main():
         )
 
     # ========================================================================
-    # SECTION 4: Full revert (allow-all check_command)
+    # SECTION 4: Full revert (allow-all check_command_for_agent)
     # ========================================================================
-    print("\n[Section 4] Full revert: an allow-all check_command turns the corpus red")
+    print("\n[Section 4] Full revert: an allow-all check_command_for_agent turns the corpus red")
 
-    def allow_all(_command):
-        return False, ""
+    def allow_all(_command, _agent):
+        return False, "", ""
 
-    with replaced(mod, "check_command", allow_all):
+    with replaced(mod, "check_command_for_agent", allow_all):
         allowed_under_revert = [cmd for cmd in CORPUS.values() if not is_blocked(mod, cmd)]
     h.test_result(
-        "allow-all check_command: every corpus command is allowed (pre-check would fail)",
+        "allow-all check_command_for_agent: every corpus command is allowed (pre-check would fail)",
         len(allowed_under_revert) == len(CORPUS),
         f"allowed {len(allowed_under_revert)} of {len(CORPUS)}",
     )

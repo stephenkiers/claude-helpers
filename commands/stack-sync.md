@@ -599,8 +599,9 @@ Options:
   they can execute it by hand; an abort never leaves them without the runbook.
 
 Skip the question (proceed automatically) when `--yes` (alias `-y`) was passed — `ASSUME_YES=true`.
-`/shipit` always invokes `/stack-sync --yes`, so inside a flow's ship step this gate is normally
-skipped; it is relayed only when `/cleanup`'s post-merge restack (no `--yes`) reaches it.
+`/shipit` invokes `/stack-sync --yes` outside a flow, so the gate is normally skipped; inside a flow,
+`/shipit` invokes `/stack-sync` without `--yes`, relaying the confirmation through the Ask block. It is also relayed
+when `/cleanup`'s post-merge restack (no `--yes`) reaches it.
 Skip all execution when `--dry-run` was passed — 4b.2's dry-run gate already exited before this step;
 the emitted plan (and the single-driver `echo` from Step 4a) is the entire output.
 

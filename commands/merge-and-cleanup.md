@@ -690,10 +690,10 @@ If an earlier Ask already created the receipt, rewrite the whole file and **keep
 
 `Decision: OK` only when the PR is merged **and** `/cleanup` succeeded. Otherwise `FAILED`, with a
 `Reason:` naming the stop: `queue kickback (exit 2) — fix, push, re-run /merge-and-cleanup <N>`,
-`queue refused (exit 3) — <queue message>`, `merge gate failed`, `push gate failed`,
+`queue refused (exit 3) — <queue message>`, `queue outcome unknown (exit 1) — no fresh queue result and the PR is not merged`, `merge gate failed`, `push gate failed`,
 `stopped at merge-queue setup offer`, or `/cleanup failed after merge — run /cleanup <abs-path>`.
 On a kickback or refusal the worktree is left intact (Phase 4-Q never reaches `/cleanup`); the
-orchestrator never remediates — it offers the human Retry / Take over / Abort.
+orchestrator never remediates — it offers the human Retry / Take over / Abort. An unknown, unparsable, or missing queue outcome is its own case (exit 1, not a refusal): the PR is not MERGED, so the worktree is left intact and the stop is a hard stop like the others.
 
 ## Files
 
