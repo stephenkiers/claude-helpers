@@ -487,7 +487,6 @@ def main():
     print()
     print("[Section 8] #421 command doc improvements")
 
-    step4_sec = _section(fleet_cmd, "## Step 4: Dispatch loop")
     relay_sec = _between(fleet_cmd, "2. **Relay items", "3. **Renderer failure.**")
     relay_flat = _flat(relay_sec)
     step_validation = "must match" in relay_flat and "[a-z0-9-]" in relay_flat
