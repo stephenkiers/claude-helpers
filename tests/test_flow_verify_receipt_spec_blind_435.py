@@ -8,15 +8,18 @@ Covers two spec clauses:
   unresolved/ambiguous (never guessed).
 - _verify_unknown_already_done accepts an "unknown" item as already-done only when BOTH the row's
   cited line range overlaps an old-side diff hunk within 3 lines of slack AND a cited anchor is
-  script-verified present; otherwise it rejects.
+  script-verified present; otherwise it rejects. The cited path:N anchor must sit on the row's own
+  file, with N inside the row's range (+/- slack).
 
 Run with: python3 tests/test_flow_verify_receipt_spec_blind_435.py
 """
 
+import hashlib
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
@@ -28,13 +31,24 @@ fvr = importlib.util.module_from_spec(_spec)
 sys.modules["flow_verify_receipt"] = fvr
 _spec.loader.exec_module(fvr)
 
+# The persisted fix coverage table every artifact binds to (coverage_sha256).
+_COV_TMP = tempfile.TemporaryDirectory()
+COVERAGE_FILE = Path(_COV_TMP.name) / "05-fix.coverage.txt"
+COVERAGE_FILE.write_text("UNITS: 1\nD1 | unknown | fixture", encoding="utf-8")
+COVERAGE_SHA = hashlib.sha256(COVERAGE_FILE.read_bytes()).hexdigest()
+
+
+def _verify(unit_id: str, evidence: str, artifact: Dict) -> Tuple[bool, str]:
+    """Call _verify_unknown_already_done with the bound coverage file."""
+    return fvr._verify_unknown_already_done(unit_id, evidence, artifact, COVERAGE_FILE)
+
 
 def _artifact(
     hunk_start: int = 100,
     hunk_count: int = 5,
     row_start: int = 416,
     row_end: int = 435,
-    commits: List[str] = None,
+    commits: Optional[List[str]] = None,
     changed: str = "scripts/workflow/deps.py",
 ) -> Dict:
     """Build a frozen evidence artifact with one hunk and one row for fix:D1."""
@@ -43,6 +57,7 @@ def _artifact(
         "available": True,
         "base": "base_sha",
         "tip": "tip_sha",
+        "coverage_sha256": COVERAGE_SHA,
         "changed_files": [changed],
         "hunks": {changed: [[hunk_start, hunk_count]]},
         "base_line_counts": {changed: 536},
@@ -136,6 +151,19 @@ def case_basename_single_nested_match_resolves() -> Tuple[bool, str]:
     return (True, "")
 
 
+def case_basename_root_and_nested_is_ambiguous() -> Tuple[bool, str]:
+    """A bare basename that equals a root changed path and also matches a nested one is ambiguous."""
+    changed_files = {"deps.py", "scripts/workflow/deps.py"}
+    tokens = fvr._doing_it_path_tokens("deps.py:416-435", changed_files)
+    if len(tokens) != 1 or not tokens[0].is_ambiguous or tokens[0].resolved_path is not None:
+        return (False, f"Expected one ambiguous unresolved token, got {tokens}")
+    results = fvr._classify_doing_it_rows(
+        [fvr.DoingItRow(unit_id="D1", file_cell="deps.py:416-435")], changed_files)
+    if results["D1"].status != "unknown" or "ambiguous" not in results["D1"].evidence.lower():
+        return (False, f"Expected unknown ambiguous row, got {results['D1']}")
+    return (True, "")
+
+
 def case_basename_zero_matches_cell_is_unknown() -> Tuple[bool, str]:
     """A bare basename with zero changed matches is dropped: row reads unknown, not uncovered or covered."""
     rows = [fvr.DoingItRow(unit_id="D1", file_cell="missing.py:1-5")]
@@ -167,7 +195,7 @@ def case_slack_exact_three_before_hunk_passes() -> Tuple[bool, str]:
     """Row ends exactly 3 lines before the hunk start: distance 3 is within slack, passes."""
     # hunk starts at 100; row end 97 is distance 3 before it.
     artifact = _artifact(hunk_start=100, hunk_count=5, row_start=90, row_end=97)
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", "scripts/workflow/deps.py:95", artifact)
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:95", artifact)
     if not passes:
         return (False, f"Expected pass at slack distance 3, got reason {reason}")
     return (True, "")
@@ -177,7 +205,7 @@ def case_slack_exact_three_after_hunk_passes() -> Tuple[bool, str]:
     """Row starts exactly 3 lines after the hunk end: distance 3 is within slack, passes."""
     # hunk 100..105; row start 108 is distance 3 past hunk end.
     artifact = _artifact(hunk_start=100, hunk_count=5, row_start=108, row_end=110)
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", "scripts/workflow/deps.py:109", artifact)
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:109", artifact)
     if not passes:
         return (False, f"Expected pass at slack distance 3 after hunk, got reason {reason}")
     return (True, "")
@@ -187,7 +215,7 @@ def case_slack_four_before_hunk_fails() -> Tuple[bool, str]:
     """Row ends 4 lines before the hunk start: beyond slack, fails range-overlap."""
     # hunk starts at 100; row end 96 is distance 4.
     artifact = _artifact(hunk_start=100, hunk_count=5, row_start=90, row_end=96)
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", "scripts/workflow/deps.py:95", artifact)
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:95", artifact)
     if passes:
         return (False, "Expected failure at slack distance 4")
     if reason != "range-overlap":
@@ -199,7 +227,7 @@ def case_slack_four_after_hunk_fails() -> Tuple[bool, str]:
     """Row starts 4 lines after the hunk end: beyond slack, fails range-overlap."""
     # hunk 100..105; row start 109 is distance 4 past hunk end.
     artifact = _artifact(hunk_start=100, hunk_count=5, row_start=109, row_end=112)
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", "scripts/workflow/deps.py:110", artifact)
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:110", artifact)
     if passes:
         return (False, "Expected failure at slack distance 4 after hunk")
     if reason != "range-overlap":
@@ -216,7 +244,7 @@ def case_anchor_present_no_overlap_fails_with_sha() -> Tuple[bool, str]:
     """A valid commit SHA anchor does not rescue a row with no hunk overlap."""
     artifact = _artifact(hunk_start=100, hunk_count=5, row_start=300, row_end=310,
                          commits=["abc1234def5678"])
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", "see commit abc1234", artifact)
+    passes, reason = _verify("fix:D1", "see commit abc1234", artifact)
     if passes:
         return (False, "Expected failure: anchor present but no overlap")
     if reason != "range-overlap":
@@ -227,7 +255,7 @@ def case_anchor_present_no_overlap_fails_with_sha() -> Tuple[bool, str]:
 def case_overlap_but_no_anchor_fails() -> Tuple[bool, str]:
     """Overlapping row with a path cited that is not in the diff: anchor missing, fails."""
     artifact = _artifact(hunk_start=416, hunk_count=5, row_start=416, row_end=435)
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", "other/file.py:420", artifact)
+    passes, reason = _verify("fix:D1", "other/file.py:420", artifact)
     if passes:
         return (False, "Expected failure: overlap but anchor absent")
     if reason != "anchor":
@@ -238,7 +266,7 @@ def case_overlap_but_no_anchor_fails() -> Tuple[bool, str]:
 def case_overlap_but_anchor_line_past_tip_fails() -> Tuple[bool, str]:
     """Anchor cites a line past the tip end of file: not script-verified, fails."""
     artifact = _artifact(hunk_start=416, hunk_count=5, row_start=416, row_end=435)
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", "scripts/workflow/deps.py:999", artifact)
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:999", artifact)
     if passes:
         return (False, "Expected failure: anchor past tip end")
     if reason != "anchor":
@@ -250,7 +278,7 @@ def case_overlap_but_unknown_sha_fails() -> Tuple[bool, str]:
     """Overlapping row with a SHA that matches no commit in the artifact: fails anchor."""
     artifact = _artifact(hunk_start=416, hunk_count=5, row_start=416, row_end=435,
                          commits=["abc1234def5678"])
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", "deadbee", artifact)
+    passes, reason = _verify("fix:D1", "deadbee", artifact)
     if passes:
         return (False, "Expected failure: unknown SHA")
     if reason != "anchor":
@@ -265,6 +293,7 @@ def case_overlap_with_ambiguous_basename_anchor_fails() -> Tuple[bool, str]:
         "available": True,
         "base": "base_sha",
         "tip": "tip_sha",
+        "coverage_sha256": COVERAGE_SHA,
         "changed_files": ["scripts/deps.py", "tests/deps.py"],
         "hunks": {"scripts/deps.py": [[416, 5]]},
         "base_line_counts": {"scripts/deps.py": 536, "tests/deps.py": 100},
@@ -274,7 +303,7 @@ def case_overlap_with_ambiguous_basename_anchor_fails() -> Tuple[bool, str]:
             "fix:D1": [{"path": "scripts/deps.py", "start": 416, "end": 420}],
         },
     }
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", "deps.py:418", artifact)
+    passes, reason = _verify("fix:D1", "deps.py:418", artifact)
     if passes:
         return (False, "Expected failure: ambiguous basename anchor")
     if reason != "anchor":
@@ -286,9 +315,121 @@ def case_overlap_with_sha_anchor_passes() -> Tuple[bool, str]:
     """Positive control for the anchor branch: overlap plus a matching SHA prefix passes."""
     artifact = _artifact(hunk_start=416, hunk_count=5, row_start=416, row_end=435,
                          commits=["abc1234def5678"])
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", "landed in abc1234", artifact)
+    passes, reason = _verify("fix:D1", "landed in abc1234", artifact)
     if not passes:
         return (False, f"Expected pass with SHA anchor and overlap, got reason {reason}")
+    return (True, "")
+
+
+# ---------------------------------------------------------------------------
+# _verify_unknown_already_done: a path:N anchor must be on the row's own file, inside its range
+# ---------------------------------------------------------------------------
+
+
+def case_path_anchor_on_row_file_inside_range_passes() -> Tuple[bool, str]:
+    """Control: path:N on the row's own file, N inside the row's range, passes."""
+    artifact = _artifact(hunk_start=416, hunk_count=5, row_start=416, row_end=420)
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:418", artifact)
+    if not passes:
+        return (False, f"Expected pass, got reason {reason}")
+    return (True, "")
+
+
+def case_path_anchor_on_other_changed_file_fails() -> Tuple[bool, str]:
+    """An anchor on another changed file, even one inside the row's line numbers, does not verify the row."""
+    artifact = {
+        "format": 1,
+        "available": True,
+        "base": "base_sha",
+        "tip": "tip_sha",
+        "coverage_sha256": COVERAGE_SHA,
+        "changed_files": ["scripts/workflow/deps.py", "other/file.py"],
+        "hunks": {"scripts/workflow/deps.py": [[416, 5]]},
+        "base_line_counts": {"scripts/workflow/deps.py": 536, "other/file.py": 500},
+        "tip_line_counts": {"scripts/workflow/deps.py": 541, "other/file.py": 500},
+        "commits": [],
+        "rows": {"fix:D1": [{"path": "scripts/workflow/deps.py", "start": 416, "end": 420}]},
+    }
+    passes, reason = _verify("fix:D1", "other/file.py:418", artifact)
+    if passes or reason != "anchor":
+        return (False, f"Expected (False, anchor) for an anchor on another file, got ({passes}, {reason})")
+    return (True, "")
+
+
+def case_path_anchor_bare_basename_on_row_file_passes() -> Tuple[bool, str]:
+    """A bare basename anchor that resolves to the row's own file, inside its range, passes."""
+    artifact = _artifact(hunk_start=416, hunk_count=5, row_start=416, row_end=420)
+    passes, reason = _verify("fix:D1", "deps.py:418", artifact)
+    if not passes:
+        return (False, f"Expected pass for bare basename on the row file, got {reason}")
+    return (True, "")
+
+
+def case_path_anchor_outside_row_range_fails() -> Tuple[bool, str]:
+    """N past the row's end by more than the slack, on the row's own file (tip is long enough): fails."""
+    artifact = _artifact(hunk_start=416, hunk_count=5, row_start=416, row_end=420)
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:430", artifact)
+    if passes or reason != "anchor":
+        return (False, f"Expected (False, anchor), got ({passes}, {reason})")
+    return (True, "")
+
+
+def case_path_anchor_slack_boundary_after_row() -> Tuple[bool, str]:
+    """N at row end + 3 is within slack and passes; N at row end + 4 fails."""
+    artifact = _artifact(hunk_start=416, hunk_count=5, row_start=416, row_end=420)
+    passes, _ = _verify("fix:D1", "scripts/workflow/deps.py:423", artifact)
+    if not passes:
+        return (False, "Expected pass at row end + 3")
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:424", artifact)
+    if passes or reason != "anchor":
+        return (False, f"Expected (False, anchor) at row end + 4, got ({passes}, {reason})")
+    return (True, "")
+
+
+def case_path_anchor_slack_boundary_before_row() -> Tuple[bool, str]:
+    """N at row start - 3 is within slack and passes; N at row start - 4 fails."""
+    artifact = _artifact(hunk_start=416, hunk_count=5, row_start=416, row_end=420)
+    passes, _ = _verify("fix:D1", "scripts/workflow/deps.py:413", artifact)
+    if not passes:
+        return (False, "Expected pass at row start - 3")
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:412", artifact)
+    if passes or reason != "anchor":
+        return (False, f"Expected (False, anchor) at row start - 4, got ({passes}, {reason})")
+    return (True, "")
+
+
+def case_path_anchor_range_end_outside_row_fails() -> Tuple[bool, str]:
+    """An N-M anchor whose end leaves the row's range (+ slack) fails even when its start is inside."""
+    artifact = _artifact(hunk_start=416, hunk_count=5, row_start=416, row_end=420)
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:418-430", artifact)
+    if passes or reason != "anchor":
+        return (False, f"Expected (False, anchor), got ({passes}, {reason})")
+    return (True, "")
+
+
+def case_path_anchor_line_zero_or_inverted_fails() -> Tuple[bool, str]:
+    """Line 0 and an inverted N-M anchor are not valid anchors."""
+    artifact = _artifact(hunk_start=416, hunk_count=5, row_start=416, row_end=420)
+    for evidence in ["scripts/workflow/deps.py:0", "scripts/workflow/deps.py:419-417"]:
+        passes, reason = _verify("fix:D1", evidence, artifact)
+        if passes or reason != "anchor":
+            return (False, f"{evidence!r}: expected (False, anchor), got ({passes}, {reason})")
+    return (True, "")
+
+
+def case_path_anchor_huge_or_superscript_numbers_do_not_raise() -> Tuple[bool, str]:
+    """A 5000-digit or superscript line number is not an anchor: fails anchor, never raises."""
+    artifact = _artifact(hunk_start=416, hunk_count=5, row_start=416, row_end=420)
+    for evidence in [
+        "scripts/workflow/deps.py:" + "9" * 5000,
+        "scripts/workflow/deps.py:4¹⁸",
+    ]:
+        try:
+            passes, reason = _verify("fix:D1", evidence, artifact)
+        except Exception as e:
+            return (False, f"raised {type(e).__name__}: {e}")
+        if passes or reason != "anchor":
+            return (False, f"expected (False, anchor), got ({passes}, {reason})")
     return (True, "")
 
 
@@ -300,6 +441,7 @@ CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("three-way ambiguous token flagged", case_basename_three_way_ambiguous_token_flags_ambiguity),
     ("three-way ambiguous row unknown", case_basename_three_way_ambiguous_row_is_unknown),
     ("single nested basename resolves", case_basename_single_nested_match_resolves),
+    ("root plus nested basename ambiguous", case_basename_root_and_nested_is_ambiguous),
     ("zero-match basename cell unknown", case_basename_zero_matches_cell_is_unknown),
     ("resolved nested basename covers row", case_basename_resolved_cell_covers_row),
     ("slack distance 3 before hunk passes", case_slack_exact_three_before_hunk_passes),
@@ -312,6 +454,15 @@ CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("overlap but unknown SHA fails", case_overlap_but_unknown_sha_fails),
     ("overlap with ambiguous basename anchor fails", case_overlap_with_ambiguous_basename_anchor_fails),
     ("overlap with SHA anchor passes", case_overlap_with_sha_anchor_passes),
+    ("path anchor on row file in range passes", case_path_anchor_on_row_file_inside_range_passes),
+    ("path anchor on other changed file fails", case_path_anchor_on_other_changed_file_fails),
+    ("bare basename anchor on row file passes", case_path_anchor_bare_basename_on_row_file_passes),
+    ("path anchor outside row range fails", case_path_anchor_outside_row_range_fails),
+    ("path anchor slack boundary after row", case_path_anchor_slack_boundary_after_row),
+    ("path anchor slack boundary before row", case_path_anchor_slack_boundary_before_row),
+    ("path anchor range end outside row fails", case_path_anchor_range_end_outside_row_fails),
+    ("path anchor line 0 or inverted fails", case_path_anchor_line_zero_or_inverted_fails),
+    ("path anchor huge or superscript number no raise", case_path_anchor_huge_or_superscript_numbers_do_not_raise),
 ]
 
 

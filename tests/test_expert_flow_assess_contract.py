@@ -172,7 +172,7 @@ def main():
     h.test_result("expert-flow.md fix section mentions fix-audit coverage call",
                   "--coverage-out" in ef and "--evidence-out" in ef)
     h.test_result("expert-flow.md fix section mentions evidence.json artifact",
-                  "steps/06-fix.evidence.json" in ef or "steps/<NN>-fix.evidence.json" in ef)
+                  "steps/05-fix.evidence.json" in ef or "steps/<NN>-fix.evidence.json" in ef)
     h.test_result("expert-flow.md assess item 9 mentions unknown with range_overlap",
                   "coverage `unknown` and `range_overlap: overlap`" in assess_sec)
     h.test_result("expert-flow.md uses printf '%s' with issue list JSON piping",

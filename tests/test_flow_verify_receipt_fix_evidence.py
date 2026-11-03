@@ -10,12 +10,15 @@ Run with: python3 tests/test_flow_verify_receipt_fix_evidence.py
 
 import hashlib
 import importlib.util
+import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
+from contextlib import redirect_stdout
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
@@ -27,6 +30,19 @@ fvr = importlib.util.module_from_spec(_spec)
 sys.modules["flow_verify_receipt"] = fvr
 _spec.loader.exec_module(fvr)
 
+# The persisted fix coverage table that every artifact binds to (coverage_sha256). Its content is not
+# read by _verify_unknown_already_done; only its bytes matter for the sha binding.
+_COV_TMP = tempfile.TemporaryDirectory()
+COVERAGE_FILE = Path(_COV_TMP.name) / "05-fix.coverage.txt"
+COVERAGE_FILE.write_text("UNITS: 1\nD1 | unknown | fixture", encoding="utf-8")
+COVERAGE_SHA = hashlib.sha256(COVERAGE_FILE.read_bytes()).hexdigest()
+
+
+def _verify(unit_id: str, evidence: str, artifact: Dict,
+            coverage_file: Optional[Path] = COVERAGE_FILE) -> Tuple[bool, str]:
+    """Call _verify_unknown_already_done with the bound coverage file."""
+    return fvr._verify_unknown_already_done(unit_id, evidence, artifact, coverage_file)
+
 
 def case_verify_unknown_already_done_passes_with_both_anchors() -> Tuple[bool, str]:
     """Rule 5 positive: a fix:D1 unknown with B overlap and evidence anchor → passes."""
@@ -35,6 +51,7 @@ def case_verify_unknown_already_done_passes_with_both_anchors() -> Tuple[bool, s
         "available": True,
         "base": "base_sha",
         "tip": "tip_sha",
+        "coverage_sha256": COVERAGE_SHA,
         "changed_files": ["scripts/workflow/deps.py"],
         "hunks": {
             "scripts/workflow/deps.py": [[416, 5]],  # start, count
@@ -49,7 +66,7 @@ def case_verify_unknown_already_done_passes_with_both_anchors() -> Tuple[bool, s
         },
     }
     evidence = "scripts/workflow/deps.py:420"
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", evidence, artifact)
+    passes, reason = _verify("fix:D1", evidence, artifact)
     if not passes:
         return (False, f"Expected passes, got reason: {reason}")
     return (True, "")
@@ -62,6 +79,7 @@ def case_verify_unknown_already_done_fails_no_range_overlap() -> Tuple[bool, str
         "available": True,
         "base": "base_sha",
         "tip": "tip_sha",
+        "coverage_sha256": COVERAGE_SHA,
         "changed_files": ["scripts/workflow/deps.py"],
         "hunks": {
             "scripts/workflow/deps.py": [[100, 5]],  # Hunk at 100-105
@@ -76,7 +94,7 @@ def case_verify_unknown_already_done_fails_no_range_overlap() -> Tuple[bool, str
         },
     }
     evidence = "scripts/workflow/deps.py:420"
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", evidence, artifact)
+    passes, reason = _verify("fix:D1", evidence, artifact)
     if passes:
         return (False, "Expected failure")
     if reason != "range-overlap":
@@ -89,6 +107,7 @@ def case_verify_unknown_already_done_fails_no_anchor() -> Tuple[bool, str]:
     artifact = {
         "format": 1,
         "available": True,
+        "coverage_sha256": COVERAGE_SHA,
         "changed_files": ["scripts/workflow/deps.py"],
         "hunks": {
             "scripts/workflow/deps.py": [[416, 5]],
@@ -101,7 +120,7 @@ def case_verify_unknown_already_done_fails_no_anchor() -> Tuple[bool, str]:
         },
     }
     evidence = "This is prose only, no anchors"
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", evidence, artifact)
+    passes, reason = _verify("fix:D1", evidence, artifact)
     if passes:
         return (False, "Expected failure")
     if reason != "anchor":
@@ -111,9 +130,9 @@ def case_verify_unknown_already_done_fails_no_anchor() -> Tuple[bool, str]:
 
 def case_verify_unknown_already_done_fails_missing_artifact() -> Tuple[bool, str]:
     """Missing artifact fails."""
-    artifact = {}
+    artifact: Dict = {}
     evidence = "scripts/workflow/deps.py:420"
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", evidence, artifact)
+    passes, reason = _verify("fix:D1", evidence, artifact)
     if passes:
         return (False, "Expected failure")
     return (True, "")
@@ -127,12 +146,134 @@ def case_verify_unknown_already_done_fails_available_false() -> Tuple[bool, str]
         "reason": "git failure",
     }
     evidence = "scripts/workflow/deps.py:420"
-    passes, reason = fvr._verify_unknown_already_done("fix:D1", evidence, artifact)
+    passes, reason = _verify("fix:D1", evidence, artifact)
     if passes:
         return (False, "Expected failure")
     if reason != "unavailable":
         return (False, f"Expected unavailable, got {reason}")
     return (True, "")
+
+
+# ---------------------------------------------------------------------------
+# Coverage binding (coverage_sha256 against the persisted coverage file)
+# ---------------------------------------------------------------------------
+
+
+def _passing_artifact() -> Dict:
+    """A structurally valid artifact that would pass with a correct binding."""
+    return {
+        "format": 1,
+        "available": True,
+        "coverage_sha256": COVERAGE_SHA,
+        "changed_files": ["scripts/workflow/deps.py"],
+        "hunks": {"scripts/workflow/deps.py": [[416, 5]]},
+        "base_line_counts": {"scripts/workflow/deps.py": 536},
+        "tip_line_counts": {"scripts/workflow/deps.py": 541},
+        "commits": [],
+        "rows": {"fix:D1": [{"path": "scripts/workflow/deps.py", "start": 416, "end": 435}]},
+    }
+
+
+def case_binding_control_passes() -> Tuple[bool, str]:
+    """Control: the valid artifact with its bound coverage file passes."""
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:420", _passing_artifact())
+    if not passes:
+        return (False, f"control should pass, got {reason}")
+    return (True, "")
+
+
+def case_binding_missing_sha_is_unavailable() -> Tuple[bool, str]:
+    """An artifact without coverage_sha256 cannot be bound to a coverage table: unavailable."""
+    artifact = _passing_artifact()
+    del artifact["coverage_sha256"]
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:420", artifact)
+    if passes or reason != "unavailable":
+        return (False, f"Expected (False, unavailable), got ({passes}, {reason})")
+    return (True, "")
+
+
+def case_binding_empty_sha_is_unavailable() -> Tuple[bool, str]:
+    """coverage_mode writes "" when no --coverage-out was given: not a binding, unavailable."""
+    artifact = _passing_artifact()
+    artifact["coverage_sha256"] = ""
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:420", artifact)
+    if passes or reason != "unavailable":
+        return (False, f"Expected (False, unavailable), got ({passes}, {reason})")
+    return (True, "")
+
+
+def case_binding_sha_mismatch_is_unavailable() -> Tuple[bool, str]:
+    """The artifact names a different coverage table than the one on disk: unavailable."""
+    artifact = _passing_artifact()
+    artifact["coverage_sha256"] = hashlib.sha256(b"some other table").hexdigest()
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:420", artifact)
+    if passes or reason != "unavailable":
+        return (False, f"Expected (False, unavailable), got ({passes}, {reason})")
+    return (True, "")
+
+
+def case_binding_no_coverage_file_is_unavailable() -> Tuple[bool, str]:
+    """With no coverage file reachable the binding cannot be checked: unavailable, even with a sha."""
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:420", _passing_artifact(), coverage_file=None)
+    if passes or reason != "unavailable":
+        return (False, f"Expected (False, unavailable), got ({passes}, {reason})")
+    return (True, "")
+
+
+def case_binding_missing_coverage_path_is_unavailable() -> Tuple[bool, str]:
+    """A coverage path that does not exist cannot be hashed: unavailable."""
+    missing = Path(_COV_TMP.name) / "does-not-exist.txt"
+    passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:420", _passing_artifact(), coverage_file=missing)
+    if passes or reason != "unavailable":
+        return (False, f"Expected (False, unavailable), got ({passes}, {reason})")
+    return (True, "")
+
+
+# ---------------------------------------------------------------------------
+# Malformed artifacts: unavailable, never an exception
+# ---------------------------------------------------------------------------
+
+
+def _malformed_cases() -> List[Tuple[str, Dict]]:
+    """Each artifact is bound (valid sha) but has one malformed field."""
+    cases: List[Tuple[str, Dict]] = []
+
+    def with_change(label: str, **changes: object) -> None:
+        artifact = _passing_artifact()
+        artifact.update(changes)
+        cases.append((label, artifact))
+
+    with_change("rows is a list", rows=[])
+    with_change("row entry is not a list", rows={"fix:D1": {"path": "scripts/workflow/deps.py"}})
+    with_change("row item is not a dict", rows={"fix:D1": ["scripts/workflow/deps.py:420"]})
+    with_change("start is a string", rows={"fix:D1": [{"path": "scripts/workflow/deps.py", "start": "416", "end": 435}]})
+    with_change("end is a bool", rows={"fix:D1": [{"path": "scripts/workflow/deps.py", "start": 416, "end": True}]})
+    with_change("path is not a string", rows={"fix:D1": [{"path": 7, "start": 416, "end": 435}]})
+    with_change("hunks is a list", hunks=[[416, 5]])
+    with_change("hunk is not a pair", hunks={"scripts/workflow/deps.py": [[416]]})
+    with_change("hunk holds a float", hunks={"scripts/workflow/deps.py": [[416.0, 5]]})
+    with_change("changed_files is a string", changed_files="scripts/workflow/deps.py")
+    with_change("base_line_counts is a list", base_line_counts=[536])
+    with_change("tip_line_counts value is a string", tip_line_counts={"scripts/workflow/deps.py": "541"})
+    with_change("commits holds an int", commits=[123])
+    return cases
+
+
+def case_malformed_artifacts_are_unavailable() -> Tuple[bool, str]:
+    """Every malformed field returns (False, unavailable) and never raises."""
+    for label, artifact in _malformed_cases():
+        try:
+            passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:420", artifact)
+        except Exception as e:  # any raise is a failure
+            return (False, f"{label}: raised {type(e).__name__}: {e}")
+        if passes or reason != "unavailable":
+            return (False, f"{label}: expected (False, unavailable), got ({passes}, {reason})")
+    return (True, "")
+
+
+# ---------------------------------------------------------------------------
+# File-token resolution
+# ---------------------------------------------------------------------------
 
 
 def case_resolve_file_token_exact_match() -> Tuple[bool, str]:
@@ -165,6 +306,35 @@ def case_resolve_file_token_ambiguous() -> Tuple[bool, str]:
         return (False, f"Expected ambiguous, got {status}")
     if len(candidates) != 2:
         return (False, f"Expected 2 candidates, got {len(candidates)}")
+    return (True, "")
+
+
+def case_resolve_file_token_bare_root_and_nested_is_ambiguous() -> Tuple[bool, str]:
+    """A bare token equal to a root changed path and also a nested match is ambiguous, not the root file."""
+    changed_files = {"deps.py", "scripts/workflow/deps.py"}
+    status, resolved, candidates = fvr._resolve_file_token("deps.py", changed_files)
+    if status != "ambiguous" or resolved is not None:
+        return (False, f"Expected ambiguous with no resolved path, got {status} {resolved}")
+    if sorted(candidates) != ["deps.py", "scripts/workflow/deps.py"]:
+        return (False, f"Expected both candidates, got {candidates}")
+    return (True, "")
+
+
+def case_resolve_file_token_bare_single_exact_resolves() -> Tuple[bool, str]:
+    """A bare token that is the only changed path with that name resolves to it."""
+    changed_files = {"deps.py", "tests/other.py"}
+    status, resolved, _ = fvr._resolve_file_token("deps.py", changed_files)
+    if status != "resolved" or resolved != "deps.py":
+        return (False, f"Expected resolved deps.py, got {status} {resolved}")
+    return (True, "")
+
+
+def case_resolve_file_token_qualified_exact_match_wins() -> Tuple[bool, str]:
+    """A path-qualified token prefers its exact match over a longer suffix match."""
+    changed_files = {"scripts/deps.py", "x/scripts/deps.py"}
+    status, resolved, _ = fvr._resolve_file_token("scripts/deps.py", changed_files)
+    if status != "resolved" or resolved != "scripts/deps.py":
+        return (False, f"Expected exact scripts/deps.py, got {status} {resolved}")
     return (True, "")
 
 
@@ -269,15 +439,213 @@ def case_doing_it_path_tokens_single_line() -> Tuple[bool, str]:
     return (True, "")
 
 
+# ---------------------------------------------------------------------------
+# Line-range parsing: ASCII digits only, no raise, line 0 and inverted ranges are no range
+# ---------------------------------------------------------------------------
+
+
+def case_line_range_superscript_digits_are_no_range() -> Tuple[bool, str]:
+    """Superscript digits pass str.isdigit() but are not ASCII: no range, no exception."""
+    changed_files = {"scripts/workflow/deps.py"}
+    for cell in ["deps.py:²", "deps.py:1¹-2²"]:
+        try:
+            tokens = fvr._doing_it_path_tokens(cell, changed_files)
+        except Exception as e:
+            return (False, f"{cell!r} raised {type(e).__name__}: {e}")
+        if len(tokens) != 1 or tokens[0].line_range is not None:
+            return (False, f"{cell!r}: expected one token with no range, got {tokens}")
+    return (True, "")
+
+
+def case_line_range_huge_number_is_no_range() -> Tuple[bool, str]:
+    """A 5000-digit number is not a line number: no range, no exception."""
+    changed_files = {"scripts/workflow/deps.py"}
+    huge = "9" * 5000
+    for cell in [f"deps.py:{huge}", f"deps.py:1-{huge}", f"deps.py:{huge}-{huge}"]:
+        try:
+            tokens = fvr._doing_it_path_tokens(cell, changed_files)
+        except Exception as e:
+            return (False, f"raised {type(e).__name__}: {e}")
+        if len(tokens) != 1 or tokens[0].line_range is not None:
+            return (False, f"expected one token with no range, got {tokens}")
+    return (True, "")
+
+
+def case_line_range_zero_and_inverted_are_no_range() -> Tuple[bool, str]:
+    """Line 0 and start > end are not ranges."""
+    changed_files = {"scripts/workflow/deps.py"}
+    for cell in ["deps.py:0", "deps.py:0-5", "deps.py:9-3", "deps.py:0-0"]:
+        tokens = fvr._doing_it_path_tokens(cell, changed_files)
+        if len(tokens) != 1 or tokens[0].line_range is not None:
+            return (False, f"{cell!r}: expected no range, got {tokens}")
+    return (True, "")
+
+
+def case_line_range_valid_forms_still_parse() -> Tuple[bool, str]:
+    """Plain and dashed ranges, including the 9-digit limit, still parse."""
+    changed_files = {"scripts/workflow/deps.py"}
+    want = {
+        "deps.py:7": (7, 7),
+        "deps.py:3-7": (3, 7),
+        "deps.py:5-5": (5, 5),
+        "deps.py:999999999": (999999999, 999999999),
+    }
+    for cell, expected in want.items():
+        tokens = fvr._doing_it_path_tokens(cell, changed_files)
+        if len(tokens) != 1 or tokens[0].line_range != expected:
+            return (False, f"{cell!r}: expected {expected}, got {tokens}")
+    return (True, "")
+
+
+# ---------------------------------------------------------------------------
+# Integration: real git repo through coverage_mode (unknown row ranges reach the artifact)
+# ---------------------------------------------------------------------------
+
+GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
+
+ACTION_PLAN = """# Action plan
+
+## Doing it: 2
+
+| Item | File |
+|------|------|
+| one | deps.py:10-12 |
+| two | scripts/workflow/deps.py |
+
+## Deferred: 0
+"""
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                            env=GIT_ENV, check=True)
+    return result.stdout.strip()
+
+
+def _make_fix_fixture(tmp: Path) -> Tuple[Path, str, Path, Path]:
+    """Repo with scripts/workflow/deps.py changed at lines 10-12; returns (repo, base_sha, plan, flow_dir)."""
+    repo = tmp / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    target = repo / "scripts" / "workflow" / "deps.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("".join(f"line {n}\n" for n in range(1, 31)), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    lines = [f"line {n}\n" for n in range(1, 31)]
+    for n in (10, 11, 12):
+        lines[n - 1] = f"changed {n}\n"
+    target.write_text("".join(lines), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "change")
+
+    plan = tmp / "claude-action-plan.md"
+    plan.write_text(ACTION_PLAN, encoding="utf-8")
+    flow_dir = tmp / "flow"
+    (flow_dir / "steps").mkdir(parents=True)
+    return repo, base, plan, flow_dir
+
+
+def _run_coverage(repo: Path, base: str, plan: Path, receipt: Path,
+                  coverage_out: Path, evidence_out: Path) -> None:
+    """Run coverage_mode(fix) in-process; capture stdout and swallow its exit."""
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        try:
+            fvr.coverage_mode("fix", str(plan), str(receipt), str(repo), "HEAD", base,
+                              coverage_out=coverage_out, evidence_out=evidence_out)
+        except SystemExit as e:
+            if e.code not in (0, None):
+                raise
+
+
+def case_unknown_row_range_reaches_artifact_and_verifies() -> Tuple[bool, str]:
+    """A shared-file (unknown) row keeps its resolved range in the artifact, and verifies end to end."""
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        repo, base, plan, flow_dir = _make_fix_fixture(tmp)
+        receipt = flow_dir / "steps" / "05-fix.md"
+        receipt.write_text("", encoding="utf-8")
+        coverage_out = flow_dir / "steps" / "05-fix.coverage.txt"
+        evidence_out = flow_dir / "steps" / "05-fix.evidence.json"
+        _run_coverage(repo, base, plan, receipt, coverage_out, evidence_out)
+
+        coverage_text = coverage_out.read_text(encoding="utf-8")
+        if "D1 | unknown |" not in coverage_text:
+            return (False, f"D1 should be unknown (shared file), coverage was:\n{coverage_text}")
+        artifact = json.loads(evidence_out.read_text(encoding="utf-8"))
+        if artifact.get("available") is False:
+            return (False, f"artifact unavailable: {artifact}")
+        rows = artifact.get("rows", {})
+        want = [{"path": "scripts/workflow/deps.py", "start": 10, "end": 12}]
+        if rows.get("fix:D1") != want:
+            return (False, f"unknown row fix:D1 should carry its range {want}, rows were {rows}")
+        if "fix:D2" in rows:
+            return (False, f"row with no range must not appear in rows: {rows}")
+        passes, reason = fvr._verify_unknown_already_done(
+            "fix:D1", "scripts/workflow/deps.py:11", artifact, coverage_out)
+        if not passes:
+            return (False, f"unknown row should verify with overlap and anchor, got {reason}")
+        passes, reason = fvr._verify_unknown_already_done(
+            "fix:D1", "scripts/workflow/deps.py:40", artifact, coverage_out)
+        if passes or reason != "anchor":
+            return (False, f"anchor outside the row range must fail, got ({passes}, {reason})")
+    return (True, "")
+
+
+def _run_script(args: List[str]) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True)
+
+
+def case_coverage_out_outside_steps_is_refused() -> Tuple[bool, str]:
+    """With --flow-dir, --coverage-out and --evidence-out must live under <flow_dir>/steps/."""
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        repo, base, plan, flow_dir = _make_fix_fixture(tmp)
+        receipt = flow_dir / "steps" / "05-fix.md"
+        receipt.write_text("", encoding="utf-8")
+        common = ["--step", "fix", "--coverage", "--plan", str(plan), "--receipt", str(receipt),
+                  "--repo", str(repo), "--branch", "HEAD", "--base", base, "--flow-dir", str(flow_dir)]
+
+        outside = tmp / "elsewhere" / "coverage.txt"
+        outside.parent.mkdir()
+        proc = _run_script(common + ["--coverage-out", str(outside)])
+        if proc.returncode == 0 or outside.exists():
+            return (False, f"coverage-out outside steps/ should be refused: rc={proc.returncode}")
+
+        escape = flow_dir / "steps" / ".." / "escaped-evidence.json"
+        proc = _run_script(common + ["--evidence-out", str(escape)])
+        if proc.returncode == 0 or (flow_dir / "escaped-evidence.json").exists():
+            return (False, f"path escaping steps/ via .. should be refused: rc={proc.returncode}")
+
+        proc = _run_script(common + ["--coverage-out", str(flow_dir / "steps" / "05-fix.coverage.txt"),
+                                     "--evidence-out", str(flow_dir / "steps" / "05-fix.evidence.json")])
+        if proc.returncode != 0 or not (flow_dir / "steps" / "05-fix.evidence.json").exists():
+            return (False, f"paths under steps/ should be accepted: rc={proc.returncode} {proc.stderr}")
+    return (True, "")
+
+
 CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("passes with both anchors", case_verify_unknown_already_done_passes_with_both_anchors),
     ("fails on no range overlap", case_verify_unknown_already_done_fails_no_range_overlap),
     ("fails on prose-only evidence", case_verify_unknown_already_done_fails_no_anchor),
     ("fails on missing artifact", case_verify_unknown_already_done_fails_missing_artifact),
     ("fails on available:false", case_verify_unknown_already_done_fails_available_false),
+    ("binding control passes", case_binding_control_passes),
+    ("binding: missing coverage_sha256 unavailable", case_binding_missing_sha_is_unavailable),
+    ("binding: empty coverage_sha256 unavailable", case_binding_empty_sha_is_unavailable),
+    ("binding: sha mismatch unavailable", case_binding_sha_mismatch_is_unavailable),
+    ("binding: no coverage file unavailable", case_binding_no_coverage_file_is_unavailable),
+    ("binding: missing coverage path unavailable", case_binding_missing_coverage_path_is_unavailable),
+    ("malformed artifact fields are unavailable", case_malformed_artifacts_are_unavailable),
     ("exact match resolves", case_resolve_file_token_exact_match),
     ("basename match resolves", case_resolve_file_token_basename_match),
     ("ambiguous match detected", case_resolve_file_token_ambiguous),
+    ("bare root+nested token is ambiguous", case_resolve_file_token_bare_root_and_nested_is_ambiguous),
+    ("bare single exact token resolves", case_resolve_file_token_bare_single_exact_resolves),
+    ("qualified exact match wins", case_resolve_file_token_qualified_exact_match_wins),
     ("no match returns none", case_resolve_file_token_no_match),
     ("partial component no match", case_resolve_file_token_no_suffix_match_partial),
     ("globs never resolve", case_resolve_file_token_never_resolve_globs),
@@ -286,6 +654,12 @@ CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("bound check past end", case_classify_doing_it_rows_bound_check_past_end),
     ("parses line range", case_doing_it_path_tokens_parses_line_range),
     ("single line number", case_doing_it_path_tokens_single_line),
+    ("superscript digits are no range", case_line_range_superscript_digits_are_no_range),
+    ("huge line number is no range", case_line_range_huge_number_is_no_range),
+    ("line 0 and inverted ranges are no range", case_line_range_zero_and_inverted_are_no_range),
+    ("valid range forms still parse", case_line_range_valid_forms_still_parse),
+    ("unknown row range reaches artifact and verifies", case_unknown_row_range_reaches_artifact_and_verifies),
+    ("coverage/evidence out outside steps refused", case_coverage_out_outside_steps_is_refused),
 ]
 
 
