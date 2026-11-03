@@ -470,7 +470,7 @@ def _heal_pass(fleet_dir: Path, issue: int, repo: str, flow_dir: Path, main_work
         update_fleet(fleet_dir, upd)
 
     worktree = st.get("worktree")
-    if not isinstance(worktree, str) or not worktree or not Path(worktree).is_dir():
+    if not isinstance(worktree, str) or not worktree or not Path(worktree).is_absolute() or not Path(worktree).is_dir():
         note("Ticket worktree is not recorded.")
         return
     base = _default_base(repo, main_worktree)

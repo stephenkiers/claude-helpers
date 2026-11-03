@@ -446,7 +446,7 @@ def _manifest_change(worktree: Path, base: str) -> _ManifestChange:
         return _ManifestChange(False, [])
 
     old_obj: Dict[str, Any] = {}
-    old_show = _git(["show", f"{base_sha}:package.json"], worktree)
+    old_show = _git(["show", "--no-textconv", f"{base_sha}:package.json"], worktree)
     if old_show.returncode == 0:
         try:
             parsed_old = json.loads(old_show.stdout)

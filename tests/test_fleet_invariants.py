@@ -296,6 +296,36 @@ def main():
         except Exception as e:
             h.test_result("heal_pass returns silently when flow_dir is None", False, f"raised {e}")
 
+    # heal_pass with relative worktree path should refuse before probing
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        fleet_dir = root / "fleet"
+        fleet_dir.mkdir()
+        main_wt = root / "main"
+        main_wt.mkdir()
+        (fleet_dir / "fleet.json").write_text(json.dumps(
+            {"repo": "test/repo", "main_worktree": str(main_wt), "tickets": [{"issue": 1, "heals": {}}]}))
+        flow_dir = root / "flow"
+        flow_dir.mkdir()
+        (flow_dir / "state.json").write_text(json.dumps({
+            "issue": 1, "step": "implement", "status": "failed", "failures": {"implement": 1},
+            "worktree": "relative/path",  # Relative path instead of absolute
+        }))
+        calls: list = []
+
+        def fake_cli_never_called(argv, cwd, timeout, on_spawn=None):
+            calls.append(argv)
+            return None
+
+        fl._run_cli = fake_cli_never_called
+        try:
+            fl.heal_pass(fleet_dir, 1, "test/repo", flow_dir, main_wt)
+            h.test_result("heal_pass with relative worktree path returns silently", True)
+        except Exception as e:
+            h.test_result("heal_pass with relative worktree path returns silently", False, f"raised {e}")
+        h.test_result("heal_pass with relative worktree path does not call the CLI",
+                      not calls, f"calls={calls}")
+
     # Stop-key mirror: fleet.current_stop_key must equal heal.stop_key_for for every stop shape
     sys.path.insert(0, str(REPO_ROOT))
     from scripts.workflow import heal as heal_mod

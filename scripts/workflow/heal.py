@@ -5,8 +5,7 @@ This module provides the tool registry, nomination logic, and the probe/run
 interface for the fleet's automatic heal capability.
 
 A tool is a precondition + fixed action + post-check. Each ticket stop
-produces at most one tool run. The harness is testable in pure functions;
-side effects go through an injected runner.
+produces at most one tool run.
 
 Invoked by scripts/workflow/cli.py heal subcommand.
 """
