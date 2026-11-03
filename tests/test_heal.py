@@ -215,6 +215,21 @@ def main():
         f"Got {rec}",
     )
 
+    result_healed_unchanged = heal.HealResult(
+        tool="install",
+        status="healed",
+        reason="installed",
+        changed=False,
+        recommendation="take-over",
+        stop_key="abc",
+    )
+    rec = heal.after_heal(result_healed_unchanged, evidence_with_retry)
+    h.test_result(
+        "after_heal: take-over when healed but nothing changed",
+        rec == "take-over",
+        f"Got {rec}",
+    )
+
     result_refused = heal.HealResult(
         tool="install",
         status="refused",
