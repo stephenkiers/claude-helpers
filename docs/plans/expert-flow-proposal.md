@@ -253,7 +253,9 @@ summary, the action plan, and the PR before you merge. Mitigations, in order of 
    a merge kickback: all end in *Retry / Take over / Abort*. The flow may re-run a step once; it may
    not improvise a fix. `/expert-rebase` is suggested, not invoked. Exception: a single-unit
    implement/fix shortfall is escalated once to Sonnet automatically before the menu; if that escalation
-   fails, the usual menu applies.
+   fails, the usual menu applies. A dependency install before implement, fix and verify is a separate
+   bounded, logged pre-step chore, not a remediation of a failed step (ADR-0023, 2026-11-01 amendment);
+   it never follows a failure.
 4. **Issue mutation is the earliest remote side-effect** (step 2 rewrites the issue body with the
    plan — same as today). The plan checkpoint questions come *before* it, so the human has approved
    the plan content that gets written.

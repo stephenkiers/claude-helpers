@@ -34,7 +34,7 @@ The approach preserves the current semantics:
 
 6. **Provider protocol** (Sam System, ADR-0005): `providers/base.py` defines a `Provider` Protocol; both `github.py` and `local.py` implement the same contract so `cli.py` never special-cases them (stub implementations Phase 1; full implementations Phases 2-3).
 
-7. **No per-project extension point** (Decision 3): The CLI is not designed for runtime configuration. Forks that need different behavior edit `scripts/workflow/` directly — that IS the extension mechanism, consistent with the repo's fork-and-adapt philosophy.
+7. **No per-project extension point** (Decision 3): The CLI is not designed for runtime configuration. Forks that need different behavior edit `scripts/workflow/` directly — that IS the extension mechanism, consistent with the repo's fork-and-adapt philosophy. *Amended by Amendment 10 (2026-11-01): the CLI now reads and writes the main worktree's config and runs bounded install subprocesses.*
 
 ## Consequences
 
@@ -45,7 +45,7 @@ The approach preserves the current semantics:
 - `worktrees.py`: Worktree parent detection (ADR-0010), main/second worktree discovery.
 - `project.py`: Repository identity (gh repo view), local-plan-mode detection, current user.
 - `cache.py`: Read and validate cache files (phase 1); write/locking stubs citing Decision 1.
-- `checks.py`: Toolchain and check detection (read-only; execution in Phase 2+).
+- `checks.py`: Toolchain and check detection (read-only; execution in Phase 2+). The read-only scope of Decision 3 is amended by Amendment 10 (2026-11-01) for the check-answer write and the deps chore.
 - `stack.py`: Stack detection (ADR-0011): `is_stacked()` (cache-first, ancestor fallback), `detect_layout()` (single-driver | per-branch | unknown).
 - `safety.py`: Shared `Unknown(reason: str)` type for fail-closed behavior.
 - `providers/base.py`: Read-only provider contract (`Provider` Protocol).
@@ -310,3 +310,38 @@ This two-stage approach (seed-then-fallback) ensures:
 **Snapshot semantics:** Seeded files represent a snapshot of the main worktree's configuration at worktree-creation time. If the main worktree's configuration changes later (e.g., `/shipit` is run in the main worktree and updates `repo-cache.json`), the new worktree's seeded copy is NOT automatically updated. This is intentional: the new worktree's seeded snapshot is stable and independent from later changes in the main worktree. Downstream commands' fallback resolution (step 2 and 4 above) bridges this gap by consulting the main worktree's current files when needed.
 
 **Failure modes:** If seeding fails completely (e.g., permission denied), worktrees can still be created and used — downstream commands fall back to the main worktree's current configuration. If fallback sources are also absent, the command fails with a clear message ("no check command configured"). This design ensures robustness: the absence of seeded files is never a blocker.
+
+### Amendment 9: package.json check detection with provenance (2026-11-01, #417)
+
+**Problem:** A repo whose only check command is `package.json` `scripts.check` resolves to nothing in the chain above. `/expert-flow` needs that command before implement, and the chain must not gain a live `package.json` source.
+
+**Decision:**
+- `checks.detect_package_json_check` is a deterministic file read of `package.json` `scripts.check`, prefixed by the package manager named by the root lockfile (`npm`, `pnpm`, `yarn`, or `bun`, from the same closed table `commands/shipit.md` documents). It is not a guess: no package manager is probed, and an ambiguous lockfile yields no command.
+- `checks ensure-check` writes the detected command into the **main** `repo-cache.json` `commands.check`, with a top-level sidecar `commandSources: {"check": "package-json"}`. Resolution reports the source as `repo-cache (package-json)`. The write is a raw JSON update that preserves every other key. It does not round-trip through `RepoCacheData`, which drops unknown keys.
+- **Chain order is unchanged.** `resolve_check_detail` keeps the six-step order above. The detector writes into the cache rather than adding a live `package.json` source, so the step and the verifier resolve the same value.
+- **Human answers go to `project.yaml`, not the cache.** `checks record-check-answer` text-appends a human's answer to the main `.claude/project.yaml`. A `CLAUDE.md`-derived candidate is suggest-only and is never persisted by the CLI.
+- **D4, #387:** the `/merge-and-cleanup` chain unification (#387) should reuse the shared resolver (`resolve_check_detail`) and this detector, not add its own `package.json` read. This amendment does not change #387's behavior and does not pin its design.
+
+The mapping between the detector and `commands/shipit.md`'s lockfile table is pinned by a test, so the repo has one rule rather than two. See `docs/workflow-cli-invariants.md`, Decision 3 and Decision 8.
+
+### Amendment 10: CLI-owned writes and install subprocesses for the environment chores (2026-11-01, #417)
+
+**Problem:** Decision 3 keeps the CLI free of runtime configuration, and Phase 1 is read-only. The `/expert-flow` environment chores (ADR-0023, 2026-11-01 amendment) need the CLI to do more: read the main worktree's `.claude/project.yaml`, append a human's check answer to it, write `repo-cache.json` and the deps stamp, and run package-manager install subprocesses through `scripts/workflow/deps.py`. None of these is a step-agent write under the flow-directory prefix (ADR-0018, 2026-10-13 amendment), so each needs an explicit rule.
+
+**Decision:** The CLI is permitted these behaviors, and only these, within the bounds below.
+
+- **Reads:** the main worktree's `.claude/project.yaml` (`commands.install`, `commands.check`, `checkOptOut`).
+- **Writes:**
+  - The main-config writes (`checks record-check-answer`, `checks ensure-check`) take an advisory `flock` on `claude-checks-<hash>.lock` in the system temp directory, keyed by the main worktree path. The lock degrades to none if it cannot be opened.
+  - `checks record-check-answer` text-appends a human's answer to the main `.claude/project.yaml`. Only a human's answer is written there; a `CLAUDE.md`-derived candidate is never persisted by the CLI (Amendment 9).
+  - `checks ensure-check` writes a `package.json`-detected command into the main `repo-cache.json`, with the `commandSources` sidecar (Amendment 9).
+  - `deps ensure` writes the deps stamp at `<git dir>/claude-helpers/deps-stamp.json`. It records the install command, the lockfile hash, a manifest hash (`package.json`, the table lockfiles, the install-config files `.npmrc`, `.yarnrc.yml`, `.pnpmfile.cjs` and `bunfig.toml`, and every file under `.yarn/releases/`) and any manifest approval. A stamp counts as current only if the command, lockfile hash and manifest hash all match (the manifest hash is what catches a change when there is no lockfile) and `node_modules` or `.pnp.cjs` also exists, so an install that leaves neither is reinstalled on every run. The stamp's install record is deleted before an install starts and written only after exit 0; a prior manifest approval is preserved by rewriting an approval-only stamp before the install runs.
+- **Install subprocesses (`scripts/workflow/deps.py`):**
+  - Frozen or immutable installs from the lockfile table: `npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable` (Yarn 2 and later) or `yarn install --frozen-lockfile` (Yarn 1.x), or `bun install --frozen-lockfile`, selected from the root lockfile. The Yarn major comes from `package.json` `packageManager`, and an unreadable version fails closed; or the main worktree's explicit `commands.install`. The lockfile table never runs a non-frozen install. `commands.install` is the human's own command from the main `project.yaml` and is run as written, so it is not constrained to a frozen mode. "As written" means the string is split with `shlex.split` and run with `shell=False`, so shell syntax (`&&`, pipes, environment-variable prefixes) does not work; an unparseable, empty or non-string value, or an unreadable `project.yaml`, yields `failed`. When set, it takes priority over the lockfile table and the Yarn version check.
+  - Fixed argv, `shell=False`, stdin closed, Corepack prompts disabled, a hard timeout, and the process group killed on timeout or on SIGINT/SIGTERM (a SIGKILL cannot run the cleanup).
+  - Manifest-change approval gate: if `package.json`, any lockfile in the table, an install-config file (`.npmrc`, `.yarnrc.yml`, `.pnpmfile.cjs`, `bunfig.toml`) or a file under `.yarn/releases/` differs between the merge-base of the base ref and `HEAD` (committed or uncommitted changes count), nothing installs and the result is `manifest-changed`. `deps ensure --approve-manifest` records the human's approval of the current manifest hash; a later manifest edit re-arms the gate. The gate does not apply at worktree time, because the branch equals its base.
+  - Output is redacted and bounded to a tail before it reaches a receipt, `state.json`, or a park file.
+  - The command prints a `DEPS: <status>[: detail]` line. Statuses are `current`, `installed`, `failed`, `ambiguous` (including a `packageManager` that names a different manager than the lockfile), `manifest-changed` and `skipped`; exits 3, 4 and 5 are expected outcomes (`ambiguous`, `manifest-changed`, `skipped`), not command failures.
+- **Environment (accepted residual):** installs run with the full environment (`dict(os.environ)`), so lifecycle scripts can see credentials such as `GH_TOKEN` and `NPM_TOKEN`. This exposure is accepted, not mitigated. Installs already execute branch-controlled lifecycle scripts by design, so scrubbing the environment would not close the exposure to those scripts, and it would break private-registry authentication, which installs need.
+
+**Consequences:** The CLI's writes outside the flow-directory prefix are CLI-owned, not step-agent `Write`, and their paths are limited to the files listed above. The orchestrator and step agents still hold no package-manager grant; install execution happens only inside the CLI. This rule does not extend to any other CLI write or subprocess. A new one needs its own amendment.

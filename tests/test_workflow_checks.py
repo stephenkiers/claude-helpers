@@ -8,15 +8,20 @@ Run with: python3 tests/test_workflow_checks.py
 import contextlib
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
+import workflow.checks as checks_module
 from workflow.checks import (
-    execute_check, build_check_order, resolve_check_command, resolve_check_timeout
+    execute_check, build_check_order, resolve_check_command, resolve_check_timeout,
+    resolve_check_detail, detect_package_json_check, suggest_from_claude_md,
+    ensure_check, record_check_answer,
 )
+from workflow.deps import LOCKFILE_MANAGERS
 from _test_harness import Harness
 
 
@@ -450,6 +455,386 @@ if __name__ == "__main__":
             and "checkOptOut must be a non-empty string" in failure
             and "no check command configured" in failure,
             f"command={command!r} source={source!r} failure={failure!r}",
+        )
+
+    def _put(path, text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    print("[Section 10] Package.json provenance label (#417 Step 2)")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wt = Path(tmpdir) / "wt"
+        _put(wt / ".claude" / "repo-cache.json", json.dumps({"version": 1, "commands": {"check": "npm run check"}}))
+        resolution = resolve_check_detail(wt, None)
+        test_result(
+            "a repo-cache check without provenance keeps the plain 'repo-cache' label",
+            resolution.source == "repo-cache" and resolution.command == "npm run check",
+            f"source={resolution.source!r}",
+        )
+        _put(
+            wt / ".claude" / "repo-cache.json",
+            json.dumps({"version": 1, "commands": {"check": "npm run check"}, "commandSources": {"check": "package-json"}}),
+        )
+        # The package-json provenance is re-derived from this worktree, so it must derive the same check.
+        _put(wt / "package-lock.json", "{}")
+        _put(wt / "package.json", json.dumps({"scripts": {"check": "npm run check"}}))
+        resolution = resolve_check_detail(wt, None)
+        test_result(
+            "a repo-cache check with commandSources.check == package-json is labelled 'repo-cache (package-json)'",
+            resolution.source == "repo-cache (package-json)" and resolution.command == "npm run check",
+            f"source={resolution.source!r}",
+        )
+
+        # Item 9: a package-json cache check is not trusted from the shared cache when this worktree
+        # derives no check; the cached value is ignored and the failure names why.
+        (wt / "package.json").write_text(json.dumps({"scripts": {"test": "x"}}))
+        resolution = resolve_check_detail(wt, None)
+        test_result(
+            "a package-json cache check is ignored when this worktree's package.json derives no check",
+            resolution.command is None and resolution.source is None
+            and "package-json check not re-derived" in (resolution.failure_reason or ""),
+            f"command={resolution.command!r} source={resolution.source!r}",
+        )
+        (wt / "package.json").write_text(json.dumps({"scripts": {"check": "pnpm-check-here"}}))
+        (wt / "package-lock.json").unlink()
+        _put(wt / "pnpm-lock.yaml", "")
+        resolution = resolve_check_detail(wt, None)
+        test_result(
+            "a package-json cache check is re-derived from this worktree, so a different branch's script is used",
+            resolution.command == "pnpm run check" and resolution.source == "repo-cache (package-json)",
+            f"command={resolution.command!r} source={resolution.source!r}",
+        )
+
+    print("[Section 11] detect_package_json_check")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        _put(base / "npm" / "package-lock.json", "{}")
+        _put(base / "npm" / "package.json", json.dumps({"scripts": {"check": "tsc && jest"}}))
+        test_result(
+            "npm lockfile with scripts.check detects 'npm run check'",
+            detect_package_json_check(base / "npm") == "npm run check",
+        )
+        _put(base / "pnpm" / "pnpm-lock.yaml", "")
+        _put(base / "pnpm" / "package.json", json.dumps({"scripts": {"check": "x"}}))
+        test_result(
+            "pnpm lockfile with scripts.check detects 'pnpm run check'",
+            detect_package_json_check(base / "pnpm") == "pnpm run check",
+        )
+        _put(base / "noscript" / "package-lock.json", "{}")
+        _put(base / "noscript" / "package.json", json.dumps({"scripts": {"test": "x"}}))
+        test_result(
+            "no scripts.check yields None",
+            detect_package_json_check(base / "noscript") is None,
+        )
+        _put(base / "ambig" / "package-lock.json", "{}")
+        _put(base / "ambig" / "yarn.lock", "")
+        _put(base / "ambig" / "package.json", json.dumps({"scripts": {"check": "x"}}))
+        test_result(
+            "two lockfiles yield None (nothing guessed)",
+            detect_package_json_check(base / "ambig") is None,
+        )
+        _put(base / "nolock" / "package.json", json.dumps({"scripts": {"check": "x"}}))
+        test_result(
+            "no lockfile yields None",
+            detect_package_json_check(base / "nolock") is None,
+        )
+
+    print("[Section 11b] commands/shipit.md lockfile table equals the detector mapping (#417 Step 3)")
+
+    shipit_text = (Path(__file__).parent.parent / "commands" / "shipit.md").read_text(encoding="utf-8")
+    table_rows = {}
+    table_found = False
+    in_table = False
+    for line in shipit_text.splitlines():
+        if "Lockfile → package manager" in line:
+            in_table = True
+            continue
+        if not in_table:
+            continue
+        row = re.match(r"^\|\s*`([^`]+)`\s*\|\s*(\w+)\s*\|\s*$", line)
+        if row:
+            table_found = True
+            table_rows[row.group(1)] = row.group(2)
+        elif table_found:
+            break
+    test_result(
+        "commands/shipit.md has a lockfile-to-manager table (rows like | `package-lock.json` | npm |)",
+        table_found,
+        "heading 'Lockfile → package manager' missing or no rows parsed from commands/shipit.md",
+    )
+    test_result(
+        "the shipit.md lockfile table equals the detector's LOCKFILE_MANAGERS mapping (one rule, not two)",
+        table_rows == LOCKFILE_MANAGERS,
+        f"doc={table_rows} detector={LOCKFILE_MANAGERS}",
+    )
+
+    print("[Section 12] suggest_from_claude_md (display only)")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wt = Path(tmpdir)
+        _put(wt / "CLAUDE.md", "Before pushing, run `just check` to gate the change.\n")
+        test_result(
+            "a backticked 'just check' in CLAUDE.md is suggested",
+            suggest_from_claude_md(wt) == "just check",
+        )
+        _put(wt / "CLAUDE.md", "No gate command is documented here.\n")
+        test_result(
+            "CLAUDE.md with no check command suggests nothing",
+            suggest_from_claude_md(wt) is None,
+        )
+
+    print("[Section 13] ensure_check")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        main = base / "main"
+        feat = base / "feat"
+        _put(feat / "package-lock.json", "{}")
+        _put(feat / "package.json", json.dumps({"scripts": {"check": "run-all"}}))
+        result = ensure_check(feat, main)
+        cache = json.loads((main / ".claude" / "repo-cache.json").read_text())
+        test_result(
+            "a derivable check is written to the MAIN repo-cache with provenance (action detected)",
+            result.action == "detected" and result.source == "repo-cache (package-json)"
+            and result.command == "npm run check"
+            and cache["commands"]["check"] == "npm run check"
+            and cache["commandSources"]["check"] == "package-json",
+            f"result={result} cache={cache}",
+        )
+        resolution = resolve_check_detail(feat, main)
+        test_result(
+            "after ensure_check the step resolves through the main repo-cache with the package-json label",
+            resolution.command == "npm run check" and resolution.source == "repo-cache (package-json)",
+            f"source={resolution.source!r} command={resolution.command!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        main = base / "main"
+        feat = base / "feat"
+        _put(feat / "package-lock.json", "{}")
+        _put(feat / "package.json", json.dumps({"scripts": {"check": "run-all"}}))
+        _put(main / ".claude" / "repo-cache.json", json.dumps({"version": 1, "commands": {"install": "npm ci"}, "checkTimeoutSecs": 60}))
+        result = ensure_check(feat, main)
+        cache = json.loads((main / ".claude" / "repo-cache.json").read_text())
+        test_result(
+            "existing main repo-cache keys (install, checkTimeoutSecs) are preserved",
+            result.action == "detected" and cache["commands"]["install"] == "npm ci"
+            and cache["checkTimeoutSecs"] == 60 and cache["commands"]["check"] == "npm run check",
+            f"cache={cache}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        main = base / "main"
+        feat = base / "feat"
+        _put(feat / "package-lock.json", "{}")
+        _put(feat / "package.json", json.dumps({"scripts": {"check": "run-all"}}))
+        _put(main / ".claude" / "repo-cache.json", "{not json")
+        result = ensure_check(feat, main)
+        test_result(
+            "a corrupt main repo-cache.json is refused and left unchanged (action error)",
+            result.action == "error" and (main / ".claude" / "repo-cache.json").read_text() == "{not json",
+            f"result={result}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        main = base / "main"
+        feat = base / "feat"
+        _put(feat / "CLAUDE.md", "Run `make check` before merging.\n")
+        result = ensure_check(feat, main)
+        test_result(
+            "nothing derivable is unresolved with an unverified CLAUDE.md suggestion, and nothing is written",
+            result.action == "unresolved" and result.source is None and result.suggestion == "make check"
+            and not (main / ".claude" / "repo-cache.json").exists(),
+            f"result={result}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        main = base / "main"
+        feat = base / "feat"
+        _put(main / ".claude" / "project.yaml", "checkOptOut: no CI in this repo\n")
+        result = ensure_check(feat, main)
+        test_result(
+            "an explicit checkOptOut is reported as opt-out with its reason",
+            result.action == "opt-out" and result.source == "opt-out"
+            and result.opt_out_reason == "no CI in this repo",
+            f"result={result}",
+        )
+
+    print("[Section 14] record_check_answer")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        main.mkdir()
+        ok, message = record_check_answer(main, command="make verify")
+        resolution = resolve_check_detail(main, None)
+        test_result(
+            "with no project.yaml the answer creates it with commands.check and verifies",
+            ok and resolution.command == "make verify" and resolution.source == "project.yaml",
+            f"ok={ok} message={message!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        _put(main / ".claude" / "project.yaml", "commands:\n  install: npm ci\n")
+        ok, message = record_check_answer(main, command="make verify")
+        text = (main / ".claude" / "project.yaml").read_text()
+        test_result(
+            "a block commands: gets check inserted after the header with the first child's indent",
+            ok and text == 'commands:\n  check: "make verify"\n  install: npm ci\n'
+            and resolve_check_detail(main, None).command == "make verify",
+            f"ok={ok} text={text!r} message={message!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        original = "commands:\n  check: make old\n"
+        _put(main / ".claude" / "project.yaml", original)
+        ok, message = record_check_answer(main, command="make new")
+        test_result(
+            "an existing commands.check is refused and the file is unchanged",
+            not ok and (main / ".claude" / "project.yaml").read_text() == original,
+            f"ok={ok} message={message!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        original = "commands: {install: npm ci}\n"
+        _put(main / ".claude" / "project.yaml", original)
+        ok, message = record_check_answer(main, command="make verify")
+        test_result(
+            "flow-style commands is refused and the file is unchanged",
+            not ok and (main / ".claude" / "project.yaml").read_text() == original,
+            f"ok={ok} message={message!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        _put(main / ".claude" / "project.yaml", "commands:\n  install: x\n")
+        ok, message = record_check_answer(main, opt_out="CI is not wired up yet")
+        resolution = resolve_check_detail(main, None)
+        test_result(
+            "--opt-out appends checkOptOut and verifies as an opt-out",
+            ok and resolution.source == "opt-out" and resolution.opt_out_reason == "CI is not wired up yet",
+            f"ok={ok} message={message!r}",
+        )
+        ok_again, _ = record_check_answer(main, opt_out="again")
+        test_result(
+            "a second --opt-out is refused because checkOptOut already exists",
+            not ok_again,
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        _put(main / ".claude" / "repo-cache.json", json.dumps({"version": 1, "commands": {"check": "from-cache"}}))
+        _put(main / ".claude" / "project.yaml", "# keep me\n")
+        ok, message = record_check_answer(main, command="new-answer")
+        test_result(
+            "when re-resolution does not confirm the answer, project.yaml is restored and the YAML is named",
+            not ok and "verification failed" in message and "new-answer" in message
+            and (main / ".claude" / "project.yaml").read_text() == "# keep me\n",
+            f"ok={ok} message={message!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        _put(main / ".claude" / "repo-cache.json", json.dumps({"version": 1, "commands": {"check": "from-cache"}}))
+        ok, message = record_check_answer(main, command="new-answer")
+        test_result(
+            "a rolled-back answer in a file that did not exist before is removed again",
+            not ok and not (main / ".claude" / "project.yaml").exists(),
+            f"ok={ok} message={message!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        main.mkdir()
+        ok_both, _ = record_check_answer(main, command="x", opt_out="y")
+        ok_none, _ = record_check_answer(main)
+        ok_multi, _ = record_check_answer(main, command="line one\nline two")
+        test_result(
+            "both or neither answer flag, or a multi-line answer, is refused",
+            not ok_both and not ok_none and not ok_multi and not (main / ".claude" / "project.yaml").exists(),
+        )
+
+    print("[Section 15] record_check_answer: config lock, opt-out normalization, nested check, CRLF (#417 items 10, 27)")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        _put(main / ".claude" / "project.yaml", "commands:\n  install: npm ci\n")
+        ok, message = record_check_answer(main, command="make verify")
+        test_result(
+            "the config lock file is kept out of .claude/ (only project.yaml is there after a recorded answer)",
+            ok and sorted(p.name for p in (main / ".claude").iterdir()) == ["project.yaml"],
+            f"ok={ok} message={message!r}",
+        )
+
+    saved_fcntl = checks_module.fcntl
+    checks_module.fcntl = None
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            main = Path(tmpdir) / "main"
+            main.mkdir()
+            ok, message = record_check_answer(main, command="make verify")
+            resolution = resolve_check_detail(main, None)
+            test_result(
+                "without fcntl the answer is still recorded and verified (the lock degrades to no lock)",
+                ok and resolution.command == "make verify",
+                f"ok={ok} message={message!r}",
+            )
+    finally:
+        checks_module.fcntl = saved_fcntl
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        _put(main / ".claude" / "project.yaml", "commands:\n  install: npm ci\n")
+        ok, message = record_check_answer(main, opt_out="  CI   is\toff  ")
+        text = (main / ".claude" / "project.yaml").read_text()
+        test_result(
+            "--opt-out echoes and writes the whitespace-normalized reason, not the raw value",
+            ok and 'checkOptOut: "CI is off"' in message and 'checkOptOut: "CI is off"' in text and "  CI" not in text,
+            f"ok={ok} message={message!r} text={text!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        original = "commands:\n  install:\n    check: nested-only\n"
+        _put(main / ".claude" / "project.yaml", original)
+        ok, message = record_check_answer(main, command="make verify")
+        text = (main / ".claude" / "project.yaml").read_text()
+        test_result(
+            "a deeper-nested key named check is not mistaken for commands.check; the answer is inserted",
+            ok and text == 'commands:\n  check: "make verify"\n  install:\n    check: nested-only\n',
+            f"ok={ok} text={text!r} message={message!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        (main / ".claude").mkdir(parents=True)
+        (main / ".claude" / "project.yaml").write_bytes(b"commands:\r\n  install: npm ci\r\n")
+        ok, message = record_check_answer(main, command="make verify")
+        data = (main / ".claude" / "project.yaml").read_bytes()
+        test_result(
+            "a CRLF project.yaml is edited and kept CRLF (no bare LF is introduced)",
+            ok and data == b'commands:\r\n  check: "make verify"\r\n  install: npm ci\r\n',
+            f"ok={ok} data={data!r} message={message!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        main = Path(tmpdir) / "main"
+        _put(main / ".claude" / "repo-cache.json", json.dumps({"version": 1, "commands": {"check": "from-cache"}}))
+        (main / ".claude" / "project.yaml").write_bytes(b"# keep me\r\n")
+        ok, message = record_check_answer(main, command="new-answer")
+        data = (main / ".claude" / "project.yaml").read_bytes()
+        test_result(
+            "a CRLF project.yaml that fails verification is restored to its original bytes",
+            not ok and data == b"# keep me\r\n",
+            f"ok={ok} data={data!r} message={message!r}",
         )
 
     print()

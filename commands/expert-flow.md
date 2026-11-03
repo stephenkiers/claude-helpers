@@ -1,7 +1,7 @@
 ---
 description: Lifecycle orchestrator — worktree → plan → track → implement → review → fix → verify → ship → merge for one issue (or an epic's sub-issues, sequentially). Creates the ticket worktree first and continues from inside it. Runs each lifecycle command as a subagent step, relays every question the step would have asked back to you, and stops hard on failures. Resumable from disk.
 argument-hint: [<issue-url|number>] [--plan-effort 2|3] [--review-effort 2-5] [--auto-merge] [--gates] [--from <step>] [--plan-file <path>] [--epic] [--fleet] | --resume <flow-dir|issue#> [--redo plan|review] [--fleet] | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
-allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh issue create:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*), Bash(python3 "$HOME/.claude/scripts/fleet.py" wait:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" append:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" list:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" mark:*), Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*), Bash(python3 "$HOME/.claude/scripts/flow-accept.py" eligible:*), Bash(python3 "$HOME/.claude/scripts/flow-accept.py" record:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/heal-check.py":*), Bash(shasum -a 256:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup, Bash(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*)
+allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh issue create:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*), Bash(python3 "$HOME/.claude/scripts/fleet.py" wait:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" append:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" list:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" mark:*), Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*), Bash(python3 "$HOME/.claude/scripts/flow-accept.py" eligible:*), Bash(python3 "$HOME/.claude/scripts/flow-accept.py" record:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/heal-check.py":*), Bash(shasum -a 256:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup, Bash(python3 -m scripts.workflow.cli deps ensure:*), Bash(python3 -m scripts.workflow.cli checks ensure-check:*), Bash(python3 -m scripts.workflow.cli checks record-check-answer:*), Bash(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*)
 model: sonnet
 ---
 
@@ -37,9 +37,9 @@ a literal and substituted into later blocks and into the step prompts. Angle-bra
 
 **The orchestrator never does the work.** `allowed-tools` grants read-only git/gh, `Write` (for
 files under `FLOW_DIR` and the one marker file), `Task` (to spawn a step), `SendMessage` (to resume
-a step with answers), and `AskUserQuestion`. Five added script grants: `Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*)` runs the read-only receipt verifier before an OK receipt advances, `Bash(python3 "$HOME/.claude/scripts/flow-ledger.py":*)` appends human-input records (`human.jsonl`) only through the script, `Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*)` archives, restores, and checks redo attempts, and `Bash(python3 "$HOME/.claude/scripts/flow-accept.py" eligible:*)` and `... record:*` check and record the human-only **Accept and continue** (Hard stop item 3c and the Accept procedure; the orchestrator never chooses it). A fifth grant `Bash(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*)` is the read-only issue-comments helper; the widening of this grant from the step agents to the orchestrator is sequenced with the guard work #418 and tests/test_expert_flow.py must be re-run once #418 lands. Shell writes are limited to: `printf >` receipt stubs and
+a step with answers), and `AskUserQuestion`. Three `scripts.workflow.cli` grants serve the worktree stage and the Check command question: `deps ensure` (installs run inside the CLI, never through a package-manager command, so no `npm`, `pnpm`, `yarn`, or `bun` grant exists), `checks ensure-check`, and `checks record-check-answer` (the one writer of the main `project.yaml` answer). Five added script grants: `Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*)` runs the read-only receipt verifier before an OK receipt advances, `Bash(python3 "$HOME/.claude/scripts/flow-ledger.py":*)` appends human-input records (`human.jsonl`) only through the script, `Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*)` archives, restores, and checks redo attempts, and `Bash(python3 "$HOME/.claude/scripts/flow-accept.py" eligible:*)` and `... record:*` check and record the human-only **Accept and continue** (Hard stop item 3c and the Accept procedure; the orchestrator never chooses it). A fifth grant `Bash(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*)` is the read-only issue-comments helper; the widening of this grant from the step agents to the orchestrator is sequenced with the guard work #418 and tests/test_expert_flow.py must be re-run once #418 lands. Shell writes are limited to: `printf >` receipt stubs and
 `printf >>` log lines under `FLOW_DIR`, and the one marker-exclude line described in the worktree step.
-The `printf >` writes overwrite the receipt stubs and the audit-file stubs (`steps/<NN>-<STEP>.audit.md`).
+The `printf >` writes overwrite the receipt stubs and the audit-file stubs (`steps/<NN>-<STEP>.audit.md`). The CLI, not the shell, owns the bounded writes made through `deps ensure` and `checks record-check-answer` (the main `project.yaml` answer, the main `repo-cache.json` check, the deps stamp, and the install subprocesses); see ADR-0013 Amendment 10.
 There is no `Edit`, no write-capable git beyond the exact Rebase grants, no `gh` mutation. The one destructive action is the
 **Start fresh** deletion of the old flow's worktree through the `/cleanup` helper: the orchestrator's
 only sanctioned destructive action, run only after the human chose Start fresh (see "Existing flow"). (`Bash(sed -n:*)` and similar read-only
@@ -891,6 +891,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
 | `gate_passed` | boolean | `true` only after the human answers Merge at the merge gate |
 | `gates` | object step → `"continue"` | step gates the human answered Continue; a gated step absent here is (re-)asked |
 | `bases` | object step → SHA | commit SHA at the first spawn of `implement` / `fix`; kept across Retry and `--resume` |
+| `deps` | array of `{step, result, at}` | one entry per `deps ensure` run: the worktree step and each Deps precondition (`step` is `worktree`, `implement`, `fix`, or `verify`); `result` is the printed token (`installed`, `current`, `skipped`, `ambiguous`, `manifest-changed`, `failed`); `at` is ISO-8601 UTC. Append-only history; absent means no entries yet |
 | `implementer_model` | object step → `null`, `"sonnet"` | set when escalating to Sonnet; sticky once set; `implement` and `fix` only |
 | `escalations` | object step → integer | count of escalations per step (auto or manual); incremented on every escalation trigger; default: 0 per step on resume if absent |
 | `outstanding_format` | integer | version of the disposition marker format; `2` for flows created after the 2026-10-27 amendment; absent for earlier flows |
@@ -956,7 +957,7 @@ Redo-able steps: plan, review.
 
 | # | Step | Command | Runs in | Agent | Receipt required lines (plus `ATTEMPT: <k>` on every agent receipt) |
 |---|---|---|---|---|---|
-| 00 | worktree | `/track-and-start --issue <ISSUE> --worktree-only` | main worktree | general-purpose | `WORKTREE:` `BRANCH:` (orchestrator-written) |
+| 00 | worktree | `/track-and-start --issue <ISSUE> --worktree-only` | main worktree | general-purpose | `WORKTREE:` `BRANCH:` `DEPS:` `CHECK_SOURCE:` (orchestrator-written) |
 | 01 | plan | `/expert-plan <ISSUE_URL> --flow <FLOW_DIR> [--effort <PLAN_EFFORT>]` | ticket worktree | general-purpose | `FINAL_PLAN_PATH:` |
 | 02 | track | `/track-and-start --issue <ISSUE> --plan-file <PLAN_PATH>` | main worktree | general-purpose | `WORKTREE:` `BRANCH:` (orchestrator-written) |
 | 03 | implement | `/implement-with-haiku <PLAN_PATH>` | ticket worktree | flow-implement | a `ROUND 1` section-header line (shape owned by `scripts/flow-verify-receipt.py`; rule 5) (the action-plan-source line is `fix`-only) |
@@ -1172,7 +1173,7 @@ Then branch on the validated `Decision`:
 ### Orchestrator-written receipts
 
 Four steps write their receipt in the orchestrator, not the subagent: **worktree** and **track**
-(`WORKTREE`, `BRANCH`), **verify** (`CHECK`, `CHECK_EXIT`), and **ship** when reusing an open PR (`PR_URL`). This
+(`WORKTREE`, `BRANCH`; the worktree receipt also carries `DEPS` and `CHECK_SOURCE`), **verify** (`CHECK`, `CHECK_EXIT`), and **ship** when reusing an open PR (`PR_URL`). This
 is the one procedure for all four:
 
 - The subagent (when one is spawned) does not write the receipt. Its reply carries the raw values.
@@ -1878,6 +1879,47 @@ For `done`, the first line reads `— done: merged <PR_URL>`, the second is omit
 is due to `live` being set, the second line adds: "clear `live` in `state.json` only after confirming
 no step agent is alive."
 
+### Deps precondition
+
+Before spawning `implement`, `fix`, or `verify` (including a `verify` re-run after an auto-rebase, and
+any Retry of those three), the orchestrator makes the ticket worktree's dependencies match its
+lockfile. It runs `deps ensure` against the flow's real base, not `bases[STEP]` (a per-step ticket
+SHA that gives an empty diff before `fix` and is undefined for `verify`):
+
+```bash
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
+PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli deps ensure --worktree "<WORKTREE>" --main-worktree "<MAIN_WORKTREE>" --base "origin/<DEFAULT_BRANCH>"
+```
+
+Run it in the background or under a Bash timeout only if the wait allows more than `DEPS_TIMEOUT_SECS` (900s): the Bash maximum is 600000 ms, so re-wait rather than kill. A SIGKILL cannot run the cleanup and leaves the installer's process group running; SIGINT and SIGTERM do kill the group.
+
+`<DEFAULT_BRANCH>` is the default branch from Project detection. Handling by the status token on the printed `DEPS:` line. Exits 3, 4, and 5 are expected outcomes of `deps ensure`, not failures of the command; each maps to the status its printed line names, and that status decides the handling below:
+
+- `current` and `installed`: print one line (`deps: <result>`), append the `deps` entry, and spawn the
+  step. The action is never silent.
+- `skipped` and `ambiguous`: append the `deps` entry, print a warning, and spawn the step as today.
+- `manifest-changed`: stop before the spawn. The stop names the added or changed packages that the
+  command printed. Hard-stop menu: **Retry** first runs `deps ensure` again with `--approve-manifest`
+  (this records the human's approval of the current manifest hash, so the gate clears and the frozen
+  install runs), then re-runs the precondition; **Take over**; **Abort**. In `--fleet` it parks as a
+  `gate`.
+- `failed`: stop before the spawn. The stop prints the redacted failure tail
+  the command printed. Hard-stop menu: **Retry** re-runs the precondition, without `--approve-manifest`;
+  **Take over**; **Abort**. In `--fleet` it parks as a `gate`.
+
+Every result appends `{"step": "<STEP>", "result": "<result>", "at": "<ISO-8601 UTC>"}` to `state.json`
+`deps`, then `WRITE-STATE`, and logs `deps <result> before <STEP>`. A precondition stop does **not**
+increment `failures[STEP]`: the step never ran, so no attempt was spent. Accept and continue is never
+offered at these stops (it needs a 3c receipt). Cap semantics are otherwise untouched, and a genuine
+exit `126` or `127` inside a step stays the `check-not-run` hard stop it is today.
+
+Ship and review need no precondition. Review does not run the check, and ship follows verify with no
+edit in between.
+
+**Stage ordering guarantee:** worktree, then deps, then check detection, then plan, then any step that
+runs the check. This is the order the worktree step and the Check command question enforce.
+
 ### Per-step details
 
 **worktree.** Fresh runs only (a resume past it has `worktree` recorded). Args: `--issue <ISSUE>
@@ -1895,8 +1937,34 @@ git worktree list --porcelain | grep -A2 "^worktree <WORKTREE>$"
 
 The `branch refs/heads/<BRANCH>` line must match. If the reply has no worktree line, or git
 disagrees, the step is `FAILED` with reason `worktree not created`. Only then record `WORKTREE` and
-`BRANCH`, write the receipt, and write the **flow marker** so every later step finds the flow with
-no flag:
+`BRANCH`. The rest of the stage runs in this fixed order, and nothing later starts until it finishes:
+worktree (verified above), then deps, then check detection, then the marker and receipt, then the
+hand-off. Plan, and every step that runs the check, comes after all of it.
+
+1. **Deps.** Run `deps ensure` for the new worktree. It has no `--base`, so no manifest-change gate
+   applies here:
+
+   ```bash
+   source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
+   PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli deps ensure --worktree "<WORKTREE>" --main-worktree "<MAIN_WORKTREE>"
+   ```
+
+   The result is the status token on the printed `DEPS:` line. Exits 3, 4, and 5 are expected outcomes of `deps ensure`, not failures of the command; each maps to the status its printed line names, and that status alone decides what happens next. `installed` and `current` print one line and
+   continue. `skipped` and `ambiguous` print a warning and continue (no lockfile, or mixed lockfiles so
+   nothing runs). `failed` (the printed `DEPS: failed: <reason>` line) with a detected lockfile or an explicit
+   `commands.install` is a hard stop through the Hard stop menu (Retry re-runs this `deps ensure`;
+   Take over and Abort as for any worktree-stage stop). It is not counted in `failures.worktree`, and in
+   `--fleet` it parks. Every result is appended to `state.json` `deps` (see "Flow state").
+2. **Check detection.** Run `checks ensure-check --worktree "<WORKTREE>" --main-worktree "<MAIN_WORKTREE>"`
+   (same `PYTHONPATH` form as above). It prints `CHECK_SOURCE:` and `CHECK_ACTION:` lines, plus `CHECK_COMMAND:` when a command resolved, or `CHECK_SOURCE: unresolved` with `CHECK_ACTION: unresolved`. Exit 1 with `CHECK_ACTION: error` and an `ERROR:` line is a write failure: stop and surface the `ERROR:` line; record no answer.
+   `unresolved` never stops this step: the receipt records it and the plan-time question
+   ("Check command question", before the plan spawn) asks once.
+3. **Marker and receipt.** Only now record the receipt and the marker. The receipt carries the required
+   lines `WORKTREE:`, `BRANCH:`, `DEPS: <result>`, and `CHECK_SOURCE: <source | unresolved>` (see
+   "Orchestrator-written receipts").
+
+Then write the **flow marker** so every later step finds the flow with no flag:
 
 - `Write` the single line `<FLOW_DIR>` to `<WORKTREE>/.claude/flow-run` (create `.claude/` with
   `mkdir -p` first — the worktree is now confirmed).
@@ -1926,6 +1994,42 @@ paused`, log `handoff`, `WRITE-STATE`, close telemetry (`command-end --command e
 interrupted`), print the hand-off lines from "Where the orchestrator runs", and end the turn.
 Running bare `/expert-flow` inside the worktree resumes this flow at `plan` without a question (see "No-argument run"); `/expert-flow <ISSUE>` asks once as before.
 
+**Check command question (before plan, and before implement while unresolved).** Runs after the
+hand-off on a fresh run, on every `--resume` that reaches `plan`, and before the `implement` spawn
+whenever the check is still unresolved. Run `checks ensure-check --worktree "<WORKTREE>"
+--main-worktree "<MAIN_WORKTREE>"` (the `PYTHONPATH` form from the worktree step). If it prints
+`CHECK_ACTION: resolved`, `detected` or `opt-out`, print its `CHECK_SOURCE:` and `CHECK_COMMAND:` (or `OPT_OUT:`) lines and continue. If it prints `CHECK_ACTION: unresolved`, ask once. If it exits 1 with `CHECK_ACTION: error`, stop and surface the `ERROR:` line; record no answer.
+
+1. **Question file.** Pick `SEQ` and write `${FLOW_DIR}/questions/plan-<SEQ>.json` through the Ask
+   block (`step: "plan"`, `command: "expert-flow"`, `attempt: <ATTEMPT>`, `context_path: null`). The
+   `summary` quotes the `sources tried:` line from `checks resolve-check --worktree "<WORKTREE>"
+   --main-worktree "<MAIN_WORKTREE>"` (its `failure_reason`; `ensure-check` does not list sources), and
+   states that verify and ship need a check (a `checkOptOut` only skips the implement and fix gate).
+   One question, header
+   `Check command`, text "No check command is configured for this repo. Which command should verify
+   and ship run?" Options, in order: when `ensure-check` printed a `SUGGESTION:` line, its command with
+   the ` (from CLAUDE.md, unverified)` suffix removed by the orchestrator, shown as
+   `<command> (from CLAUDE.md, unverified)` with the description "Nothing is saved unless you
+   choose it"; then `Type a command` ("Answer in your own words: the exact command, run from the
+   worktree root"); then `Set checkOptOut` ("Record a reason. Skips the implement and fix check gate
+   only; verify and ship still need a command."). Each entry has an `id` and `brief: null`.
+2. **Relay.** Relay it as "Relaying a question" does (the Ask block's relay path). Ask it with
+   `AskUserQuestion` exactly as the file reads. In `--fleet` it parks as a `gate` (see "Fleet mode").
+   In `--epic` only the first child asks; the siblings resolve from main.
+3. **Persist the human's answer, never a guess.** A command (the suggestion or the typed text) runs
+   `checks record-check-answer --main-worktree "<MAIN_WORKTREE>" --command '<command>'`; an opt-out runs
+   the same with `--opt-out '<reason>'`. Pass the value as one single-quoted argument, and re-ask
+   instead of passing a value that contains a newline or a single quote. Then re-run `checks
+   ensure-check`. A non-zero exit, or a command answer that does not resolve to the value given, is a
+   refusal.
+4. **Ledger.** Record the answer through the script, so it reaches later workers as background:
+   `python3 "$HOME/.claude/scripts/flow-ledger.py" append --flow-dir "$FLOW_DIR" --kind answer --step plan --attempt <k> --text-stdin <<'HUMAN_TEXT_<8 random hex>'`
+   with the text `check command: <command>` or `check opt-out: <reason>`. Non-zero exit is
+   `STOP human ledger error: <first stderr line>`.
+5. **Refusal.** A refused `record-check-answer` prints the exact line to add to the main `.claude/project.yaml` (`check: "<command>"` under a block-style `commands:`, or a top-level `checkOptOut: "<reason>"`); relay that line. Do not guess a command.
+   Then continue to plan, which needs no check. The `implement` spawn re-runs this block first; while it
+   is still unresolved the flow stops there with the same line.
+
 **plan.** Args: `<ISSUE_URL> --flow <FLOW_DIR>` plus `--effort <PLAN_EFFORT>` when set. Runs in
 `WORKTREE` (the flow marker exists by now; `--flow` is still passed and wins as the explicit
 source). On `OK`, record `PLAN_PATH` from the receipt's `FINAL_PLAN_PATH:` line
@@ -1943,7 +2047,7 @@ recorded `WORKTREE` and `BRANCH` (otherwise `FAILED` `worktree not created`). It
 receipt and re-asserts the flow marker (see the worktree step).
 Artifact check: none needed. The receipt is orchestrator-written after `git worktree list` verification. In epic E3, the `gh issue view` URL check is the evidence.
 
-**implement.** Args: `<PLAN_PATH>`. Never pass `--pause`. The required `ROUND 1` section-header
+**implement.** Args: `<PLAN_PATH>`. Before the spawn, the Check command question (while unresolved) and the Deps precondition run. Never pass `--pause`. The required `ROUND 1` section-header
 line comes from the command's own final summary: the receipt copies that summary block verbatim, anchored to the whole block from `ROUND SIZING:` to the end, with no reformatting, reordering, or dropped lines (`fix` also requires `ACTION PLAN SOURCE:`). Rule 5 checks the header's shape. Gate-not-converged and
 shared-file conflicts arrive as `FAILED` receipts — hard stop (the check heal and Fix now cover only the cases named in their blocks).
 Artifact check: ≥1 new commit since `bases.implement` (script).
@@ -1959,12 +2063,12 @@ Artifact check: `REVIEW_DIR` files and checkpoints (script).
 
 **Model note:** The `flow-review` agent pins Sonnet. Inside a flow, review runs on Sonnet by default, restoring the documented panel default from `/expert-review`'s `model: sonnet` frontmatter. The flow's Opus-escalation question (Step 5.5 in `/expert-review`) is skipped when `EFFORT_EXPLICIT=true`, which is the normal flow case where `--effort` is passed; Opus is only available when the flow omits `--review-effort`, allowing Step 5.5 to ask.
 
-**fix.** Skipped (log `skipped`, no stage opened) when `critical`, `high`, `medium`, and `low`
+**fix.** The Deps precondition runs before the spawn (when the step is not skipped). Skipped (log `skipped`, no stage opened) when `critical`, `high`, `medium`, and `low`
 are all `0`. Otherwise `/implement-with-haiku <REVIEW_DIR>/claude-action-plan.md` with step name
 `fix` and receipt `05-fix.md`.
 Artifact check: ≥1 new commit since `bases.fix`, unless the review's `claude-action-plan.md` has no *Doing it* items (script, `--review-dir`). If it still fails on a legitimate no-op, the stop text names `--from verify` as the way forward.
 
-**verify.** Resolve the check command by running:
+**verify.** The Deps precondition runs before the spawn, and again before a re-run after an auto-rebase. Resolve the check command by running:
 
 ```bash
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }

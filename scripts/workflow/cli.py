@@ -16,10 +16,17 @@ Usage:
   python3 -m scripts.workflow.cli track seed-cache --from <main> --to <worktree>
   python3 -m scripts.workflow.cli worktree detect-parent [--cwd <dir>]
   python3 -m scripts.workflow.cli checks resolve-check --worktree <dir> [--main-worktree <dir>]
+  python3 -m scripts.workflow.cli checks ensure-check --worktree <dir> --main-worktree <dir>
+  python3 -m scripts.workflow.cli checks record-check-answer --main-worktree <dir> (--command <cmd> | --opt-out <reason>)
+  python3 -m scripts.workflow.cli deps ensure --worktree <dir> --main-worktree <dir> [--base <ref>] [--approve-manifest]
 
 Exit codes for `checks resolve-check`: 0 when a command resolved; 1 whenever failure_reason is
 set, including an explicit checkOptOut. A caller that must tell opt-out from not-configured
 reads `source` ("opt-out" vs null) from the JSON, not the exit code.
+
+Exit codes for `deps ensure`: 0 current or installed; 1 failed; 3 ambiguous lockfiles;
+4 manifest-changed (needs approval); 5 skipped (no lockfile and no commands.install).
+argparse usage errors keep exit 2.
 """
 
 import sys
@@ -28,7 +35,7 @@ import json
 from pathlib import Path
 from typing import Callable, Any, Tuple
 
-from . import cleanup, merge, shipit, checks, track, verify_queue, issue_comments
+from . import cleanup, merge, shipit, checks, deps, track, verify_queue, issue_comments
 from .cache import read_repo_cache
 from .models import RepoCacheData
 from .providers import GithubProvider, LocalProvider
@@ -333,6 +340,50 @@ def main() -> None:
             "Main worktree path for fallback (optional). Exit 1 means failure_reason is set "
             "(opt-out or not configured); read `source` from the JSON to tell them apart."
         )
+    )
+
+    checks_ensure_check_parser = checks_subparsers.add_parser(
+        "ensure-check",
+        help="Resolve the check, or derive it from package.json into the main repo-cache (never asks)",
+        description=(
+            "Print CHECK_SOURCE (first line), CHECK_ACTION (resolved | detected | opt-out | unresolved), "
+            "then CHECK_COMMAND or OPT_OUT, or SUGGESTION for unresolved. Exit 0 for every state; "
+            "exit 1 only when the main repo-cache.json write fails."
+        ),
+    )
+    checks_ensure_check_parser.add_argument("--worktree", required=True, help="Step worktree path")
+    checks_ensure_check_parser.add_argument("--main-worktree", required=True, help="Main worktree path")
+
+    checks_record_answer_parser = checks_subparsers.add_parser(
+        "record-check-answer",
+        help="Record a human's check answer in the main project.yaml, then verify it resolves",
+    )
+    checks_record_answer_parser.add_argument("--main-worktree", required=True, help="Main worktree path")
+    record_answer_group = checks_record_answer_parser.add_mutually_exclusive_group(required=True)
+    record_answer_group.add_argument(
+        "--command", dest="check_command", default=None, help="Check command to record as commands.check"
+    )
+    record_answer_group.add_argument("--opt-out", default=None, help="Reason to record as checkOptOut")
+
+    deps_parser = subparsers.add_parser("deps", help="Dependency install precondition")
+    deps_subparsers = deps_parser.add_subparsers(dest="deps_action")
+
+    deps_ensure_parser = deps_subparsers.add_parser(
+        "ensure",
+        help="Make dependencies current for the worktree's lockfile",
+        description=(
+            "Print DEPS: <status>[: detail] then, on failure, a redacted tail of the install output. "
+            "Exit 0 current/installed, 1 failed, 3 ambiguous, 4 manifest-changed, 5 skipped."
+        ),
+    )
+    deps_ensure_parser.add_argument("--worktree", required=True, help="Step worktree path")
+    deps_ensure_parser.add_argument("--main-worktree", required=True, help="Main worktree path (commands.install source)")
+    deps_ensure_parser.add_argument(
+        "--base", default=None, help="Flow base ref; enables the manifest gate against merge-base(base, HEAD)"
+    )
+    deps_ensure_parser.add_argument(
+        "--approve-manifest", action="store_true",
+        help="Approve the current package.json/lockfile hash so the manifest gate clears"
     )
 
     worktree_parser = subparsers.add_parser("worktree", help="Worktree layout detection")
@@ -735,6 +786,28 @@ def main() -> None:
                 }
                 print(json.dumps(output))
                 sys.exit(1)
+        elif args.checks_action == "ensure-check":
+            ensured = checks.ensure_check(Path(args.worktree), Path(args.main_worktree))
+            if ensured.action == "error":
+                print("CHECK_SOURCE: unresolved")
+                print("CHECK_ACTION: error")
+                print(f"ERROR: {ensured.error}")
+                sys.exit(1)
+            print(f"CHECK_SOURCE: {ensured.source if ensured.source is not None else 'unresolved'}")
+            print(f"CHECK_ACTION: {ensured.action}")
+            if ensured.command is not None:
+                print(f"CHECK_COMMAND: {ensured.command}")
+            if ensured.opt_out_reason is not None:
+                print(f"OPT_OUT: {ensured.opt_out_reason}")
+            if ensured.suggestion is not None:
+                print(f"SUGGESTION: {ensured.suggestion} (from CLAUDE.md, unverified)")
+        elif args.checks_action == "record-check-answer":
+            ok, message = checks.record_check_answer(
+                Path(args.main_worktree), command=args.check_command, opt_out=args.opt_out
+            )
+            print(message)
+            if not ok:
+                sys.exit(1)
         else:
             checks_parser.print_help()
             sys.exit(1)
@@ -810,6 +883,29 @@ def main() -> None:
                 sys.exit(2)
         else:
             issue_comments_parser.print_help()
+            sys.exit(1)
+    elif args.command == "deps":
+        if args.deps_action == "ensure":
+            try:
+                deps_result = deps.ensure_deps(
+                    Path(args.worktree),
+                    Path(args.main_worktree),
+                    base=args.base,
+                    approve_manifest=args.approve_manifest,
+                )
+            except KeyboardInterrupt:
+                print("DEPS: failed: interrupted")
+                sys.exit(130)
+            except SystemExit as interrupted:
+                # SIGTERM turns into SystemExit(143) inside the install; still print a DEPS line.
+                if isinstance(interrupted.code, int) and interrupted.code >= 128:
+                    print("DEPS: failed: interrupted")
+                raise
+            for out_line in deps_result.output_lines():
+                print(out_line)
+            sys.exit(deps_result.exit_code)
+        else:
+            deps_parser.print_help()
             sys.exit(1)
     else:
         parser.print_help()

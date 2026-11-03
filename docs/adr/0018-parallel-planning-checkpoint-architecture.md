@@ -106,6 +106,7 @@ the `.claude/flow-run` marker or relay flag). The orchestrator itself writes flo
 - **No answer writes from step agents.** Step agents read answer files (`${FLOW_DIR}/answers/*.json`)
   after relay, but never write them. The orchestrator owns answer-file writes (via the `Ask` relay
   pattern in `flow-reference.md`).
+- **CLI-owned writes (cross-reference, 2026-11-01).** Writes outside this prefix that the `deps ensure` and `checks` CLI make (the main `project.yaml`, `repo-cache.json`, the deps stamp) and its install subprocesses are not step-agent writes. They are bounded in ADR-0013 Amendment 10.
 
 **Failure modes (documented behavior):**
 

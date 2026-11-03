@@ -221,6 +221,77 @@ def main():
     )
 
     print()
+    print("[Section 9] #417 check-command preflight and deps chore in commands/expert-fleet.md")
+
+    fm_match = re.search(r"^allowed-tools:\s*(.*)$", fleet_cmd, re.MULTILINE)
+    fm_tools = fm_match.group(1) if fm_match else ""
+    h.test_result(
+        "expert-fleet grants checks ensure-check and checks record-check-answer",
+        "Bash(python3 -m scripts.workflow.cli checks ensure-check:*)" in fm_tools
+        and "Bash(python3 -m scripts.workflow.cli checks record-check-answer:*)" in fm_tools,
+    )
+    pkg_grant = re.search(r"Bash\((npm|pnpm|yarn|bun)\b", fm_tools)
+    h.test_result(
+        "expert-fleet grants no package-manager command",
+        pkg_grant is None,
+        f"found grant: {pkg_grant.group(0)}" if pkg_grant else "",
+    )
+
+    preflight_idx = fleet_cmd.find("## Check-command preflight (before Step 3)")
+    launch_idx = fleet_cmd.find("## Step 3: Launch")
+    h.test_result(
+        "Check-command preflight section sits before ## Step 3: Launch",
+        preflight_idx >= 0 and launch_idx > preflight_idx,
+    )
+    preflight = fleet_cmd[preflight_idx:launch_idx] if preflight_idx >= 0 and launch_idx > preflight_idx else ""
+    h.test_result(
+        "preflight resolves with checks ensure-check against MAIN as worktree and main worktree",
+        'checks ensure-check --worktree "<MAIN>" --main-worktree "<MAIN>"' in preflight,
+    )
+    h.test_result(
+        "preflight refuses to launch and says not to run fleet.py run",
+        "**Refuse to launch**" in preflight and "Do not run `fleet.py run`" in preflight,
+    )
+    h.test_result(
+        "preflight question uses header epic and joins the --prepass batch",
+        "header `epic`" in preflight and "--prepass" in preflight,
+    )
+    h.test_result(
+        "preflight persists with checks record-check-answer",
+        "checks record-check-answer --main-worktree \"<MAIN>\"" in preflight,
+    )
+    step3 = fleet_cmd[launch_idx:]
+    h.test_result(
+        "Step 3 runs the preflight before fleet.py ready",
+        "Run the Check-command preflight above, then `fleet.py ready FLEET`." in step3,
+    )
+    step2_idx = fleet_cmd.find("## Step 2: Big-stones pre-pass")
+    h.test_result(
+        "Step 2 runs preflight step 1 before the first AskUserQuestion",
+        step2_idx >= 0 and "step 1 of the Check-command preflight" in fleet_cmd[step2_idx:launch_idx],
+    )
+    deps_idx = fleet_cmd.find("**Deps chore inside tickets.**")
+    deps = fleet_cmd[deps_idx:fleet_cmd.find("## What this command deliberately does not do")] if deps_idx >= 0 else ""
+    deps_flat = " ".join(deps.split())
+    h.test_result("deps chore paragraph exists", deps_idx >= 0)
+    h.test_result(
+        "successful deps results never park",
+        "A successful result" in deps_flat and "never parks" in deps_flat,
+    )
+    h.test_result(
+        "failed and manifest-changed deps results park as a gate",
+        "`failed`" in deps_flat and "`manifest-changed`" in deps_flat and "`gate`" in deps_flat,
+    )
+    h.test_result(
+        "deps chore inherits #382 and moves to #370's Validate phase",
+        "#382" in deps_flat and "#370" in deps_flat,
+    )
+    h.test_result(
+        "deliberate-not-do bullet carves out checks record-check-answer",
+        "checks record-check-answer" in fleet_cmd[fleet_cmd.find("## What this command deliberately does not do"):],
+    )
+
+    print()
     h.summarize_and_exit()
 
 
