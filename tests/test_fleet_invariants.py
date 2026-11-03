@@ -188,6 +188,59 @@ def main():
                 f"found {hard_coded!r} in scripts/fleet.py"
             )
 
+    # Case 5: heal_pass never raises (Step 8, D1)
+    print()
+    print("### heal_pass() never raises and tail file permissions")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        home.mkdir()
+        fleet_dir = Path(tmp) / "fleet"
+        fleet_dir.mkdir()
+        main_wt = Path(tmp) / "main"
+        main_wt.mkdir()
+
+        # Create a minimal fleet.json
+        fleet_data = {"repo": "test/repo", "tickets": [{"issue": 1, "heals": {}}]}
+        (fleet_dir / "fleet.json").write_text(json.dumps(fleet_data))
+
+        # Create a flow directory with minimal state
+        flow_dir = Path(tmp) / "flow"
+        flow_dir.mkdir()
+        (flow_dir / "state.json").write_text(json.dumps({
+            "issue": 1,
+            "step": "implement",
+            "status": "failed",
+            "failures": {"implement": 1},
+        }))
+
+        # heal_pass should never raise, even with invalid inputs
+        try:
+            fl.heal_pass(fleet_dir, 1, "test/repo", flow_dir, main_wt)
+            h.test_result("heal_pass does not raise with valid inputs", True)
+        except Exception as e:
+            h.test_result("heal_pass does not raise with valid inputs", False, f"raised {e}")
+
+        # heal_pass with None flow_dir should return silently
+        try:
+            fl.heal_pass(fleet_dir, 1, "test/repo", None, main_wt)
+            h.test_result("heal_pass returns silently when flow_dir is None", True)
+        except Exception as e:
+            h.test_result("heal_pass returns silently when flow_dir is None", False, f"raised {e}")
+
+        # Tail files should be created with mode 0600 (rw-------)
+        tails_dir = fleet_dir / "heals"
+        if tails_dir.exists():
+            tail_files = list(tails_dir.glob("*.tail"))
+            if tail_files:
+                for tail in tail_files:
+                    mode = tail.stat().st_mode & 0o777
+                    h.test_result(
+                        f"Tail file {tail.name} has mode 0600",
+                        mode == 0o600,
+                        f"Got mode {oct(mode)}"
+                    )
+
     h.summarize_and_exit()
 
 

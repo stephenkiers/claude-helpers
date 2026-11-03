@@ -520,6 +520,43 @@ def main():
     )
 
     print()
+    print("[Section 10] Step 4(a): Heal line in FLEET output")
+
+    fleet_lines_full = fleet_cmd.splitlines()
+    step4_idx = fleet_cmd.find("## Step 4")
+    if step4_idx >= 0:
+        step5_idx = fleet_cmd.find("## Step 5", step4_idx + 1)
+        step4_section = fleet_cmd[step4_idx:step5_idx if step5_idx >= 0 else None]
+        heal_mention = "heal" in step4_section.lower()
+        h.test_result(
+            "Step 4 section mentions heal output",
+            heal_mention,
+            "no heal mention in Step 4" if not heal_mention else "",
+        )
+    else:
+        h.test_result("Step 4 section found", False, "## Step 4 not found in expert-fleet.md")
+
+    print()
+    print("[Section 11] ADR-0025 amendment: Byte-identical POC claim retired")
+
+    # The byte-identical claim is retired (2026-11-02 amendment).
+    # Check that the ADR mentions this retirement with the key phrase "that claim is retired"
+    retired_mention = "that claim is retired" in adr.lower() or "retired claim" in adr.lower()
+    h.test_result(
+        "ADR-0025 documents retirement of the byte-identical claim (2026-11-02 amendment)",
+        retired_mention,
+        "no 'that claim is retired' or 'retired claim' in ADR" if not retired_mention else "",
+    )
+
+    # The amendment should name 2026-11-02 (or the specific amendment date)
+    amendment_date = "2026-11-02" in adr
+    h.test_result(
+        "ADR-0025 cites the 2026-11-02 amendment date for the retirement",
+        amendment_date,
+        "amendment date not found" if not amendment_date else "",
+    )
+
+    print()
     h.summarize_and_exit()
 
 

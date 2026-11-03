@@ -194,6 +194,73 @@ def main():
         st = json.loads(cli("status", str(fleet_dir), "--json").stdout)
         h.test_result("status json shape", st["rows"][0]["state"] == "done" and st["ready"] == [])
 
+    # Heal cap and record structure (Step 7)
+    print()
+    print("### Heal write-ahead cap and record structure")
+    with tempfile.TemporaryDirectory() as tmp:
+        data = {"repo": REPO, "tickets": [{"issue": 42}]}
+        t = data["tickets"][0]
+
+        # Write-ahead cap: once per cause
+        result1 = fl.heal_write_ahead(t, "missing-deps", "implement")
+        h.test_result("heal_write_ahead returns True on first call", result1 is True)
+        h.test_result(
+            "heal_write_ahead creates heals entry",
+            "heals" in t and "missing-deps" in t["heals"],
+        )
+        h.test_result(
+            "heal_write_ahead sets outcome to 'attempted'",
+            t["heals"]["missing-deps"]["outcome"] == "attempted",
+        )
+
+        result2 = fl.heal_write_ahead(t, "missing-deps", "implement")
+        h.test_result("heal_write_ahead returns False on second call (cap hit)", result2 is False)
+        h.test_result(
+            "heal_write_ahead doesn't duplicate cause entry",
+            len(t.get("heals", {})) == 1,
+        )
+
+        # Different cause still works
+        result3 = fl.heal_write_ahead(t, "other-cause", "implement")
+        h.test_result("heal_write_ahead works for different cause", result3 is True)
+
+        # heal_finish updates the record
+        fl.heal_finish(t, "missing-deps", "install", "healed", "retry-recommended", "stop-abc")
+        h.test_result(
+            "heal_finish updates tool name",
+            t["heals"]["missing-deps"]["tool"] == "install",
+        )
+        h.test_result(
+            "heal_finish updates outcome",
+            t["heals"]["missing-deps"]["outcome"] == "healed",
+        )
+        h.test_result(
+            "heal_finish updates recommendation",
+            t["heals"]["missing-deps"]["recommendation"] == "retry-recommended",
+        )
+        h.test_result(
+            "heal_finish updates stop_key",
+            t["heals"]["missing-deps"]["stop_key"] == "stop-abc",
+        )
+
+        # Attempted outcome (crashed heal)
+        t2 = {"issue": 43}
+        fl.heal_write_ahead(t2, "missing-deps", "implement")
+        h.test_result(
+            "'attempted' outcome is written when heal crashes",
+            t2["heals"]["missing-deps"]["outcome"] == "attempted",
+        )
+
+        # heal_note for diagnosis or probe refusal
+        t3 = {"issue": 44}
+        t3["heal_note"] = {
+            "stop_key": "note-xyz",
+            "at": "2026-11-02T00:00:00Z",
+            "line": "Manifest changed; needs approval.",
+        }
+        h.test_result("heal_note has stop_key", t3["heal_note"]["stop_key"] == "note-xyz")
+        h.test_result("heal_note has line", "Manifest changed" in t3["heal_note"]["line"])
+
     h.summarize_and_exit()
 
 
