@@ -241,6 +241,24 @@ def main():
                         f"Got mode {oct(mode)}"
                     )
 
+    # Stop-key mirror: fleet.current_stop_key must equal heal.stop_key_for for both stop shapes
+    sys.path.insert(0, str(REPO_ROOT))
+    from scripts.workflow import heal as heal_mod
+    with tempfile.TemporaryDirectory() as tmp:
+        fd = Path(tmp)
+        (fd / "state.json").write_text(json.dumps(
+            {"step": "verify", "status": "failed", "stop_reason": {"verify": "lint failed"}}))
+        h.test_result(
+            "stop key mirror: no open ask",
+            fl.current_stop_key(fd) == heal_mod.stop_key_for(None, "verify", "failed", "lint failed"),
+        )
+        ask = json.dumps({"status": "open", "q": "x"}).encode()
+        (fd / "fleet-ask.json").write_bytes(ask)
+        h.test_result(
+            "stop key mirror: open ask",
+            fl.current_stop_key(fd) == heal_mod.stop_key_for(ask, "verify", "failed", "lint failed"),
+        )
+
     h.summarize_and_exit()
 
 
