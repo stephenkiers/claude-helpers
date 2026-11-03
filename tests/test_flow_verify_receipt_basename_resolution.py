@@ -11,7 +11,7 @@ Covers two spec clauses:
   script-verified present; otherwise it rejects. The cited path:N anchor must sit on the row's own
   file, with N inside the row's range (+/- slack).
 
-Run with: python3 tests/test_flow_verify_receipt_spec_blind_435.py
+Run with: python3 tests/test_flow_verify_receipt_basename_resolution.py
 """
 
 import hashlib
