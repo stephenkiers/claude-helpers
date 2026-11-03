@@ -11,14 +11,16 @@ side effects go through an injected runner.
 Invoked by scripts/workflow/cli.py heal subcommand.
 """
 
+import hashlib
 import json
+import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Literal, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
 
-if TYPE_CHECKING:
-    from . import deps as deps_module
+from . import deps
 
 # Type aliases
 Permission = Literal["runs-repo-code", "writes-gitignored", "no-write"]
@@ -48,6 +50,32 @@ HealReason = Literal[
 # Recommendation enum tokens
 Recommendation = Literal["retry-recommended", "take-over"]
 
+# Closed sets taken from the documented state.json schema (commands/expert-flow.md, State section).
+KNOWN_STEPS: Tuple[str, ...] = (
+    "worktree", "plan", "track", "implement", "review", "fix", "verify", "assess", "ship", "merge",
+)
+_STATUSES: Tuple[str, ...] = ("running", "awaiting", "paused", "failed", "abandoned", "done")
+_STOP_SOURCES: Tuple[str, ...] = ("receipt", "validation", "audit", "tree")
+_DEPS_RESULTS: Tuple[str, ...] = (
+    "installed", "current", "skipped", "ambiguous", "manifest-changed", "failed",
+)
+_DEPS_STEPS: Tuple[str, ...] = ("worktree", "implement", "fix", "verify")
+_STATUS_VALUES: Tuple[str, ...] = ("no-op", "healed", "refused", "failed")
+
+# The Flow stop gate is the only ask that can nominate a heal.
+FLOW_STOP_HEADER = "Flow stop"
+
+# Permission-classifier refusals surface in stop_reason with Claude Code's own wording ("Permission ...
+# has been denied"). No sample of that text exists in this repo, so the marker is pinned here as the
+# pair of case-insensitive substrings below; a stop whose reason carries both is never healed.
+PERMISSION_MARKERS: Tuple[str, str] = ("permission", "denied")
+
+# Per-parameter bounds for the project override: (minimum, maximum), both inclusive.
+PARAM_BOUNDS: Dict[str, Tuple[int, int]] = {"timeout_secs": (1, deps.DEPS_TIMEOUT_SECS)}
+
+OVERRIDE_INVALID_LINE = "Project heal override is invalid; no tool will run."
+OVERRIDE_DISABLED_LINE = "Heal tool is disabled by the project override."
+
 
 @dataclass(frozen=True)
 class Tool:
@@ -67,15 +95,17 @@ class Tool:
 @dataclass(frozen=True)
 class StopEvidence:
     """Parsed flow data that nominates a tool or a diagnosis."""
-    kind: str  # "flow-stop", "failed", "stopped", etc.
+    kind: str  # "flow-stop", "failed", "stopped"
     header: Optional[str]  # Gate header name, if any
     step: Optional[str]  # The step that failed
     failures: Dict[str, int]  # failures[step] counters
     stop_source: Optional[str]  # Where the stop came from
-    stop_reason_class: Optional[str]  # e.g. "permission-refusal"
-    last_deps_result: Optional[str]  # Latest deps status or None
-    offers_retry: bool  # Does the gate offer Retry as an option?
-    stop_key: Optional[str]  # Identifies this stop: ask hash or state hash
+    stop_reason_class: Optional[str]  # closed enum: permission-refusal, check-not-configured, reduced-run
+    last_deps_result: Optional[str]  # Result of the newest deps entry, or None
+    offers_retry: bool  # Does the open gate's own recorded options include Retry?
+    stop_key: Optional[str]  # Identifies this stop (see stop_key_for)
+    last_deps_step: Optional[str] = None  # Step of the newest deps entry
+    worktree: Optional[str] = None  # state.json worktree, validated against the argument
 
 
 @dataclass(frozen=True)
@@ -89,18 +119,30 @@ class HealResult:
     stop_key: Optional[str]
 
 
+def stop_key_for(ask_bytes: Optional[bytes], step: str, status: str, reason: str) -> str:
+    """
+    The one definition of a stop's identity.
+
+    An open ask is identified by the sha256 of its fleet-ask.json bytes; a stop with no open ask by the
+    sha256 of "step", "status" and "stop_reason[step]" (empty when absent) joined by newlines. Both are
+    truncated to 16 hex digits. scripts/fleet.py cannot import this module, so it carries a mirror of
+    the same computation (fleet.current_stop_key) that must stay identical.
+    """
+    if ask_bytes is not None:
+        return hashlib.sha256(ask_bytes).hexdigest()[:16]
+    return hashlib.sha256(f"{step}\n{status}\n{reason}".encode("utf-8")).hexdigest()[:16]
+
+
 # ────────────────────────────────────────────────────────────────────────────
-# The install tool (Step 4)
+# The install tool
 # ────────────────────────────────────────────────────────────────────────────
 
 def _install_precondition(worktree: Path, main_worktree: Path, base: Optional[str]) -> bool:
-    """Install runs only if deps are out of date (currency check returns 'stale')."""
+    """Install runs only if the read-only currency check says an install would run."""
     if base is None:
         return False
     try:
-        from . import deps  # type: ignore[import-untyped]
-        result = deps.deps_currency(worktree, main_worktree, base)  # type: ignore[attr-defined]
-        return result == "stale"
+        return deps.deps_currency(worktree, main_worktree, base) == "stale"
     except Exception:
         return False
 
@@ -112,12 +154,11 @@ def _install_run(
     timeout: int,
     tail_file: Optional[Path],
 ) -> Dict[str, Any]:
-    """Run ensure_deps with ignore_approvals=True."""
+    """Run ensure_deps with ignore_approvals=True. The redacted tail comes back under "tail"."""
     if base is None:
-        return {"status": "refused", "reason": "no-base"}
+        return {"status": "refused", "reason": "precondition-refused", "changed": False}
     try:
-        from . import deps  # type: ignore[import-untyped]
-        result = deps.ensure_deps(  # type: ignore[call-arg]
+        result = deps.ensure_deps(
             worktree,
             main_worktree,
             base=base,
@@ -125,33 +166,30 @@ def _install_run(
             timeout=timeout,
             ignore_approvals=True,
         )
-        # Map status to heal status
+        tail = list(result.tail)
         if result.status == "installed":
-            return {"status": "healed", "reason": "currency-installed", "changed": True}
-        elif result.status == "current":
-            return {"status": "no-op", "reason": "currency-current", "changed": False}
-        elif result.status == "manifest-changed":
-            return {"status": "refused", "reason": "currency-manifest-changed", "changed": False}
-        elif result.status == "ambiguous":
-            return {"status": "refused", "reason": "currency-ambiguous", "changed": False}
-        elif result.status == "skipped":
-            return {"status": "refused", "reason": "currency-skipped", "changed": False}
-        elif result.status == "failed":
-            return {"status": "failed", "reason": "currency-failed", "changed": False}
-        else:
-            return {"status": "failed", "reason": "internal-error", "changed": False}
+            return {"status": "healed", "reason": "currency-installed", "changed": True, "tail": tail}
+        if result.status == "current":
+            return {"status": "no-op", "reason": "currency-current", "changed": False, "tail": tail}
+        if result.status == "manifest-changed":
+            return {"status": "refused", "reason": "currency-manifest-changed", "changed": False, "tail": tail}
+        if result.status == "ambiguous":
+            return {"status": "refused", "reason": "currency-ambiguous", "changed": False, "tail": tail}
+        if result.status == "skipped":
+            return {"status": "refused", "reason": "currency-skipped", "changed": False, "tail": tail}
+        if result.status == "failed":
+            return {"status": "failed", "reason": "currency-failed", "changed": False, "tail": tail}
+        return {"status": "failed", "reason": "internal-error", "changed": False, "tail": tail}
     except Exception:
         return {"status": "failed", "reason": "internal-error", "changed": False}
 
 
 def _install_verify(worktree: Path, main_worktree: Path, base: Optional[str]) -> bool:
-    """Post-check: ensure_deps reports 'current' after a heal."""
+    """Post-check: the read-only currency check reports 'current' after a heal."""
     if base is None:
         return False
     try:
-        from . import deps  # type: ignore[import-untyped]
-        result = deps.deps_currency(worktree, main_worktree, base)  # type: ignore[attr-defined]
-        return result == "current"
+        return deps.deps_currency(worktree, main_worktree, base) == "current"
     except Exception:
         return False
 
@@ -182,9 +220,15 @@ DIAGNOSES: Dict[str, str] = {
     "malformed-receipt": "Malformed receipt or reduced run detected.",
 }
 
+# Structured stop_reason_class values (from the reader) that map to a diagnosis.
+_CLASS_DIAGNOSES: Dict[str, str] = {
+    "check-not-configured": DIAGNOSES["missing-check-config"],
+    "reduced-run": DIAGNOSES["malformed-receipt"],
+}
+
 
 # ────────────────────────────────────────────────────────────────────────────
-# Core harness logic (Step 3, pure functions)
+# Core harness logic (pure functions)
 # ────────────────────────────────────────────────────────────────────────────
 
 def nominate(
@@ -195,56 +239,49 @@ def nominate(
     """
     Nominate a tool or a diagnosis line. Pure, no I/O.
 
-    Returns:
-        (tool, None) for a nomination, or (None, diagnosis_line) for a refusal/diagnosis,
-        or (None, None) for no evidence.
+    Returns (tool, None) for a nomination, (None, line) for a refusal or diagnosis, and (None, None)
+    when there is no evidence to act on.
 
-    Refusals:
-    - failures[step] >= 2
-    - Unknown header or kind
-    - last_deps_result == "manifest-changed"
-    - stop_reason_class indicates permission refusal
+    Nomination needs valid evidence and either a known stop_source or a failed Deps-precondition
+    entry for the stopped step. Whether an install is actually due is the probe's decision
+    (deps_currency), never this function's.
     """
     if evidence is None:
         return None, None
 
-    # Validate we have the required fields to nominate
-    if evidence.stop_source is None and (
-        evidence.last_deps_result is None or evidence.stop_reason_class != "failed"
-    ):
-        return None, "No evidence to nominate."
-
-    # Check failure cap (W1 A: failures < 2 means 0 or 1)
-    step_failures = evidence.failures.get(evidence.step or "unknown", 0)
-    if step_failures >= 2:
-        return None, f"Failure limit reached ({step_failures} attempts)."
-
-    # Check for unknown/unsupported stop types
     if evidence.kind not in ("flow-stop", "failed", "stopped"):
         return None, "Unknown stop type."
+    if evidence.step not in KNOWN_STEPS:
+        return None, "Unknown stop type."
+    if evidence.header is not None and evidence.header != FLOW_STOP_HEADER:
+        return None, "Unknown stop type."
 
-    # Check for permission-refusal (never nominates a tool)
+    failed_precondition = (
+        evidence.last_deps_result == "failed" and evidence.last_deps_step == evidence.step
+    )
+    if evidence.stop_source is None and not failed_precondition:
+        return None, None
+
+    # W1: heal only while failures[STEP] < 2. An absent counter is 0.
+    if evidence.failures.get(str(evidence.step), 0) >= 2:
+        return None, "Failure limit reached; heal skipped."
+
     if evidence.stop_reason_class == "permission-refusal":
         return None, "Permission refusal; cannot heal."
 
-    # Check for manifest-changed (blocks nomination)
     if evidence.last_deps_result == "manifest-changed":
         return None, "Manifest changed; needs approval."
 
-    # Try to find a matching tool
+    if evidence.stop_reason_class in _CLASS_DIAGNOSES:
+        return None, _CLASS_DIAGNOSES[str(evidence.stop_reason_class)]
+
     for tool in tools:
-        # Check if tool is enabled in override
-        if tool.name in override:
-            tool_config = override[tool.name]
-            if isinstance(tool_config, dict) and tool_config.get("enabled") is False:
-                continue
-
-        # For install: matches missing-deps cause (inferred from last_deps_result)
+        tool_config = override.get(tool.name)
+        if isinstance(tool_config, dict) and tool_config.get("enabled") is False:
+            return None, OVERRIDE_DISABLED_LINE
         if tool.cause == "missing-deps":
-            if evidence.last_deps_result in ("stale",):
-                return tool, None
+            return tool, None
 
-    # No tool matched; return diagnosis
     return None, "No matching heal tool."
 
 
@@ -252,31 +289,27 @@ def probe(
     tool: Tool,
     context: Tuple[Path, Path, Optional[str]],
     runner: Optional[Callable[[Tool, Tuple[Path, Path, Optional[str]]], bool]] = None,
+    issue: Optional[int] = None,
+    state_worktree: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Read-only probe of whether a tool can run. No cap spent.
 
-    Returns:
-        (True, None) if precondition passes, or (False, refusal_line) otherwise.
+    Returns (True, None) if the precondition passes, or (False, refusal_line) otherwise.
     """
     worktree, main_worktree, base = context
 
-    # Validate worktree (Step 4)
-    validation_error = _validate_worktree(worktree, main_worktree)
+    validation_error = _validate_worktree(worktree, main_worktree, issue, state_worktree)
     if validation_error:
         return False, validation_error
 
-    # Check unchanged-inputs gate (Step 3)
     if tool.gate == "harness" and tool.inputs:
-        unchanged = _check_unchanged_inputs(worktree, main_worktree, base, tool.inputs)
-        if not unchanged:
+        if not _check_unchanged_inputs(worktree, main_worktree, base, tool.inputs):
             return False, "Tool inputs have changed."
 
-    # Check approval rule (Step 3)
     if tool.approval == "wait-for-approval":
         return False, f"Tool {tool.name} awaiting approval."
 
-    # Run precondition
     if not tool.precondition(worktree, main_worktree, base):
         return False, f"Precondition failed for {tool.name}."
 
@@ -287,16 +320,14 @@ def after_heal(result: HealResult, evidence: StopEvidence) -> Recommendation:
     """
     Pure function: choose retry or take-over based on result and evidence.
 
-    Retry is recommended only when:
-    - evidence.offers_retry is True
-    - tool changed something
-    - last_deps_result is not "manifest-changed"
-
-    Otherwise: take-over.
+    retry-recommended only when the result is healed (post-check passed), the tool changed something,
+    the gate's own options offer Retry, and the newest deps result is not manifest-changed.
+    Every other case, including refused, failed and no-op, is take-over.
     """
     if (
-        evidence.offers_retry
+        result.status == "healed"
         and result.changed
+        and evidence.offers_retry
         and evidence.last_deps_result != "manifest-changed"
     ):
         return "retry-recommended"
@@ -307,55 +338,83 @@ def after_heal(result: HealResult, evidence: StopEvidence) -> Recommendation:
 # Helper functions
 # ────────────────────────────────────────────────────────────────────────────
 
-def _validate_worktree(worktree: Path, main_worktree: Path) -> Optional[str]:
+def _git_wt(args: List[str], cwd: Path) -> "subprocess.CompletedProcess[str]":
+    """git with the fsmonitor hook disabled, since a ticket worktree's config is ticket-controlled."""
+    return subprocess.run(
+        ["git", "-c", "core.fsmonitor=false"] + args,
+        cwd=str(cwd),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+def _validate_worktree(
+    worktree: Path,
+    main_worktree: Path,
+    issue: Optional[int] = None,
+    state_worktree: Optional[str] = None,
+) -> Optional[str]:
     """
-    Validate that the worktree is safe to modify.
+    Validate that the worktree is safe to modify. Returns a fixed error line or None if valid.
 
-    Checks:
-    - Appears in git worktree list of main repo
-    - Realpath matches
-    - Is not the main worktree
-    - Branch names the issue (best-effort)
-
-    Returns error string or None if valid.
+    Checks: it is listed by `git worktree list --porcelain` of the main repo; its realpath matches the
+    listed path and, when given, state.json's worktree; it is not the main worktree; and, when an
+    issue is given, its branch names the issue.
     """
     try:
-        result = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"],
-            cwd=str(main_worktree),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        result = _git_wt(["worktree", "list", "--porcelain"], main_worktree)
         if result.returncode != 0:
             return "Could not list worktrees."
 
-        worktree_realpath = worktree.resolve()
-        main_realpath = main_worktree.resolve()
-
-        if worktree_realpath == main_realpath:
+        worktree_real = os.path.realpath(str(worktree))
+        main_real = os.path.realpath(str(main_worktree))
+        if worktree_real == main_real:
             return "Cannot heal the main worktree."
 
-        # Check if worktree appears in list
-        found = False
-        for line in result.stdout.split("\n"):
-            if not line.strip():
-                continue
-            parts = line.split()
-            if parts:
-                wt_path = Path(parts[0]).resolve()
-                if wt_path == worktree_realpath:
-                    found = True
-                    break
+        if state_worktree is not None and os.path.realpath(state_worktree) != worktree_real:
+            return "Worktree does not match the flow state."
 
-        if not found:
+        records: List[Dict[str, str]] = []
+        current: Dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                if current:
+                    records.append(current)
+                current = {}
+                continue
+            key, _, value = line.partition(" ")
+            if key in ("worktree", "branch"):
+                current[key] = value
+        if current:
+            records.append(current)
+
+        match: Optional[Dict[str, str]] = None
+        for index, rec in enumerate(records):
+            path = rec.get("worktree")
+            if path is None:
+                continue
+            real = os.path.realpath(path)
+            if real == worktree_real:
+                if index == 0 or real == main_real:
+                    return "Cannot heal the main worktree."
+                match = rec
+                break
+        if match is None:
             return "Worktree not in git worktree list."
+
+        if issue is not None:
+            branch = match.get("branch", "")
+            name = branch[len("refs/heads/"):] if branch.startswith("refs/heads/") else branch
+            if not name or re.search(r"(?<!\d)%d(?!\d)" % issue, name) is None:
+                return "Worktree branch does not name the issue."
 
         return None
     except subprocess.TimeoutExpired:
         return "Worktree list check timed out."
-    except Exception as e:
-        return f"Worktree validation error: {e}"
+    except Exception:
+        return "Worktree validation failed."
 
 
 def _check_unchanged_inputs(
@@ -364,82 +423,159 @@ def _check_unchanged_inputs(
     base: Optional[str],
     inputs: Tuple[str, ...],
 ) -> bool:
-    """
-    Check if input files are unchanged against the merge-base.
-
-    Returns True if all inputs are unchanged (or do not exist), False if any changed.
-    """
-    if not base or not inputs:
+    """Check that input files are unchanged against the merge-base. False on any change or error."""
+    if not inputs:
         return True
+    if not base:
+        return False
 
     try:
-        result = subprocess.run(
-            ["git", "diff", "--name-only", f"{base}...HEAD"],
-            cwd=str(worktree),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        result = _git_wt(["diff", "--name-only", f"{base}...HEAD"], worktree)
         if result.returncode != 0:
             return False
-
         changed_files = set(result.stdout.strip().split("\n")) if result.stdout.strip() else set()
-
-        for inp in inputs:
-            if inp in changed_files:
-                return False
-
-        return True
-    except subprocess.TimeoutExpired:
-        return False
+        return not any(inp in changed_files for inp in inputs)
     except Exception:
         return False
 
 
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _load_object(path: Path) -> Optional[Dict[str, Any]]:
+    """A JSON object file; None when missing, unreadable or not an object."""
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _str_map(value: Any, allowed: Optional[Tuple[str, ...]]) -> Optional[Dict[str, str]]:
+    """A step -> string object (absent or null reads as empty); None when malformed."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        return None
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            return None
+        if allowed is not None and item not in allowed:
+            return None
+    return dict(value)
+
+
+def _classify_reason(reason: str) -> Optional[str]:
+    """Map a stop_reason onto a closed class token. The text itself never travels further."""
+    low = reason.lower()
+    if all(marker in low for marker in PERMISSION_MARKERS):
+        return "permission-refusal"
+    if "check_not_configured" in low:
+        return "check-not-configured"
+    if low.startswith("reduced run (audit)"):
+        return "reduced-run"
+    return None
+
+
 def _read_stop_evidence(flow_dir: Path, issue: int) -> Optional[StopEvidence]:
     """
-    Read stop evidence from flow directory state.json and fleet-ask.json.
+    Build StopEvidence from the flow's real state.json (and fleet-ask.json when present).
 
-    Builds StopEvidence from structured fields, returning None if malformed or missing.
+    Fails closed: any malformed or non-integer field, an unknown step or status, or an ask that is
+    not an open Flow stop gate produces None. An absent failures[STEP] counts as 0.
     """
-    state_file = flow_dir / "state.json"
-    ask_file = flow_dir / "fleet-ask.json"
-
     try:
-        if not state_file.exists():
+        state = _load_object(flow_dir / "state.json")
+        if state is None or str(state.get("issue")) != str(issue):
             return None
 
-        state_data = json.loads(state_file.read_text())
+        step = state.get("step")
+        status = state.get("status")
+        if not isinstance(step, str) or step not in KNOWN_STEPS:
+            return None
+        if not isinstance(status, str) or status not in _STATUSES:
+            return None
 
-        # Extract required fields
-        kind = state_data.get("kind", "unknown")
-        header = state_data.get("header")
-        step = state_data.get("step")
-        status = state_data.get("status")
-        failures = state_data.get("failures", {})
+        raw_failures = state.get("failures")
+        if raw_failures is None:
+            raw_failures = {}
+        if not isinstance(raw_failures, dict):
+            return None
+        failures: Dict[str, int] = {}
+        for key, count in raw_failures.items():
+            if not isinstance(key, str) or not _is_int(count) or count < 0:
+                return None
+            failures[key] = count
 
-        # Infer stop_source and stop_reason_class
-        stop_source = state_data.get("stop_source")
-        stop_reason_class = state_data.get("stop_reason_class")
-        last_deps_result = state_data.get("last_deps_result")
+        sources = _str_map(state.get("stop_source"), _STOP_SOURCES)
+        reasons = _str_map(state.get("stop_reason"), None)
+        if sources is None or reasons is None:
+            return None
+        stop_source = sources.get(step)
+        reason = reasons.get(step, "")
 
-        # Check if gate offers Retry (from the gate record or the options)
-        offers_retry = (
-            isinstance(state_data.get("gate"), dict)
-            and "Retry" in state_data["gate"].get("options", [])
-        )
+        raw_deps = state.get("deps")
+        if raw_deps is None:
+            raw_deps = []
+        if not isinstance(raw_deps, list):
+            return None
+        for entry in raw_deps:
+            if (
+                not isinstance(entry, dict)
+                or entry.get("step") not in _DEPS_STEPS
+                or entry.get("result") not in _DEPS_RESULTS
+                or not isinstance(entry.get("at"), str)
+            ):
+                return None
+        last_deps_result = raw_deps[-1]["result"] if raw_deps else None
+        last_deps_step = raw_deps[-1]["step"] if raw_deps else None
 
-        # Compute stop_key from ask or state
-        stop_key = None
-        if ask_file.exists():
-            ask_text = ask_file.read_text()
-            import hashlib
-            stop_key = hashlib.sha256(ask_text.encode()).hexdigest()[:16]
+        wt = state.get("worktree")
+        if wt is not None and not isinstance(wt, str):
+            return None
+
+        ask_path = flow_dir / "fleet-ask.json"
+        ask_bytes: Optional[bytes] = None
+        ask: Optional[Dict[str, Any]] = None
+        if ask_path.exists():
+            ask_bytes = ask_path.read_bytes()
+            try:
+                parsed = json.loads(ask_bytes)
+            except ValueError:
+                return None
+            if not isinstance(parsed, dict):
+                return None
+            ask = parsed
+
+        offers_retry = False
+        header: Optional[str] = None
+        if ask is not None and ask.get("status") == "open":
+            gate = ask.get("gate")
+            if ask.get("kind") != "gate" or not isinstance(gate, dict):
+                return None
+            if gate.get("header") != FLOW_STOP_HEADER or ask.get("step") != step:
+                return None
+            options = gate.get("options")
+            if not isinstance(options, list):
+                return None
+            labels = []
+            for option in options:
+                if not isinstance(option, dict) or not isinstance(option.get("label"), str):
+                    return None
+                labels.append(option["label"])
+            offers_retry = "Retry" in labels
+            kind = "flow-stop"
+            header = FLOW_STOP_HEADER
+            key = stop_key_for(ask_bytes, step, status, reason)
         else:
-            # Hash of step, status, reason
-            state_hash_input = f"{step}:{status}:{stop_reason_class}"
-            import hashlib
-            stop_key = hashlib.sha256(state_hash_input.encode()).hexdigest()[:16]
+            if status == "failed":
+                kind = "failed"
+            elif status == "paused":
+                kind = "stopped"
+            else:
+                return None
+            key = stop_key_for(None, step, status, reason)
 
         return StopEvidence(
             kind=kind,
@@ -447,63 +583,88 @@ def _read_stop_evidence(flow_dir: Path, issue: int) -> Optional[StopEvidence]:
             step=step,
             failures=failures,
             stop_source=stop_source,
-            stop_reason_class=stop_reason_class,
+            stop_reason_class=_classify_reason(reason),
             last_deps_result=last_deps_result,
             offers_retry=offers_retry,
-            stop_key=stop_key,
+            stop_key=key,
+            last_deps_step=last_deps_step,
+            worktree=wt,
         )
     except Exception:
         return None
 
 
-def _read_project_override(main_worktree: Path) -> Dict[str, Any]:
+def _read_project_override(main_worktree: Path) -> Tuple[Dict[str, Any], Optional[str]]:
     """
-    Read fleet.heal.tools from main worktree's .claude/project.yaml.
+    Read fleet.heal.tools from the main worktree's .claude/project.yaml, never the ticket worktree.
 
-    Returns tool overrides dict, or {} on any error (fail closed).
+    Returns (override, diagnosis). Fails closed: any problem returns ({}, OVERRIDE_INVALID_LINE), and
+    the caller must then run no tool. Absent file, or absent fleet.heal.tools, is ({}, None). Accepted
+    per tool: `enabled` (a real bool) and its declared params, each an int (not a bool) within its bounds.
     """
+    path = main_worktree / ".claude" / "project.yaml"
     try:
-        import yaml  # type: ignore[import-untyped]
-    except ImportError:
-        yaml = None  # type: ignore[assignment]
+        if not path.exists():
+            return {}, None
+        if deps.yaml is None:
+            return {}, OVERRIDE_INVALID_LINE
+        config = deps.yaml.safe_load(path.read_text())
+        if config is None:
+            return {}, None
+        if not isinstance(config, dict):
+            return {}, OVERRIDE_INVALID_LINE
+        fleet = config.get("fleet")
+        if fleet is None:
+            return {}, None
+        if not isinstance(fleet, dict):
+            return {}, OVERRIDE_INVALID_LINE
+        heal_config = fleet.get("heal")
+        if heal_config is None:
+            return {}, None
+        if not isinstance(heal_config, dict) or set(heal_config) - {"tools"}:
+            return {}, OVERRIDE_INVALID_LINE
+        tools_config = heal_config.get("tools")
+        if tools_config is None:
+            return {}, None
+        if not isinstance(tools_config, dict):
+            return {}, OVERRIDE_INVALID_LINE
 
-    if yaml is None:
-        return {}
-
-    try:
-        project_yaml = main_worktree / ".claude" / "project.yaml"
-        if not project_yaml.exists():
-            return {}
-
-        config = yaml.safe_load(project_yaml.read_text()) or {}
-        heal_config = config.get("fleet", {}).get("heal", {}).get("tools", {})
-
-        # Validate: only bool "enabled" and declared params; reject argv
+        known = {t.name: t for t in TOOLS}
         validated: Dict[str, Any] = {}
-        for tool_name, tool_config in (heal_config.items() if isinstance(heal_config, dict) else []):
+        for tool_name, tool_config in tools_config.items():
+            if not isinstance(tool_name, str) or tool_name not in known:
+                return {}, OVERRIDE_INVALID_LINE
             if not isinstance(tool_config, dict):
-                continue
-            v: Dict[str, Any] = {}
-            if "enabled" in tool_config:
-                if not isinstance(tool_config["enabled"], bool):
-                    return {}  # Fail closed on invalid type
-                v["enabled"] = tool_config["enabled"]
-            # Validate param bounds (deferred to tool validation)
-            for param_name in ["timeout_secs"]:
-                if param_name in tool_config:
-                    val = tool_config[param_name]
-                    if not isinstance(val, int) or val <= 0:
-                        return {}  # Fail closed
-                    v[param_name] = val
-            validated[tool_name] = v
-
-        return validated
+                return {}, OVERRIDE_INVALID_LINE
+            allowed = {"enabled"} | set(known[tool_name].params)
+            entry: Dict[str, Any] = {}
+            for key, value in tool_config.items():
+                if not isinstance(key, str) or key not in allowed:
+                    return {}, OVERRIDE_INVALID_LINE
+                if key == "enabled":
+                    if not isinstance(value, bool):
+                        return {}, OVERRIDE_INVALID_LINE
+                else:
+                    low, high = PARAM_BOUNDS.get(key, (1, 1))
+                    if not _is_int(value) or not low <= value <= high:
+                        return {}, OVERRIDE_INVALID_LINE
+                entry[key] = value
+            validated[tool_name] = entry
+        return validated, None
     except Exception:
-        return {}  # Fail closed on parse error or any other error
+        return {}, OVERRIDE_INVALID_LINE
+
+
+def _effective_timeout(tool: Tool, override: Dict[str, Any]) -> int:
+    """The tool's timeout: an override value, bounded above by DEPS_TIMEOUT_SECS."""
+    entry = override.get(tool.name)
+    if isinstance(entry, dict) and _is_int(entry.get("timeout_secs")):
+        return max(1, min(int(entry["timeout_secs"]), deps.DEPS_TIMEOUT_SECS))
+    return deps.DEPS_TIMEOUT_SECS
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# CLI entry points (Step 6)
+# CLI entry points
 # ────────────────────────────────────────────────────────────────────────────
 
 def cli_probe(
@@ -516,45 +677,61 @@ def cli_probe(
     """
     Probe for a tool to run. Read-only; no cap spent.
 
-    Returns JSON: {"tool": name, "timeout_secs": int, "stop_key": str}
-    or {"line": diagnosis, "stop_key": str or null}
+    Returns {"tool", "timeout_secs", "stop_key"} for a nomination, {"line", "stop_key"} for a
+    diagnosis or refusal, and {"stop_key": None} when there is nothing to do. Never raises.
     """
     try:
-        # Read stop evidence
         evidence = _read_stop_evidence(flow_dir, issue)
         if evidence is None:
-            return {"line": "No stop evidence found.", "stop_key": None}
+            return {"stop_key": None}
 
-        # Read project overrides
-        override = _read_project_override(main_worktree)
-
-        # Nominate a tool or diagnosis
-        tool, diagnosis = nominate(evidence, TOOLS, override)
-
+        tool, diagnosis = nominate(evidence, TOOLS, {})
         if diagnosis:
             return {"line": diagnosis, "stop_key": evidence.stop_key}
-
         if tool is None:
-            return {"line": "No tool nominated.", "stop_key": evidence.stop_key}
+            return {"stop_key": evidence.stop_key}
 
-        # Probe the tool
-        ok, refusal = probe(tool, (worktree, main_worktree, base))
+        override, override_error = _read_project_override(main_worktree)
+        if override_error:
+            return {"line": override_error, "stop_key": evidence.stop_key}
+        tool, diagnosis = nominate(evidence, TOOLS, override)
+        if diagnosis:
+            return {"line": diagnosis, "stop_key": evidence.stop_key}
+        if tool is None:
+            return {"stop_key": evidence.stop_key}
+
+        if not base:
+            return {"line": "No base ref; cannot heal.", "stop_key": evidence.stop_key}
+
+        ok, refusal = probe(tool, (worktree, main_worktree, base), None, issue, evidence.worktree)
         if not ok:
             return {"line": refusal or "Tool probe failed.", "stop_key": evidence.stop_key}
 
-        # Get timeout from override or default
-        timeout_secs = 900  # DEPS_TIMEOUT_SECS
-        if tool.name in override and isinstance(override[tool.name], dict):
-            if "timeout_secs" in override[tool.name]:
-                timeout_secs = min(override[tool.name]["timeout_secs"], 900)
-
         return {
             "tool": tool.name,
-            "timeout_secs": timeout_secs,
+            "timeout_secs": _effective_timeout(tool, override),
             "stop_key": evidence.stop_key,
         }
-    except Exception as e:
-        return {"line": f"Probe failed: {e}", "stop_key": None}
+    except Exception:
+        return {"line": "Heal probe failed.", "stop_key": None}
+
+
+def _run_result(
+    tool_name: str,
+    status: str,
+    reason: str,
+    changed: bool,
+    recommendation: str,
+    stop_key: Optional[str],
+) -> Dict[str, Any]:
+    return {
+        "tool": tool_name,
+        "status": status,
+        "reason": reason,
+        "changed": changed,
+        "recommendation": recommendation,
+        "stop_key": stop_key,
+    }
 
 
 def cli_run(
@@ -567,104 +744,84 @@ def cli_run(
     tail_file: Optional[Path],
 ) -> Dict[str, Any]:
     """
-    Run a tool and return the result JSON.
+    Run a tool and return the result JSON. Never raises.
 
-    Returns: {"tool": name, "status": enum, "reason": enum, "changed": bool,
-              "recommendation": enum, "stop_key": str}
+    Returns {"tool", "status", "reason", "changed", "recommendation", "stop_key"}. The tool,
+    nomination, override and probe are all re-checked here, so a stale or hand-built call cannot
+    bypass them. The redacted installer tail goes only to tail_file (mode 0600, created exclusively
+    without following a symlink).
     """
+    known = {t.name: t for t in TOOLS}
+    fd: Optional[int] = None
     try:
-        # Find the tool
-        tool = None
-        for t in TOOLS:
-            if t.name == tool_name:
-                tool = t
-                break
-
+        tool = known.get(tool_name)
         if tool is None:
-            return {
-                "tool": tool_name,
-                "status": "failed",
-                "reason": "internal-error",
-                "changed": False,
-                "recommendation": "take-over",
-                "stop_key": None,
-            }
+            return _run_result("", "failed", "internal-error", False, "take-over", None)
 
-        # Read stop evidence
         evidence = _read_stop_evidence(flow_dir, issue)
         if evidence is None:
-            return {
-                "tool": tool_name,
-                "status": "failed",
-                "reason": "internal-error",
-                "changed": False,
-                "recommendation": "take-over",
-                "stop_key": None,
-            }
+            return _run_result(tool.name, "failed", "internal-error", False, "take-over", None)
+        key = evidence.stop_key
 
-        # Read overrides
-        override = _read_project_override(main_worktree)
+        override, override_error = _read_project_override(main_worktree)
+        if override_error:
+            return _run_result(tool.name, "refused", "precondition-refused", False, "take-over", key)
+        nominated, _line = nominate(evidence, TOOLS, override)
+        if nominated is None or nominated.name != tool.name or not base:
+            return _run_result(tool.name, "refused", "precondition-refused", False, "take-over", key)
 
-        # Probe the tool
-        ok, refusal = probe(tool, (worktree, main_worktree, base))
+        ok, _refusal = probe(tool, (worktree, main_worktree, base), None, issue, evidence.worktree)
         if not ok:
-            return {
-                "tool": tool_name,
-                "status": "refused",
-                "reason": "precondition-refused",
-                "changed": False,
-                "recommendation": "take-over",
-                "stop_key": evidence.stop_key,
-            }
+            return _run_result(tool.name, "refused", "precondition-refused", False, "take-over", key)
 
-        # Get timeout
-        timeout_secs = 900
-        if tool.name in override and isinstance(override[tool.name], dict):
-            if "timeout_secs" in override[tool.name]:
-                timeout_secs = min(override[tool.name]["timeout_secs"], 900)
+        if tail_file is not None:
+            fd = os.open(
+                str(tail_file),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+            )
 
-        # Run the tool
-        run_result = tool.run(worktree, main_worktree, base, timeout_secs, tail_file)
+        run_result = tool.run(worktree, main_worktree, base, _effective_timeout(tool, override), tail_file)
+        if not isinstance(run_result, dict):
+            run_result = {}
 
-        # Extract result fields
-        status = run_result.get("status", "failed")
-        reason = run_result.get("reason", "internal-error")
-        changed = run_result.get("changed", False)
+        status = run_result.get("status")
+        reason = run_result.get("reason")
+        changed = run_result.get("changed") is True
+        if status not in _STATUS_VALUES:
+            status, reason, changed = "failed", "internal-error", False
+        if not isinstance(reason, str):
+            reason = "internal-error"
 
-        # Check post-condition if healed
-        if status == "healed":
-            verify_ok = tool.verify(worktree, main_worktree, base)
-            if not verify_ok:
-                status = "failed"
-                reason = "internal-error"
+        if fd is not None:
+            tail = run_result.get("tail")
+            if isinstance(tail, list) and tail:
+                text = "\n".join(deps.redact_output("\n".join(str(x) for x in tail))) + "\n"
+                os.write(fd, text.encode("utf-8", "replace"))
 
-        # Compute recommendation
+        # A failed post-check means nothing verified changed, so it can never recommend a retry.
+        if status == "healed" and not tool.verify(worktree, main_worktree, base):
+            status, reason, changed = "failed", "internal-error", False
+
         recommendation = after_heal(
             HealResult(
-                tool=tool_name,
-                status=status,
-                reason=reason,
+                tool=tool.name,
+                status=cast(Status, status),
+                reason=cast(HealReason, reason),
                 changed=changed,
                 recommendation="take-over",
-                stop_key=evidence.stop_key,
+                stop_key=key,
             ),
             evidence,
         )
-
-        return {
-            "tool": tool_name,
-            "status": status,
-            "reason": reason,
-            "changed": changed,
-            "recommendation": recommendation,
-            "stop_key": evidence.stop_key,
-        }
-    except Exception as e:
-        return {
-            "tool": tool_name,
-            "status": "failed",
-            "reason": "internal-error",
-            "changed": False,
-            "recommendation": "take-over",
-            "stop_key": None,
-        }
+        return _run_result(tool.name, str(status), reason, changed, recommendation, key)
+    except Exception:
+        return _run_result(
+            tool_name if tool_name in known else "", "failed", "internal-error", False, "take-over", None
+        )
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass

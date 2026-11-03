@@ -34,8 +34,10 @@ failed, stalled (flow mid-step but no process), stopped (paused for a human outs
 """
 import argparse
 import fcntl
+import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -103,23 +105,120 @@ def ticket(data: Dict[str, Any], issue: int) -> Dict[str, Any]:
     raise SystemExit(f"ERROR: #{issue} is not in this fleet")
 
 
-def heal_write_ahead(t: Dict[str, Any], cause: str, step: str) -> bool:
-    """Write a heal attempt record. Returns False if cause already has an entry, True if written."""
-    heals = t.setdefault("heals", {})
+# Closed sets for the heal record. Anything outside them is treated as failed / take-over.
+HEAL_STEPS = ("worktree", "plan", "track", "implement", "review", "fix", "verify", "assess", "ship", "merge")
+HEAL_TOOL_CAUSES = {"install": "missing-deps"}
+HEAL_STATUSES = ("no-op", "healed", "refused", "failed")
+HEAL_RECOMMENDATIONS = ("retry-recommended", "take-over")
+HEAL_PROBE_TIMEOUT_SECS = 30
+HEAL_RUN_MARGIN_SECS = 60
+HEAL_TERM_GRACE_SECS = 15
+HEAL_MAX_TIMEOUT_SECS = 900  # mirrors deps.DEPS_TIMEOUT_SECS; a larger probe value is rejected
+
+
+def current_stop_key(flow_dir: Optional[Path]) -> Optional[str]:
+    """
+    The identity of a flow's current stop, independent of any probe.
+
+    This mirrors scripts/workflow/heal.py stop_key_for and MUST stay identical to it: an open ask is
+    the sha256 of the bytes of fleet-ask.json; otherwise the sha256 of step, status and stop_reason[step] joined by newlines
+    from state.json; both truncated to 16 hex digits. fleet.py is stdlib-only and cannot import heal.py,
+    so heal records and notes are matched to the current stop by recomputing this key and comparing it
+    with the key the probe stored.
+    """
+    if flow_dir is None:
+        return None
+    try:
+        st = read_json(flow_dir / "state.json")
+        if not st:
+            return None
+        ask_path = flow_dir / "fleet-ask.json"
+        if ask_path.exists():
+            raw = ask_path.read_bytes()
+            v = json.loads(raw)
+            if isinstance(v, dict) and v.get("status") == "open":
+                return hashlib.sha256(raw).hexdigest()[:16]
+        reasons = st.get("stop_reason")
+        reason = reasons.get(st.get("step")) if isinstance(reasons, dict) else ""
+        text = f"{st.get('step')}\n{st.get('status')}\n{reason if isinstance(reason, str) else ''}"
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    except (OSError, ValueError):
+        return None
+
+
+def _fixed_line(value: Any) -> str:
+    """A display-safe single line: only printable characters, bounded. Never a ticket-controlled string."""
+    if not isinstance(value, str):
+        return "Heal diagnosis unavailable."
+    return "".join(c for c in value if c.isprintable())[:160] or "Heal diagnosis unavailable."
+
+
+def heal_write_ahead(t: Dict[str, Any], cause: str, step: str, tool: str = "", stop_key: str = "") -> bool:
+    """
+    Spend the heal cap for a cause: False when the cause already has any entry (even a malformed one),
+    otherwise write an `attempted` entry and return True. Call under update_fleet.
+    """
+    heals = t.get("heals")
+    if not isinstance(heals, dict):
+        heals = {}
+        t["heals"] = heals
     if cause in heals:
         return False
-    heals[cause] = {"tool": "", "step": step, "at": now_iso(), "outcome": "attempted",
-                   "recommendation": "", "stop_key": ""}
+    heals[cause] = {"tool": tool, "step": step if step in HEAL_STEPS else "", "at": now_iso(),
+                    "outcome": "attempted", "recommendation": "", "stop_key": stop_key}
     return True
 
 
 def heal_finish(t: Dict[str, Any], cause: str, tool: str, outcome: str, recommendation: str,
                 stop_key: str) -> None:
-    """Finish a heal attempt record with outcome and recommendation."""
-    heals = t.setdefault("heals", {})
-    if cause in heals:
-        heals[cause].update({"tool": tool, "outcome": outcome, "recommendation": recommendation,
-                            "stop_key": stop_key})
+    """Finish an `attempted` entry; any other entry is left untouched. Call under update_fleet."""
+    heals = t.get("heals")
+    entry = heals.get(cause) if isinstance(heals, dict) else None
+    if isinstance(entry, dict) and entry.get("outcome") == "attempted":
+        entry.update({"tool": tool, "outcome": outcome, "recommendation": recommendation,
+                      "stop_key": stop_key})
+
+
+def heal_set_note(t: Dict[str, Any], stop_key: Optional[str], line: str) -> None:
+    """Overwrite the ticket's heal_note. Spends no cap. Call under update_fleet."""
+    t["heal_note"] = {"stop_key": stop_key, "at": now_iso(), "line": _fixed_line(line)}
+
+
+def matching_heal(t: Dict[str, Any], key: Optional[str]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """(heal entry, heal_note) whose stop_key equals the current stop's key; (None, None) otherwise."""
+    if not key:
+        return None, None
+    heal = None
+    heals = t.get("heals")
+    if isinstance(heals, dict):
+        for entry in heals.values():
+            if isinstance(entry, dict) and entry.get("stop_key") == key:
+                heal = entry
+                break
+    note = t.get("heal_note")
+    if not (isinstance(note, dict) and note.get("stop_key") == key):
+        note = None
+    return heal, note
+
+
+def heal_bits(heal: Optional[Dict[str, Any]], note: Optional[Dict[str, Any]]) -> List[str]:
+    """Short enum-only words for the status row and FLEET line. 'healed' is never shown: a retry decides."""
+    bits: List[str] = []
+    if heal:
+        outcome = heal.get("outcome")
+        if outcome == "attempted":
+            bits.append("heal=interrupted")
+        elif outcome in HEAL_STATUSES:
+            bits.append("heal=attempted" if outcome == "healed" else f"heal={outcome}")
+            if heal.get("recommendation") == "retry-recommended" and outcome == "healed":
+                bits.append("Retry recommended")
+            elif heal.get("recommendation") == "take-over":
+                bits.append("Take over")
+        else:
+            bits.append("heal=unknown")
+    if note and not heal:
+        bits.append("heal=diagnosis")
+    return bits
 
 
 # ---------------------------------------------------------------------------------------------
@@ -177,129 +276,181 @@ def open_ask(flow_dir: Path) -> Optional[Dict[str, Any]]:
     return ask if ask and ask.get("status") == "open" else None
 
 
+def _heals_dir(fleet_dir: Path) -> Optional[Path]:
+    """FLEET/heals, created 0700 and chmod'ed 0700; None when it is a symlink or not a directory."""
+    path = fleet_dir / "heals"
+    if path.is_symlink():
+        return None
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        return None
+    os.chmod(path, 0o700)
+    return path
+
+
+def _reserve_tail(heals: Path, issue: int) -> Optional[Path]:
+    """Collision-free tail name: reserve `<issue>-<seq>.seq` with O_EXCL; the CLI then creates the .tail."""
+    for seq in range(1, 1000):
+        try:
+            fd = os.open(str(heals / f"{issue}-{seq:02d}.seq"),
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            continue
+        os.close(fd)
+        return heals / f"{issue}-{seq:02d}.tail"
+    return None
+
+
+def _run_cli(argv: List[str], cwd: Path, timeout: float) -> Optional[Dict[str, Any]]:
+    """
+    Run the heal CLI with a fixed argv and no shell. On timeout, SIGTERM first (so ensure_deps' cleanup
+    kills the installer's process group), wait HEAL_TERM_GRACE_SECS, then SIGKILL. Returns the parsed JSON
+    object, or None on a timeout, OSError, non-zero exit, unparseable output or non-object JSON.
+    """
+    try:
+        proc = subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    except OSError:
+        return None
+    try:
+        stdout, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.communicate(timeout=HEAL_TERM_GRACE_SECS)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+        return None
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        v = json.loads(stdout)
+    except ValueError:
+        return None
+    return v if isinstance(v, dict) else None
+
+
+def _default_base(repo: str, main_worktree: Path) -> Optional[str]:
+    """origin/<default branch> from `gh repo view`, or None. No fallback guess."""
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        return None
+    try:
+        out = subprocess.run(["gh", "repo", "view", repo, "--json", "defaultBranchRef",
+                              "-q", ".defaultBranchRef.name"],
+                             cwd=str(main_worktree), capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    name = out.stdout.strip()
+    if out.returncode != 0 or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._/-]*", name):
+        return None
+    return f"origin/{name}"
+
+
+def _is_flow_stop_ask(ask: Dict[str, Any]) -> bool:
+    gate = ask.get("gate")
+    return ask.get("kind") == "gate" and isinstance(gate, dict) and gate.get("header") == "Flow stop"
+
+
 def heal_pass(fleet_dir: Path, issue: int, repo: str, flow_dir: Optional[Path],
               main_worktree: Path) -> None:
-    """Run the heal harness for a stopped ticket. Catches all exceptions."""
+    """
+    Run the heal harness once for a ticket that has just stopped. Never raises: it must not prevent the
+    pid clear or the FLEET line. Skips quickly for tickets that are done, running, or parked on anything
+    other than a Flow stop gate.
+    """
     if not flow_dir:
         return
     try:
-        st = read_json(flow_dir / "state.json") or {}
-        step = st.get("step", "unknown")
-
-        # Resolve helpers directory
-        helpers_dir = Path(__file__).resolve().parent.parent
-
-        # Resolve default branch: gh repo view --json defaultBranchRef
-        try:
-            base_result = subprocess.run(
-                ["gh", "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef"],
-                cwd=str(main_worktree), capture_output=True, text=True, timeout=15
-            )
-            if base_result.returncode == 0:
-                default_branch = base_result.stdout.strip()
-                base = f"origin/{default_branch}" if default_branch else None
-            else:
-                base = None
-        except (OSError, subprocess.TimeoutExpired):
-            base = None
-
-        if base is None:
-            def upd_no_base(d: Dict[str, Any]) -> None:
-                ticket(d, issue)["heal_note"] = {"stop_key": None, "at": now_iso(),
-                                                 "line": "Failed to resolve default branch"}
-            update_fleet(fleet_dir, upd_no_base)
-            return
-
-        # Probe for a tool to run
-        tails_dir = fleet_dir / "heals"
-        tails_dir.mkdir(mode=0o700, exist_ok=True)
-        seq = len(list(tails_dir.glob(f"{issue}-*.tail"))) + 1
-        tail_path = tails_dir / f"{issue}-{seq:02d}.tail"
-
-        probe_cmd = [
-            "python3", "-m", "scripts.workflow.cli", "heal", "probe",
-            "--worktree", str(flow_dir),
-            "--main-worktree", str(main_worktree),
-            "--base", base,
-            "--flow-dir", str(flow_dir),
-            "--issue", str(issue)
-        ]
-
-        try:
-            probe_result = subprocess.run(
-                probe_cmd, cwd=str(helpers_dir), capture_output=True, text=True, timeout=30
-            )
-            probe_json = json.loads(probe_result.stdout) if probe_result.stdout else {}
-        except (json.JSONDecodeError, subprocess.TimeoutExpired, OSError):
-            probe_json = {}
-
-        # Check for tool nomination or diagnosis
-        if "tool" in probe_json:
-            # Tool nominated - proceed with run
-            tool = probe_json["tool"]
-            timeout_secs = probe_json.get("timeout_secs", 300)
-            stop_key = probe_json.get("stop_key", "")
-            cause = "missing-deps"  # For install tool
-
-            # Check cap and write-ahead
-            def upd_attempt(d: Dict[str, Any]) -> None:
-                heal_write_ahead(ticket(d, issue), cause, step)
-            update_fleet(fleet_dir, upd_attempt)
-
-            # Run heal run with timeout
-            run_cmd = [
-                "python3", "-m", "scripts.workflow.cli", "heal", "run",
-                "--worktree", str(flow_dir),
-                "--main-worktree", str(main_worktree),
-                "--base", base,
-                "--flow-dir", str(flow_dir),
-                "--issue", str(issue),
-                "--tool", tool,
-                "--tail-file", str(tail_path)
-            ]
-
-            # Run with SIGTERM then SIGKILL on timeout
-            grace_period = 5
-            run_json = {}
-            try:
-                proc = subprocess.Popen(
-                    run_cmd, cwd=str(helpers_dir),
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-                )
-                try:
-                    stdout, _ = proc.communicate(timeout=timeout_secs + grace_period)
-                    run_json = json.loads(stdout) if stdout else {}
-                except subprocess.TimeoutExpired:
-                    proc.send_signal(signal.SIGTERM)
-                    try:
-                        proc.wait(timeout=grace_period)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.wait()
-                    run_json = {"status": "failed", "reason": "timeout", "changed": False,
-                              "recommendation": "take-over", "tool": tool, "stop_key": stop_key}
-            except OSError:
-                run_json = {"status": "failed", "reason": "internal-error", "changed": False,
-                          "recommendation": "take-over", "tool": tool, "stop_key": stop_key}
-
-            # Finish the heal record
-            outcome = run_json.get("status", "failed")
-            recommendation = run_json.get("recommendation", "take-over")
-
-            def upd_finish(d: Dict[str, Any]) -> None:
-                heal_finish(ticket(d, issue), cause, tool, outcome, recommendation, stop_key)
-            update_fleet(fleet_dir, upd_finish)
-
-        elif "line" in probe_json:
-            # Diagnosis or refusal
-            stop_key = probe_json.get("stop_key")
-            line = probe_json.get("line", "Unknown diagnosis")
-            def upd_diagnosis(d: Dict[str, Any]) -> None:
-                ticket(d, issue)["heal_note"] = {"stop_key": stop_key, "at": now_iso(), "line": line}
-            update_fleet(fleet_dir, upd_diagnosis)
-
+        _heal_pass(fleet_dir, issue, repo, flow_dir, main_worktree)
     except Exception:
         pass
+
+
+def _heal_pass(fleet_dir: Path, issue: int, repo: str, flow_dir: Path, main_worktree: Path) -> None:
+    st = read_json(flow_dir / "state.json") or {}
+    if st.get("status") not in ("failed", "paused", "awaiting"):
+        return
+    ask = open_ask(flow_dir)
+    if ask is not None and not _is_flow_stop_ask(ask):
+        return
+    step = st.get("step")
+    if step not in HEAL_STEPS:
+        return
+    key = current_stop_key(flow_dir)
+
+    def note(line: str, stop_key: Optional[str] = key) -> None:
+        def upd(d: Dict[str, Any]) -> None:
+            heal_set_note(ticket(d, issue), stop_key, line)
+        update_fleet(fleet_dir, upd)
+
+    worktree = st.get("worktree")
+    if not isinstance(worktree, str) or not worktree or not Path(worktree).is_dir():
+        note("Ticket worktree is not recorded.")
+        return
+    base = _default_base(repo, main_worktree)
+    if base is None:
+        note("Could not resolve the default branch.")
+        return
+
+    helpers_dir = Path(__file__).resolve().parent.parent
+    common = ["--worktree", worktree, "--main-worktree", str(main_worktree), "--base", base,
+              "--flow-dir", str(flow_dir), "--issue", str(issue)]
+    cli = ["python3", "-m", "scripts.workflow.cli", "heal"]
+
+    probe = _run_cli(cli + ["probe"] + common, helpers_dir, HEAL_PROBE_TIMEOUT_SECS)
+    if probe is None:
+        note("Heal probe failed.")
+        return
+    probe_key = probe.get("stop_key")
+    if not isinstance(probe_key, str):
+        probe_key = None
+    tool = probe.get("tool")
+    if tool is None:
+        if "line" in probe:
+            note(_fixed_line(probe.get("line")), probe_key or key)
+        return
+    timeout_secs = probe.get("timeout_secs")
+    if (not isinstance(tool, str) or tool not in HEAL_TOOL_CAUSES or probe_key is None
+            or isinstance(timeout_secs, bool) or not isinstance(timeout_secs, int)
+            or not 1 <= timeout_secs <= HEAL_MAX_TIMEOUT_SECS):
+        note("Heal probe returned an unusable nomination.")
+        return
+    if probe_key != key:
+        note("The stop changed during the heal probe.")
+        return
+    cause = HEAL_TOOL_CAUSES[tool]
+
+    heals = _heals_dir(fleet_dir)
+    tail_path = _reserve_tail(heals, issue) if heals else None
+    if tail_path is None:
+        note("Heal tail directory is unsafe.")
+        return
+
+    spent = [False]
+
+    def upd_attempt(d: Dict[str, Any]) -> None:
+        spent[0] = heal_write_ahead(ticket(d, issue), cause, str(step), tool, probe_key)
+    update_fleet(fleet_dir, upd_attempt)
+    if not spent[0]:
+        return
+
+    outcome, recommendation = "failed", "take-over"
+    try:
+        result = _run_cli(cli + ["run"] + common + ["--tool", tool, "--tail-file", str(tail_path)],
+                          helpers_dir, timeout_secs + HEAL_RUN_MARGIN_SECS)
+        if (result is not None and result.get("tool") == tool and result.get("status") in HEAL_STATUSES
+                and result.get("recommendation") in HEAL_RECOMMENDATIONS):
+            outcome = str(result["status"])
+            recommendation = str(result["recommendation"])
+            if recommendation == "retry-recommended" and outcome != "healed":
+                recommendation = "take-over"
+    finally:
+        def upd_finish(d: Dict[str, Any]) -> None:
+            heal_finish(ticket(d, issue), cause, tool, outcome, recommendation, probe_key)
+        update_fleet(fleet_dir, upd_finish)
 
 
 def flow_status(t: Dict[str, Any], flow_dir: Optional[Path]) -> str:
@@ -387,17 +538,13 @@ def compute(data: Dict[str, Any], flows_root: Optional[Path] = None,
         row: Dict[str, Any] = {"issue": t["issue"], "title": t.get("title", ""), "state": state,
                                "step": st.get("step"), "pr": st.get("pr"), "flow_dir": str(fd) if fd else None,
                                "worktree": st.get("worktree"), "ask": ask.get("kind") if ask else None, "unmet": []}
-        # Add heal records matching the current stop
-        if state == "stopped" and ask:
-            stop_key = ask.get("stop_key")
-            if stop_key:
-                for cause, heal_entry in (t.get("heals") or {}).items():
-                    if heal_entry.get("stop_key") == stop_key:
-                        row["heal"] = heal_entry
-                        break
-        # Add heal_note
-        if t.get("heal_note"):
-            row["heal_note"] = t["heal_note"]
+        # Heal record / note whose stop_key matches the CURRENT stop (never a stale one).
+        if state in ("stopped", "parked", "failed", "stalled"):
+            heal, hnote = matching_heal(t, current_stop_key(fd))
+            if heal:
+                row["heal"] = heal
+            if hnote:
+                row["heal_note"] = hnote
         rows.append(row)
     for row, t in zip(rows, data["tickets"]):
         if row["state"] in LAUNCHABLE:
@@ -437,13 +584,12 @@ def inbox(data: Dict[str, Any], flows_root: Optional[Path] = None) -> List[Dict[
         rf = ask.get("report_file")
         if rf:
             item["report_path"] = str(fd / rf)
-        # Add heal record if it matches this ask's stop_key
-        stop_key = ask.get("stop_key")
-        if stop_key:
-            for cause, heal_entry in (t.get("heals") or {}).items():
-                if heal_entry.get("stop_key") == stop_key:
-                    item["heal"] = heal_entry
-                    break
+        # Heal record / note only when its stop_key matches this open ask
+        heal, hnote = matching_heal(t, current_stop_key(fd))
+        if heal:
+            item["heal"] = heal
+        if hnote:
+            item["heal_note"] = hnote
         items.append(item)
     return items
 
@@ -551,17 +697,7 @@ def run(fleet_dir: Path, issue: int, message_file: Optional[Path]) -> int:
     rows = compute(load_fleet(fleet_dir))
     row = next(r for r in rows if r["issue"] == issue)
     extra = f" ({row['ask']} at {row['step']})" if row["ask"] else (f" at {row['step']}" if row["step"] else "")
-    heal_suffix = ""
-    if row.get("heal"):
-        heal = row["heal"]
-        if heal.get("recommendation") == "retry-recommended":
-            heal_suffix = " heal=retry-recommended"
-        elif heal.get("outcome") == "attempted":
-            heal_suffix = " heal=interrupted"
-        else:
-            heal_suffix = f" heal={heal.get('outcome', 'unknown')}"
-    if row.get("heal_note") and not row.get("heal"):
-        heal_suffix = " heal=diagnosis"
+    heal_suffix = "".join(" " + b for b in heal_bits(row.get("heal"), row.get("heal_note")))
     print(f"FLEET #{issue} {row['state']}{extra}{heal_suffix}" + (f" pr={row['pr']}" if row["pr"] else ""))
     return 0
 
@@ -604,24 +740,13 @@ def cmd_status(a: argparse.Namespace) -> int:
             bits.append(f"step={r['step']}")
         if r["ask"]:
             bits.append(f"ask={r['ask']}")
-        if r.get("heal"):
-            heal = r["heal"]
-            recommendation = heal.get("recommendation", "")
-            if recommendation == "retry-recommended":
-                bits.append("heal=retry-recommended")
-            elif heal.get("outcome") == "attempted":
-                bits.append("heal=interrupted")
-            else:
-                bits.append(f"heal={heal.get('outcome', 'unknown')}")
+        bits.extend(heal_bits(r.get("heal"), r.get("heal_note")))
         if r.get("heal_note"):
-            # Don't add to bits for stopped tickets; heal_note is a diagnosis
-            pass
+            bits.append("note=" + _fixed_line(r["heal_note"].get("line")))
         if r["unmet"]:
             bits.append("waits-on=" + ",".join(r["unmet"]))
         if r["pr"]:
             bits.append(r["pr"])
-        if r["state"] == "stopped" and not r.get("ask"):
-            bits.append("Take over")
         print("\t".join(bits) + f"\t{r['title']}")
     print("ready: " + (" ".join(f"#{n}" for n in ready(data, rows)) or "none"))
     return 0
