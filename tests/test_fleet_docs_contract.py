@@ -522,7 +522,6 @@ def main():
     print()
     print("[Section 10] Step 4(a): Heal line in FLEET output")
 
-    fleet_lines_full = fleet_cmd.splitlines()
     step4_idx = fleet_cmd.find("## Step 4")
     if step4_idx >= 0:
         step5_idx = fleet_cmd.find("## Step 5", step4_idx + 1)

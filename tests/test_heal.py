@@ -7,12 +7,9 @@ install tool status mapping, and error handling.
 Run with: python3 tests/test_heal.py
 """
 
-import json
-import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import REPO_ROOT, Harness
