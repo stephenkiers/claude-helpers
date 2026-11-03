@@ -29,9 +29,9 @@ reads `source` ("opt-out" vs null) from the JSON, not the exit code.
 Exit codes for `deps ensure`: 0 current or installed; 1 failed; 3 ambiguous lockfiles;
 4 manifest-changed (needs approval); 5 skipped (no lockfile and no commands.install).
 
-Exit codes for `heal probe` and `heal run`: 0 for expected outcomes (including refusals);
-1 only for unexpected errors. Both print one JSON object on stdout.
-argparse usage errors keep exit 2.
+Exit codes for `heal probe` and `heal run`: 0 once the arguments parse, whatever the outcome. Refusals
+and internal errors are reported inside the printed JSON, never as a non-zero exit. Both print one JSON
+object on stdout. argparse usage errors keep exit 2; a bare `heal` prints help and exits 1.
 """
 
 import sys
@@ -401,7 +401,7 @@ def main() -> None:
     heal_probe_parser = heal_subparsers.add_parser(
         "probe",
         help="Probe for a tool to heal a stopped ticket (read-only)",
-        description="Probe for a tool to heal a stopped ticket. Prints JSON: {tool, timeout_secs, stop_key} or {line, stop_key}. Exit 0 always."
+        description="Probe for a tool to heal a stopped ticket (read-only, no cap spent). Prints JSON: {tool, timeout_secs, stop_key} or {line, stop_key}, or {stop_key: null} when there is nothing to do. Exits 0 once the arguments parse, whatever the outcome (refusals and internal errors are in the JSON); argparse usage errors exit 2."
     )
     heal_probe_parser.add_argument("--worktree", required=True, help="Step worktree path")
     heal_probe_parser.add_argument("--main-worktree", required=True, help="Main worktree path")
@@ -412,7 +412,7 @@ def main() -> None:
     heal_run_parser = heal_subparsers.add_parser(
         "run",
         help="Run a heal tool and return the result",
-        description="Run a heal tool and return the result. Prints JSON: {tool, status, reason, changed, recommendation, stop_key}. Exit 0 for expected outcomes, 1 for unexpected errors."
+        description="Run a heal tool and return the result. Prints JSON: {tool, status, reason, changed, recommendation, stop_key}. Exits 0 once the arguments parse, whatever the outcome (refusals and internal errors are in the JSON); argparse usage errors exit 2."
     )
     heal_run_parser.add_argument("--worktree", required=True, help="Step worktree path")
     heal_run_parser.add_argument("--main-worktree", required=True, help="Main worktree path")

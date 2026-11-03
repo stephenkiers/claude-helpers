@@ -16,9 +16,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, TypedDict, cast, get_args
 
 from . import deps
 
@@ -27,6 +28,10 @@ Permission = Literal["runs-repo-code", "writes-gitignored", "no-write"]
 Approval = Literal["run-first", "wait-for-approval"]
 Gate = Literal["harness", "ensure-deps-exception"]
 Status = Literal["no-op", "healed", "refused", "failed"]
+# Closed kinds of StopEvidence (see _read_stop_evidence).
+EvidenceKind = Literal["flow-stop", "failed", "stopped"]
+# Closed classes produced by _classify_reason from a stop_reason string.
+ReasonClass = Literal["permission-refusal", "check-not-configured", "reduced-run"]
 
 # Reason enum tokens (closed set)
 HealReason = Literal[
@@ -60,7 +65,9 @@ _DEPS_RESULTS: Tuple[str, ...] = (
     "installed", "current", "skipped", "ambiguous", "manifest-changed", "failed",
 )
 _DEPS_STEPS: Tuple[str, ...] = ("worktree", "implement", "fix", "verify")
-_STATUS_VALUES: Tuple[str, ...] = ("no-op", "healed", "refused", "failed")
+# Membership sets for validating values that cross a boundary (tool results, reasons) before any cast.
+_STATUS_VALUES: Tuple[str, ...] = get_args(Status)
+_HEAL_REASONS: Tuple[str, ...] = get_args(HealReason)
 
 # The Flow stop gate is the only ask that can nominate a heal.
 FLOW_STOP_HEADER = "Flow stop"
@@ -77,6 +84,17 @@ OVERRIDE_INVALID_LINE = "Project heal override is invalid; no tool will run."
 OVERRIDE_DISABLED_LINE = "Heal tool is disabled by the project override."
 
 
+class _RunOutcomeRequired(TypedDict):
+    status: str  # Validated against Status by cli_run before use
+    reason: str  # Validated against HealReason by cli_run before use
+    changed: bool
+
+
+class RunOutcome(_RunOutcomeRequired, total=False):
+    """What a Tool.run returns. The optional tail is redacted and written to the tail file by cli_run."""
+    tail: List[str]
+
+
 @dataclass(frozen=True)
 class Tool:
     """A tool that the harness can run on a stopped ticket."""
@@ -88,19 +106,19 @@ class Tool:
     inputs: Tuple[str, ...]  # Repo paths compared against merge-base
     params: Tuple[str, ...]  # Declared parameter names
     precondition: Callable[[Path, Path, Optional[str]], bool]  # (worktree, main, base) -> can-run
-    run: Callable[[Path, Path, Optional[str], int, Optional[Path]], Any]  # (worktree, main, base, timeout, tail_file) -> result
+    run: Callable[[Path, Path, Optional[str], int, Optional[Path]], RunOutcome]  # (worktree, main, base, timeout, tail_file)
     verify: Callable[[Path, Path, Optional[str]], bool]  # (worktree, main, base) -> changed
 
 
 @dataclass(frozen=True)
 class StopEvidence:
     """Parsed flow data that nominates a tool or a diagnosis."""
-    kind: str  # "flow-stop", "failed", "stopped"
+    kind: EvidenceKind  # "flow-stop", "failed", "stopped"
     header: Optional[str]  # Gate header name, if any
     step: Optional[str]  # The step that failed
     failures: Dict[str, int]  # failures[step] counters
     stop_source: Optional[str]  # Where the stop came from
-    stop_reason_class: Optional[str]  # closed enum: permission-refusal, check-not-configured, reduced-run
+    stop_reason_class: Optional[ReasonClass]  # closed enum: permission-refusal, check-not-configured, reduced-run
     last_deps_result: Optional[str]  # Result of the newest deps entry, or None
     offers_retry: bool  # Does the open gate's own recorded options include Retry?
     stop_key: Optional[str]  # Identifies this stop (see stop_key_for)
@@ -137,6 +155,14 @@ def stop_key_for(ask_bytes: Optional[bytes], step: str, status: str, reason: str
 # The install tool
 # ────────────────────────────────────────────────────────────────────────────
 
+def _note_failure(stage: str) -> None:
+    """
+    A fixed stderr line for a stage that raised. The exception text is never printed, since it can
+    carry paths or command output. The caller still returns its own fixed result, so nothing propagates.
+    """
+    print(f"heal: stage '{stage}' failed unexpectedly; returning a fixed result.", file=sys.stderr)
+
+
 def _install_precondition(worktree: Path, main_worktree: Path, base: Optional[str]) -> bool:
     """Install runs only if the read-only currency check says an install would run."""
     if base is None:
@@ -144,6 +170,7 @@ def _install_precondition(worktree: Path, main_worktree: Path, base: Optional[st
     try:
         return deps.deps_currency(worktree, main_worktree, base) == "stale"
     except Exception:
+        _note_failure("install precondition")
         return False
 
 
@@ -152,8 +179,8 @@ def _install_run(
     main_worktree: Path,
     base: Optional[str],
     timeout: int,
-    tail_file: Optional[Path],
-) -> Dict[str, Any]:
+    tail_file: Optional[Path],  # reserved: the tail travels in the RunOutcome and cli_run writes it
+) -> RunOutcome:
     """Run ensure_deps with ignore_approvals=True. The redacted tail comes back under "tail"."""
     if base is None:
         return {"status": "refused", "reason": "precondition-refused", "changed": False}
@@ -181,6 +208,7 @@ def _install_run(
             return {"status": "failed", "reason": "currency-failed", "changed": False, "tail": tail}
         return {"status": "failed", "reason": "internal-error", "changed": False, "tail": tail}
     except Exception:
+        _note_failure("install run")
         return {"status": "failed", "reason": "internal-error", "changed": False}
 
 
@@ -191,6 +219,7 @@ def _install_verify(worktree: Path, main_worktree: Path, base: Optional[str]) ->
     try:
         return deps.deps_currency(worktree, main_worktree, base) == "current"
     except Exception:
+        _note_failure("install verify")
         return False
 
 
@@ -245,6 +274,11 @@ def nominate(
     Nomination needs valid evidence and either a known stop_source or a failed Deps-precondition
     entry for the stopped step. Whether an install is actually due is the probe's decision
     (deps_currency), never this function's.
+
+    Two quirks, both pinned by tests. The first tool the loop reaches with `enabled: false` in the
+    override returns OVERRIDE_DISABLED_LINE, so a disabled tool's line wins over any later tool.
+    The match is hard-coded to cause "missing-deps": a tool with any other cause is skipped, and
+    with no match the result is "No matching heal tool." until a branch for that cause exists.
     """
     if evidence is None:
         return None, None
@@ -288,7 +322,6 @@ def nominate(
 def probe(
     tool: Tool,
     context: Tuple[Path, Path, Optional[str]],
-    runner: Optional[Callable[[Tool, Tuple[Path, Path, Optional[str]]], bool]] = None,
     issue: Optional[int] = None,
     state_worktree: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
@@ -414,6 +447,7 @@ def _validate_worktree(
     except subprocess.TimeoutExpired:
         return "Worktree list check timed out."
     except Exception:
+        _note_failure("worktree validation")
         return "Worktree validation failed."
 
 
@@ -436,6 +470,7 @@ def _check_unchanged_inputs(
         changed_files = set(result.stdout.strip().split("\n")) if result.stdout.strip() else set()
         return not any(inp in changed_files for inp in inputs)
     except Exception:
+        _note_failure("check unchanged inputs")
         return False
 
 
@@ -466,8 +501,14 @@ def _str_map(value: Any, allowed: Optional[Tuple[str, ...]]) -> Optional[Dict[st
     return dict(value)
 
 
-def _classify_reason(reason: str) -> Optional[str]:
-    """Map a stop_reason onto a closed class token. The text itself never travels further."""
+def _classify_reason(reason: str) -> Optional[ReasonClass]:
+    """
+    Map a stop_reason onto a closed class token. The text itself never travels further.
+
+    The literals are not verified against live Claude Code or check-runner output: the permission
+    wording and the check_not_configured / "Reduced run (audit)" prefixes are pinned as fixtures in
+    tests/test_heal.py. Permission is tested first, so a reason carrying both classes is a refusal.
+    """
     low = reason.lower()
     if all(marker in low for marker in PERMISSION_MARKERS):
         return "permission-refusal"
@@ -484,6 +525,11 @@ def _read_stop_evidence(flow_dir: Path, issue: int) -> Optional[StopEvidence]:
 
     Fails closed: any malformed or non-integer field, an unknown step or status, or an ask that is
     not an open Flow stop gate produces None. An absent failures[STEP] counts as 0.
+
+    Residual (accepted, ADR-0025 §6): state.json and fleet-ask.json sit in the flow directory, which
+    the ticket's own session can write. Nomination therefore starts from ticket-writable data. The
+    probe's read-only preconditions (deps_currency, worktree validation), not this evidence, decide
+    whether an install is actually due.
     """
     try:
         state = _load_object(flow_dir / "state.json")
@@ -548,6 +594,7 @@ def _read_stop_evidence(flow_dir: Path, issue: int) -> Optional[StopEvidence]:
                 return None
             ask = parsed
 
+        kind: EvidenceKind
         offers_retry = False
         header: Optional[str] = None
         if ask is not None and ask.get("status") == "open":
@@ -591,6 +638,7 @@ def _read_stop_evidence(flow_dir: Path, issue: int) -> Optional[StopEvidence]:
             worktree=wt,
         )
     except Exception:
+        _note_failure("read stop evidence")
         return None
 
 
@@ -645,14 +693,71 @@ def _read_project_override(main_worktree: Path) -> Tuple[Dict[str, Any], Optiona
                     if not isinstance(value, bool):
                         return {}, OVERRIDE_INVALID_LINE
                 else:
-                    low, high = PARAM_BOUNDS.get(key, (1, 1))
+                    # A declared parameter with no bounds entry fails closed rather than taking a placeholder range.
+                    bounds = PARAM_BOUNDS.get(key)
+                    if bounds is None:
+                        return {}, OVERRIDE_INVALID_LINE
+                    low, high = bounds
                     if not _is_int(value) or not low <= value <= high:
                         return {}, OVERRIDE_INVALID_LINE
                 entry[key] = value
             validated[tool_name] = entry
         return validated, None
     except Exception:
+        _note_failure("read project override")
         return {}, OVERRIDE_INVALID_LINE
+
+
+def _as_status(value: Any) -> Optional[Status]:
+    """The value as a Status when it is a member of the Literal, else None. Membership is checked before the cast."""
+    if isinstance(value, str) and value in _STATUS_VALUES:
+        return cast(Status, value)
+    return None
+
+
+def _as_heal_reason(value: Any) -> Optional[HealReason]:
+    """The value as a HealReason when it is a member of the Literal, else None. Membership is checked before the cast."""
+    if isinstance(value, str) and value in _HEAL_REASONS:
+        return cast(HealReason, value)
+    return None
+
+
+def _checked_outcome(raw: Any) -> Tuple[Status, HealReason, bool]:
+    """
+    Normalise a Tool.run result. Anything malformed, or any status or reason outside its Literal, becomes
+    failed / internal-error with changed False. Only a literal True counts as changed.
+    """
+    if not isinstance(raw, dict):
+        return "failed", "internal-error", False
+    status = _as_status(raw.get("status"))
+    reason = _as_heal_reason(raw.get("reason"))
+    if status is None or reason is None:
+        return "failed", "internal-error", False
+    return status, reason, raw.get("changed") is True
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte, looping over short writes. A zero-byte write raises rather than spinning."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short write to tail file")
+        view = view[written:]
+
+
+def _write_tail(fd: int, tail: Any) -> None:
+    """
+    Write the redacted installer tail to the tail file. Any failure here is noted and swallowed, so a
+    completed run keeps its own result and is not reported as failed because its log could not be saved.
+    """
+    if not isinstance(tail, list) or not tail:
+        return
+    try:
+        text = "\n".join(deps.redact_output("\n".join(str(x) for x in tail))) + "\n"
+        _write_all(fd, text.encode("utf-8", "replace"))
+    except Exception:
+        _note_failure("tail write")
 
 
 def _effective_timeout(tool: Tool, override: Dict[str, Any]) -> int:
@@ -703,7 +808,7 @@ def cli_probe(
         if not base:
             return {"line": "No base ref; cannot heal.", "stop_key": evidence.stop_key}
 
-        ok, refusal = probe(tool, (worktree, main_worktree, base), None, issue, evidence.worktree)
+        ok, refusal = probe(tool, (worktree, main_worktree, base), issue, evidence.worktree)
         if not ok:
             return {"line": refusal or "Tool probe failed.", "stop_key": evidence.stop_key}
 
@@ -713,6 +818,7 @@ def cli_probe(
             "stop_key": evidence.stop_key,
         }
     except Exception:
+        _note_failure("probe")
         return {"line": "Heal probe failed.", "stop_key": None}
 
 
@@ -770,7 +876,7 @@ def cli_run(
         if nominated is None or nominated.name != tool.name or not base:
             return _run_result(tool.name, "refused", "precondition-refused", False, "take-over", key)
 
-        ok, _refusal = probe(tool, (worktree, main_worktree, base), None, issue, evidence.worktree)
+        ok, _refusal = probe(tool, (worktree, main_worktree, base), issue, evidence.worktree)
         if not ok:
             return _run_result(tool.name, "refused", "precondition-refused", False, "take-over", key)
 
@@ -781,23 +887,12 @@ def cli_run(
                 0o600,
             )
 
-        run_result = tool.run(worktree, main_worktree, base, _effective_timeout(tool, override), tail_file)
-        if not isinstance(run_result, dict):
-            run_result = {}
+        raw = tool.run(worktree, main_worktree, base, _effective_timeout(tool, override), tail_file)
+        status, reason, changed = _checked_outcome(raw)
 
-        status = run_result.get("status")
-        reason = run_result.get("reason")
-        changed = run_result.get("changed") is True
-        if status not in _STATUS_VALUES:
-            status, reason, changed = "failed", "internal-error", False
-        if not isinstance(reason, str):
-            reason = "internal-error"
-
-        if fd is not None:
-            tail = run_result.get("tail")
-            if isinstance(tail, list) and tail:
-                text = "\n".join(deps.redact_output("\n".join(str(x) for x in tail))) + "\n"
-                os.write(fd, text.encode("utf-8", "replace"))
+        # The tail is best effort: a failed write is noted inside _write_tail and never changes the result.
+        if fd is not None and isinstance(raw, dict):
+            _write_tail(fd, raw.get("tail"))
 
         # A failed post-check means nothing verified changed, so it can never recommend a retry.
         if status == "healed" and not tool.verify(worktree, main_worktree, base):
@@ -806,16 +901,17 @@ def cli_run(
         recommendation = after_heal(
             HealResult(
                 tool=tool.name,
-                status=cast(Status, status),
-                reason=cast(HealReason, reason),
+                status=status,
+                reason=reason,
                 changed=changed,
                 recommendation="take-over",
                 stop_key=key,
             ),
             evidence,
         )
-        return _run_result(tool.name, str(status), reason, changed, recommendation, key)
+        return _run_result(tool.name, status, reason, changed, recommendation, key)
     except Exception:
+        _note_failure("run")
         return _run_result(
             tool_name if tool_name in known else "", "failed", "internal-error", False, "take-over", None
         )
