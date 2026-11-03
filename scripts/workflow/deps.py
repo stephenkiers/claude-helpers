@@ -568,14 +568,15 @@ def _run_install(argv: List[str], worktree: Path, timeout: int) -> InstallOutcom
 
 
 def _manifest_gate(
-    worktree: Path, base: str, stamp: Dict[str, Any], current_manifest: str
+    worktree: Path, base: str, stamp: Dict[str, Any], current_manifest: str, ignore_approvals: bool = False
 ) -> Optional[DepsResult]:
     """manifest-changed or failed when the manifest differs from base and is not approved; None to proceed."""
     change = _manifest_change(worktree, base)
     if change.error is not None:
         return DepsResult("failed", change.error)
-    if change.changed and stamp.get(APPROVAL_KEY) != current_manifest:
-        return DepsResult("manifest-changed", _describe_change(change.names))
+    if change.changed:
+        if ignore_approvals or stamp.get(APPROVAL_KEY) != current_manifest:
+            return DepsResult("manifest-changed", _describe_change(change.names))
     return None
 
 
@@ -657,6 +658,7 @@ def _ensure(
     base: Optional[str],
     approve_manifest: bool,
     timeout: int,
+    ignore_approvals: bool = False,
 ) -> DepsResult:
     real_worktree, error = _validated_worktree(worktree, main_worktree)
     if error is not None or real_worktree is None:
@@ -698,7 +700,7 @@ def _ensure(
             return DepsResult("failed", write_error)
 
     if base is not None:
-        gated = _manifest_gate(real_worktree, base, stamp, current_manifest)
+        gated = _manifest_gate(real_worktree, base, stamp, current_manifest, ignore_approvals)
         if gated is not None:
             return gated
 
@@ -708,12 +710,82 @@ def _ensure(
     return _install_and_record(real_worktree, plan, fingerprint, stamp_file, stamp, timeout)
 
 
+def deps_currency(worktree: Path, main_worktree: Path, base: Optional[str] = None) -> str:
+    """
+    Read-only check whether an install is needed for the worktree, never raising.
+
+    Args:
+        worktree: The step's worktree (must sit under the worktree parent).
+        main_worktree: The main worktree whose project.yaml supplies commands.install.
+        base: Flow base ref (e.g. origin/main). When given, the manifest gate runs against
+            merge-base(base, HEAD). Omitted at worktree time, where the branch equals its base.
+
+    Returns:
+        Exactly one of:
+        - "stale": an install would run
+        - "current": dependencies are current
+        - "unknown": any error, ambiguous, skipped, or manifest-changed (including under
+            ignore-approvals semantics, since a stored approval may be forged)
+
+    Never raises. Any read error returns "unknown".
+    """
+    try:
+        real_worktree, error = _validated_worktree(worktree, main_worktree)
+        if error is not None or real_worktree is None:
+            return "unknown"
+
+        install_command, error = _main_install_command(main_worktree)
+        if error is not None:
+            return "unknown"
+
+        lockfile, ambiguous = find_lockfile(real_worktree)
+        if ambiguous is not None:
+            return "unknown"
+        if lockfile is None and install_command is None:
+            return "unknown"
+
+        plan, error = _install_plan(real_worktree, lockfile, install_command)
+        if plan is None:
+            return "unknown"
+
+        stamp_file, error = _stamp_path(real_worktree)
+        if error is not None or stamp_file is None:
+            return "unknown"
+
+        current_manifest = manifest_sha(real_worktree)
+        fingerprint = _Fingerprint(
+            command=plan.command_key,
+            lockfile=lockfile.name if lockfile is not None else None,
+            lockfile_sha=_lockfile_sha(real_worktree, lockfile),
+            manifest=current_manifest,
+        )
+
+        stamp = _read_stamp(stamp_file)
+
+        # Check manifest gate with ignore_approvals=True to detect if manifest changed.
+        # Any stored approval is potentially forged, so we ignore it.
+        if base is not None:
+            gated = _manifest_gate(real_worktree, base, stamp, current_manifest, ignore_approvals=True)
+            if gated is not None:
+                # manifest-changed or failed -> unknown
+                return "unknown"
+
+        if fingerprint.matches(stamp) and _has_install_artifact(real_worktree):
+            return "current"
+
+        return "stale"
+    except Exception:
+        # Never raise: any exception returns "unknown"
+        return "unknown"
+
+
 def ensure_deps(
     worktree: Path,
     main_worktree: Path,
     base: Optional[str] = None,
     approve_manifest: bool = False,
     timeout: int = DEPS_TIMEOUT_SECS,
+    ignore_approvals: bool = False,
 ) -> DepsResult:
     """
     Make dependencies current for the worktree's lockfile, installing only when needed.
@@ -726,6 +798,9 @@ def ensure_deps(
         approve_manifest: Record approval of the current manifest hash in the stamp, so the gate
             clears. Only the orchestrator passes this, at a manifest-changed stop the human chose to retry.
         timeout: Hard limit on the install, in seconds.
+        ignore_approvals: When True, ignore the stored APPROVAL_KEY in the manifest gate, so a
+            manifest that differs from the merge-base returns manifest-changed even if an approval
+            exists. Default False keeps the behavior unchanged.
 
     Returns:
         A DepsResult whose status is one of the Status categories. Every failure is returned, not raised:
@@ -733,6 +808,6 @@ def ensure_deps(
         status "failed" with a detail.
     """
     try:
-        return _ensure(worktree, main_worktree, base, approve_manifest, timeout)
+        return _ensure(worktree, main_worktree, base, approve_manifest, timeout, ignore_approvals)
     except OSError as e:
         return DepsResult("failed", f"filesystem error: {e}")
