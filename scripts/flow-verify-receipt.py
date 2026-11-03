@@ -3588,7 +3588,7 @@ def _classify_doing_it_rows(
             st = ambiguous[0]
             # Reconstruct candidates from all other units that saw this ambiguity
             # For simplicity, just report "ambiguous basename"
-            evidence = f"ambiguous basename: multiple changed files match"
+            evidence = "ambiguous basename: multiple changed files match"
             results[row.unit_id] = CoverageClassification("unknown", evidence)
             continue
 
@@ -4773,20 +4773,20 @@ def match_outstanding_issue_mode(flow_id: str, item_id: str, limit: int) -> NoRe
     # step = [a-z]+, unit = 1-200 printable chars without control chars or ' " ` $ \ |
     step_pattern = r'^[a-z]+:'
     if not re.match(step_pattern, item_id):
-        error(f"invalid item-id: must start with step followed by colon")
+        error("invalid item-id: must start with step followed by colon")
 
     unit_part = item_id.split(":", 1)[1] if ":" in item_id else ""
     if not unit_part or len(unit_part) > 200:
-        error(f"invalid item-id: unit must be 1-200 characters")
+        error("invalid item-id: unit must be 1-200 characters")
 
     # Check for forbidden characters in unit
     forbidden = {"'", '"', '`', '$', '\\', '|', '\n'}
     if any(c in unit_part for c in forbidden):
-        error(f"invalid item-id: unit contains forbidden characters")
+        error("invalid item-id: unit contains forbidden characters")
 
     # Check for control characters
     if any(ord(c) < 32 for c in unit_part):
-        error(f"invalid item-id: unit contains control characters")
+        error("invalid item-id: unit contains control characters")
 
     # Read JSON from stdin
     try:
