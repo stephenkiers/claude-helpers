@@ -197,6 +197,13 @@ Each time you are re-invoked (a background run exited, or the human replied):
    - `parked` (any open ask, including a `failed` flow with an open `gate` ask) is in the inbox (below), not here.
    - `stopped` (paused for a human outside the fleet): print the flow dir and
      `/expert-flow --resume <N>` for the human to drive by hand.
+   - **Heal, before a stop is shown.** A stopped or failed ticket may have had one allow-listed environment
+     tool run in its worktree by `fleet.py` (ADR-0025, 2026-11-02 amendment; today only `install`), once per
+     cause per ticket. That is a repair, not a retry: no gate is answered and nothing is re-run at a gate.
+     Read it from the inbox item or the status row as `heal attempted: <tool>` with its outcome (changed
+     something, no change, refused with a reason, failed, or interrupted). `Retry recommended` means a gate
+     offers Retry and the tool changed something; Retry is still your choice. A refusal or a diagnosis line
+     is not a heal, and a stop with no heal line is shown exactly as before.
 4. **Inbox.** If it is empty (after removing tickets reported unrenderable under (a)) and no ticket is
    `running` (a ticket skipped under (a) clause 1 because it was delivered or launched in the previous
    turn counts as `running` here, even if `status --json` does not yet report it so), go to Step 5. If
@@ -237,7 +244,7 @@ Each time you are re-invoked (a background run exited, or the human replied):
           `#N: question file could not be rendered at <file_path> (stderr: <error_reason>). Fix or delete the file and re-run /expert-fleet --resume: left parked.` and leave the ticket parked.
           Run /setup-local if the renderer is not found.
         - A reported ticket does not count as open inbox for the rest of this turn or for Step 5 (unrenderable tickets are recomputed from the inbox each turn, not remembered). The parked-then-stop rule means: when you have rendered all available tickets and some reported unrenderable, do not go to Step 5.
-     4. **Gate items:** unchanged. Print `#N <title> — <step>` and `gate.context` in an assistant message,
+     4. **Gate items:** unchanged. Print `#N <title> — <step>` and `gate.context` in an assistant message, then the item's `heal` line if it has one (print it verbatim: `heal attempted: <tool>` with its outcome, plus `Retry recommended` only where the gate offers Retry and the tool changed something; the line never picks an option or shortens into a recommendation),
         then call `AskUserQuestion` with the header prefixed `#N` (12 characters or fewer) and the options
         copied unchanged. Repeat until all are asked.
    - **(b) Deliver answers.** Deliver every answer you now have **before** any report is printed, so a
@@ -282,13 +289,23 @@ reaches `fleet: idle` instead of looping.
 
 If the fleet reaches idle without every ticket moving (all parked or blocked), and one or more tickets were delivered an answer or launched in this session but their state has not progressed, re-running the dispatcher with `--resume` will wake them and resume the loop.
 
+Then list heals per ticket, one line each for a ticket with a heal record: `#N <tool>: <outcome>`, using
+the outcome wording from Step 4 (for example `install: changed something`, or `interrupted` for an attempt
+a crash left open). The heal count per ticket counts only attempts whose tool ran and finished. `interrupted`
+(still `attempted`) and `refused` entries are listed by name but not counted, because refusals are not heals.
+If no ticket has a heal record, print no heal lines.
+
 ## What this command deliberately does not do
 
 - Answer questions, pick defaults, or treat silence as consent — a parked ticket waits.
-- Retry failed tickets, or auto-remediate anything (`/expert-flow`'s hard stops still apply).
+- Retry failed tickets. Its only repair is the bounded fleet heal of Step 4 item 3 (ADR-0025, 2026-11-02
+  amendment): one allow-listed environment tool per cause per ticket, run by `fleet.py`, never a code edit,
+  never a gate answer. `/expert-flow`'s hard stops still apply.
 - Run tickets with unmet dependencies "optimistically", or stack PRs; a dependant starts only once
   its dependency merged (or is CLOSED).
-- Write into flow directories or worktrees. Its own writes are under `FLEET` (issue-body drafts in
+- Write into flow directories, or into a ticket's worktree except through the bounded heal. The heal's tool
+  writes (the `install` tool's dependency install in the ticket's worktree) happen inside `fleet.py`'s heal
+  CLI, never in this session, and never touch a flow directory. Its own writes are under `FLEET` (issue-body drafts in
   `FLEET/direction/<N>.md`, Step 2.3; rendered question files in `FLEET/render/`, Step 4.4(a); delivery
   messages in `FLEET/messages/`, Step 4(b)) and the scratch ticket list in `~/.claude/fleet-scratch/`
   (Step 1.6), which holds no fleet state. The other writes
