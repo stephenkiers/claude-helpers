@@ -7,7 +7,6 @@ install tool status mapping, and error handling.
 Run with: python3 tests/test_heal.py
 """
 
-import importlib.util
 import json
 import os
 import sys
@@ -18,10 +17,8 @@ from typing import Any, Dict, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import REPO_ROOT, Harness
 
-HEAL_SCRIPT = REPO_ROOT / "scripts" / "workflow" / "heal.py"
-_spec = importlib.util.spec_from_file_location("heal", HEAL_SCRIPT)
-heal = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(heal)
+sys.path.insert(0, str(REPO_ROOT))
+from scripts.workflow import heal  # noqa: E402
 
 
 def make_evidence(**kwargs) -> heal.StopEvidence:
@@ -76,7 +73,7 @@ def main():
     tool, diag = heal.nominate(evidence_w1_fail_3, heal.TOOLS, {})
     h.test_result(
         "W1 A: failures = 5 also refuses",
-        tool is None and "5 attempts" in (diag or ""),
+        tool is None and "Failure limit reached" in (diag or ""),
         f"diag={diag}",
     )
 
@@ -260,7 +257,7 @@ fleet:
         timeout_secs: 600
 """
         )
-        override = heal._read_project_override(main_wt)
+        override, odiag = heal._read_project_override(main_wt)
         h.test_result(
             "Valid override reads successfully",
             override.get("install", {}).get("timeout_secs") == 600,
@@ -278,10 +275,10 @@ fleet:
         unknown_param: 999
 """
         )
-        override = heal._read_project_override(main_wt)
+        override, odiag = heal._read_project_override(main_wt)
         h.test_result(
-            "Unknown param is silently ignored",
-            "unknown_param" not in override.get("install", {}),
+            "Unknown param fails closed with a diagnosis",
+            odiag is not None,
             f"Got {override}",
         )
 
@@ -295,10 +292,10 @@ fleet:
         enabled: "yes"
 """
         )
-        override = heal._read_project_override(main_wt)
+        override, odiag = heal._read_project_override(main_wt)
         h.test_result(
             "Invalid enabled type returns empty override (fail-closed)",
-            override == {},
+            override == {} and odiag is not None,
             f"Got {override}",
         )
 
@@ -312,10 +309,10 @@ fleet:
         timeout_secs: 0
 """
         )
-        override = heal._read_project_override(main_wt)
+        override, odiag = heal._read_project_override(main_wt)
         h.test_result(
             "timeout_secs <= 0 returns empty override (fail-closed)",
-            override == {},
+            override == {} and odiag is not None,
             f"Got {override}",
         )
 
@@ -329,19 +326,19 @@ fleet:
         timeout_secs: -100
 """
         )
-        override = heal._read_project_override(main_wt)
+        override, odiag = heal._read_project_override(main_wt)
         h.test_result(
             "Negative timeout_secs returns empty override (fail-closed)",
-            override == {},
+            override == {} and odiag is not None,
             f"Got {override}",
         )
 
         # Missing project.yaml
         project_yaml.unlink()
-        override = heal._read_project_override(main_wt)
+        override, odiag = heal._read_project_override(main_wt)
         h.test_result(
-            "Missing project.yaml returns empty override",
-            override == {},
+            "Missing project.yaml returns empty override, no diagnosis",
+            override == {} and odiag is None,
             f"Got {override}",
         )
 

@@ -211,9 +211,9 @@ def heal_bits(heal: Optional[Dict[str, Any]], note: Optional[Dict[str, Any]]) ->
         elif outcome in HEAL_STATUSES:
             bits.append("heal=attempted" if outcome == "healed" else f"heal={outcome}")
             if heal.get("recommendation") == "retry-recommended" and outcome == "healed":
-                bits.append("Retry recommended")
+                bits.append("heal: Retry recommended")
             elif heal.get("recommendation") == "take-over":
-                bits.append("Take over")
+                bits.append("heal: Take over")
         else:
             bits.append("heal=unknown")
     if note and not heal:
