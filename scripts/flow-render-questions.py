@@ -138,7 +138,7 @@ def _read_context(path: Any, warnings: List[str]) -> Optional[str]:
     # Validate containment: realpath should be under ~/.claude/flows/
     try:
         real = os.path.realpath(path)
-        flows_base = os.path.expanduser("~/.claude/flows")
+        flows_base = os.path.realpath(os.path.expanduser("~/.claude/flows"))
         # Check if real path is under flows base
         try:
             common = os.path.commonpath([real, flows_base])
