@@ -32,8 +32,8 @@ parent directory may be created but the file itself is not.
 
 Exit codes:
   0: ok
-  1: usage error: bad arguments such as --prefix longer than 11 characters. Unhandled exceptions
-     also exit 1 (traceback on stderr).
+  1: (a) usage error: bad arguments such as --prefix longer than 11 characters.
+     (b) Unhandled exceptions (crash): exit 1 with traceback on stderr.
   2: deliberately unused (python3 exits 2 when this script file is missing)
   3: input file unreadable or not JSON
   4: invalid shape: questions not a list, empty questions list, a question lacking id or with null

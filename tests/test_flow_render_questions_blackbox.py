@@ -21,7 +21,6 @@ Run with: python3 tests/test_flow_render_questions_blackbox.py
 """
 
 import json
-import os
 import stat
 import subprocess
 import sys
@@ -97,59 +96,58 @@ def t_empty_questions_list_exits_4():
 
 
 def t_malformed_options_exits_4():
-    """Malformed options (not a dict/list) - validator should reject invalid structures."""
+    """Malformed options entries (non-dict in list) - validator should reject invalid structures."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         q_file = make_question_file(tmp_dir, {
             "questions": [{
                 "summary": "Q1",
-                "options": "not a list or dict",  # Invalid
+                "options": ["not a dict"],  # Invalid: non-dict entry in list
             }]
         })
         rc, _, _, _ = run_renderer(q_file)
-        # If implemented, should exit 4; if not yet validated, may exit 0
+        # Per plan F5: malformed options entries exit exactly 4
         h.test_result(
-            "Malformed options handled (exit 4 or 0)",
-            rc in [0, 4],
-            f"unexpected exit {rc}"
+            "Malformed options entry exits 4",
+            rc == 4,
+            f"expected exit 4, got {rc}"
         )
 
 
 def t_non_string_header_exits_4():
-    """Non-string header in options - validator should reject if strict."""
+    """Non-string header at question level - validator should reject."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         q_file = make_question_file(tmp_dir, {
             "questions": [{
                 "summary": "Q1",
-                "options": [{"header": 123}],  # Not a string
+                "header": 123,  # Not a string: invalid
             }]
         })
         rc, _, _, _ = run_renderer(q_file)
-        # Validation might not be strict yet; just test it doesn't crash
+        # Per plan F5: non-string header exits exactly 4
         h.test_result(
-            "Non-string header handled",
-            rc in [0, 4],
-            f"unexpected exit {rc}"
+            "Non-string header exits 4",
+            rc == 4,
+            f"expected exit 4, got {rc}"
         )
 
 
 def t_unknown_report_handle_exits_4():
-    """Report with unknown handle (not Q/D/W) - should be validated or gracefully handled."""
+    """Report with unknown handle (not Q/D/W) - should be validated and rejected."""
     with tempfile.TemporaryDirectory() as tmp_dir:
-        q_file = make_question_file(tmp_dir, {
-            "questions": [{
-                "summary": "Q1",
-                "items": [{
-                    "handle": "X1",  # Invalid: not Q/D/W
-                    "summary": "Some item"
-                }]
+        q_file = Path(tmp_dir) / "question.json"
+        q_file.write_text(json.dumps({
+            "kind": "report",
+            "items": [{
+                "handle": "X1",  # Invalid: not Q/D/W
+                "title": "Some item"
             }]
-        })
+        }))
         rc, _, _, _ = run_renderer(q_file)
-        # If validation is implemented, exits 4; otherwise silently handled
+        # Per plan F13: unknown report handle exits exactly 4
         h.test_result(
-            "Unknown report handle handled",
-            rc in [0, 4],
-            f"unexpected exit {rc}"
+            "Unknown report handle exits 4",
+            rc == 4,
+            f"expected exit 4, got {rc}"
         )
 
 
@@ -210,9 +208,9 @@ print("\n[Section 3] context_path safety")
 
 
 def t_context_path_must_be_under_flow_dir():
-    """context_path outside flow-dir should be warned or rejected."""
+    """context_path outside flow-dir should be warned but rendering continues."""
     with tempfile.TemporaryDirectory() as tmp_dir:
-        # Create a context file outside the expected flow dir
+        # Create a context file outside ~/.claude/flows/
         outside = Path(tmp_dir) / "outside.txt"
         outside.write_text("Some context")
 
@@ -222,13 +220,12 @@ def t_context_path_must_be_under_flow_dir():
                 "context_path": str(outside)
             }]
         })
-        # The renderer should not crash; it may warn or cap the content
+        # Per plan F17: path containment check warns but continues with exit 0
         rc, stdout, stderr, _ = run_renderer(q_file)
-        # Should complete (exit 0 or warn, but not crash with exit 3/4)
         h.test_result(
-            "context_path outside flow-dir is handled",
-            rc in [0, 4],  # 0 if warning is OK, 4 if rejected
-            f"unexpected exit {rc}: stderr={stderr}"
+            "context_path outside flow-dir exits 0",
+            rc == 0,
+            f"expected exit 0, got {rc}: stderr={stderr}"
         )
 
 
@@ -294,7 +291,7 @@ def t_header_truncated_at_word_boundary():
             h.test_result(
                 "Output file contains question data",
                 len(out_content) > 0,
-                f"output is empty"
+                "output is empty"
             )
 
 
@@ -343,10 +340,11 @@ def t_missing_description_uses_placeholder():
 
         if out_path.exists():
             out_content = out_path.read_text()
-            # Output should NOT contain the literal string "None"
+            # Per plan F19: null description omitted, no literal 'None'
+            # The output should NOT contain the literal string "None" as the description value
             h.test_result(
                 "Output does not print literal 'None'",
-                "None" not in out_content or "None" in "Question 1",  # Allow if part of a word
+                "None" not in out_content,
                 f"output contains 'None': {out_content[:200]}"
             )
 
@@ -393,7 +391,7 @@ def t_non_null_description_is_rendered():
             h.test_result(
                 "Output file is not empty with description",
                 len(out_content) > 0,
-                f"output is empty"
+                "output is empty"
             )
 
 
