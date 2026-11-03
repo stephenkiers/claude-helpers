@@ -154,7 +154,8 @@ turn and wait for a reply), a fleet run instead:
    - `report` — a plan checkpoint report (report-kind relay step 3). Write the rendered report by
      running the renderer with `--out "${FLOW_DIR}/fleet-report-<SEQ>.md"` (on the `questions/<STEP>-<SEQ>.json`
      input, as relay step 3 does; the fallback writes it with `Write` as today) and name it in
-     `report_file`; also set `question_file`.
+     `report_file`; also set `question_file`. If the renderer exits with 3 or 4 (invalid input file), do NOT write
+     `fleet-ask.json`; go to "Hard stop" as `FAILED` with reason `question file unreadable` instead.
    - `gate` — one of this orchestrator's own questions (merge gate, hard-stop menu, resume rules 1
      and 3a). `gate` carries the header, question text, and options exactly as they would have been
      asked, and `context` carries the lines that would have been printed above the form (stop line,
@@ -1363,7 +1364,7 @@ For plan checkpoint reports from `/expert-plan`:
    python3 "$HOME/.claude/scripts/flow-render-questions.py" "${FLOW_DIR}/questions/<STEP>-<SEQ>.json" --out "${FLOW_DIR}/render/<STEP>-<SEQ>.md"
    ```
    The renderer produces the skeleton below, in this fixed order, with step-authored text always escaped.
-   The same skeleton is the fallback: if the renderer is unavailable, print it yourself as described under "Renderer exit handling" below.
+   On exit 1 or 2 (missing or crashed), the same skeleton is the fallback: print it yourself as described under "Renderer exit handling" below. On exit 3 or 4 (invalid input), the renderer has already printed the error; do not print and do not ask (see "Renderer exit handling" below).
    - If the report's `headline` is not null, render it as a `>` blockquote (untrusted: ticket-derived), with leading `#`, `---`, and backticks escaped.
    - If the report's `north_star_blind` is not null, print it as a single paragraph (the exact "NORTH STAR BLIND:" line from the non-flow run, if any).
    - **Summary: "Needs your answer: Q1, Q2"** (only the must-answer Q items; this appears before the detailed sections to surface what needs a decision).

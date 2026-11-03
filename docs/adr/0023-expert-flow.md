@@ -1248,4 +1248,12 @@ This amendment fixes a context-loss bug in `/expert-fleet` and gives flow and fl
   - A missing script, or a crash of the script, falls back to the raw print of the question file's context, with a `/setup-local` warning. This holds in both commands.
   - An invalid file (exit 3 or 4, including duplicate question text on exit 4) is not a fallback. In `/expert-flow` it is a `question file unreadable` hard stop, recorded as `FAILED`, the same outcome as an unparseable file in common step 1. In `/expert-fleet` the ticket is reported and left parked, and it does not count as open inbox. A fallback there would collide in the answer mapping.
 - **#304 unchanged otherwise.** #304's compression and caps stay where they are. This amendment changes only what is rendered and how the header is capped under `--prefix`.
-- **Untouched.** `scripts/fleet.py` and ADR-0025 are not changed by this amendment. The fleet's parking and resume behaviour is the same, and only the question's presentation changes.
+- **Untouched: `fleet.py` and ADR-0025.** The `/expert-fleet` dispatcher is prose the model follows; `scripts/fleet.py` is deliberately not modified (per ADR-0025 §6). The fleet's parking and resume behaviour is unchanged. Only the question file presentation changes, through the shared renderer.
+- **Dispatch-loop changes (INTERIM).** The dispatcher implements five temporary changes pending a follow-up move to fleet.py (#426):
+  - The "skip-delivered" rule: the dispatcher does not re-ask a question once delivered to the fleet.
+  - The "unrenderable-parked" rule: a question file the renderer cannot read parks the ticket and is not retried by the dispatcher.
+  - The `del(.question_data)` inbox slimming: answered questions are removed from the fleet's inbox to save memory.
+  - The `delivering #N` echo: the dispatcher prints progress as it relays each parked ticket's answer batch.
+  - The one-ticket-per-call rule: each /expert-fleet dispatcher invocation processes one ticket to completion.
+  These five rules are symptoms of holding unrenderable state and per-call chunking in the model's memory rather than fleet.py. They remain until the dispatcher logic moves into fleet.py and the fleet is dogfooded on #426.
+- **Producer header checks (follow-up).** Producers should verify that `header` text puts meaning in the first 12 characters (the cap under `--prefix`), so that fleet headers are not truncated in a way that loses distinction. This is not enforced; it is a convention producers must observe.

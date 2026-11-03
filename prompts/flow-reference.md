@@ -177,7 +177,9 @@ Initial redo spawns (the redo procedure in `commands/expert-flow.md`, from eithe
    `attempt` is the step prompt's `ATTEMPT=<k>`, with `1` when absent. The verifier never counts a question file without an integer `attempt` ≥ 1 and reports it as malformed, which fails the plan or review check closed.
 
    `id` is `q1`, `q2`, … in the order asked, unique within the file, and it is the key the answers
-   file uses. `id` and `brief` are the only additions to each `questions[]` entry; the orchestrator
+   file uses. The `question` text (the human-facing prompt) must also be unique within the file, since
+   answers are mapped by question text; the renderer rejects duplicate question text as invalid input.
+   `id` and `brief` are the only additions to each `questions[]` entry; the orchestrator
    strips both before the call, along with `item` (for `assess` questions) and `comment_id` (for
    "new comment since plan" questions). Each entry otherwise keeps the tool's own schema — `question`,
    `header`, `options[]` with `label` and `description`, and `multiSelect` — so the orchestrator can
