@@ -946,18 +946,18 @@ def main() -> None:
             sys.exit(1)
     elif args.command == "heal":
         if args.heal_action == "probe":
-            result = heal.cli_probe(
+            heal_result = heal.cli_probe(
                 Path(args.worktree),
                 Path(args.main_worktree),
                 args.base,
                 Path(args.flow_dir),
                 args.issue,
             )
-            print(json.dumps(result))
+            print(json.dumps(heal_result))
             sys.exit(0)
         elif args.heal_action == "run":
             tail_file = Path(args.tail_file) if args.tail_file else None
-            result = heal.cli_run(
+            heal_result = heal.cli_run(
                 Path(args.worktree),
                 Path(args.main_worktree),
                 args.base,
@@ -966,7 +966,7 @@ def main() -> None:
                 args.tool,
                 tail_file,
             )
-            print(json.dumps(result))
+            print(json.dumps(heal_result))
             sys.exit(0)
         else:
             heal_parser.print_help()
