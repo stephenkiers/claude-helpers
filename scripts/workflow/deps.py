@@ -289,8 +289,12 @@ def redact_output(text: str) -> List[str]:
 
 
 def _git(args: List[str], cwd: Path) -> "subprocess.CompletedProcess[str]":
+    """
+    git with the fsmonitor hook disabled, matching heal.py's _git_wt: a ticket worktree's config is
+    ticket-controlled, so a core.fsmonitor it sets must never run on the heal path.
+    """
     return subprocess.run(
-        ["git"] + args,
+        ["git", "-c", "core.fsmonitor=false"] + args,
         cwd=str(cwd),
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -377,7 +381,7 @@ def _write_stamp(path: Path, data: Dict[str, Any]) -> Optional[str]:
 
 def _remove_file(path: Path) -> Optional[str]:
     """
-    Delete path, preserving symlinks. If path is a symlink, delete its target instead of the link.
+    Delete path. If path is a symlink, the link itself is kept and its target is deleted instead.
     A missing file is fine; any other failure is returned so the caller can stop.
     """
     try:
@@ -652,6 +656,55 @@ def _install_and_record(
     return DepsResult("installed")
 
 
+@dataclass(frozen=True)
+class _Assessment:
+    """The resolved install of one worktree: where it runs, what it runs, what a stamp must record."""
+    worktree: Path
+    plan: _InstallPlan
+    fingerprint: _Fingerprint
+    stamp_file: Path
+    stamp: Dict[str, Any]
+
+
+def _assess(worktree: Path, main_worktree: Path) -> Tuple[Optional[_Assessment], Optional[DepsResult]]:
+    """
+    The shared read-only assessment that deps ensure and deps_currency both start from.
+
+    Returns (assessment, None) when an install can be planned, or (None, result) when the run stops
+    before any install: failed, ambiguous or skipped. Nothing is written and no install runs here.
+    """
+    real_worktree, error = _validated_worktree(worktree, main_worktree)
+    if error is not None or real_worktree is None:
+        return None, DepsResult("failed", error or "invalid worktree")
+
+    install_command, error = _main_install_command(main_worktree)
+    if error is not None:
+        return None, DepsResult("failed", error)
+
+    lockfile, ambiguous = find_lockfile(real_worktree)
+    if ambiguous is not None:
+        return None, DepsResult("ambiguous", ambiguous)
+    if lockfile is None and install_command is None:
+        return None, DepsResult("skipped", "no lockfile")
+
+    plan, error = _install_plan(real_worktree, lockfile, install_command)
+    if plan is None:
+        return None, DepsResult("failed", error or "no install plan")
+
+    stamp_file, error = _stamp_path(real_worktree)
+    if error is not None or stamp_file is None:
+        return None, DepsResult("failed", error or "no stamp location")
+
+    fingerprint = _Fingerprint(
+        command=plan.command_key,
+        lockfile=lockfile.name if lockfile is not None else None,
+        lockfile_sha=_lockfile_sha(real_worktree, lockfile),
+        manifest=manifest_sha(real_worktree),
+    )
+    assessment = _Assessment(real_worktree, plan, fingerprint, stamp_file, _read_stamp(stamp_file))
+    return assessment, None
+
+
 def _ensure(
     worktree: Path,
     main_worktree: Path,
@@ -660,54 +713,31 @@ def _ensure(
     timeout: int,
     ignore_approvals: bool = False,
 ) -> DepsResult:
-    real_worktree, error = _validated_worktree(worktree, main_worktree)
-    if error is not None or real_worktree is None:
-        return DepsResult("failed", error or "invalid worktree")
+    assessed, failure = _assess(worktree, main_worktree)
+    if assessed is None:
+        return failure if failure is not None else DepsResult("failed", "invalid worktree")
 
-    install_command, error = _main_install_command(main_worktree)
-    if error is not None:
-        return DepsResult("failed", error)
-
-    lockfile, ambiguous = find_lockfile(real_worktree)
-    if ambiguous is not None:
-        return DepsResult("ambiguous", ambiguous)
-    if lockfile is None and install_command is None:
-        return DepsResult("skipped", "no lockfile")
-
-    plan, error = _install_plan(real_worktree, lockfile, install_command)
-    if plan is None:
-        return DepsResult("failed", error or "no install plan")
-
-    stamp_file, error = _stamp_path(real_worktree)
-    if error is not None or stamp_file is None:
-        return DepsResult("failed", error or "no stamp location")
-
-    current_manifest = manifest_sha(real_worktree)
-    fingerprint = _Fingerprint(
-        command=plan.command_key,
-        lockfile=lockfile.name if lockfile is not None else None,
-        lockfile_sha=_lockfile_sha(real_worktree, lockfile),
-        manifest=current_manifest,
-    )
-
-    stamp = _read_stamp(stamp_file)
+    stamp = assessed.stamp
+    current_manifest = assessed.fingerprint.manifest
     if approve_manifest:
         # Merged into the existing stamp, so an approval never erases the record of the current install.
         stamp = dict(stamp)
         stamp[APPROVAL_KEY] = current_manifest
-        write_error = _write_stamp(stamp_file, stamp)
+        write_error = _write_stamp(assessed.stamp_file, stamp)
         if write_error is not None:
             return DepsResult("failed", write_error)
 
     if base is not None:
-        gated = _manifest_gate(real_worktree, base, stamp, current_manifest, ignore_approvals)
+        gated = _manifest_gate(assessed.worktree, base, stamp, current_manifest, ignore_approvals)
         if gated is not None:
             return gated
 
-    if fingerprint.matches(stamp) and _has_install_artifact(real_worktree):
+    if assessed.fingerprint.matches(stamp) and _has_install_artifact(assessed.worktree):
         return DepsResult("current")
 
-    return _install_and_record(real_worktree, plan, fingerprint, stamp_file, stamp, timeout)
+    return _install_and_record(
+        assessed.worktree, assessed.plan, assessed.fingerprint, assessed.stamp_file, stamp, timeout
+    )
 
 
 def deps_currency(worktree: Path, main_worktree: Path, base: Optional[str] = None) -> str:
@@ -730,47 +760,22 @@ def deps_currency(worktree: Path, main_worktree: Path, base: Optional[str] = Non
     Never raises. Any read error returns "unknown".
     """
     try:
-        real_worktree, error = _validated_worktree(worktree, main_worktree)
-        if error is not None or real_worktree is None:
+        assessed, failure = _assess(worktree, main_worktree)
+        if assessed is None or failure is not None:
+            # Any failed, ambiguous or skipped assessment is unknown, never stale.
             return "unknown"
-
-        install_command, error = _main_install_command(main_worktree)
-        if error is not None:
-            return "unknown"
-
-        lockfile, ambiguous = find_lockfile(real_worktree)
-        if ambiguous is not None:
-            return "unknown"
-        if lockfile is None and install_command is None:
-            return "unknown"
-
-        plan, error = _install_plan(real_worktree, lockfile, install_command)
-        if plan is None:
-            return "unknown"
-
-        stamp_file, error = _stamp_path(real_worktree)
-        if error is not None or stamp_file is None:
-            return "unknown"
-
-        current_manifest = manifest_sha(real_worktree)
-        fingerprint = _Fingerprint(
-            command=plan.command_key,
-            lockfile=lockfile.name if lockfile is not None else None,
-            lockfile_sha=_lockfile_sha(real_worktree, lockfile),
-            manifest=current_manifest,
-        )
-
-        stamp = _read_stamp(stamp_file)
 
         # Check manifest gate with ignore_approvals=True to detect if manifest changed.
         # Any stored approval is potentially forged, so we ignore it.
         if base is not None:
-            gated = _manifest_gate(real_worktree, base, stamp, current_manifest, ignore_approvals=True)
+            gated = _manifest_gate(
+                assessed.worktree, base, assessed.stamp, assessed.fingerprint.manifest, ignore_approvals=True
+            )
             if gated is not None:
                 # manifest-changed or failed -> unknown
                 return "unknown"
 
-        if fingerprint.matches(stamp) and _has_install_artifact(real_worktree):
+        if assessed.fingerprint.matches(assessed.stamp) and _has_install_artifact(assessed.worktree):
             return "current"
 
         return "stale"
@@ -801,6 +806,16 @@ def ensure_deps(
         ignore_approvals: When True, ignore the stored APPROVAL_KEY in the manifest gate, so a
             manifest that differs from the merge-base returns manifest-changed even if an approval
             exists. Default False keeps the behavior unchanged.
+
+    Flag precedence (one call, in this order):
+        - base is None: the manifest gate is skipped, so ignore_approvals has no effect on the result.
+          approve_manifest still writes its approval to the stamp.
+        - approve_manifest writes the approval before the gate runs, so with ignore_approvals False a
+          manifest that differs from the merge-base clears the gate in the same call.
+        - ignore_approvals wins over approve_manifest for the gate's decision: with both set, a changed
+          manifest still returns manifest-changed. The approval is still recorded in the stamp, so a
+          later call that does not set ignore_approvals can clear the gate with it.
+        - A current stamp with an install artifact returns current only after the gate has passed.
 
     Returns:
         A DepsResult whose status is one of the Status categories. Every failure is returned, not raised:

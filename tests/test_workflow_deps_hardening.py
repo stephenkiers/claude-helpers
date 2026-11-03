@@ -12,6 +12,7 @@ Hardening tests for `python3 -m scripts.workflow.cli deps ensure` (#417), writte
 6. redaction: GitHub and npm token prefixes and GH_TOKEN / NPM_TOKEN key/value forms are masked
 7. the timeout kills the whole install process group, not only the direct child
 8. a symlinked stamp stays a symlink across a rewrite
+9. every git call on the deps path runs with core.fsmonitor disabled (the heal.py _git_wt rule)
 
 Every case runs the real CLI as a subprocess against a temp layout (main worktree plus a linked worktree),
 with fake package managers prepended to PATH; nothing touches the network or the real ~/.claude. The
@@ -36,6 +37,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
@@ -397,6 +399,35 @@ def section_symlinked_stamp(t):
           f"target={target} changed={target.exists() and target.read_bytes() != before}")
 
 
+def section_git_fsmonitor(t):
+    """Every git call on the deps path disables core.fsmonitor, matching heal.py's _git_wt."""
+    fsmonitor_off = ["git", "-c", "core.fsmonitor=false"]
+    real_run = subprocess.run
+    seen: List[List[str]] = []
+
+    def recording_run(argv, *args, **kwargs):
+        if isinstance(argv, list) and argv[:1] == ["git"]:
+            seen.append(list(argv))
+        return real_run(argv, *args, **kwargs)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main, feat = make_layout(root, {"package-lock.json": "v1\n", "package.json": package_json()})
+        with mock.patch.object(deps.subprocess, "run", side_effect=recording_run):
+            direct = deps._git(["rev-parse", "--absolute-git-dir"], feat)
+            currency = deps.deps_currency(feat, main, "main")
+        t("fsmonitor precondition: deps._git runs git and returns its output",
+          direct.returncode == 0 and direct.stdout.strip() != "", f"rc={direct.returncode}")
+        # `git worktree list` comes from worktrees.detect_worktree_parent, outside deps.py, so it is excluded
+        # here. The deps-owned calls (rev-parse, merge-base, diff, ls-files, show) must all carry the flag.
+        own = [argv for argv in seen if "worktree" not in argv]
+        t("fsmonitor: the currency check on the heal path runs deps-owned git calls through deps._git",
+          len(own) >= 2, f"calls={seen} result={currency}")
+        bare = [argv for argv in own if argv[:3] != fsmonitor_off]
+        t("fsmonitor: every deps-owned git argv begins with -c core.fsmonitor=false",
+          not bare, f"without_flag={bare}")
+
+
 if __name__ == "__main__":
     h = Harness("DEPS HARDENING TEST SUITE")
     t = h.test_result
@@ -409,6 +440,7 @@ if __name__ == "__main__":
         section_redaction,
         section_process_group,
         section_symlinked_stamp,
+        section_git_fsmonitor,
     ):
         print(f"[{section.__name__}]")
         section(t)

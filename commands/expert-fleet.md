@@ -200,9 +200,17 @@ Each time you are re-invoked (a background run exited, or the human replied):
    - **Heal, before a stop is shown.** A stopped or failed ticket may have had one allow-listed environment
      tool run in its worktree by `fleet.py` (ADR-0025, 2026-11-02 amendment; today only `install`), once per
      cause per ticket. That is a repair, not a retry: no gate is answered and nothing is re-run at a gate.
-     Read it from the inbox item or the status row as `heal=<outcome>` (`attempted` when the tool ran and
-     finished, `no-op`, `refused`, `failed`, or `interrupted`). `Retry recommended` means a gate
-     offers Retry and the tool changed something; Retry is still your choice. A `refused` entry spends the cap but is not a heal that ran, and a stop with no heal line is shown exactly as before.
+     Read it from the inbox item (its `heal` record and `heal_note`) or the status row. `fleet.py` builds
+     the heal tokens with `heal_bits` in `scripts/fleet.py`, from the record's `outcome` and `recommendation`.
+     The status row and the FLEET line print the same tokens:
+     - `heal=attempted`: the outcome is `healed`, so the tool ran and finished. A healed run is never shown as `healed`, because a retry decides.
+     - `heal=interrupted`: the outcome is still `attempted`, so a crash left the attempt open. It has no recommendation, so it gets no Take over token.
+     - `heal=no-op`, `heal=refused`, `heal=failed`: the recorded outcome, unchanged.
+     - `heal=unknown`: any other outcome value.
+     - `heal=diagnosis`: a `heal_note` (a fixed diagnosis line) for this stop with no heal record. No tool ran.
+     - `heal: Retry recommended`: the recommendation is `retry-recommended`. `fleet.py` writes that only for a healed run where a gate offers Retry and the tool changed something. Retry is still the human's choice.
+     - `heal: Take over`: the recommendation is `take-over`.
+     The status row also prints `note=<line>` from a `heal_note`. A `refused` entry spends the cap but is not a heal that ran, and a stop with no heal record or note is shown exactly as before.
 4. **Inbox.** If it is empty (after removing tickets reported unrenderable under (a)) and no ticket is
    `running` (a ticket skipped under (a) clause 1 because it was delivered or launched in the previous
    turn counts as `running` here, even if `status --json` does not yet report it so), go to Step 5. If
@@ -243,7 +251,7 @@ Each time you are re-invoked (a background run exited, or the human replied):
           `#N: question file could not be rendered at <file_path> (stderr: <error_reason>). Fix or delete the file and re-run /expert-fleet --resume: left parked.` and leave the ticket parked.
           Run /setup-local if the renderer is not found.
         - A reported ticket does not count as open inbox for the rest of this turn or for Step 5 (unrenderable tickets are recomputed from the inbox each turn, not remembered). The parked-then-stop rule means: when you have rendered all available tickets and some reported unrenderable, do not go to Step 5.
-     4. **Gate items:** unchanged. Print `#N <title> — <step>` and `gate.context` in an assistant message, then the item's `heal` line if it has one (print it verbatim: the `heal=<outcome>` words, plus `Retry recommended` only where the gate offers Retry and the tool changed something; the line never picks an option or shortens into a recommendation),
+     4. **Gate items:** unchanged. Print `#N <title> — <step>` and `gate.context` in an assistant message, then the item's `heal` line if the item has one (print the heal line the fleet builds from the item's `heal` record and `heal_note`, using the token list in item 3: the tokens in that order, space-separated, each copied exactly; add no other words, and never reword, shorten or combine them. The line never picks an option, and its `heal: Retry recommended` token is the fleet's recorded recommendation, not one you judge),
         then call `AskUserQuestion` with the header prefixed `#N` (12 characters or fewer) and the options
         copied unchanged. Repeat until all are asked.
    - **(b) Deliver answers.** Deliver every answer you now have **before** any report is printed, so a
