@@ -26,23 +26,29 @@ def init(scratch, basis, count, scope=None):
 def main():
     h = Harness("UNIT PROGRESS HARDENING")
     with tempfile.TemporaryDirectory() as tmp:
+        # mark --sha requires a real commit in the cwd repository
+        real = Path(tmp) / "real"
+        real.mkdir()
+        for c in (["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "c"]):
+            subprocess.run(["git", *c], cwd=real, check=True, capture_output=True)
+        REAL = subprocess.run(["git", "rev-parse", "HEAD"], cwd=real, capture_output=True, text=True).stdout.strip()
         scratch = str(Path(tmp) / "s1")
         code, _, err = init(scratch, "sequential", 3)
         h.test_result("sequential init ok", code == 0, err)
 
         print("[Finding 5] sequential order is enforced by mark")
-        code, _, err = run_progress_cmd(["mark", "--unit-id", "u2", "--status", "committed", "--sha", SHA], scratch=scratch)
+        code, _, err = run_progress_cmd(["mark", "--unit-id", "u2", "--status", "committed", "--sha", REAL], scratch=scratch, cwd=str(real))
         h.test_result("u2 cannot commit before u1", code != 0 and "sequential order" in err, f"{code} {err}")
-        code, _, err = run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", SHA], scratch=scratch)
+        code, _, err = run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", REAL], scratch=scratch, cwd=str(real))
         h.test_result("u1 commits first", code == 0, err)
-        code, _, err = run_progress_cmd(["mark", "--unit-id", "u2", "--status", "committed", "--sha", SHA], scratch=scratch)
+        code, _, err = run_progress_cmd(["mark", "--unit-id", "u2", "--status", "committed", "--sha", REAL], scratch=scratch, cwd=str(real))
         h.test_result("u2 commits after u1", code == 0, err)
         code, _, err = run_progress_cmd(["mark", "--unit-id", "u3", "--status", "failed"], scratch=scratch)
         h.test_result("u3 can fail after prefix committed", code == 0, err)
 
         s2 = str(Path(tmp) / "s2")
         init(s2, "parallel", 2)
-        code, _, err = run_progress_cmd(["mark", "--unit-id", "u2", "--status", "committed", "--sha", SHA], scratch=s2)
+        code, _, err = run_progress_cmd(["mark", "--unit-id", "u2", "--status", "committed", "--sha", REAL], scratch=s2, cwd=str(real))
         h.test_result("parallel mode has no ordering constraint", code == 0, err)
 
         print("[Finding 7] scope names are exact and validated")

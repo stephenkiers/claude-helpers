@@ -88,7 +88,7 @@ def main() -> None:
         h.test_result("init sequential 3 units", code == 0)
 
         # Mark u1 as committed
-        code, _, _ = run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", base_sha], flow_dir=str(flow_dir))
+        code, _, _ = run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", base_sha], flow_dir=str(flow_dir), cwd=str(git.repo_root))
         h.test_result("mark u1 committed", code == 0)
 
         # Check pending before retry
@@ -156,7 +156,7 @@ def main() -> None:
         h.test_result("init record", code == 0)
 
         # Mark as committed
-        code, _, _ = run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", base_sha4], flow_dir=str(flow_dir4))
+        code, _, _ = run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", base_sha4], flow_dir=str(flow_dir4), cwd=str(git4.repo_root))
         h.test_result("mark committed", code == 0)
 
         # Try to supersede: should refuse
@@ -208,8 +208,8 @@ def main() -> None:
         h.test_result("init parallel", code == 0)
 
         # Mark 2 as committed, 1 as failed
-        run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", base_sha6], flow_dir=str(flow_dir6))
-        run_progress_cmd(["mark", "--unit-id", "u2", "--status", "committed", "--sha", base_sha6], flow_dir=str(flow_dir6))
+        run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", base_sha6], flow_dir=str(flow_dir6), cwd=str(git6.repo_root))
+        run_progress_cmd(["mark", "--unit-id", "u2", "--status", "committed", "--sha", base_sha6], flow_dir=str(flow_dir6), cwd=str(git6.repo_root))
         run_progress_cmd(["mark", "--unit-id", "u3", "--status", "failed"], flow_dir=str(flow_dir6))
 
         # Check pending
@@ -251,8 +251,8 @@ def main() -> None:
         h.test_result("init main record", code == 0)
 
         # Mark all as committed
-        run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", base_sha8], flow_dir=str(flow_dir8))
-        run_progress_cmd(["mark", "--unit-id", "u2", "--status", "committed", "--sha", base_sha8], flow_dir=str(flow_dir8))
+        run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", base_sha8], flow_dir=str(flow_dir8), cwd=str(git8.repo_root))
+        run_progress_cmd(["mark", "--unit-id", "u2", "--status", "committed", "--sha", base_sha8], flow_dir=str(flow_dir8), cwd=str(git8.repo_root))
 
         # Get tip
         code, tip, _ = run_progress_cmd(["tip"], flow_dir=str(flow_dir8))
@@ -272,7 +272,7 @@ def main() -> None:
         h.test_result("init", code == 0)
 
         # Mark as committed
-        run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", base_sha9], flow_dir=str(flow_dir9))
+        run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", base_sha9], flow_dir=str(flow_dir9), cwd=str(git9.repo_root))
 
         # Pending should be empty
         code, out, _ = run_progress_cmd(["pending"], flow_dir=str(flow_dir9))

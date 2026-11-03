@@ -28,7 +28,7 @@ from _git_fixture import GitFixture
 PROGRESS_SCRIPT = REPO_ROOT / "scripts" / "unit-progress.py"
 
 
-def run_progress_cmd(cmd_args: list, stdin_data: str = None, scratch: str = None) -> tuple:
+def run_progress_cmd(cmd_args: list, stdin_data: str = None, scratch: str = None, cwd: str = None) -> tuple:
     """Run unit-progress with given args. Returns (exit_code, stdout, stderr)."""
     base_cmd = [sys.executable, str(PROGRESS_SCRIPT), "--step", "implement"]
     if scratch:
@@ -37,7 +37,7 @@ def run_progress_cmd(cmd_args: list, stdin_data: str = None, scratch: str = None
         base_cmd.extend(["--flow-dir", "/tmp/nonexistent"])  # Dummy for non-flow mode
 
     cmd = base_cmd + cmd_args
-    result = subprocess.run(cmd, capture_output=True, text=True, input=stdin_data)
+    result = subprocess.run(cmd, capture_output=True, text=True, input=stdin_data, cwd=cwd)
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
@@ -156,7 +156,7 @@ def main() -> None:
         h.test_result("mark committed without SHA fails", code != 0, f"exit {code}")
 
         print("\n[Test 9] mark committed with SHA succeeds")
-        code, out, err = run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", sha1], scratch=str(scratch))
+        code, out, err = run_progress_cmd(["mark", "--unit-id", "u1", "--status", "committed", "--sha", sha1], scratch=str(scratch), cwd=str(git.repo_root))
         h.test_result("mark committed with SHA", code == 0, f"exit {code}: {err}")
 
         print("\n[Test 10] pending lists pending and failed unit ids")

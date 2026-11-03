@@ -171,7 +171,7 @@ def main():
         init(s_failsha, repo, plan, c0, "sequential", ["u1", "u2"])
         code, _, err = run(["mark", "--unit-id", "u1", "--status", "failed", "--sha", c1], s_failsha, repo)
         h.test_result("mark failed with --sha is rejected (SHA only for committed)", code != 0, f"rc={code} err={err!r}")
-        code, _, err = run(["mark", "--unit-id", "u2", "--status", "committed", "--sha", c1], s_sha, repo)
+        code, _, err = run(["mark", "--unit-id", "u1", "--status", "committed", "--sha", c1], s_sha, repo)
         h.test_result("control: mark committed with a real SHA succeeds", code == 0, err)
 
     h.summarize_and_exit()

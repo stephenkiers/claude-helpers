@@ -156,6 +156,8 @@ def count_distinct_files(text: str) -> Optional[int]:
     for step_text in steps:
         files = extract_files_from_step(step_text)
         all_files.update(files)
+    if any(not extract_files_from_step(t) for t in steps):
+        return None  # fail closed: every step must declare its files
     return len(all_files) if len(all_files) > 0 else None
 
 

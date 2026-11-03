@@ -497,6 +497,8 @@ def cmd_init(
     min_units: Optional[int] = None
     if isinstance(min_units_raw, int):
         min_units = min_units_raw
+        if min_units < 1:
+            error(f"unit-progress: init: sizing.min_units must be >= 1, got {min_units}")
         if len(units_input) < min_units:
             error(f"unit-progress: init: {len(units_input)} units < min_units {min_units}")
 
@@ -675,9 +677,15 @@ def cmd_mark(
     if status == "committed" and not sha:
         error("unit-progress: mark: committed status requires --sha")
 
+    if status != "committed" and sha:
+        error("unit-progress: mark: --sha is only valid with committed status")
+
     if status == "committed" and sha:
         if not is_valid_hex_sha(sha):
             error("unit-progress: mark: invalid sha format")
+        rc, _ = run_git_cmd(["git", "cat-file", "-e", f"{sha}^{{commit}}"])
+        if rc != 0:
+            error(f"unit-progress: mark: {sha} is not a commit in this repository")
 
     # Check for units.json (required)
     units_file = record_dir / "units.json"
