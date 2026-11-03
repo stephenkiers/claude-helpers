@@ -20,23 +20,25 @@ Form kind (no `kind` field, or any kind other than "report") writes JSON:
   - When summary is null and every brief is null, batch 1 carries the `context_path` file instead.
     If that file is unreadable, the preamble is a placeholder and a warning is recorded.
   - `ask` copies question, header, options (label and description) and multiSelect unchanged.
-  - The header is capped at 12 characters only when --prefix is given (prefix + header, truncated).
+  - The header is capped at 12 characters only when --prefix is given (prefix + header, truncated
+    at a word boundary or with '…').
 
 Report kind (kind == "report") writes markdown: headline (blockquote), north_star_blind, the
 "Needs your answer" line, the ticket, the Q, D and W sections, the roundup, and the fixed closing
 sentence. Step-authored text that starts a line with `#`, `---` or a backtick is backslash-escaped.
 
-Writes are atomic: a temp file in the output directory, then os.replace. On any failure --out is
-not created.
+Writes are atomic: a temp file in the output directory, then os.replace. On any failure --out
+parent directory may be created but the file itself is not.
 
 Exit codes:
   0: ok
-  1: usage error (bad arguments, --prefix longer than 11 characters), or an uncaught crash
-     (traceback on stderr)
+  1: usage error: bad arguments such as --prefix longer than 11 characters. Unhandled exceptions
+     also exit 1 (traceback on stderr).
   2: deliberately unused (python3 exits 2 when this script file is missing)
-  3: input unreadable or not JSON
-  4: invalid shape (questions not a list, a question lacking id or question, a null question,
-     duplicate question text, or a non-list items in a report)
+  3: input file unreadable or not JSON
+  4: invalid shape: questions not a list, empty questions list, a question lacking id or with null
+     question, duplicate question text, malformed options entries, non-string header, items not a
+     list in a report, or a report item with an unknown handle (not Q, D, or W)
 """
 import argparse
 import json
@@ -45,7 +47,7 @@ import re
 import sys
 import tempfile
 import traceback
-from typing import Any, Dict, List, NoReturn, Optional, Sequence, Set
+from typing import Any, Dict, List, NoReturn, Optional, Sequence, Set, TypedDict
 
 EXIT_OK = 0
 EXIT_USAGE = 1
@@ -73,6 +75,33 @@ class _Invalid(Exception):
     """Invalid shape: exit 4."""
 
 
+class _OptionEntry(TypedDict, total=False):
+    """An option for an AskUserQuestion."""
+    label: Optional[str]
+    description: Optional[str]
+
+
+class _AskQuestion(TypedDict, total=False):
+    """The ask entry for a question in a form batch."""
+    question: str
+    header: Optional[str]
+    options: List[_OptionEntry]
+    multiSelect: bool
+
+
+class _FormBatch(TypedDict, total=False):
+    """A batch of questions in a form rendering."""
+    preamble: str
+    questions: List[Dict[str, Any]]
+
+
+class _FormOutput(TypedDict, total=False):
+    """The output shape of render_form."""
+    kind: str
+    warnings: List[str]
+    batches: List[_FormBatch]
+
+
 class _Parser(argparse.ArgumentParser):
     """ArgumentParser that reports usage errors on one stderr line and exits 1."""
 
@@ -97,12 +126,51 @@ def _fence(content: str) -> str:
 
 
 def _read_context(path: Any, warnings: List[str]) -> Optional[str]:
+    """Read a context file with containment check and size cap.
+
+    The realpath should be under ~/.claude/flows/ for production use.
+    Caps bytes read at 64 KiB and warns if truncated.
+    """
     if not isinstance(path, str) or not path:
         warnings.append("no summary or brief, and context_path is null: no context shown")
         return None
+
+    # Validate containment: realpath should be under ~/.claude/flows/
+    try:
+        real = os.path.realpath(path)
+        flows_base = os.path.expanduser("~/.claude/flows")
+        # Check if real path is under flows base
+        try:
+            common = os.path.commonpath([real, flows_base])
+            is_contained = common == flows_base
+        except ValueError:
+            # Paths on different drives (Windows)
+            is_contained = False
+
+        if not is_contained:
+            # Warn but skip reading (security boundary)
+            warnings.append(
+                "context_path %s is not under ~/.claude/flows: skipped (full path: %s)" % (path, real)
+            )
+            return None
+    except OSError:
+        # Permission issues with realpath
+        warnings.append("context_path %s: permission error" % path)
+        return None
+
     try:
         with open(path, "r", encoding="utf-8") as fh:
-            return fh.read()
+            content = fh.read(64 * 1024)  # 64 KiB cap
+        # Check if truncated
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                fh.seek(64 * 1024)
+                extra = fh.read(1)
+                if extra:
+                    content += "\n… (context truncated at 64 KiB)"
+        except (OSError, UnicodeDecodeError):
+            pass
+        return content
     except (OSError, UnicodeDecodeError):
         warnings.append("context_path %s is unreadable: no context shown" % path)
         return None
@@ -118,22 +186,53 @@ def _escape(text: str) -> str:
     return "\n".join(lines)
 
 
+def _truncate_header(header: str, cap: int) -> str:
+    """Truncate header at word boundary or with ellipsis if it exceeds cap."""
+    if len(header) <= cap:
+        return header
+    # Try to truncate at a word boundary
+    truncated = header[:cap]
+    last_space = truncated.rfind(" ")
+    if last_space > 0:
+        # Truncate at last space and add ellipsis
+        return (truncated[:last_space] + "…")[:cap]
+    else:
+        # No space found; just truncate and add ellipsis
+        return (header[:cap - 1] + "…")
+
+
 def _as_text(value: Any) -> str:
+    """Convert a value to text. None becomes a placeholder."""
+    if value is None:
+        return "(none)"
     return value if isinstance(value, str) else str(value)
 
 
 def _ask_options(raw: Any) -> Any:
+    """Extract label and description from options, validating each entry."""
     if not isinstance(raw, list):
         return raw
-    return [{"label": opt.get("label"), "description": opt.get("description")} for opt in raw]
+    result = []
+    for opt in raw:
+        if not isinstance(opt, dict):
+            raise _Invalid("an options entry is not a JSON object")
+        # label and description are optional; use None as default
+        entry: _OptionEntry = {
+            "label": opt.get("label"),
+            "description": opt.get("description"),
+        }
+        result.append(entry)
+    return result
 
 
-def render_form(data: Any, prefix: Optional[str]) -> Dict[str, Any]:
+def render_form(data: Any, prefix: Optional[str]) -> _FormOutput:
     if not isinstance(data, dict):
         raise _Invalid("question file is not a JSON object")
     questions = data.get("questions")
     if not isinstance(questions, list):
         raise _Invalid("questions is not a list")
+    if not questions:
+        raise _Invalid("questions is empty")
 
     seen: Set[str] = set()
     for q in questions:
@@ -150,7 +249,7 @@ def render_form(data: Any, prefix: Optional[str]) -> Dict[str, Any]:
     summary = data.get("summary")
     fallback = summary is None and all(q.get("brief") is None for q in questions)
 
-    batches: List[Dict[str, Any]] = []
+    batches: List[_FormBatch] = []
     for start in range(0, len(questions), BATCH_SIZE):
         chunk = questions[start:start + BATCH_SIZE]
         preamble = ""
@@ -163,16 +262,27 @@ def render_form(data: Any, prefix: Optional[str]) -> Dict[str, Any]:
                 blocks.append(_as_text(summary))
             for q in chunk:
                 if q.get("brief") is not None:
-                    blocks.append(_as_text(q["brief"]))
+                    brief_text = q["brief"]
+                    if isinstance(brief_text, str):
+                        blocks.append(_fence(brief_text))
+                    else:
+                        blocks.append(_fence(_as_text(brief_text)))
             if blocks:
-                preamble = _fence("\n\n".join(blocks))
+                preamble = "\n\n".join(blocks)
 
         entries: List[Dict[str, Any]] = []
         for q in chunk:
             header = q.get("header")
+            # Validate header is a string if provided
+            if header is not None and not isinstance(header, str):
+                raise _Invalid("question %s has a non-string header" % q.get("id"))
+
+            # Apply prefix and truncation
             if prefix is not None:
-                header = (prefix + (header or ""))[:HEADER_CAP]
-            ask = {
+                full_header = prefix + (header or "")
+                header = _truncate_header(full_header, HEADER_CAP)
+
+            ask: _AskQuestion = {
                 "question": q["question"],
                 "header": header,
                 "options": _ask_options(q.get("options")),
@@ -196,10 +306,15 @@ def _bullets_for_item(item: Dict[str, Any], prefix: str) -> List[str]:
             for opt in options:
                 if not isinstance(opt, dict):
                     continue
+                # Only include label and description if they are present (not None)
+                label = opt.get("label")
+                desc_for = opt.get("for")
+                desc_against = opt.get("against")
+                label_text = _escape(_as_text(label)) if label is not None else "(no label)"
+                for_text = _escape(_as_text(desc_for)) if desc_for is not None else ""
+                against_text = _escape(_as_text(desc_against)) if desc_against is not None else ""
                 lines.append("- Option %s: for: %s; against: %s" % (
-                    _escape(_as_text(opt.get("label"))),
-                    _escape(_as_text(opt.get("for"))),
-                    _escape(_as_text(opt.get("against"))),
+                    label_text, for_text, against_text,
                 ))
         label = "Recommendation"
     elif prefix == "D":
@@ -233,9 +348,15 @@ def render_report(data: Any) -> str:
     for item in items:
         if not isinstance(item, dict):
             raise _Invalid("an item is not a JSON object")
-        key = _as_text(item.get("handle") or "")[:1]
-        if key in groups:
-            groups[key].append(item)
+        handle = item.get("handle")
+        if handle is not None:
+            key = _as_text(handle)[:1]
+        else:
+            key = ""
+        # Validate handle is one of Q, D, W
+        if key not in groups:
+            raise _Invalid("a report item has an unknown handle: %s" % handle)
+        groups[key].append(item)
 
     parts: List[str] = []
     headline = data.get("headline")
@@ -278,6 +399,8 @@ def _write_atomic(out: str, content: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(content)
+        # Set readable file mode (0o644)
+        os.chmod(tmp, 0o644)
         os.replace(tmp, out)
     except BaseException:
         try:

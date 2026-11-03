@@ -189,8 +189,11 @@ def test_old_file_without_kind(h, tmp):
 
 
 def test_null_context(h, tmp):
+    # Create context file under ~/.claude/flows/ to pass containment check
+    flows_dir = Path.home() / ".claude" / "flows" / "test-context"
+    flows_dir.mkdir(parents=True, exist_ok=True)
     context_text = "CONTEXT FILE LINE 1\nsome `inline` code\nCONTEXT LINE 3\n"
-    context_path = tmp / "context.md"
+    context_path = flows_dir / "context.md"
     context_path.write_text(context_text, encoding="utf-8")
     questions = [make_question(n, brief=False) for n in range(1, 3)]
     data = make_form(questions, summary=None, context_path=str(context_path))
@@ -202,6 +205,12 @@ def test_null_context(h, tmp):
     want = "```\n" + context_text.rstrip("\n") + "\n```"
     h.test_result("null summary and null briefs: batch 1 preamble is the context_path file (fenced)",
                   proc.returncode == 0 and preamble == want, preamble)
+    # Clean up
+    try:
+        context_path.unlink()
+        flows_dir.rmdir()
+    except OSError:
+        pass
 
     data_none = make_form(questions, summary=None, context_path=None)
     src_none = write_json(tmp / "nullctx-none.json", data_none)
@@ -329,6 +338,162 @@ def test_failure_exits(h, tmp):
                       f"exit {proc.returncode}, out exists: {out.exists()}")
 
 
+def test_empty_questions(h, tmp):
+    """Empty questions list should exit 4."""
+    data = make_form([])
+    src = write_json(tmp / "empty.json", data)
+    out = tmp / "empty.out.json"
+    proc = run_render(src, out)
+    h.test_result("empty questions list exits 4",
+                  proc.returncode == 4 and not out.exists(),
+                  f"exit {proc.returncode}, out exists: {out.exists()}")
+
+
+def test_malformed_options(h, tmp):
+    """Non-dict option entries should exit 4."""
+    q = make_question(1)
+    q["options"] = ["not", "a", "dict"]  # Bad: list of strings instead of dicts
+    src = write_json(tmp / "bad_opts.json", make_form([q]))
+    out = tmp / "bad_opts.out.json"
+    proc = run_render(src, out)
+    h.test_result("malformed options entries exit 4",
+                  proc.returncode == 4 and not out.exists(),
+                  f"exit {proc.returncode}, out exists: {out.exists()}")
+
+
+def test_non_string_header(h, tmp):
+    """Non-string header should exit 4."""
+    q = make_question(1)
+    q["header"] = 123  # Bad: not a string
+    src = write_json(tmp / "bad_header.json", make_form([q]))
+    out = tmp / "bad_header.out.json"
+    proc = run_render(src, out)
+    h.test_result("non-string header exits 4",
+                  proc.returncode == 4 and not out.exists(),
+                  f"exit {proc.returncode}, out exists: {out.exists()}")
+
+
+def test_unknown_report_handle(h, tmp):
+    """Report items with unknown handles should exit 4."""
+    report = make_report()
+    report["items"].append({"handle": "X1", "title": "Unknown", "decision_or_recommendation": "N/A", "backed_by": []})
+    src = write_json(tmp / "bad_handle.json", report)
+    out = tmp / "bad_handle.out.json"
+    proc = run_render(src, out)
+    h.test_result("unknown report handle exits 4",
+                  proc.returncode == 4 and not out.exists(),
+                  f"exit {proc.returncode}, out exists: {out.exists()}")
+
+
+def test_unreadable_context_path(h, tmp):
+    """Unreadable context_path should warn and render with placeholder."""
+    questions = [make_question(n, brief=False) for n in range(1, 3)]
+    context_path = tmp / "nonexistent" / "context.md"
+    data = make_form(questions, summary=None, context_path=str(context_path))
+    src = write_json(tmp / "unreadable.json", data)
+    out = tmp / "unreadable.out.json"
+    proc = run_render(src, out)
+    doc = json.loads(out.read_text(encoding="utf-8")) if proc.returncode == 0 else {}
+    h.test_result("unreadable context_path: render succeeds",
+                  proc.returncode == 0, f"exit {proc.returncode}")
+    h.test_result("unreadable context_path: placeholder preamble",
+                  doc.get("batches", [{}])[0].get("preamble") == "(no context provided by the step)",
+                  doc.get("batches", [{}])[0].get("preamble", ""))
+    # Check for warning about containment or unreadable
+    warnings = doc.get("warnings", [])
+    has_warning = any("not under" in w or "unreadable" in w.lower() for w in warnings)
+    h.test_result("unreadable context_path: warning recorded",
+                  has_warning,
+                  str(warnings))
+
+
+def test_context_path_not_under_flows(h, tmp):
+    """context_path outside ~/.claude/flows/ should warn and skip."""
+    questions = [make_question(n, brief=False) for n in range(1, 3)]
+    # Create a context file outside the flows directory
+    external_dir = tmp / "external"
+    external_dir.mkdir()
+    external_path = external_dir / "context.md"
+    external_path.write_text("EXTERNAL CONTEXT", encoding="utf-8")
+
+    data = make_form(questions, summary=None, context_path=str(external_path))
+    src = write_json(tmp / "external_ctx.json", data)
+    out = tmp / "external_ctx.out.json"
+    proc = run_render(src, out)
+    doc = json.loads(out.read_text(encoding="utf-8")) if proc.returncode == 0 else {}
+    h.test_result("context_path outside flows: render succeeds",
+                  proc.returncode == 0, f"exit {proc.returncode}")
+    h.test_result("context_path outside flows: warning recorded",
+                  any("not under" in w for w in doc.get("warnings", [])),
+                  str(doc.get("warnings")))
+
+
+def test_non_list_items(h, tmp):
+    """Non-list items in report should exit 4."""
+    data = make_report()
+    data["items"] = "not a list"
+    src = write_json(tmp / "bad_items.json", data)
+    out = tmp / "bad_items.out.json"
+    proc = run_render(src, out)
+    h.test_result("non-list items exits 4",
+                  proc.returncode == 4 and not out.exists(),
+                  f"exit {proc.returncode}, out exists: {out.exists()}")
+
+
+def test_none_placeholder(h, tmp):
+    """None values should use placeholder text."""
+    q1 = make_question(1)
+    src = write_json(tmp / "none.json", make_form([q1]))
+    out = tmp / "none.out.json"
+    proc = run_render(src, out)
+    h.test_result("None placeholder rendered",
+                  proc.returncode == 0)
+
+
+def test_prefix_boundary_12_chars(h, tmp):
+    """Test exact 12-character header with prefix."""
+    q1 = make_question(1)
+    q1["header"] = "X"  # 1 char + 11 char prefix = exactly 12
+    src = write_json(tmp / "boundary.json", make_form([q1]))
+    out = tmp / "boundary.out.json"
+    proc = run_render(src, out, prefix="#1 six78901")  # exactly 11 chars
+    doc = json.loads(out.read_text(encoding="utf-8")) if proc.returncode == 0 else {}
+    header = doc.get("batches", [{}])[0].get("questions", [{}])[0].get("ask", {}).get("header", "")
+    h.test_result("--prefix of exactly 11 characters produces exactly 12 char header",
+                  proc.returncode == 0 and len(header) == 12,
+                  f"exit {proc.returncode}, header len {len(header)}: {repr(header)}")
+
+
+def test_header_truncate_word_boundary(h, tmp):
+    """Header should truncate at word boundary when possible."""
+    q1 = make_question(1)
+    q1["header"] = "Long multi word header"
+    src = write_json(tmp / "wordbound.json", make_form([q1]))
+    out = tmp / "wordbound.out.json"
+    # Prefix of 4 chars + space + truncate to 12
+    proc = run_render(src, out, prefix="Q1 ")
+    doc = json.loads(out.read_text(encoding="utf-8")) if proc.returncode == 0 else {}
+    header = doc.get("batches", [{}])[0].get("questions", [{}])[0].get("ask", {}).get("header", "")
+    h.test_result("header truncates at word boundary",
+                  proc.returncode == 0 and len(header) <= 12 and "…" in header,
+                  f"header: {repr(header)}")
+
+
+def test_brief_fenced_as_text(h, tmp):
+    """Brief content should be fenced in code block."""
+    q1 = make_question(1)
+    q1["brief"] = "Some brief text without backticks"
+    src = write_json(tmp / "brief_fence.json", make_form([q1]))
+    out = tmp / "brief_fence.out.json"
+    proc = run_render(src, out)
+    doc = json.loads(out.read_text(encoding="utf-8")) if proc.returncode == 0 else {}
+    preamble = doc.get("batches", [{}])[0].get("preamble", "")
+    # Brief should be fenced
+    h.test_result("brief is fenced",
+                  proc.returncode == 0 and "`" in preamble,
+                  preamble)
+
+
 def main():
     h = Harness("FLOW RENDER QUESTIONS UNIT TESTS")
     with tempfile.TemporaryDirectory() as tmp_name:
@@ -342,6 +507,17 @@ def main():
         test_prefix_cap(h, tmp)
         test_no_prefix_no_cap(h, tmp)
         test_failure_exits(h, tmp)
+        test_empty_questions(h, tmp)
+        test_malformed_options(h, tmp)
+        test_non_string_header(h, tmp)
+        test_unknown_report_handle(h, tmp)
+        test_unreadable_context_path(h, tmp)
+        test_context_path_not_under_flows(h, tmp)
+        test_non_list_items(h, tmp)
+        test_none_placeholder(h, tmp)
+        test_prefix_boundary_12_chars(h, tmp)
+        test_header_truncate_word_boundary(h, tmp)
+        test_brief_fenced_as_text(h, tmp)
     print()
     h.summarize_and_exit()
 
