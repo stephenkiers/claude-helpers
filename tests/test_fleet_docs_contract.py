@@ -485,6 +485,83 @@ def main():
                   "Six added script grants" in flow_cmd)
 
     print()
+    print("[Section 8] #421 command doc improvements")
+
+    step4_sec = _section(fleet_cmd, "## Step 4: Dispatch loop")
+    relay_sec = _between(fleet_cmd, "2. **Relay items", "3. **Renderer failure.**")
+    relay_flat = _flat(relay_sec)
+    step_validation = "must match" in relay_flat and "[a-z0-9-]" in relay_flat
+    seq_in_filename = "<N>-<step>-<seq>" in relay_flat
+    prose_enforcement = "no mechanical backstop" in relay_flat and "#426" in relay_flat
+    h.test_result(
+        "relay clause validates step format against ^[a-z0-9-]+$",
+        step_validation,
+        "validation rule not found" if not step_validation else "",
+    )
+    h.test_result(
+        "relay clause includes <seq> in output filename to avoid stale files",
+        seq_in_filename,
+        "--out filename still lacks <seq>" if not seq_in_filename else "",
+    )
+    h.test_result(
+        "relay clause records prose-enforcement residual risk with #426 dogfood reference",
+        prose_enforcement,
+        "no mechanical backstop / #426 note found" if not prose_enforcement else "",
+    )
+
+    failure_sec = _between(fleet_cmd, "3. **Renderer failure.**", "4. **Gate items:**")
+    failure_flat = _flat(failure_sec)
+    h.test_result(
+        "invalid file error message includes file path, stderr reason, and recovery action",
+        "<file_path>" in failure_flat and "<error_reason>" in failure_flat
+        and "Fix or delete" in failure_flat and "--resume" in failure_flat,
+        "error message missing path/reason/recovery" if not (
+            "<file_path>" in failure_flat and "<error_reason>" in failure_flat
+            and "Fix or delete" in failure_flat and "--resume" in failure_flat
+        ) else "",
+    )
+    h.test_result(
+        "unrenderable set is recomputed each turn (not remembered)",
+        "recomputed from the inbox each turn, not remembered" in failure_flat,
+        "recompute statement missing" if "recomputed from the inbox each turn, not remembered" not in failure_flat else "",
+    )
+    h.test_result(
+        "fallback (renderer crash/missing) includes four-at-a-time chunking",
+        "Four at a time, one ticket per call" in failure_flat,
+        "chunking rule missing from fallback" if "Four at a time, one ticket per call" not in failure_flat else "",
+    )
+
+    relay_flat_batch = _flat(_between(relay_sec, "For each batch:", "Keep each question"))
+    h.test_result(
+        "relay batch printing includes queue header before first batch",
+        "Parked questions" in relay_flat_batch and "tickets" in relay_flat_batch and "batches" in relay_flat_batch,
+        "queue header missing" if not (
+            "Parked questions" in relay_flat_batch and "tickets" in relay_flat_batch and "batches" in relay_flat_batch
+        ) else "",
+    )
+    h.test_result(
+        "relay batch printing includes batch numbering for later batches",
+        "Batch 2 of" in relay_flat_batch or "[Batch" in relay_flat_batch,
+        "batch numbering missing" if not ("Batch 2 of" in relay_flat_batch or "[Batch" in relay_flat_batch) else "",
+    )
+    h.test_result(
+        "relay prints renderer warnings as a one-line caution before preamble",
+        "`warnings` is non-empty" in relay_flat_batch and "one-line caution before the preamble" in relay_flat_batch,
+        "warnings display not documented" if not (
+            "`warnings` is non-empty" in relay_flat_batch and "one-line caution before the preamble" in relay_flat_batch
+        ) else "",
+    )
+
+    step5_sec = _section(fleet_cmd, "## Step 5: Finish")
+    h.test_result(
+        "Step 5 includes stall recovery note about re-running --resume",
+        "--resume" in step5_sec and "wake" in step5_sec and ("stalled" in step5_sec or "delivered" in step5_sec),
+        "stall recovery note missing from Step 5" if not (
+            "--resume" in step5_sec and "wake" in step5_sec
+        ) else "",
+    )
+
+    print()
     h.summarize_and_exit()
 
 

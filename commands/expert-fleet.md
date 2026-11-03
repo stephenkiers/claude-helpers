@@ -208,12 +208,17 @@ Each time you are re-invoked (a background run exited, or the human replied):
         `running` in this turn's `status --json`, or whose ticket you delivered an answer to or launched
         in the previous turn. `flow_status` reports `running` only once the pid is recorded, so a
         just-delivered ticket can still look parked.
-     2. **Relay items, one ticket at a time.** Render the item's question file with the renderer:
-        `python3 "$HOME/.claude/scripts/flow-render-questions.py" <flow_dir>/<question_file> --out FLEET/render/<N>-<step>.json --prefix "#<N> "`.
-        Write the output under `FLEET`, never into the flow directory. `Read` the `--out` file. For each
-        batch:
-        - in an assistant message, print `#N <title> — <step>`, then that batch's `preamble` verbatim (it
-          carries no `<id>:` label lines; do not add any);
+     2. **Relay items, one ticket at a time.** Render the item's question file with the renderer.
+        Before rendering, validate `<step>`: it must match `^[a-z0-9-]+$`; if it does not, treat the ticket as unrenderable (see clause 3 below).
+        Run `python3 "$HOME/.claude/scripts/flow-render-questions.py" <flow_dir>/<question_file> --out FLEET/render/<N>-<step>-<seq>.json --prefix "#<N> "`, where `<seq>` is the question file's sequence number (or other unique suffix) to avoid stale cached files across rounds.
+        Write the output under `FLEET`, never into the flow directory. `Read` the `--out` file.
+        
+        This step enforces the single-ticket-per-ask rule from prose; there is no mechanical backstop — the fleet depends on following this rule (dogfood under #426).
+        
+        For each batch:
+        - Before the first batch, print a one-line queue header: e.g. `Parked questions: <N> tickets, <M> batches`.
+        - in an assistant message, print `#<N> <title> — <step>` (prepend the batch number if not the first: e.g. `[Batch 2 of <M>] #<N> …`), then that batch's `preamble` verbatim (it
+          carries no `<id>:` label lines; do not add any). If `warnings` is non-empty, print it as a one-line caution before the preamble.
         - in the same turn, immediately call `AskUserQuestion` with only that batch's `ask` entries,
           unchanged.
 
@@ -227,10 +232,11 @@ Each time you are re-invoked (a background run exited, or the human replied):
           `⚠️ question renderer unavailable (<missing|crashed>): showing raw context. Run /setup-local.`
           and fall back to the current behaviour: `Read` the question file, print its `summary` and every
           `brief` (or the `context_path` file), and ask with the header prefixed `#N` (12 characters or
-          fewer).
+          fewer). Four at a time, one ticket per call.
         - If the renderer reports an **invalid file** (exit 3 or 4): do not ask. Report
-          `#N: question file could not be rendered (exit <code>): left parked` and leave the ticket parked.
-        - A reported ticket does not count as open inbox for the rest of this turn or for Step 5 (see Step 8).
+          `#N: question file could not be rendered at <file_path> (stderr: <error_reason>). Fix or delete the file and re-run /expert-fleet --resume: left parked.` and leave the ticket parked.
+          Run /setup-local if the renderer is not found.
+        - A reported ticket does not count as open inbox for the rest of this turn or for Step 5 (unrenderable tickets are recomputed from the inbox each turn, not remembered). The parked-then-stop rule means: when you have rendered all available tickets and some reported unrenderable, do not go to Step 5.
      4. **Gate items:** unchanged. Print `#N <title> — <step>` and `gate.context` in an assistant message,
         then call `AskUserQuestion` with the header prefixed `#N` (12 characters or fewer) and the options
         copied unchanged. Repeat until all are asked.
@@ -273,6 +279,8 @@ each one is waiting on. `fleet: done` if every ticket is `done`, else
 `fleet: idle — /expert-fleet --resume FLEET to continue`. A ticket reported unrenderable under Step 4.4(a)
 is listed among the `parked` lines with the reason `question file could not be rendered`, so the fleet
 reaches `fleet: idle` instead of looping.
+
+If the fleet reaches idle without every ticket moving (all parked or blocked), and one or more tickets were delivered an answer or launched in this session but their state has not progressed, re-running the dispatcher with `--resume` will wake them and resume the loop.
 
 ## What this command deliberately does not do
 
