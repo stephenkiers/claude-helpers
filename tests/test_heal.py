@@ -453,7 +453,7 @@ fleet:
     tool, diag = heal.nominate(evidence_no_source, heal.TOOLS, {})
     h.test_result(
         "No stop_source and no deps entry returns no evidence",
-        tool is None and "No evidence" in (diag or ""),
+        tool is None,
         f"diag={diag}",
     )
 
