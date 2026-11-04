@@ -382,7 +382,7 @@ a real `/expert-flow` run). "Machine-enforced" is evidenced for the hook-denied 
 
 With the `/expert-flow` helper for reading GitHub issue comments (ticket #401), premise (b) of the standing exception ("not reading arbitrary diff content as untrusted data") no longer holds for general-purpose steps that read issue comments:
 
-**In-flow plan step** (`/expert-plan`) receives the widest input of any step: trusted **and** unverified comments (from the helper without `--trusted-only`). It runs as a full-capability `general-purpose` agent with `Write` and unrestricted Bash. The plan step's orchestrator writes unverified comment text directly into the `## Issue comments` section of `context.md` and into scout batches before any contributor sees it.
+**In-flow plan step** (superseded 2026-11-03: see § "The `flow-plan` step agent" below for current behavior). Historical: plan received widest input — trusted and unverified comments — and ran as a full-capacity `general-purpose` agent with `Write` and unrestricted Bash.
 
 **In-flow implement and fix steps** (`/implement-with-haiku`) read trusted comments on the linked issue (`--trusted-only`, unverified excluded), and raise each new trusted comment through the "new comment since plan" Ask. They run as `general-purpose` agents.
 
@@ -396,13 +396,13 @@ With the `/expert-flow` helper for reading GitHub issue comments (ticket #401), 
 
 **Mitigations** (what they do and do not do):
 - Trust tier boundaries (OWNER/COLLABORATOR vs. unverified)
-- `--trusted-only` everywhere except the in-flow plan step
+- `--trusted-only` everywhere; plan now restricted (see 2026-11-03 amendment)
 - Comment text is fenced where it is shown to the planner: `render_markdown` wraps the comments block in a per-render nonce fence (`<<<COMMENT-{nonce}` ... `<<<COMMENT-{nonce}>>>>`, regenerated until the nonce appears in no body) and quotes every unverified body line. This is a presentation convention, not a machine-enforced boundary; scout batch files are plain JSON and are not fenced.
 - Haiku scouts on long unverified threads, fail closed: an unverified comment reaches the planner only by an explicit, valid `include` verdict for its id. A missing, malformed, or unknown verdict drops it. Scouts limit volume; they do not sanitise the text of the comments they include. Threads under the filter threshold reach the plan orchestrator unfiltered.
 
-Unverified comment text deliberately reaches planning, the one step that is still unrestricted and full-capability. That is the accepted placement (per ticket decision W1), not a reduction of the attack surface; the boundary enforcement that closes it is pending (#359/#360, restricting the remaining general-purpose steps).
+Note (2026-10-30): Unverified comment text reached planning (then unrestricted), accepted placement per W1. With plan now restricted (2026-11-03 amendment), the boundary is narrowed; see § "Issue-comments boundary: narrowed, not closed" below.
 
-**Accepted residual risks** (the consumers that read comments are exactly: the in-flow plan step, implement, fix, ship, the review Ask, the pre-merge check, and `/expert-is-it-done`):
+**Accepted residual risks** (2026-10-30, pre-plan-restriction): Obsolete; see 2026-11-03 amendment § "Issue-comments boundary: narrowed, not closed" for updated analysis.
 - Unverified text reaches the in-flow plan step, unfiltered below the scout threshold and by scout-included ids above it. Scouts are not a sanitiser.
 - No fail-closed carve-out when comments are unavailable (Q2 = B exactly): an `--auto-merge` or `--fleet` run can merge with `comments_status: unavailable`, visibly marked in the receipt.
 - Org-owned repos where the flow's user shows as MEMBER: the watermark and Implementation Plan dedupe switch off (W2 consequence), and post-plan steps see none of that user's comments. Inside a flow the plan-fetch lower bound still applies.
@@ -632,7 +632,7 @@ it runs `flow-plan`, a restricted agent detailed below.
 
 **Model and tools:** Sonnet alias (ADR-0004 amendment below), no `Edit`, `Skill` allowlist
 (`{expert-plan}` only), `Agent` allowlist (`{expert-reviewer, expert-scout}` only, no
-general-purpose fallback).
+general-purpose fallback). `ScheduleWakeup` for status-only barriers while waiting on spawned agents.
 
 **Bash guard:** best-effort publish-deny profile (`flow-bash-guard.py --agent auto` mode). Denies git
 push, gh pr/issue create|edit|comment|close|merge, non-GET gh api, and interpreter verb-pair forms

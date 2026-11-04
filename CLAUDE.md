@@ -428,7 +428,7 @@ avoidable, so this relies on self-report rather than a lint rule.
 - `flow-plan` — agent for the `plan` step of `/expert-flow` (used by `/expert-plan` when invoked as
   a step agent). Model pinned to `sonnet` (restores the documented `/expert-plan` panel default);
   contributors and synthesis inherit it. No `Edit` tool. `Skill` allowlist (`{expert-plan}` only).
-  `Agent` allowlist (`{expert-reviewer, expert-scout}` only, no general-purpose fallback). Best-effort
+  `Agent` allowlist (`{expert-reviewer, expert-scout}` only, no general-purpose fallback). `ScheduleWakeup` granted for status-only barriers. Best-effort
   publish-deny Bash guard (denies git push, gh pr/issue create|edit|comment|close|merge, non-GET gh api,
   interpreter verb-pair forms; allows other commands including scripts). Hook wiring for this Skill-invoked
   agent shape is unprobed, including headless/fleet firing (see ADR-0008 2026-11-03 amendment).
