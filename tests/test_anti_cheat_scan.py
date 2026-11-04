@@ -2,7 +2,7 @@
 """
 Black-box tests for scripts/anti-cheat-scan.py (#380).
 
-Driven only through the CLI (subprocess) against tiny throwaway repos. Covers:
+Driven via the CLI entry point; one test via subprocess. Covers:
 1. `implement` profile parity with /implement-with-haiku Gate step 2.
 2. `heal` profile: test edits, gate-config edits, added suppressions, env guards, and the
    revert-to-pass rule (post-image must not restore pre-revert-base text).
@@ -20,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python, RepoTemplate
 
 SCAN = REPO_ROOT / "scripts" / "anti-cheat-scan.py"
 GIT_ID = ["-c", "user.email=test@example.com", "-c", "user.name=Test", "-c", "commit.gpgsign=false",
@@ -83,20 +84,40 @@ def new_repo(root, name="repo"):
     return repo
 
 
+def _build_base(root):
+    run_git(root, "init", "-q")
+    return commit(root, BASE_FILES, "base"), commit(root, {"src/app.py": IMPLEMENT_APP}, "implement")
+
+
+_BASE = RepoTemplate(_build_base)
+
+
 def make_repo(tmp):
     """C0 = pre-work, C1 = the implement commit. Returns (repo, c0, c1)."""
-    repo = new_repo(tmp)
-    c0 = commit(repo, BASE_FILES, "base")
-    c1 = commit(repo, {"src/app.py": IMPLEMENT_APP}, "implement")
+    repo = _BASE.copy(Path(tmp) / "repo")
+    c0, c1 = _BASE.meta
     return repo, c0, c1
 
 
-def scan(repo, base, head, profile, revert_base=None):
+def scan_e2e(repo, base, head, profile, revert_base=None):
     cmd = [sys.executable, str(SCAN), "--repo", str(repo), "--base", base, "--head", head,
            "--profile", profile]
     if revert_base is not None:
         cmd += ["--revert-base", revert_base]
     result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        data = json.loads(result.stdout)
+    except ValueError:
+        data = {}
+    return result.returncode, data
+
+
+def scan(repo, base, head, profile, revert_base=None):
+    cmd = [str(SCAN), "--repo", str(repo), "--base", base, "--head", head,
+           "--profile", profile]
+    if revert_base is not None:
+        cmd += ["--revert-base", revert_base]
+    result = run_python(cmd)
     try:
         data = json.loads(result.stdout)
     except ValueError:
@@ -139,7 +160,7 @@ def main():
     print("[Section 1] implement profile")
     with tempfile.TemporaryDirectory() as tmp:
         repo, c0, c1 = make_repo(tmp)
-        rc, data = scan(repo, c0, c1, "implement")
+        rc, data = scan_e2e(repo, c0, c1, "implement")
         h.test_result("implement: a clean implementation diff passes", passed(rc, data), detail(rc, data))
         h.test_result("implement: output carries a reasons list", isinstance(data.get("reasons"), list), detail(rc, data))
 

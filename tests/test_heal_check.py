@@ -2,7 +2,7 @@
 """
 Black-box tests for scripts/heal-check.py (#380): signature, compare, complexity.
 
-Driven only through the CLI (subprocess). `signature` runs against the real captured runner
+`signature` runs against the real captured runner
 output in tests/fixtures/heal/ plus synthetic infra/garbage windows. `complexity` runs against
 tiny throwaway repos.
 
@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 HEAL_CHECK = REPO_ROOT / "scripts" / "heal-check.py"
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "heal"
@@ -28,8 +29,17 @@ GIT_ID = ["-c", "user.email=test@example.com", "-c", "user.name=Test", "-c", "co
           "-c", "core.hooksPath=/dev/null"]
 
 
-def run_cli(*args):
+def run_cli_e2e(*args):
     result = subprocess.run([sys.executable, str(HEAL_CHECK), *args], capture_output=True, text=True)
+    try:
+        data = json.loads(result.stdout)
+    except ValueError:
+        data = None
+    return result.returncode, data, result.stdout + result.stderr
+
+
+def run_cli(*args):
+    result = run_python([str(HEAL_CHECK), *args])
     try:
         data = json.loads(result.stdout)
     except ValueError:
@@ -42,13 +52,14 @@ def run_git(repo, *args):
     return result.stdout.strip()
 
 
-def signature_of(tmp, text, name="out.txt"):
+def signature_of(tmp, text, name="out.txt", use_e2e=False):
     path = Path(tmp) / name
     if isinstance(text, bytes):
         path.write_bytes(text)
     else:
         path.write_text(text)
-    return run_cli("signature", "--output-file", str(path))
+    cli_func = run_cli_e2e if use_e2e else run_cli
+    return cli_func("signature", "--output-file", str(path))
 
 
 def fixture_text(name):
@@ -103,7 +114,7 @@ def test_signature(h):
     print("[Section 1] signature: real captures")
     lint_text = fixture_text("just-check-ruff-f401.txt")
     with tempfile.TemporaryDirectory() as tmp:
-        rc, data, raw = signature_of(tmp, lint_text)
+        rc, data, raw = signature_of(tmp, lint_text, use_e2e=True)
         h.test_result("lint capture: class is 'lint'", rc == 0 and data and data["class"] == "lint", raw[:300])
         h.test_result("lint capture: counts is null (just check stops at lint)", data and data.get("counts") is None, raw[:300])
         h.test_result("lint capture: ids name the rule and file",
