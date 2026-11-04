@@ -30,6 +30,7 @@ import telemetry_schema
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 SCRIPT = REPO_ROOT / "scripts" / "implement-ledger.py"
 _spec = importlib.util.spec_from_file_location("implement_ledger", SCRIPT)
@@ -104,7 +105,7 @@ class Sandbox:
         subprocess.run(["git", "init", "-q", str(d)], check=True)
         return d
 
-    def run(self, args, session=None, cwd=None):
+    def run_e2e(self, args, session=None, cwd=None):
         env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
         env["IMPLEMENT_LEDGER_STATE_DIR"] = str(self.state)
         env["HOME"] = str(self.home)
@@ -113,6 +114,17 @@ class Sandbox:
         return subprocess.run(
             [sys.executable, str(SCRIPT), *args],
             cwd=str(cwd or self.repo), env=env, capture_output=True, text=True, timeout=120,
+        )
+
+    def run(self, args, session=None, cwd=None):
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        env["IMPLEMENT_LEDGER_STATE_DIR"] = str(self.state)
+        env["HOME"] = str(self.home)
+        if session is not None:
+            env["CLAUDE_CODE_SESSION_ID"] = session
+        return run_python(
+            [str(SCRIPT), *args],
+            cwd=str(cwd or self.repo), env=env,
         )
 
     def command_ends(self):
@@ -142,6 +154,16 @@ class Run:
         self.scratch = sb.scratch(scratch_name)
         self.ledger = self.scratch / "ledger.md"
 
+    def init_e2e(self, *, session=SESSION, pause=False, carried=None, sha=START_SHA):
+        args = ["init", "--scratch", str(self.scratch), "--start-sha", sha, "--run-key", self.rk]
+        if session is not None:
+            args += ["--session-id", session]
+        if pause:
+            args.append("--pause")
+        if carried:
+            args += ["--carried", carried]
+        return self.sb.run_e2e(args)
+
     def init(self, *, session=SESSION, pause=False, carried=None, sha=START_SHA):
         args = ["init", "--scratch", str(self.scratch), "--start-sha", sha, "--run-key", self.rk]
         if session is not None:
@@ -161,6 +183,9 @@ class Run:
         with open(self.ledger, "a") as f:
             for line in lines:
                 f.write(line + "\n")
+
+    def check_e2e(self):
+        return self.sb.run_e2e(["check", "--run-key", self.rk])
 
     def check(self):
         return self.sb.run(["check", "--run-key", self.rk])
@@ -211,7 +236,7 @@ def mechanical_rows(run, drop=()):
 
 def _check_rows(run):
     """Return (rc, combined output) for check."""
-    r = run.check()
+    r = run.check_e2e()
     return r.returncode, _out(r)
 
 
@@ -227,7 +252,7 @@ def test_init_writes_ledger_and_pointer():
     sb = Sandbox()
     try:
         run = Run(sb, "run-init")
-        r = run.init()
+        r = run.init_e2e()
         ok = r.returncode == 0 and run.ledger.exists() and len(sb.pointers(run.rk)) == 1
         return ok, _brief(r)
     finally:
