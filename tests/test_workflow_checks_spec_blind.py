@@ -51,6 +51,7 @@ from typing import Dict, Iterator, Optional
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 from scripts.workflow.cache import read_repo_cache  # noqa: E402
 from scripts.workflow.models import RepoCacheData  # noqa: E402
@@ -118,6 +119,16 @@ class Case:
         env = dict(os.environ)
         if extra_env:
             env.update(extra_env)
+        r = run_python(
+            ["-m", "scripts.workflow.cli", "checks", *args],
+            cwd=REPO_ROOT, env=env,
+        )
+        return Run(r.returncode, r.stdout, r.stderr)
+
+    def cli_e2e(self, *args: str, extra_env: Optional[Dict[str, str]] = None) -> Run:
+        env = dict(os.environ)
+        if extra_env:
+            env.update(extra_env)
         r = subprocess.run(
             [sys.executable, "-m", "scripts.workflow.cli", "checks", *args],
             cwd=REPO_ROOT, env=env, stdin=subprocess.DEVNULL,
@@ -135,6 +146,10 @@ class Case:
     def record(self, *args: str, extra_env: Optional[Dict[str, str]] = None) -> Run:
         return self.cli("record-check-answer", "--main-worktree", str(self.main), *args,
                         extra_env=extra_env)
+
+    def record_e2e(self, *args: str, extra_env: Optional[Dict[str, str]] = None) -> Run:
+        return self.cli_e2e("record-check-answer", "--main-worktree", str(self.main), *args,
+                            extra_env=extra_env)
 
     def read_cache_json(self) -> Optional[dict]:
         if not self.cache.exists():
@@ -421,7 +436,7 @@ def section_no_pyyaml(t):
             t("PyYAML-absent control: the same record without the shim succeeds",
               control.rc == 0, f"rc={control.rc} out={control.combined!r}")
         with case({"README.md": "x\n"}) as c:
-            r = c.record("--command", "npm run check", extra_env={"PYTHONPATH": str(shim)})
+            r = c.record_e2e("--command", "npm run check", extra_env={"PYTHONPATH": str(shim)})
             t("PyYAML absent: the record reports failure (non-zero) instead of claiming success",
               r.rc != 0, f"rc={r.rc} out={r.combined!r}")
     finally:
