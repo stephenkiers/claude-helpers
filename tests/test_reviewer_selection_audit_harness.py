@@ -402,6 +402,279 @@ def test_trigger_matches_multi_star_globs(h):
     )
 
 
+def test_load_reviewer_index_missing_contexts_raises_valueerror(h):
+    """load_reviewer_index() raises ValueError when a reviewer lacks contexts field."""
+    module = _load_module()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        index_file = Path(tmp) / "index-missing-contexts.yaml"
+        # Reviewer with no contexts field at all
+        index_file.write_text(
+            "reviewers:\n"
+            "  - name: Test Reviewer\n"
+            "    file: test-reviewer.yaml\n"
+            "    priority: high\n"
+            "    triggers: [test]\n"
+        )
+
+        try:
+            module.load_reviewer_index(index_file)
+            h.test_result(
+                "load_reviewer_index raises ValueError for missing contexts",
+                False,
+                "Expected ValueError but function succeeded"
+            )
+        except ValueError as e:
+            h.test_result(
+                "load_reviewer_index raises ValueError for missing contexts",
+                True,
+                f"got ValueError: {e}"
+            )
+        except SystemExit as e:
+            h.test_result(
+                "load_reviewer_index raises ValueError for missing contexts",
+                False,
+                f"Expected ValueError but got SystemExit({e.code})"
+            )
+        except Exception as e:
+            h.test_result(
+                "load_reviewer_index raises ValueError for missing contexts",
+                False,
+                f"Expected ValueError but got {type(e).__name__}: {e}"
+            )
+
+
+def test_parse_inline_flow_map_accepts_dict(h):
+    """parse_inline_flow_map() accepts dict input."""
+    module = _load_module()
+
+    valid_flow_map = {"review": "primary", "plan": "secondary"}
+
+    try:
+        result = module.parse_inline_flow_map(valid_flow_map)
+        h.test_result(
+            "parse_inline_flow_map accepts dict input",
+            result == valid_flow_map,
+            f"got result: {result}"
+        )
+    except Exception as e:
+        h.test_result(
+            "parse_inline_flow_map accepts dict input",
+            False,
+            f"Expected success but got {type(e).__name__}: {e}"
+        )
+
+
+def test_parse_inline_flow_map_rejects_string_input(h):
+    """parse_inline_flow_map() rejects string input (no manual parsing)."""
+    module = _load_module()
+
+    # This should no longer work - the manual string-parsing branch was deleted
+    string_flow_map = "review: primary, plan: secondary"
+
+    try:
+        result = module.parse_inline_flow_map(string_flow_map)
+        h.test_result(
+            "parse_inline_flow_map rejects string input",
+            False,
+            f"Expected ValueError/TypeError but got result: {result}"
+        )
+    except (ValueError, TypeError) as e:
+        h.test_result(
+            "parse_inline_flow_map rejects string input",
+            True,
+            f"correctly rejected string with {type(e).__name__}: {e}"
+        )
+    except Exception as e:
+        h.test_result(
+            "parse_inline_flow_map rejects string input",
+            False,
+            f"Expected ValueError/TypeError but got {type(e).__name__}: {e}"
+        )
+
+
+def test_parse_inline_flow_map_validates_keys(h):
+    """parse_inline_flow_map() validates keys against {review, plan, write}."""
+    module = _load_module()
+
+    invalid_key_map = {"review": "primary", "invalid_key": "primary"}
+
+    try:
+        result = module.parse_inline_flow_map(invalid_key_map)
+        h.test_result(
+            "parse_inline_flow_map validates keys",
+            False,
+            f"Expected ValueError but got result: {result}"
+        )
+    except ValueError as e:
+        h.test_result(
+            "parse_inline_flow_map validates keys",
+            True,
+            f"correctly raised ValueError: {e}"
+        )
+    except Exception as e:
+        h.test_result(
+            "parse_inline_flow_map validates keys",
+            False,
+            f"Expected ValueError but got {type(e).__name__}: {e}"
+        )
+
+
+def test_parse_inline_flow_map_validates_values(h):
+    """parse_inline_flow_map() validates values against {primary, secondary, named-only}."""
+    module = _load_module()
+
+    invalid_value_map = {"review": "invalid_value"}
+
+    try:
+        result = module.parse_inline_flow_map(invalid_value_map)
+        h.test_result(
+            "parse_inline_flow_map validates values",
+            False,
+            f"Expected ValueError but got result: {result}"
+        )
+    except ValueError as e:
+        h.test_result(
+            "parse_inline_flow_map validates values",
+            True,
+            f"correctly raised ValueError: {e}"
+        )
+    except Exception as e:
+        h.test_result(
+            "parse_inline_flow_map validates values",
+            False,
+            f"Expected ValueError but got {type(e).__name__}: {e}"
+        )
+
+
+def test_parse_inline_flow_map_non_string_value_raises_valueerror(h):
+    """parse_inline_flow_map() raises ValueError (not TypeError) on non-string values."""
+    module = _load_module()
+
+    non_string_value_map = {"review": 123}
+
+    try:
+        result = module.parse_inline_flow_map(non_string_value_map)
+        h.test_result(
+            "parse_inline_flow_map raises ValueError on non-string values",
+            False,
+            f"Expected ValueError but got result: {result}"
+        )
+    except ValueError as e:
+        h.test_result(
+            "parse_inline_flow_map raises ValueError on non-string values",
+            True,
+            f"correctly raised ValueError: {e}"
+        )
+    except TypeError as e:
+        h.test_result(
+            "parse_inline_flow_map raises ValueError on non-string values",
+            False,
+            f"Expected ValueError but got TypeError: {e}"
+        )
+    except Exception as e:
+        h.test_result(
+            "parse_inline_flow_map raises ValueError on non-string values",
+            False,
+            f"Expected ValueError but got {type(e).__name__}: {e}"
+        )
+
+
+def test_parse_inline_flow_map_unhashable_value_raises_valueerror(h):
+    """parse_inline_flow_map() raises ValueError (not TypeError) on an unhashable value.
+
+    A hashable-but-wrong-type value (e.g. an int) can't distinguish the fixed behavior
+    from the old code: both old and new code test `val not in VALID_CONTEXT_VALUES`,
+    which raises ValueError for any hashable non-match. An *unhashable* value (list,
+    dict) is the case the fix actually changes: old code's bare `val not in
+    valid_values` raises an uncaught TypeError on an unhashable val, while new code's
+    `not isinstance(val, str) or ...` short-circuits before the `in` check ever runs.
+    """
+    module = _load_module()
+
+    unhashable_value_map = {"review": ["not", "a", "string"]}
+
+    try:
+        result = module.parse_inline_flow_map(unhashable_value_map)
+        h.test_result(
+            "parse_inline_flow_map raises ValueError on an unhashable value",
+            False,
+            f"Expected ValueError but got result: {result}"
+        )
+    except ValueError as e:
+        h.test_result(
+            "parse_inline_flow_map raises ValueError on an unhashable value",
+            True,
+            f"correctly raised ValueError: {e}"
+        )
+    except TypeError as e:
+        h.test_result(
+            "parse_inline_flow_map raises ValueError on an unhashable value",
+            False,
+            f"Expected ValueError but got TypeError: {e}"
+        )
+    except Exception as e:
+        h.test_result(
+            "parse_inline_flow_map raises ValueError on an unhashable value",
+            False,
+            f"Expected ValueError but got {type(e).__name__}: {e}"
+        )
+
+
+def test_parse_inline_flow_map_all_valid_keys_and_values(h):
+    """parse_inline_flow_map() accepts all valid key-value combinations."""
+    module = _load_module()
+
+    # Test a few valid combinations
+    test_cases = [
+        {"review": "primary"},
+        {"plan": "secondary"},
+        {"write": "named-only"},
+        {"review": "primary", "plan": "secondary", "write": "named-only"},
+    ]
+
+    all_passed = True
+    for test_case in test_cases:
+        try:
+            result = module.parse_inline_flow_map(test_case)
+            if result != test_case:
+                all_passed = False
+        except Exception:
+            all_passed = False
+
+    h.test_result(
+        "parse_inline_flow_map accepts all valid key-value combinations",
+        all_passed
+    )
+
+
+def test_parse_inline_flow_map_rejects_non_dict_list(h):
+    """parse_inline_flow_map() rejects list input."""
+    module = _load_module()
+
+    list_input = ["review", "primary"]
+
+    try:
+        result = module.parse_inline_flow_map(list_input)
+        h.test_result(
+            "parse_inline_flow_map rejects list input",
+            False,
+            f"Expected ValueError/TypeError but got result: {result}"
+        )
+    except (ValueError, TypeError) as e:
+        h.test_result(
+            "parse_inline_flow_map rejects list input",
+            True,
+            f"correctly rejected list with {type(e).__name__}"
+        )
+    except Exception as e:
+        h.test_result(
+            "parse_inline_flow_map rejects list input",
+            False,
+            f"Expected ValueError/TypeError but got {type(e).__name__}: {e}"
+        )
+
+
 def main():
     h = Harness("REVIEWER SELECTION AUDIT HARNESS TEST SUITE")
 
@@ -412,6 +685,15 @@ def main():
     test_missing_structural_gate_marker_counts_as_router_no(h)
     test_prose_only_useWhen_change_triggers_fallback(h)
     test_trigger_matches_multi_star_globs(h)
+    test_load_reviewer_index_missing_contexts_raises_valueerror(h)
+    test_parse_inline_flow_map_accepts_dict(h)
+    test_parse_inline_flow_map_rejects_string_input(h)
+    test_parse_inline_flow_map_validates_keys(h)
+    test_parse_inline_flow_map_validates_values(h)
+    test_parse_inline_flow_map_non_string_value_raises_valueerror(h)
+    test_parse_inline_flow_map_unhashable_value_raises_valueerror(h)
+    test_parse_inline_flow_map_all_valid_keys_and_values(h)
+    test_parse_inline_flow_map_rejects_non_dict_list(h)
 
     h.summarize_and_exit()
 

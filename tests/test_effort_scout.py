@@ -218,4 +218,161 @@ test_result(
     f"anchor is '{anchor_fragment}', heading slug is '{expected_slug}'"
 )
 
+print()
+print("[Finding 1] Effort Scout downward-only invariant enforced at parse boundary")
+print("=" * 70)
+
+expert_review_file = COMMANDS_DIR / "expert-review.md"
+expert_review_exists = expert_review_file.exists()
+test_result("commands/expert-review.md exists", expert_review_exists,
+  "File not found at commands/expert-review.md" if not expert_review_exists else "")
+
+has_mechanical_effort_clamp = False
+has_effort_exceeds_check = False
+
+if expert_review_exists:
+    content = expert_review_file.read_text()
+
+    # Require the literal ≤/<= comparison against MECHANICAL_EFFORT — no alternate
+    # branches, since any alternative matching only surrounding prose (e.g. "exceeds
+    # the mechanical tier") stays true even if the actual operator is flipped to ≥/>=,
+    # which is exactly the regression this check exists to catch.
+    has_mechanical_effort_clamp = bool(re.search(
+        r"effort\s*(?:≤|<=)\s*MECHANICAL_EFFORT",
+        content
+    ))
+    has_effort_exceeds_check = has_mechanical_effort_clamp
+
+test_result("Parse logic mentions MECHANICAL_EFFORT or effort clamping",
+  has_mechanical_effort_clamp,
+  "No reference to MECHANICAL_EFFORT clamping found" if expert_review_exists and not has_mechanical_effort_clamp else "")
+
+test_result("Parse logic checks if Scout effort exceeds mechanical tier",
+  has_effort_exceeds_check,
+  "No check for effort bounds found" if expert_review_exists and not has_effort_exceeds_check else "")
+
+print()
+print("[Finding 3] Bounded-input property scoped at tool level")
+print("=" * 70)
+
+expert_scout_file = AGENTS_DIR / "expert-scout.md"
+expert_scout_exists = expert_scout_file.exists()
+test_result("agents/expert-scout.md exists", expert_scout_exists,
+  "File not found" if not expert_scout_exists else "")
+
+no_git_diff_tool = True
+no_git_show_tool = True
+has_tools_frontmatter = False
+
+if expert_scout_exists:
+    content = expert_scout_file.read_text()
+
+    # Extract the frontmatter (lines between --- delimiters at the start)
+    frontmatter_match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
+    frontmatter = frontmatter_match.group(1) if frontmatter_match else ""
+    has_tools_frontmatter = bool(frontmatter)
+
+    # Check that tools frontmatter does NOT grant git diff or git show
+    no_git_diff_tool = not bool(re.search(
+        r"Bash\(git\s+diff:\*\)|git diff",
+        frontmatter,
+        re.IGNORECASE
+    ))
+
+    no_git_show_tool = not bool(re.search(
+        r"Bash\(git\s+show:\*\)|git show",
+        frontmatter,
+        re.IGNORECASE
+    ))
+
+test_result("expert-scout.md has frontmatter section", has_tools_frontmatter,
+  "No frontmatter found" if expert_scout_exists and not has_tools_frontmatter else "")
+
+test_result("expert-scout.md tools does NOT grant 'Bash(git diff:*)'",
+  no_git_diff_tool,
+  "Found git diff tool grant in frontmatter" if expert_scout_exists and not no_git_diff_tool else "")
+
+test_result("expert-scout.md tools does NOT grant 'Bash(git show:*)'",
+  no_git_show_tool,
+  "Found git show tool grant in frontmatter" if expert_scout_exists and not no_git_show_tool else "")
+
+print()
+print("[Finding 4] Checkpoint table row label changed to 'Step 3'")
+print("=" * 70)
+
+# This checks around line 125 of commands/expert-review.md for the checkpoint table row
+has_step_3_label = False
+
+if expert_review_exists:
+    content = expert_review_file.read_text()
+
+    # Look for a table row that mentions "Effort Scout" and "Step 3"
+    # This row should be in a checkpoint table showing which step each component runs in
+    has_step_3_label = bool(re.search(
+        r"Effort\s+Scout.*Step\s+3|effort-scout.*Step\s+3",
+        content,
+        re.IGNORECASE
+    ))
+
+test_result("Checkpoint table row mentions 'Step 3' for Effort Scout (not 'Step 1')",
+  has_step_3_label,
+  "Step 3 reference for Effort Scout not found" if expert_review_exists and not has_step_3_label else "")
+
+print()
+print("[Finding 5] Scout failure writes explicit error-shape JSON")
+print("=" * 70)
+
+has_error_json_shape = False
+has_fallback_error = False
+
+if expert_review_exists:
+    content = expert_review_file.read_text()
+
+    # Check for prose about writing {"error": "..."} on fallback
+    has_error_json_shape = bool(re.search(
+        r'\{"error"\s*:\s*"[^"]*"\}|\{\s*error\s*:',
+        content
+    ))
+
+    # Check for prose about fallback paths or error reasons
+    has_fallback_error = bool(re.search(
+        r"effort-scout\.json|fallback|error.*reason|(?:missing|invalid|non-fatal)",
+        content,
+        re.IGNORECASE
+    ))
+
+test_result("Parse logic describes error-shape JSON with 'error' key",
+  has_error_json_shape,
+  "Error JSON shape not described" if expert_review_exists and not has_error_json_shape else "")
+
+test_result("Parse logic describes fallback paths with explicit error reasons",
+  has_fallback_error,
+  "Fallback error handling not documented" if expert_review_exists and not has_fallback_error else "")
+
+print()
+print("[Finding 6] New section heading in ADR-0004")
+print("=" * 70)
+
+adr_0004_file = ADR_DIR / "0004-model-cost-routing.md"
+adr_0004_exists = adr_0004_file.exists()
+test_result("docs/adr/0004-model-cost-routing.md exists", adr_0004_exists,
+  "File not found" if not adr_0004_exists else "")
+
+has_amendment_heading = False
+
+if adr_0004_exists:
+    content = adr_0004_file.read_text()
+
+    # Check for new section heading: "### Amendment: Haiku Effort Scout exception (2026-09-12)"
+    # or similar Amendment heading with Effort Scout
+    has_amendment_heading = bool(re.search(
+        r"^#+\s+Amendment.*Haiku.*Effort\s+Scout|^#+\s+Amendment.*Effort\s+Scout.*exception",
+        content,
+        re.MULTILINE | re.IGNORECASE
+    ))
+
+test_result("ADR-0004 has new 'Amendment: Haiku Effort Scout exception' heading",
+  has_amendment_heading,
+  "Amendment heading not found" if adr_0004_exists and not has_amendment_heading else "")
+
 h.summarize_and_exit()
