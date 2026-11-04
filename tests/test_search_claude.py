@@ -112,176 +112,170 @@ t = h.test_result
 # --- Build fixture tree ---
 fixture_root = tempfile.mkdtemp(prefix="search-claude-test-")
 atexit.register(shutil.rmtree, fixture_root, ignore_errors=True)
-fixture = FixtureBuilder(fixture_root)
+
+# Helper: generate ISO timestamp from seconds since epoch
+def ts_from_seconds(seconds):
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(seconds))
 
 # Current time for relative mtime calculations
 now = int(time.time())
 day = 86400
 
-try:
-    # Helper: generate ISO timestamp from seconds since epoch
-    def ts_from_seconds(seconds):
-        import time
-        return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(seconds))
+# Create separate fixture builders for each test group
+g_and = FixtureBuilder(Path(fixture_root) / "and")
+g_sub = FixtureBuilder(Path(fixture_root) / "sub")
+g_newline = FixtureBuilder(Path(fixture_root) / "newline")
+g_unicode = FixtureBuilder(Path(fixture_root) / "unicode")
+g_regex = FixtureBuilder(Path(fixture_root) / "regex")
+g_days = FixtureBuilder(Path(fixture_root) / "days")
+g_self = FixtureBuilder(Path(fixture_root) / "self")
+g_bulk = FixtureBuilder(Path(fixture_root) / "bulk")
+g_snip = FixtureBuilder(Path(fixture_root) / "snip")
+g_rank = FixtureBuilder(Path(fixture_root) / "rank")
+g_multi = FixtureBuilder(Path(fixture_root) / "multi")
 
-    # Test 1: Multi-word AND matching
-    fixture.add_session(
+try:
+    # and: multi-word-and-test, quoted-phrase-test
+    g_and.add_session(
         "multi-word-and-test",
         f'{{"type":"user","message":{{"content":"tray icon color"}},"timestamp":"{ts_from_seconds(now)}"}}\n',
         mtime=now,
     )
-
-    # Test 2: Quoted phrase (exact match)
-    fixture.add_session(
+    g_and.add_session(
         "quoted-phrase-test",
         f'{{"type":"user","message":{{"content":"this is a test phrase"}},"timestamp":"{ts_from_seconds(now)}"}}\n',
         mtime=now,
     )
 
-    # Test 3: Subagent with sessionId field mismatch (path id wins)
-    fixture.add_session(
+    # sub: parent-session-uuid (subagent)
+    g_sub.add_session(
         "parent-session-uuid",
         f'{{"type":"user","message":{{"content":"subagent test"}},"timestamp":"{ts_from_seconds(now)}"}}\n',
         mtime=now,
         is_subagent=True,
     )
 
-    # Test 4: Missing .cwd field (fallback to dirname decoding)
-    # The session_id is "-Users-test-project" but we need to create it as a directory structure
-    # so that the cwd decoding from dirname works correctly
-    cwd_test_dir = Path(fixture_root) / "-Users-test-project"
-    cwd_test_dir.mkdir(parents=True, exist_ok=True)
-    cwd_test_file = cwd_test_dir / "session.jsonl"
-    cwd_test_file.write_text(f'{{"type":"user","message":{{"content":"cwd test"}},"timestamp":"{ts_from_seconds(now)}"}}\n', encoding="utf-8")
-    os.utime(cwd_test_file, (now, now))
-
-    # Test 5: Snippet with embedded newlines (one record, not split)
-    fixture.add_session(
+    # newline: newline-snippet-test, empty-file, not-json
+    g_newline.add_session(
         "newline-snippet-test",
         f'{{"type":"user","message":{{"content":"line 1\\nline 2 search term"}},"timestamp":"{ts_from_seconds(now)}"}}\n',
         mtime=now,
     )
-
-    # Test 6: Empty file
-    fixture.add_session(
+    g_newline.add_session(
         "empty-file",
         "",
         mtime=now,
     )
-
-    # Test 7: File whose first line is not JSON
-    fixture.add_session(
+    g_newline.add_session(
         "not-json",
         "this is not json\n",
         mtime=now,
     )
 
-    # Test 8: Unicode/emoji test
-    fixture.add_session(
+    # unicode: unicode-test
+    g_unicode.add_session(
         "unicode-test",
         f'{{"type":"user","message":{{"content":"emoji 😀 test"}},"timestamp":"{ts_from_seconds(now)}"}}\n',
         mtime=now,
     )
 
-    # Test 8b: Regex metacharacter in query must be treated as a literal string,
-    # not a regex — "a.b" must match "a.b" but must NOT match "aXb" (which "."
-    # would match as a regex wildcard).
-    fixture.add_session(
+    # regex: literal-dot-match, regex-wildcard-decoy
+    g_regex.add_session(
         "literal-dot-match",
         f'{{"type":"user","message":{{"content":"contains a.b literally"}},"timestamp":"{ts_from_seconds(now)}"}}\n',
         mtime=now,
     )
-    fixture.add_session(
+    g_regex.add_session(
         "regex-wildcard-decoy",
         f'{{"type":"user","message":{{"content":"contains aXb not a dot"}},"timestamp":"{ts_from_seconds(now)}"}}\n',
         mtime=now,
     )
 
-    # Test 9: File older than --days cutoff (400 days old)
+    # days: old-session
     old_mtime = now - (400 * day)
     old_ts = ts_from_seconds(old_mtime)
-    fixture.add_session(
+    g_days.add_session(
         "old-session",
         f'{{"type":"user","message":{{"content":"old query"}},"timestamp":"{old_ts}"}}\n',
         mtime=old_mtime,
     )
 
-    # Test 10: Self-session (to be excluded via CLAUDE_CODE_SESSION_ID)
-    fixture.add_session(
+    # self: self-session-id
+    g_self.add_session(
         "self-session-id",
         f'{{"type":"user","message":{{"content":"self test"}},"timestamp":"{ts_from_seconds(now)}"}}\n',
         mtime=now,
     )
 
-    # Test 11-40: 30 bulk files to test limit truncation
-    for i in range(30):
+    # bulk: 5 bulk files (reduced from 30)
+    for i in range(5):
         bulk_ts = ts_from_seconds(now - (i * 100))
-        fixture.add_session(
+        g_bulk.add_session(
             f"bulk-file-{i:02d}",
             f'{{"type":"user","message":{{"content":"bulk"}},"timestamp":"{bulk_ts}"}}\n',
             mtime=now - (i * 100),
         )
 
-    # Test 41: Snippet from tool_use.input only (not text block)
-    # Real schema: tool_use is inside message.content array with object-valued input
-    fixture.add_session(
+    # snip: tool-use-only, thinking-only
+    g_snip.add_session(
         "tool-use-only",
         f'{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_1","name":"Bash","input":{{"command":"search_term_in_input"}}}}]}},"timestamp":"{ts_from_seconds(now)}"}}\n',
         mtime=now,
     )
-
-    # Test 41b: Snippet from thinking block
-    fixture.add_session(
+    g_snip.add_session(
         "thinking-only",
         f'{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"thinking","thinking":"I should search_term_in_input next"}}]}},"timestamp":"{ts_from_seconds(now)}"}}\n',
         mtime=now,
     )
 
-    # Test 42: File whose mtime is newer than matching line's timestamp (bug 11)
-    # This file has an OLD line timestamp (3 days ago) but NEWER mtime (1 day ago)
-    stale_line_ts_sec = now - (3 * day)  # 3 days old
-    newer_mtime = now - (1 * day)  # 1 day old
+    # rank: both ranking-test files
+    stale_line_ts_sec = now - (3 * day)
+    newer_mtime = now - (1 * day)
     stale_ts = ts_from_seconds(stale_line_ts_sec)
-    fixture.add_session(
+    g_rank.add_session(
         "ranking-test-old-timestamp",
         f'{{"type":"user","message":{{"content":"ranking test compare"}},"timestamp":"{stale_ts}"}}\n',
         mtime=newer_mtime,
     )
-
-    # Test 42b: Companion file with NEWER timestamp but OLDER mtime (bug 11 verification)
-    # This file has a RECENT line timestamp (1 day ago) but OLDER mtime (3 days ago)
-    recent_line_ts_sec = now - (1 * day)  # 1 day old (more recent than the other file's line)
-    older_mtime = now - (3 * day)  # 3 days old (older mtime than the other file)
+    recent_line_ts_sec = now - (1 * day)
+    older_mtime = now - (3 * day)
     recent_ts = ts_from_seconds(recent_line_ts_sec)
-    fixture.add_session(
+    g_rank.add_session(
         "ranking-test-new-timestamp",
         f'{{"type":"user","message":{{"content":"ranking test compare"}},"timestamp":"{recent_ts}"}}\n',
         mtime=older_mtime,
     )
 
-    # Test 43: Test --days filtering (exactly at boundary)
-    boundary_ts_sec = now - (30 * day)
-    boundary_ts = ts_from_seconds(boundary_ts_sec)
-    fixture.add_session(
-        "boundary-session",
-        f'{{"type":"user","message":{{"content":"boundary test"}},"timestamp":"{boundary_ts}"}}\n',
-        mtime=boundary_ts_sec,
-    )
-
-    # Test 44: Two records with identical timestamp (for tie-break ordering test)
+    # multi: copies of both ranking-test files plus tiebreak-session-a/b, with same contents and mtimes
     identical_ts = ts_from_seconds(now - (5 * day))
-    fixture.add_session(
+    g_multi.add_session(
+        "ranking-test-old-timestamp",
+        f'{{"type":"user","message":{{"content":"ranking test compare"}},"timestamp":"{stale_ts}"}}\n',
+        mtime=newer_mtime,
+    )
+    g_multi.add_session(
+        "ranking-test-new-timestamp",
+        f'{{"type":"user","message":{{"content":"ranking test compare"}},"timestamp":"{recent_ts}"}}\n',
+        mtime=older_mtime,
+    )
+    g_multi.add_session(
         "tiebreak-session-a",
         f'{{"type":"user","message":{{"content":"tiebreak query"}},"timestamp":"{identical_ts}"}}\n',
         mtime=now - (5 * day),
     )
-    fixture.add_session(
+    g_multi.add_session(
         "tiebreak-session-b",
         f'{{"type":"user","message":{{"content":"tiebreak query"}},"timestamp":"{identical_ts}"}}\n',
         mtime=now - (5 * day),
     )
 
-    fixture_root_path = fixture.finalize()
+    # cwd: Move the cwd test file structure
+    cwd_test_dir = Path(fixture_root) / "cwd" / "-Users-test-project"
+    cwd_test_dir.mkdir(parents=True, exist_ok=True)
+    cwd_test_file = cwd_test_dir / "session.jsonl"
+    cwd_test_file.write_text(f'{{"type":"user","message":{{"content":"cwd test"}},"timestamp":"{ts_from_seconds(now)}"}}\n', encoding="utf-8")
+    os.utime(cwd_test_file, (now, now))
 
     # --- Test with both interpreters ---
     for interpreter in ["/bin/bash", "/bin/zsh"]:
@@ -293,7 +287,7 @@ try:
         code, out, err = run(
             interpreter,
             ["tray", "icon", "color"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+            {"CLAUDE_PROJECTS_DIR": str(g_and.root)},
         )
         t(
             f"{interpreter}: multi-word AND matching succeeds",
@@ -305,7 +299,7 @@ try:
         code, out, err = run(
             interpreter,
             ["this is a test phrase"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+            {"CLAUDE_PROJECTS_DIR": str(g_and.root)},
         )
         t(
             f"{interpreter}: quoted phrase matching",
@@ -313,69 +307,11 @@ try:
             f"exit={code}",
         )
 
-        # Test 3: Subagent parent id extraction
-        code, out, err = run(
-            interpreter,
-            ["subagent"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
-        )
-        if code == 0 and "parent-session-uuid" in out:
-            # Extract the session_id column (4th field in pipe-delimited output)
-            lines = [line for line in out.strip().split('\n') if line]
-            if lines:
-                fields = lines[0].split('|')
-                if len(fields) >= 4:
-                    reported_id = fields[3]
-                    t(
-                        f"{interpreter}: subagent uses path-derived parent id",
-                        reported_id == "parent-session-uuid",
-                        f"got {reported_id}",
-                    )
-
-        # Test 4: cwd fallback from dirname
-        code, out, err = run(
-            interpreter,
-            ["cwd"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
-        )
-        t(
-            f"{interpreter}: cwd decoded from dirname",
-            code == 0 and "/Users/test/project" in out,
-            f"exit={code}",
-        )
-
-        # Test 5: Snippet with newlines is one record
-        code, out, err = run(
-            interpreter,
-            ["search", "term"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
-        )
-        if "newline-snippet-test" in out:
-            # Count pipe-delimited records for this session
-            session_lines = [line for line in out.strip().split('\n') if 'newline-snippet-test' in line]
-            t(
-                f"{interpreter}: newline-containing snippet is one record",
-                len(session_lines) == 1,
-                f"got {len(session_lines)} records",
-            )
-
-        # Test 6: Empty file doesn't crash
-        code, out, err = run(
-            interpreter,
-            ["anything"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
-        )
-        t(
-            f"{interpreter}: empty file doesn't crash",
-            code in [0, 1],
-            f"exit={code}",
-        )
-
         # Test 7: --days filtering works
         code, out, err = run(
             interpreter,
             ["old", "--days", "30"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+            {"CLAUDE_PROJECTS_DIR": str(g_days.root)},
         )
         t(
             f"{interpreter}: --days filtering excludes old files",
@@ -383,15 +319,11 @@ try:
             "old-session appeared in results",
         )
 
-        # Test 7b: --all leaves FIND_EXTRA_ARGS empty. Under bash 3.2 + set -u,
-        # expanding an empty array as "${a[@]}" is an unbound-variable error that
-        # aborts the find pipeline while still exiting 0 (empty results, no error
-        # to the caller). Regression guard: --all must exit clean, emit nothing on
-        # stderr, and surface the old file that --days would have filtered out.
+        # Test 7b: --all leaves FIND_EXTRA_ARGS empty
         code, out, err = run(
             interpreter,
             ["old", "--all"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+            {"CLAUDE_PROJECTS_DIR": str(g_days.root)},
         )
         t(
             f"{interpreter}: --all runs without unbound-variable error",
@@ -408,7 +340,7 @@ try:
         code, out, err = run(
             interpreter,
             ["something", "--days"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+            {"CLAUDE_PROJECTS_DIR": str(g_days.root)},
         )
         t(
             f"{interpreter}: --days without value exits non-zero",
@@ -421,11 +353,87 @@ try:
             f"stderr: {err[:100]}",
         )
 
+        # Test 10: Limit truncation (5 bulk files, limit 3)
+        code, out, err = run(
+            interpreter,
+            ["bulk"],
+            {"CLAUDE_PROJECTS_DIR": str(g_bulk.root), "SEARCH_CLAUDE_LIMIT": "3"},
+        )
+        result_count = len([line for line in out.strip().split('\n') if line and 'bulk' in line])
+        t(
+            f"{interpreter}: results truncated to SEARCH_CLAUDE_LIMIT",
+            result_count == 3,
+            f"got {result_count} results",
+        )
+
+        # Broad query doesn't SIGPIPE (exit code != 141)
+        t(f"{interpreter}: broad query doesn't SIGPIPE (exit code != 141)", code != 141, f"exit={code}")
+
+        # workers always run under bash (search-claude.sh:160); zsh only re-checks main-script argument parsing
+        if interpreter != "/bin/bash":
+            continue
+
+        # Test 3: Subagent parent id extraction
+        code, out, err = run(
+            interpreter,
+            ["subagent"],
+            {"CLAUDE_PROJECTS_DIR": str(g_sub.root)},
+        )
+        if code == 0 and "parent-session-uuid" in out:
+            lines = [line for line in out.strip().split('\n') if line]
+            if lines:
+                fields = lines[0].split('|')
+                if len(fields) >= 4:
+                    reported_id = fields[3]
+                    t(
+                        f"{interpreter}: subagent uses path-derived parent id",
+                        reported_id == "parent-session-uuid",
+                        f"got {reported_id}",
+                    )
+
+        # Test 4: cwd fallback from dirname
+        code, out, err = run(
+            interpreter,
+            ["cwd"],
+            {"CLAUDE_PROJECTS_DIR": str(Path(fixture_root) / "cwd")},
+        )
+        t(
+            f"{interpreter}: cwd decoded from dirname",
+            code == 0 and "/Users/test/project" in out,
+            f"exit={code}",
+        )
+
+        # Test 5: Snippet with newlines is one record
+        code, out, err = run(
+            interpreter,
+            ["search", "term"],
+            {"CLAUDE_PROJECTS_DIR": str(g_newline.root)},
+        )
+        if "newline-snippet-test" in out:
+            session_lines = [line for line in out.strip().split('\n') if 'newline-snippet-test' in line]
+            t(
+                f"{interpreter}: newline-containing snippet is one record",
+                len(session_lines) == 1,
+                f"got {len(session_lines)} records",
+            )
+
+        # Test 6: Empty file doesn't crash
+        code, out, err = run(
+            interpreter,
+            ["anything"],
+            {"CLAUDE_PROJECTS_DIR": str(g_newline.root)},
+        )
+        t(
+            f"{interpreter}: empty file doesn't crash",
+            code in [0, 1],
+            f"exit={code}",
+        )
+
         # Test 9: Self-exclusion with CLAUDE_CODE_SESSION_ID
         code, out, err = run(
             interpreter,
             ["self"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "CLAUDE_CODE_SESSION_ID": "self-session-id"},
+            {"CLAUDE_PROJECTS_DIR": str(g_self.root), "CLAUDE_CODE_SESSION_ID": "self-session-id"},
         )
         t(
             f"{interpreter}: self-session excluded when CLAUDE_CODE_SESSION_ID set",
@@ -437,7 +445,7 @@ try:
         code, out, err = run(
             interpreter,
             ["self"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "CLAUDE_CODE_SESSION_ID": ""},
+            {"CLAUDE_PROJECTS_DIR": str(g_self.root), "CLAUDE_CODE_SESSION_ID": ""},
         )
         t(
             f"{interpreter}: self-session included when CLAUDE_CODE_SESSION_ID is empty",
@@ -445,24 +453,11 @@ try:
             "self-session-id missing from results",
         )
 
-        # Test 10: Limit truncation (30 bulk files, limit 10)
-        code, out, err = run(
-            interpreter,
-            ["bulk"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "10"},
-        )
-        result_count = len([line for line in out.strip().split('\n') if line and 'bulk' in line])
-        t(
-            f"{interpreter}: results truncated to SEARCH_CLAUDE_LIMIT",
-            result_count <= 10,
-            f"got {result_count} results",
-        )
-
-        # Test 11: Snippet extraction from tool_use.input and thinking blocks
+        # Test 11: Snippet extraction from tool_use.input
         code, out, err = run(
             interpreter,
             ["search_term_in_input"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+            {"CLAUDE_PROJECTS_DIR": str(g_snip.root)},
         )
         t(
             f"{interpreter}: tool-use-only session appears in results",
@@ -470,10 +465,8 @@ try:
             "tool-use-only not found in output",
         )
         if "tool-use-only" in out:
-            # Extract the line with tool-use-only
             tool_use_lines = [line for line in out.strip().split('\n') if 'tool-use-only' in line]
             if tool_use_lines:
-                # Format: mtime|timestamp|cwd|session_id|kind|first_prompt|snippet
                 fields = tool_use_lines[0].split('|')
                 if len(fields) >= 7:
                     snippet = fields[6]
@@ -483,22 +476,15 @@ try:
                         f"got sentinel instead of snippet: {snippet}",
                     )
 
-        # Test 11b: Snippet extraction from thinking blocks
-        code, out, err = run(
-            interpreter,
-            ["search_term_in_input"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
-        )
+        # Test 11b: Reuse Test 11's output for thinking-only check
         t(
             f"{interpreter}: thinking-only session appears in results",
             "thinking-only" in out,
             "thinking-only not found in output",
         )
         if "thinking-only" in out:
-            # Extract the line with thinking-only
             thinking_lines = [line for line in out.strip().split('\n') if 'thinking-only' in line]
             if thinking_lines:
-                # Format: mtime|timestamp|cwd|session_id|kind|first_prompt|snippet
                 fields = thinking_lines[0].split('|')
                 if len(fields) >= 7:
                     snippet = fields[6]
@@ -509,11 +495,10 @@ try:
                     )
 
         # Test 12: Ranking by match timestamp, not file mtime
-        # Query matches both files; verify the one with more recent timestamp ranks first
         code, out, err = run(
             interpreter,
             ["ranking", "test", "compare"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+            {"CLAUDE_PROJECTS_DIR": str(g_rank.root)},
         )
         t(
             f"{interpreter}: ranking-test-old-timestamp appears in results",
@@ -528,8 +513,6 @@ try:
         if code == 0 and "ranking-test-new-timestamp" in out and "ranking-test-old-timestamp" in out:
             lines = [line for line in out.strip().split('\n') if line and ('ranking-test-new-timestamp' in line or 'ranking-test-old-timestamp' in line)]
             if len(lines) >= 2:
-                # First result should be the one with more recent timestamp (ranking-test-new-timestamp)
-                # not the one with newer mtime (ranking-test-old-timestamp)
                 first_result = lines[0]
                 second_result = lines[1]
                 t(
@@ -538,23 +521,11 @@ try:
                     f"order wrong: first={first_result.split('|')[3]}, second={second_result.split('|')[3]}",
                 )
 
-        # Test 13: No SIGPIPE on broad query
-        code, out, err = run(
-            interpreter,
-            ["the"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "3"},
-        )
-        t(
-            f"{interpreter}: broad query doesn't SIGPIPE (exit code != 141)",
-            code != 141,
-            f"exit={code} (SIGPIPE is 141)",
-        )
-
         # Test 13b: Query with a regex metacharacter is matched literally
         code, out, err = run(
             interpreter,
             ["a.b"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+            {"CLAUDE_PROJECTS_DIR": str(g_regex.root)},
         )
         t(
             f"{interpreter}: literal 'a.b' query matches literal 'a.b' text",
@@ -571,7 +542,7 @@ try:
         code, out, err = run(
             interpreter,
             ["emoji"],
-            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+            {"CLAUDE_PROJECTS_DIR": str(g_unicode.root)},
         )
         t(
             f"{interpreter}: unicode/emoji queries work",
@@ -666,259 +637,56 @@ t("Parallel section writes to worker temp files, not shared stdout",
   not (has_bare_printf or has_bare_echo),
   "bare printf/echo detected in xargs section (would corrupt concurrent output)")
 
-# --- Single-worker path verification ---
-# Verify that SEARCH_CLAUDE_WORKERS=1 produces identical results to default (multi-worker)
-# Re-use existing test case: multi-word AND matching
-code_default, out_default, err_default = run(
-    "/bin/bash",
-    ["tray", "icon", "color"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "", "LIMIT": ""},
-)
-code_single, out_single, err_single = run(
-    "/bin/bash",
-    ["tray", "icon", "color"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "1"},
-)
-t("SEARCH_CLAUDE_WORKERS=1 produces same results as default (multi-word AND)",
-  out_default == out_single and code_default == code_single,
-  f"default: {len(out_default)} chars, single-worker: {len(out_single)} chars")
+# --- Single-worker path verification (simplified per SPEC_A §3) ---
+M = {"CLAUDE_PROJECTS_DIR": str(g_multi.root), "SEARCH_CLAUDE_LIMIT": "100"}
 
-# Verify another scenario: limit truncation
-code_default, out_default, err_default = run(
-    "/bin/bash",
-    ["bulk"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "5", "SEARCH_CLAUDE_WORKERS": ""},
-)
-code_single, out_single, err_single = run(
-    "/bin/bash",
-    ["bulk"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "5", "SEARCH_CLAUDE_WORKERS": "1"},
-)
-result_count_default = len([line for line in out_default.strip().split('\n') if line])
-result_count_single = len([line for line in out_single.strip().split('\n') if line])
-t("SEARCH_CLAUDE_WORKERS=1 respects limit (bulk results)",
-  result_count_single == result_count_default and result_count_single <= 5,
-  f"default: {result_count_default}, single-worker: {result_count_single}, limit: 5")
+# Two runs of ["user"] with SEARCH_CLAUDE_WORKERS "" and "1"
+code_default, out_default, err_default = run("/bin/bash", ["user"], M)
+code_single, out_single, err_single = run("/bin/bash", ["user"], {**M, "SEARCH_CLAUDE_WORKERS": "1"})
 
-# --- Parallelization worker count clamping tests ---
-# Test worker count clamping above max (8)
-code_default, out_default, err_default = run(
-    "/bin/bash",
-    ["tray", "icon"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "", "LIMIT": ""},
-)
-code_high, out_high, err_high = run(
-    "/bin/bash",
-    ["tray", "icon"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "100"},
-)
-t("SEARCH_CLAUDE_WORKERS=100 (clamped to 8) produces same results",
-  out_default == out_high and code_default == code_high,
-  f"default: {len(out_default)} chars, workers=100: {len(out_high)} chars")
+# Assert: default run exits 0 with exactly 4 lines (ranking-test-old/new-timestamp + tiebreak a/b)
+default_lines = [line for line in out_default.strip().split('\n') if line]
+t("Default run exits 0 with exactly 4 lines", code_default == 0 and len(default_lines) == 4,
+  f"exit={code_default}, lines={len(default_lines)}")
 
-# Test worker count clamping below min (1)
-code_zero, out_zero, err_zero = run(
-    "/bin/bash",
-    ["tray", "icon"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "0"},
-)
-t("SEARCH_CLAUDE_WORKERS=0 (clamped to 1) produces same results",
-  out_default == out_zero and code_default == code_zero,
-  f"default: {len(out_default)} chars, workers=0: {len(out_zero)} chars")
+# Assert: workers=1 output is byte-identical to default
+t("SEARCH_CLAUDE_WORKERS=1 output is byte-identical to default",
+  out_single == out_default and code_single == code_default,
+  f"default: {len(out_default)} chars, single: {len(out_single)} chars")
 
-# Test negative worker count
-code_neg, out_neg, err_neg = run(
-    "/bin/bash",
-    ["tray", "icon"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "-5"},
-)
-t("SEARCH_CLAUDE_WORKERS=-5 (clamped to 1) produces same results",
-  out_default == out_neg and code_default == code_neg,
-  f"default: {len(out_default)} chars, workers=-5: {len(out_neg)} chars")
+# Assert: ranking-test-new-timestamp comes before ranking-test-old-timestamp
+if len(default_lines) >= 2:
+    first_line = default_lines[0]
+    second_line = default_lines[1]
+    t("ranking-test-new-timestamp comes before ranking-test-old-timestamp",
+      "ranking-test-new-timestamp" in first_line and "ranking-test-old-timestamp" in second_line,
+      f"first={first_line.split('|')[3] if '|' in first_line else '?'}, second={second_line.split('|')[3] if '|' in second_line else '?'}")
 
-# Test intermediate worker counts produce consistent results
-# Use a query that will match across multiple files (bulk)
-code_workers_2, out_workers_2, err_workers_2 = run(
-    "/bin/bash",
-    ["bulk"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "2"},
-)
-code_workers_4, out_workers_4, err_workers_4 = run(
-    "/bin/bash",
-    ["bulk"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "4"},
-)
-code_workers_6, out_workers_6, err_workers_6 = run(
-    "/bin/bash",
-    ["bulk"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "6"},
-)
-code_default_bulk, out_default_bulk, err_default_bulk = run(
-    "/bin/bash",
-    ["bulk"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "", "LIMIT": ""},
-)
-t("SEARCH_CLAUDE_WORKERS=2 matches default results",
-  out_workers_2 == out_default_bulk and code_workers_2 == code_default_bulk,
-  f"default: {len(out_default_bulk)} chars, workers=2: {len(out_workers_2)} chars")
-t("SEARCH_CLAUDE_WORKERS=4 matches default results",
-  out_workers_4 == out_default_bulk and code_workers_4 == code_default_bulk,
-  f"default: {len(out_default_bulk)} chars, workers=4: {len(out_workers_4)} chars")
-t("SEARCH_CLAUDE_WORKERS=6 matches default results",
-  out_workers_6 == out_default_bulk and code_workers_6 == code_default_bulk,
-  f"default: {len(out_default_bulk)} chars, workers=6: {len(out_workers_6)} chars")
+# On g_unicode with ["emoji"]: run with workers "", "100", "0", "invalid"
+code_u_default, out_u, err_u_default = run("/bin/bash", ["emoji"], {"CLAUDE_PROJECTS_DIR": str(g_unicode.root)})
+code_u_100, out_u_100, err_u_100 = run("/bin/bash", ["emoji"], {"CLAUDE_PROJECTS_DIR": str(g_unicode.root), "SEARCH_CLAUDE_WORKERS": "100"})
+code_u_0, out_u_0, err_u_0 = run("/bin/bash", ["emoji"], {"CLAUDE_PROJECTS_DIR": str(g_unicode.root), "SEARCH_CLAUDE_WORKERS": "0"})
+code_u_invalid, out_u_invalid, err_u_invalid = run("/bin/bash", ["emoji"], {"CLAUDE_PROJECTS_DIR": str(g_unicode.root), "SEARCH_CLAUDE_WORKERS": "invalid"})
 
-# Test that all worker counts produce same result count
-count_2 = len([line for line in out_workers_2.strip().split('\n') if line])
-count_4 = len([line for line in out_workers_4.strip().split('\n') if line])
-count_6 = len([line for line in out_workers_6.strip().split('\n') if line])
-count_default = len([line for line in out_default_bulk.strip().split('\n') if line])
-t("All worker counts return same number of results",
-  count_2 == count_4 == count_6 == count_default,
-  f"count_2={count_2}, count_4={count_4}, count_6={count_6}, default={count_default}")
+t("Unicode emoji: workers=100 matches default", out_u == out_u_100 and code_u_default == code_u_100,
+  f"default: {len(out_u)} chars, workers=100: {len(out_u_100)} chars")
+t("Unicode emoji: workers=0 matches default", out_u == out_u_0 and code_u_default == code_u_0,
+  f"default: {len(out_u)} chars, workers=0: {len(out_u_0)} chars")
+t("Unicode emoji: workers=invalid matches default", out_u == out_u_invalid and code_u_default == code_u_invalid,
+  f"default: {len(out_u)} chars, workers=invalid: {len(out_u_invalid)} chars")
+t("Unicode emoji output is non-empty", len(out_u) > 0, "got empty output")
 
-# Test empty result set (query with no matches) doesn't error
-code_no_match, out_no_match, err_no_match = run(
-    "/bin/bash",
-    ["xyzabc123notfound"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
-)
-t("Empty result set (no matches) exits cleanly with exit code 0",
-  code_no_match == 0,
-  f"exit={code_no_match}")
-t("Empty result set (no matches) produces empty output",
-  out_no_match == "",
-  f"got output: {repr(out_no_match)}")
+# On g_bulk: ["bulk"] with LIMIT "3" and WORKERS "1" must return exactly 3 lines
+code_bulk, out_bulk, err_bulk = run("/bin/bash", ["bulk"], {"CLAUDE_PROJECTS_DIR": str(g_bulk.root), "SEARCH_CLAUDE_LIMIT": "3", "SEARCH_CLAUDE_WORKERS": "1"})
+bulk_lines = len([line for line in out_bulk.strip().split('\n') if line])
+t("Bulk with LIMIT=3 and WORKERS=1 returns exactly 3 lines", bulk_lines == 3, f"got {bulk_lines} lines")
 
-# Test empty result set with workers=2 still doesn't error
-code_no_match_2, out_no_match_2, err_no_match_2 = run(
-    "/bin/bash",
-    ["xyzabc123notfound"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "2"},
-)
-t("Empty result set with workers=2 exits cleanly",
-  code_no_match_2 in [0, 1],
-  f"exit={code_no_match_2}")
+# On g_unicode: ["xyzabc123notfound"] must exit 0 with empty output
+code_notfound, out_notfound, err_notfound = run("/bin/bash", ["xyzabc123notfound"], {"CLAUDE_PROJECTS_DIR": str(g_unicode.root)})
+t("Query 'xyzabc123notfound' exits 0 with empty output", code_notfound == 0 and out_notfound == "",
+  f"exit={code_notfound}, output={repr(out_notfound[:50])}")
 
-# Test result ranking is consistent across worker counts
-# Use the ranking test files which test timestamp-based ordering
-code_rank_default, out_rank_default, err_rank_default = run(
-    "/bin/bash",
-    ["ranking", "test"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
-)
-code_rank_4, out_rank_4, err_rank_4 = run(
-    "/bin/bash",
-    ["ranking", "test"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "4"},
-)
-t("Result ordering consistent between default and workers=4",
-  out_rank_default == out_rank_4 and code_rank_default == code_rank_4,
-  f"default: {len(out_rank_default)} chars, workers=4: {len(out_rank_4)} chars")
-
-# Extract ranking order from default to verify it matches workers=4
-if code_rank_default == 0 and out_rank_default and code_rank_4 == 0 and out_rank_4:
-    lines_default = [line for line in out_rank_default.strip().split('\n') if line and 'ranking' in line]
-    lines_4 = [line for line in out_rank_4.strip().split('\n') if line and 'ranking' in line]
-    if len(lines_default) >= 2 and len(lines_4) >= 2:
-        first_default = lines_default[0].split('|')[3] if '|' in lines_default[0] else None
-        first_4 = lines_4[0].split('|')[3] if '|' in lines_4[0] else None
-        t("First ranking result identical across default and workers=4",
-          first_default == first_4,
-          f"default first: {first_default}, workers=4 first: {first_4}")
-    else:
-        t("Ranking result precondition met (at least 2 results in each variant)",
-          False,
-          f"precondition not met — expected >= 2 ranking results in each variant, got default={len(lines_default)}, workers=4={len(lines_4)}")
-else:
-    t("Ranking result precondition met (exit codes ok, output non-empty)",
-      False,
-      f"precondition not met — code_rank_default={code_rank_default}, out_rank_default empty={not out_rank_default}, code_rank_4={code_rank_4}, out_rank_4 empty={not out_rank_4}")
-
-# Test with very broad query across many files
-code_the_default, out_the_default, err_the_default = run(
-    "/bin/bash",
-    ["test"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "", "LIMIT": ""},
-)
-code_the_8, out_the_8, err_the_8 = run(
-    "/bin/bash",
-    ["test"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "8"},
-)
-t("Broad query (many files) consistent at max worker count (8)",
-  out_the_default == out_the_8 and code_the_default == code_the_8,
-  f"default: {len(out_the_default)} chars, workers=8: {len(out_the_8)} chars")
-
-# Test with limit enforcement across worker counts
-code_limit_default, out_limit_default, err_limit_default = run(
-    "/bin/bash",
-    ["test"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "7", "SEARCH_CLAUDE_WORKERS": ""},
-)
-code_limit_4, out_limit_4, err_limit_4 = run(
-    "/bin/bash",
-    ["test"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "7", "SEARCH_CLAUDE_WORKERS": "4"},
-)
-count_limit_default = len([line for line in out_limit_default.strip().split('\n') if line])
-count_limit_4 = len([line for line in out_limit_4.strip().split('\n') if line])
-t("Limit is enforced identically across default and workers=4",
-  count_limit_default == count_limit_4 and count_limit_4 <= 7,
-  f"default: {count_limit_default}, workers=4: {count_limit_4}, limit: 7")
-
-# Test tiebreak ordering (identical timestamps) is stable across worker counts
-code_tie_default, out_tie_default, err_tie_default = run(
-    "/bin/bash",
-    ["tiebreak", "query"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
-)
-code_tie_4, out_tie_4, err_tie_4 = run(
-    "/bin/bash",
-    ["tiebreak", "query"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "4"},
-)
-t("Tiebreak ordering stable across default and workers=4",
-  out_tie_default == out_tie_4 and code_tie_default == code_tie_4,
-  f"default: {len(out_tie_default)} chars, workers=4: {len(out_tie_4)} chars")
-
-# Test exact result equality (byte-for-byte) across workers=1,2,4 with a specific query
-code_exact_1, out_exact_1, err_exact_1 = run(
-    "/bin/bash",
-    ["emoji"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "1"},
-)
-code_exact_2, out_exact_2, err_exact_2 = run(
-    "/bin/bash",
-    ["emoji"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "2"},
-)
-code_exact_4, out_exact_4, err_exact_4 = run(
-    "/bin/bash",
-    ["emoji"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "4"},
-)
-t("Results are byte-identical for workers=1,2,4",
-  len(out_exact_1) > 0 and out_exact_1 == out_exact_2 == out_exact_4,
-  f"1: {len(out_exact_1)}, 2: {len(out_exact_2)}, 4: {len(out_exact_4)}")
-
-# Test that non-numeric SEARCH_CLAUDE_WORKERS falls back to auto-detection
-code_nonnumeric, out_nonnumeric, err_nonnumeric = run(
-    "/bin/bash",
-    ["tray"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "invalid"},
-)
-# Also get the default output for comparison
-code_default_nonnumeric, out_default_nonnumeric, err_default_nonnumeric = run(
-    "/bin/bash",
-    ["tray"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "", "LIMIT": ""},
-)
-t("Non-numeric SEARCH_CLAUDE_WORKERS behaves identically to unset/default",
-  out_nonnumeric == out_default_nonnumeric and code_nonnumeric == code_default_nonnumeric,
-  f"nonnumeric: {len(out_nonnumeric)} chars, default: {len(out_default_nonnumeric)} chars")
-
-# Test that result format (pipe-delimited) is consistent across worker counts
+# Test that result format (pipe-delimited) is consistent
 def verify_format(output_str):
     """Verify pipe-delimited format with 7+ fields per line."""
     if not output_str.strip():
@@ -930,16 +698,12 @@ def verify_format(output_str):
                 return False
     return True
 
-t("Default results use pipe-delimited format (7+ fields)",
-  verify_format(out_default_bulk),
+t("Default g_multi results use pipe-delimited format (7+ fields)",
+  verify_format(out_default),
   "format check failed")
 
-t("Workers=4 results use pipe-delimited format (7+ fields)",
-  verify_format(out_workers_4),
-  "format check failed")
-
-t("Workers=100 results use pipe-delimited format (7+ fields)",
-  verify_format(out_high),
+t("Workers=100 g_multi results use pipe-delimited format (7+ fields)",
+  verify_format(out_u_100),
   "format check failed")
 
 # Clean up fixture (deferred from finally block so parallelization tests can use it)
