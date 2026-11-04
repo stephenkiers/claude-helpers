@@ -22,6 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import REPO_ROOT, Harness
+from _inproc import run_python, RepoTemplate
 
 SCRIPT = REPO_ROOT / "scripts" / "precedent-digest.py"
 _spec = importlib.util.spec_from_file_location("precedent_digest", SCRIPT)
@@ -91,14 +92,24 @@ class Fixture:
         return path
 
 
-def run_digest(home, args, cwd=None, env=None):
-    """Run the real script with HOME pinned to `home`. Returns (returncode, stdout, stderr)."""
+def run_digest_e2e(home, args, cwd=None, env=None):
+    """Run the real script with HOME pinned to `home` (subprocess e2e). Returns (returncode, stdout, stderr)."""
     assert_temp_home(home)
     full_env = {**os.environ, "HOME": str(home), "TZ": "UTC"}
     full_env.pop("CLAUDE_CODE_SESSION_ID", None)
     full_env.update(env or {})
     proc = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True,
                           env=full_env, cwd=str(cwd or home))
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def run_digest(home, args, cwd=None, env=None):
+    """Run the real script with HOME pinned to `home`. Returns (returncode, stdout, stderr)."""
+    assert_temp_home(home)
+    full_env = {**os.environ, "HOME": str(home), "TZ": "UTC"}
+    full_env.pop("CLAUDE_CODE_SESSION_ID", None)
+    full_env.update(env or {})
+    proc = run_python([str(SCRIPT), *args], env=full_env, cwd=str(cwd or home))
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -229,11 +240,20 @@ def many_plan_runs(fx, n, first_header):
                                                              ["Q1 = A (filler)"]))
 
 
+_GIT_TEMPLATES = {}
+
+
+def _git_repo_builder(url):
+    def build(root):
+        subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(root), "remote", "add", "origin", url],
+                       check=True, capture_output=True)
+    return build
+
+
 def make_git_repo(path, url):
-    path.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", str(path)], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "remote", "add", "origin", url],
-                   check=True, capture_output=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _GIT_TEMPLATES.setdefault(url, RepoTemplate(_git_repo_builder(url))).copy(path)
 
 
 def plan_entries_for(text):
@@ -306,7 +326,8 @@ def case_legacy_and_flat(h):
             1, "Legacy item", "decided", rec=None, decision="ZQXLEGACY")]))
         fx.put("reviews/4-20261001T100000-flat/claude-action-plan.md", review_md(needs=[review_item(
             1, "Flat item", "decided", decision="ZQXFLAT")]))
-        rc, stats, err = run_stats(fx.home)
+        rc, out, err = run_digest_e2e(fx.home, ["owner/name", "--stats"])
+        stats = json.loads(out) if rc == 0 and out.strip() else None
         h.test_result("legacy/flat: --stats exits 0", rc == 0, err)
         # The plan's own example writes legacy entries as root-relative dirs (reviews/lotl/).
         h.test_result("legacy/flat: name-only dir listed in legacy_dirs",
@@ -1554,6 +1575,76 @@ def case_curated_oversize_yaml(h):
                       and st2.get("yaml") == "ok" and st2.get("curated") == 1, f"status={st2}")
 
 
+def case_curated_decision_prose_and_rationale(h):
+    with Fixture() as fx:
+        repo = curated_repo(fx, "prose", files={"docs/constraints/beta.md":
+            "# Beta Constraint\n\n## Decision\n\nKeep the reader stateless.\n\n## Rationale\n\nEasier to roll back.\n"})
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        beta = {e["header"]: e for e in curated_of(ents)}.get("Beta Constraint", {})
+        h.test_result("curated prose: '## Decision' prose is the answer",
+                      rc == 0 and beta.get("answer") == "Keep the reader stateless.", f"entry={beta}")
+        h.test_result("curated prose: '## Rationale' prose is the reason",
+                      beta.get("reason") == "Easier to roll back.", f"entry={beta}")
+
+
+def case_curated_dangling_symlink_keeps_layer(h):
+    with Fixture() as fx:
+        repo = curated_repo(fx, "dangling", files={"docs/decisions/0001-cache.md": RULE_MD})
+        (repo / "docs" / "constraints").mkdir(parents=True, exist_ok=True)
+        os.symlink(repo / "docs" / "decisions" / "nowhere.md", repo / "docs" / "decisions" / "gone.md")
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        headers = [e["header"] for e in curated_of(ents)]
+        h.test_result("dangling symlink: other curated rule still emitted, exit 0",
+                      rc == 0 and headers == ["Reads go through the cache layer"],
+                      f"rc={rc} headers={headers} status={st}")
+
+
+def case_curated_unreadable_file_keeps_layer(h):
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        h.test_result("unreadable curated file skipped", True, "skipped: running as root")
+        return
+    with Fixture() as fx:
+        repo = curated_repo(fx, "locked", files={"docs/decisions/0001-cache.md": RULE_MD,
+                                                 "docs/decisions/0002-locked.md": "# Locked Rule\n\nRule: unreadable rule\n"})
+        (repo / "docs" / "constraints").mkdir(parents=True, exist_ok=True)
+        locked = repo / "docs" / "decisions" / "0002-locked.md"
+        locked.chmod(0)
+        try:
+            rc, ents, err, st, _ = run_curated(fx, repo)
+        finally:
+            locked.chmod(0o644)
+        headers = [e["header"] for e in curated_of(ents)]
+        h.test_result("unreadable curated file: other rule still emitted, exit 0",
+                      rc == 0 and headers == ["Reads go through the cache layer"], f"rc={rc} headers={headers}")
+        h.test_result("unreadable curated file: not a whole-layer error (curated_error null, curated 1)",
+                      st is not None and st.get("curated_error") is None and st.get("curated") == 1, f"status={st}")
+
+
+def case_curated_cap_boundary(h):
+    files = {f"docs/decisions/rule-{i:02d}.md": f"# Rule {i:02d}\n\nRule: rule {i:02d} applies\n" for i in range(20)}
+    with Fixture() as fx:
+        rc, ents, err, st, _ = run_curated(fx, curated_repo(fx, "cap-exact", files=files))
+        h.test_result("curated cap boundary: exactly 20 kept, none capped",
+                      rc == 0 and len(curated_of(ents)) == 20 and st is not None
+                      and st.get("curated") == 20 and st.get("curated_capped") == 0, f"status={st}")
+        plus = dict(files)
+        plus["docs/decisions/rule-99.md"] = "# No Answer Here\n\nJust prose, no rule line.\n"
+        rc, ents, err, st, _ = run_curated(fx, curated_repo(fx, "cap-plus-one", files=plus))
+        h.test_result("curated cap boundary: 21st candidate counted capped, not read",
+                      rc == 0 and len(curated_of(ents)) == 20 and st is not None and st.get("curated") == 20
+                      and st.get("curated_capped") == 1 and st.get("curated_no_rule") == 0, f"status={st}")
+
+
+def case_curated_bom_yaml(h):
+    with Fixture() as fx:
+        repo = curated_repo(fx, "bomyaml", yaml_text=None, files={
+            "docs/decisions/0001-cache.md": RULE_MD,
+            ".claude/reviewers/north-star-nick-local.yaml": b"\xef\xbb\xbf" + CURATED_YAML.encode("utf-8")})
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        h.test_result("curated yaml with UTF-8 BOM: still read (yaml ok, curated 1)",
+                      rc == 0 and st is not None and st.get("yaml") == "ok" and st.get("curated") == 1, f"status={st}")
+
+
 def case_status_out_label(h):
     """An unwritable output names its own flag; --out is written before --status-out fails."""
     with Fixture() as fx:
@@ -1588,7 +1679,9 @@ def main():
              case_curated_security_keywords_match_step5, case_curated_cap,
              case_curated_root_resolution, case_curated_fail_closed,
              case_curated_scan_layer_failure, case_curated_per_file_oserror, case_curated_non_md_silent,
-             case_curated_oversize_yaml, case_status_out_label]
+             case_curated_oversize_yaml, case_curated_decision_prose_and_rationale,
+             case_curated_dangling_symlink_keeps_layer, case_curated_unreadable_file_keeps_layer,
+             case_curated_cap_boundary, case_curated_bom_yaml, case_status_out_label]
     for case in cases:
         try:
             case(h)
