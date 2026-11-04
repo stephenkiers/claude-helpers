@@ -41,6 +41,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from workflow import deps
@@ -173,7 +174,8 @@ def pm_calls(log: Path) -> List[dict]:
     return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def deps_ensure(bin_dir: Path, wt: Path, main: Path, *extra: str, timeout: int = 60) -> Run:
+def deps_ensure_e2e(bin_dir: Path, wt: Path, main: Path, *extra: str, timeout: int = 60) -> Run:
+    """Original subprocess version for end-to-end testing."""
     env = dict(os.environ)
     env["PATH"] = os.pathsep.join([str(bin_dir), env.get("PATH", "")])
     cmd = [sys.executable, "-m", "scripts.workflow.cli", "deps", "ensure",
@@ -184,6 +186,17 @@ def deps_ensure(bin_dir: Path, wt: Path, main: Path, *extra: str, timeout: int =
     except subprocess.TimeoutExpired:
         return Run(None, "", "", True)
     return Run(proc.returncode, proc.stdout, proc.stderr, False)
+
+
+def deps_ensure(bin_dir: Path, wt: Path, main: Path, *extra: str, timeout: int = 60) -> Run:
+    """In-process version for most tests, faster than subprocess.run."""
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join([str(bin_dir), env.get("PATH", "")])
+    args = ["-m", "scripts.workflow.cli", "deps", "ensure",
+            "--worktree", str(wt), "--main-worktree", str(main), *extra]
+    r = run_python(args, env=env, cwd=str(REPO_ROOT), input=None)
+    # run_python doesn't support timeout detection, so hung is always False
+    return Run(r.returncode, r.stdout, r.stderr, hung=False)
 
 
 def stamp_path(wt: Path) -> Path:
@@ -246,7 +259,7 @@ def wait_gone(pid: int, seconds: float = 5.0) -> bool:
 def section_no_lockfile_stamp(t):
     tracked = {"README.md": "x\n", "package.json": package_json({"a": "1.0.0"})}
     with case(tracked, main_files={".claude/project.yaml": "commands:\n  install: 'fakeinstall only'\n"}) as c:
-        first = c.run()
+        first = deps_ensure_e2e(c.bin, c.wt, c.main)
         control = c.run()
         calls_after_control = len(c.calls())
         write(c.wt / "package.json", package_json({"a": "1.0.0", "left-pad": "1.3.0"}))

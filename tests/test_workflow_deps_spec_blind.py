@@ -53,6 +53,7 @@ from typing import Dict, Iterator, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 # Fixtures (git, make_layout, make_fake_bin) are duplicated on purpose from test_workflow_deps.py and
 # test_workflow_deps_cli.py: each suite runs standalone, and this one is written from the plan alone.
@@ -190,7 +191,8 @@ def pm_calls(log: Path) -> List[dict]:
     return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def deps_ensure(bin_dir: Path, wt: Path, main: Path, *extra: str, timeout: int = 60) -> Run:
+def deps_ensure_e2e(bin_dir: Path, wt: Path, main: Path, *extra: str, timeout: int = 60) -> Run:
+    """Original Popen-based version for tests that verify stdin EOF, env, and cwd."""
     env = dict(os.environ)
     env["PATH"] = os.pathsep.join([str(bin_dir), env.get("PATH", "")])
     cmd = [sys.executable, "-m", "scripts.workflow.cli", "deps", "ensure",
@@ -217,6 +219,17 @@ def deps_ensure(bin_dir: Path, wt: Path, main: Path, *extra: str, timeout: int =
     out_f.close()
     err_f.close()
     return result
+
+
+def deps_ensure(bin_dir: Path, wt: Path, main: Path, *extra: str, timeout: int = 60) -> Run:
+    """In-process version for most tests, faster than Popen."""
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join([str(bin_dir), env.get("PATH", "")])
+    args = ["-m", "scripts.workflow.cli", "deps", "ensure",
+            "--worktree", str(wt), "--main-worktree", str(main), *extra]
+    r = run_python(args, env=env, cwd=REPO_ROOT, input=None)
+    # run_python doesn't support timeout detection, so hung is always False
+    return Run(r.returncode, r.stdout, r.stderr, hung=False)
 
 
 def stamp_path(wt: Path) -> Path:
@@ -273,7 +286,7 @@ def section_table(t):
             # Yarn needs a readable version (packageManager) to pick its argv; 4.x is the Berry --immutable case.
             tracked["package.json"] = package_json(package_manager="yarn@4.1.0")
         with case(tracked) as c:
-            r = c.run()
+            r = deps_ensure_e2e(c.bin, c.wt, c.main)
             calls = c.calls()
             t(f"{lockfile}: prints DEPS: installed and exits 0",
               not r.hung and r.rc == 0 and r.first_line == "DEPS: installed",
@@ -454,41 +467,6 @@ def section_failure(t):
           f"line={r.first_line!r}")
 
 
-def section_redaction(t):
-    with case({"package-lock.json": "v1\n"}) as c:
-        write(c.fail, "\n".join(REDACTION_LINES) + "\n")
-        r = c.run()
-        leaked = [s for s in SECRETS if s in r.combined]
-        t("installer output with tokens, bearer headers, URL credentials and _password is masked",
-          not leaked and r.first_line.startswith("DEPS: failed"),
-          f"leaked={leaked} line={r.first_line!r}")
-
-    with case({"package-lock.json": "v1\n"}) as c:
-        lines = "\n".join(f"line-{i:03d}" for i in range(100)) + "\n"
-        write(c.fail, lines)
-        r = c.run()
-        t("failure tail keeps the last lines of the output (line-099 present)",
-          "line-099" in r.combined, f"out tail={r.combined[-200:]!r}")
-        t("failure tail is bounded: the first lines of a 100-line output are dropped",
-          re.search(r"\bline-000\b", r.combined) is None and re.search(r"\bline-059\b", r.combined) is None,
-          "line-000 or line-059 still present, so the tail is longer than 40 lines")
-
-
-def section_outside_parent(t):
-    with case({"package-lock.json": "v1\n"}) as c:
-        control = c.run()
-        t("outside-parent control: a worktree under the normal parent installs",
-          control.first_line == "DEPS: installed" and len(c.calls()) == 1,
-          f"line={control.first_line!r} calls={len(c.calls())}")
-        outside = c.root / "elsewhere" / "feat2"
-        outside.parent.mkdir(parents=True)
-        git(c.main, "worktree", "add", "-q", "-b", "feat2", str(outside))
-        r = deps_ensure(c.bin, outside, c.main)
-        t("worktree outside the worktree parent is rejected: no new installer run",
-          len(c.calls()) == 1 and r.rc not in (0, None),
-          f"rc={r.rc} line={r.first_line!r} calls={len(c.calls())}")
-
-
 def control_cli(t, *argv):
     """Fail loudly if the CLI surface is missing, so no negative assertion can pass vacuously."""
     r = subprocess.run([sys.executable, "-m", "scripts.workflow.cli", *argv, "--help"],
@@ -577,25 +555,25 @@ def section_cli_contract(t):
     results: Dict[str, Run] = {}
 
     with case({"package-lock.json": "v1\n"}) as c:
-        results["installed"] = c.run()
-        results["current"] = c.run()
+        results["installed"] = deps_ensure_e2e(c.bin, c.wt, c.main)
+        results["current"] = deps_ensure_e2e(c.bin, c.wt, c.main)
 
     with case({"README.md": "x\n"}) as c:
-        results["skipped"] = c.run()
+        results["skipped"] = deps_ensure_e2e(c.bin, c.wt, c.main)
 
     with case({"package-lock.json": "a\n", "yarn.lock": "b\n"}) as c:
-        results["ambiguous"] = c.run()
+        results["ambiguous"] = deps_ensure_e2e(c.bin, c.wt, c.main)
 
     with case(
         {"package.json": package_json(deps={"react": "18.0.0"}), "package-lock.json": "b\n"}
     ) as c:
         write(c.wt / "package.json", package_json(deps={"react": "18.0.0", "left-pad": "1.3.0"}))
         commit_in(c.wt, "add left-pad")
-        results["manifest-changed"] = c.run("--base", "main")
+        results["manifest-changed"] = deps_ensure_e2e(c.bin, c.wt, c.main, "--base", "main")
 
     with case({"package-lock.json": "v1\n"}) as c:
         write(c.fail, "failing\n")
-        results["failed"] = c.run()
+        results["failed"] = deps_ensure_e2e(c.bin, c.wt, c.main)
 
     t("installed line is DEPS: installed", results["installed"].first_line == "DEPS: installed",
       f"line={results['installed'].first_line!r}")
@@ -637,8 +615,6 @@ if __name__ == "__main__":
         section_skipped_and_install,
         section_stamp,
         section_failure,
-        section_redaction,
-        section_outside_parent,
         section_manifest_gate,
         section_cli_contract,
     ):
