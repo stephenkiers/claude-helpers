@@ -206,7 +206,7 @@ def main():
         h.test_result(
             f"{agent} in flow-bash-guard.py KNOWN_FLOW_AGENTS",
             agent in bash_guard_keys,
-            f"Missing from bash guard"
+            "Missing from bash guard"
         )
 
     print()
@@ -225,7 +225,7 @@ def main():
             h.test_result(
                 f"{agent_name} (has Agent/Task tools) in flow-agent-guard.py",
                 agent_name in agent_guard_keys,
-                f"Missing from agent guard"
+                "Missing from agent guard"
             )
 
     print()
@@ -244,7 +244,7 @@ def main():
             h.test_result(
                 f"{agent_name} (has Skill tool) in flow-skill-guard.py",
                 agent_name in skill_guard_keys,
-                f"Missing from skill guard"
+                "Missing from skill guard"
             )
 
     print()
@@ -295,7 +295,7 @@ def main():
             h.test_result(
                 f"Step '{step}' agent '{agent}' in bash guard KNOWN_FLOW_AGENTS",
                 in_bash_guard,
-                f"Missing from bash guard"
+                "Missing from bash guard"
             )
 
             # Agents with Agent/Task tools must also be in agent guard
@@ -310,7 +310,7 @@ def main():
                     h.test_result(
                         f"Step '{step}' agent '{agent}' (with Agent/Task) in agent guard",
                         in_agent_guard,
-                        f"Missing from agent guard"
+                        "Missing from agent guard"
                     )
 
                 # Agents with Skill tool must also be in skill guard
@@ -319,7 +319,7 @@ def main():
                     h.test_result(
                         f"Step '{step}' agent '{agent}' (with Skill) in skill guard",
                         in_skill_guard,
-                        f"Missing from skill guard"
+                        "Missing from skill guard"
                     )
 
     print()
@@ -338,14 +338,14 @@ def main():
             h.test_result(
                 f"Step '{step}' agent '{agent}' in FLOW_STEP_AGENTS",
                 in_buckets,
-                f"Missing from flow_agent_buckets"
+                "Missing from flow_agent_buckets"
             )
 
     # flow-assessor should NOT be in FLOW_STEP_AGENTS (per D2)
     h.test_result(
         "flow-assessor NOT in FLOW_STEP_AGENTS (D2 exemption)",
         "flow-assessor" not in buckets_keys,
-        f"flow-assessor should be exempt per D2"
+        "flow-assessor should be exempt per D2"
     )
 
     print()

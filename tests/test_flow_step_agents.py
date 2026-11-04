@@ -696,19 +696,19 @@ def main():
         h.test_result(
             f"{agent_file.name} includes defence block",
             "flow-step-defence" in body,
-            f"Missing defence block"
+            "Missing defence block"
         )
 
         h.test_result(
             f"{agent_file.name} references flow-step-contract",
             "flow-step-contract.md" in body,
-            f"Missing contract reference"
+            "Missing contract reference"
         )
 
         h.test_result(
             f"{agent_file.name} has Step identity section",
             "Step identity" in body or "step identity" in body.lower(),
-            f"Missing step identity section"
+            "Missing step identity section"
         )
 
     print()
