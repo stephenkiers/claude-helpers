@@ -31,7 +31,7 @@ codeReview:
     CONTEXT: This repository uses a structured JSON knowledge base split across
     domain files (people.json, communications.json, timeline.json, issues.json,
     _meta.json, etc.) with cross-references via standardized IDs. Base schemas
-    are defined in case-tools/schemas/base.md.
+    are defined in schemas/base.md.
 
     INVESTIGATE:
 

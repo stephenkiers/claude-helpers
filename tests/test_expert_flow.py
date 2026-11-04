@@ -850,7 +850,7 @@ def main():
                   "--gates" in args_sec and "**Off by default:**" in args_sec and "restored on `--resume`" in args_sec)
     h.test_result("--gates is rejected with --resume/--abandon/--retro/--list",
                   text.count('|| [ "$GATES" = yes ]') == 4)
-    # Regression (Todoed #103 review attempt 1): a step prompt line forcing foreground-only
+    # Regression (review attempt 1): a step prompt line forcing foreground-only
     # subagents contradicted the harness (nested Agent calls always run in the background) and the
     # join barrier (the step ends its turn and is re-invoked by completion notices, spike #246),
     # so the review step could never join its panel and ended with no receipt.

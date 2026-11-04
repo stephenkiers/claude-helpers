@@ -688,7 +688,7 @@ log.md prints a distinct NOT FOUND reason on stderr and still exits 3.
 
 ## Amendment (2026-10-21): relayed questions are counted from disk by attempt; plan/review freshness is a first-attempt identity floor (#310)
 
-**Problem.** After the 2026-10-14 receipt-markers amendment, steps still failed with `plan checkpoint incomplete (briefs: N, asked: 0)` when every question was answered, because the verifier counted only markers on the receipt. A dropped marker was indistinguishable from no-file-on-disk. (#293, lotl-co/lotl#1650).
+**Problem.** After the 2026-10-14 receipt-markers amendment, steps still failed with `plan checkpoint incomplete (briefs: N, asked: 0)` when every question was answered, because the verifier counted only markers on the receipt. A dropped marker was indistinguishable from no-file-on-disk. (#293).
 
 **Decision.** Relayed questions are disk-authoritative, scoped by an `attempt` field on each question file. Markers are kept as an optional index and a `reused-answers` selector, but they are not the counting source.
 
@@ -743,9 +743,9 @@ The plan checkpoint report can span multiple conversation rounds, where later ro
 - Step 2 of plan_checkpoint_schema.py adds a distinct reason when a report answers file uses the legacy `answers` key instead of `items`.
 - Step 3 adds per-file same-SEQ cause lookup in the verifier, running before the fold to catch shape errors early.
 
-## Amendment (2026-10-21): Closing lotl#1809 retro gaps (#320)
+## Amendment (2026-10-21): Closing retro gaps from a dogfood run (#320)
 
-This amendment closes four gaps discovered in lotl#1809 dogfooding and tracked across #320. Together they ensure a flow can no longer ship with a plan step silently unbuilt, re-ask a gate for a failed step, lose the failure reason, or land unmentioned outstanding work.
+This amendment closes four gaps discovered in dogfooding and tracked across #320. Together they ensure a flow can no longer ship with a plan step silently unbuilt, re-ask a gate for a failed step, lose the failure reason, or land unmentioned outstanding work.
 
 **Decision.**
 
@@ -1269,7 +1269,7 @@ This amendment adds the fleet heal to §1's list of bounded exceptions to "no au
 
 ## Amendment (2026-11-04) — Unknown-skill auto-retry is a fifth bounded exception
 
-Evidence: three flows stopped with `skill invocation failed: Unknown skill: <name>` (`implement-with-haiku` 2026-10-31 on stream-audio #262; `expert-review` 2026-11-04 on Todoed #114 and on llm-enrich #166). The command files and `~/.claude/commands/` links were intact and unchanged. A freshly spawned context sometimes comes up with an incomplete skill registry, and the Skill tool rejects the call before the command runs. The cause is in Claude Code, not this repo. The same failure shows as `Unknown command: /x` on the first prompt of fresh interactive sessions.
+Evidence: three flows stopped with `skill invocation failed: Unknown skill: <name>` (`implement-with-haiku` 2026-10-31 on one private project; `expert-review` 2026-11-04 on two others). The command files and `~/.claude/commands/` links were intact and unchanged. A freshly spawned context sometimes comes up with an incomplete skill registry, and the Skill tool rejects the call before the command runs. The cause is in Claude Code, not this repo. The same failure shows as `Unknown command: /x` on the first prompt of fresh interactive sessions.
 
 - **What the exception is.** Hard stop item 2a re-spawns the failed step once, without asking, when its own validated receipt says exactly `skill invocation failed: Unknown skill: <S>` and `<S>` is the skill that spawn carried.
 - **Why it is safe to automate.** The error is returned before the command body runs, so there is no partial work to repair and nothing for the orchestrator to judge. A different skill name (a nested call failing inside a command that already ran) is never retried. It edits no code, runs no check, answers no gate, sets no `healed`, and does not suspend `--auto-merge`.
