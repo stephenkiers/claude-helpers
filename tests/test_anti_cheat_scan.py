@@ -2,7 +2,7 @@
 """
 Black-box tests for scripts/anti-cheat-scan.py (#380).
 
-Driven via the CLI entry point; one test via subprocess. Covers:
+Driven via the CLI entry point, in-process through tests/_inproc.py; one test via subprocess. Covers:
 1. `implement` profile parity with /implement-with-haiku Gate step 2.
 2. `heal` profile: test edits, gate-config edits, added suppressions, env guards, and the
    revert-to-pass rule (post-image must not restore pre-revert-base text).

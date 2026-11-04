@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Tests for scripts/precedent-digest.py (#292): one deterministic digest of prior human rulings.
 
-Every case runs the real script as a subprocess with HOME pinned to a temp directory, against
+Every case runs the real script (in-process via tests/_inproc.py, with one subprocess end-to-end
+case) with HOME pinned to a temp directory, against
 synthetic fixtures written in the real file shapes (all prose invented). The script is also loaded
 via importlib (as tests/test_plan_effort.py does) so its named ruling constants can be checked.
 """

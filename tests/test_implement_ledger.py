@@ -7,7 +7,8 @@ render, locate (session hit, repo-toplevel fallback, supersede, exit 3), and fin
 #259 incident replay recorded as steps_skipped, idempotent second finish, fail-closed on a missing
 pointer or ledger).
 
-Every subprocess runs with CLAUDE_CODE_SESSION_ID removed, IMPLEMENT_LEDGER_STATE_DIR and HOME
+Every CLI run (in-process via tests/_inproc.py, plus one subprocess end-to-end case) runs with
+CLAUDE_CODE_SESSION_ID removed, IMPLEMENT_LEDGER_STATE_DIR and HOME
 pointed at a temp dir, and finish --log/--state-dir under the same temp dir, so no real telemetry
 or pointer state is touched.
 
