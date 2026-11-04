@@ -513,7 +513,7 @@ reference, is an error (`guard_block`).
 **Agent-file preflight.** Check that these files exist and are readable regular files (following symlinks):
 
 ```bash
-for AGENT_FILE in "$HOME/.claude/agents/flow-implement.md" "$HOME/.claude/agents/flow-review.md" "$HOME/.claude/agents/flow-ship.md" "$HOME/.claude/agents/flow-merge.md"; do
+for AGENT_FILE in "$HOME/.claude/agents/flow-plan.md" "$HOME/.claude/agents/flow-implement.md" "$HOME/.claude/agents/flow-review.md" "$HOME/.claude/agents/flow-ship.md" "$HOME/.claude/agents/flow-merge.md"; do
   [ -r "$AGENT_FILE" ] && [ -f "$AGENT_FILE" ] || { printf 'ERROR: agent file missing: %s\n' "$AGENT_FILE" >&2; exit 1; }
 done
 FLOW_CONTRACT="$HOME/.claude/prompts/flow-step-contract.md"
@@ -961,7 +961,7 @@ Redo-able steps: plan, review.
 | # | Step | Command | Runs in | Agent | Receipt required lines (plus `ATTEMPT: <k>` on every agent receipt) |
 |---|---|---|---|---|---|
 | 00 | worktree | `/track-and-start --issue <ISSUE> --worktree-only` | main worktree | general-purpose | `WORKTREE:` `BRANCH:` `DEPS:` `CHECK_SOURCE:` (orchestrator-written) |
-| 01 | plan | `/expert-plan <ISSUE_URL> --flow <FLOW_DIR> [--effort <PLAN_EFFORT>]` | ticket worktree | general-purpose | `FINAL_PLAN_PATH:` |
+| 01 | plan | `/expert-plan <ISSUE_URL> --flow <FLOW_DIR> [--effort <PLAN_EFFORT>]` | ticket worktree | flow-plan | `FINAL_PLAN_PATH:` |
 | 02 | track | `/track-and-start --issue <ISSUE> --plan-file <PLAN_PATH>` | main worktree | general-purpose | `WORKTREE:` `BRANCH:` (orchestrator-written) |
 | 03 | implement | `/implement-with-haiku <PLAN_PATH>` | ticket worktree | flow-implement | a `ROUND 1` section-header line (shape owned by `scripts/flow-verify-receipt.py`; rule 5) (the action-plan-source line is `fix`-only) |
 | 04 | review | `/expert-review --force [--effort <REVIEW_EFFORT>]` | ticket worktree | flow-review | `REVIEW_DIR:` `CONFIRMED: critical=N high=N medium=N low=N` |
@@ -973,7 +973,7 @@ Redo-able steps: plan, review.
 | — | merge gate | `AskUserQuestion` Merge / Hold / Take over — skipped with `--auto-merge`, except never skipped for a healed run | orchestrator | — | — |
 | 09 | merge | `/merge-and-cleanup <WORKTREE>` | main worktree | flow-merge | `MERGED: yes` (the line is **omitted** unless the PR merged) |
 
-**Agent column note:** plan stays general-purpose pending #360. This table is the single place a step's `subagent_type` is named.
+**Agent column note:** This table is the single place a step's `subagent_type` is named. Worktree, track, and verify are general-purpose (orchestrator-owned bootstrapping and testing; no capability restriction needed).
 
 **Numbering is keyed on `outstanding_format`.** The table is for a flow whose `state.json` has `outstanding_format: 2` (every flow created after the 2026-10-27 amendment). A flow without that key predates it and keeps ship at `07` and merge at `08`, with `07-assess.md` unchanged. Resolve `<NN>` for ship and merge from `outstanding_format` on every use, including the fleet `wait` path. `07-assess.md` is the same in both. The verifier does not key on these names; the marker path arrives via `--receipt`.
 
@@ -982,6 +982,16 @@ The step names are also the telemetry stage names: `worktree`, `plan`, `track`, 
 orchestrator stage outside the loop (listed in the roster for position and telemetry only). The per-step differences are listed
 after it.
 
+**Off-table spawns** (orchestrator-launched subagents outside the main step loop, each with its own agent type):
+
+| Purpose | Agent | Model | Reason |
+|---------|-------|-------|--------|
+| Fidelity audit scout (all plan/implement/review/fix attempts) | expert-scout | haiku | mechanical symbol-and-coverage detection |
+| Post-flow retro grader (`--retro`) | general-purpose | opus | synthesis, not restricted |
+| Auto-rebase worker (verify base-stale recovery) | general-purpose | unset (inherited) | rebase expertise, not restricted |
+| Check healer (verify check-heal phase) | flow-healer | sonnet | healing work, restricted |
+| Outstanding assessor (assess stage) | flow-assessor | sonnet | assessment work, restricted |
+
 ### The step loop
 
 For the current `STEP` with position `<NN>`:
@@ -989,7 +999,7 @@ For the current `STEP` with position `<NN>`:
 **1. Attempt accounting.** For steps whose Agent column is a `flow-*` agent, first check that the agent file, its hook scripts, and the contract file exist and are readable regular files (following symlinks):
 
 ```bash
-AGENT_TYPE="<AGENT_FROM_TABLE>"  # from Steps table Agent column (flow-implement, flow-review, flow-ship, or flow-merge)
+AGENT_TYPE="<AGENT_FROM_TABLE>"  # from Steps table Agent column (flow-plan, flow-implement, flow-review, flow-ship, or flow-merge)
 AGENT_FILE="$HOME/.claude/agents/${AGENT_TYPE}.md"
 FLOW_CONTRACT="$HOME/.claude/prompts/flow-step-contract.md"
 [ -r "$AGENT_FILE" ] && [ -f "$AGENT_FILE" ] || { printf 'ERROR: agent file missing: %s\n' "$AGENT_FILE" >&2; exit 1; }
