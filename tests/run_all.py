@@ -42,6 +42,10 @@ def suite_env(tmp_home):
     CLAUDE_CODE_SESSION_ID dropped (a suite must not depend on, or write state for, the session
     that happens to be running it)."""
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+    # Suites run in parallel, so scripts' short git timeouts are raised (load, not a hang, is the
+    # usual cause of a slow git call here). A suite that sets its own value keeps it.
+    for key in ("FLOW_VERIFY_GIT_TIMEOUT_SECS", "PRECEDENT_DIGEST_GIT_TIMEOUT_SECS"):
+        env.setdefault(key, "60")
     return {**env, "HOME": str(tmp_home), "PYTHONUSERBASE": REAL_USER_BASE}
 
 

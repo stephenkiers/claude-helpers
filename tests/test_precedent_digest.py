@@ -96,7 +96,7 @@ class Fixture:
 def run_digest_e2e(home, args, cwd=None, env=None):
     """Run the real script with HOME pinned to `home` (subprocess e2e). Returns (returncode, stdout, stderr)."""
     assert_temp_home(home)
-    full_env = {**os.environ, "HOME": str(home), "TZ": "UTC"}
+    full_env = {**os.environ, "HOME": str(home), "TZ": "UTC", "PRECEDENT_DIGEST_GIT_TIMEOUT_SECS": "60"}
     full_env.pop("CLAUDE_CODE_SESSION_ID", None)
     full_env.update(env or {})
     proc = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True,
@@ -107,7 +107,7 @@ def run_digest_e2e(home, args, cwd=None, env=None):
 def run_digest(home, args, cwd=None, env=None):
     """Run the real script with HOME pinned to `home`. Returns (returncode, stdout, stderr)."""
     assert_temp_home(home)
-    full_env = {**os.environ, "HOME": str(home), "TZ": "UTC"}
+    full_env = {**os.environ, "HOME": str(home), "TZ": "UTC", "PRECEDENT_DIGEST_GIT_TIMEOUT_SECS": "60"}
     full_env.pop("CLAUDE_CODE_SESSION_ID", None)
     full_env.update(env or {})
     proc = run_python([str(SCRIPT), *args], env=full_env, cwd=str(cwd or home))
