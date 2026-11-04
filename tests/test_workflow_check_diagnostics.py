@@ -82,6 +82,46 @@ if __name__ == "__main__":
         test_result("_redact handles api_key", diag._redact("api_key=secret") == "api_key=<redacted>")
         test_result("_redact handles key: syntax", diag._redact("key: myvalue") == "key: <redacted>")
 
+        # Test JSON-shaped secrets with quoted keys
+        result = diag._redact('{"password": "mysecret123"}')
+        test_result(
+            "_redact redacts JSON password pattern",
+            "password" in result and "mysecret123" not in result,
+            f"Expected JSON password to be redacted, got '{result}'"
+        )
+
+        # Test JSON-shaped api_key pattern
+        result = diag._redact('{"api_key": "abc123def456"}')
+        test_result(
+            "_redact redacts JSON api_key pattern",
+            "api_key" in result and "abc123def456" not in result,
+            f"Expected JSON api_key to be redacted, got '{result}'"
+        )
+
+        # Test bare GitHub token (ghp_ prefix)
+        result = diag._redact("ghp_abc123def456xyz789")
+        test_result(
+            "_redact redacts bare GitHub token ghp_",
+            "ghp_" not in result or "<redacted>" in result,
+            f"Expected GitHub token to be redacted, got '{result}'"
+        )
+
+        # Test bare GitHub token (ghs_ prefix)
+        result = diag._redact("ghs_xyz789abc123def456")
+        test_result(
+            "_redact redacts bare GitHub token ghs_",
+            "ghs_" not in result or "<redacted>" in result,
+            f"Expected GitHub token to be redacted, got '{result}'"
+        )
+
+        # Test AWS access key ID (AKIA prefix)
+        result = diag._redact("AKIA1234567890ABCDEF")
+        test_result(
+            "_redact redacts AWS access key ID",
+            "AKIA" not in result or "<redacted>" in result,
+            f"Expected AWS key to be redacted, got '{result}'"
+        )
+
         # --- execute_check captures stdout ---
         r = execute_check("echo out-line; echo err-line >&2; exit 3", cwd=tmp_root)
         test_result("execute_check captures stdout", "out-line" in r.stdout, r.stdout)

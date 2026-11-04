@@ -19,7 +19,7 @@ import workflow.checks as checks_module
 from workflow.checks import (
     execute_check, build_check_order, resolve_check_command, resolve_check_timeout,
     resolve_check_detail, detect_package_json_check, suggest_from_claude_md,
-    ensure_check, record_check_answer,
+    ensure_check, record_check_answer, OPT_OUT_SOURCE, NO_CHECK_CONFIGURED_MESSAGE,
 )
 from workflow.deps import LOCKFILE_MANAGERS
 from _test_harness import Harness
@@ -382,7 +382,132 @@ if __name__ == "__main__":
         test_result("(8) checkTimeoutSecs 1 is the smallest accepted value", seconds == 1, f"seconds={seconds!r}")
 
     print()
-    print("[Section 9] project.yaml checkTimeoutSecs and invalid checkOptOut (#338 directives 1-3)")
+    print("[Section 9] OPT_OUT_SOURCE is exported and reported by an opt-out resolution (from hardening spec)")
+
+    test_result(
+        "OPT_OUT_SOURCE is the string 'opt-out'",
+        OPT_OUT_SOURCE == "opt-out",
+        f"OPT_OUT_SOURCE={OPT_OUT_SOURCE!r}",
+    )
+
+    with tempfile.TemporaryDirectory() as tmp, _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+        root = Path(tmp)
+        wt, main = root / "wt", root / "main"
+        wt.mkdir()
+        main.mkdir()
+        _write(wt / ".claude" / "project.yaml", 'checkOptOut: "docs-only repo"\n')
+        command, source, failure = resolve_check_command(wt, main)
+        test_result(
+            "opt-out resolution: source equals OPT_OUT_SOURCE, command is None, failure reason present",
+            source == OPT_OUT_SOURCE and command is None and failure is not None
+            and "docs-only repo" in failure,
+            f"command={command!r} source={source!r} failure={failure!r}",
+        )
+
+    print()
+    print("[Section 10] Invalid checkOptOut edges are ignored with the non-empty-string note (from hardening spec)")
+
+    with tempfile.TemporaryDirectory() as tmp, _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+        root = Path(tmp)
+        wt, main = root / "wt", root / "main"
+        wt.mkdir()
+        main.mkdir()
+        _write(wt / ".claude" / "project.yaml", 'checkOptOut: ""\n')
+        command, source, failure = resolve_check_command(wt, main)
+        test_result(
+            "empty-string checkOptOut is ignored: no opt-out source, no command",
+            command is None and source is None and failure is not None
+            and "no check command configured" in failure,
+            f"command={command!r} source={source!r} failure={failure!r}",
+        )
+        test_result(
+            "empty-string checkOptOut: failure reason says checkOptOut must be a non-empty string",
+            failure is not None and "checkOptOut must be a non-empty string" in failure,
+            f"failure={failure!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp, _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+        root = Path(tmp)
+        wt, main = root / "wt", root / "main"
+        wt.mkdir()
+        main.mkdir()
+        _write(wt / ".claude" / "project.yaml", "checkOptOut: 42\n")
+        command, source, failure = resolve_check_command(wt, main)
+        test_result(
+            "numeric checkOptOut is ignored: source is not opt-out, failure says non-empty string",
+            source != OPT_OUT_SOURCE and command is None
+            and failure is not None and "checkOptOut must be a non-empty string" in failure,
+            f"command={command!r} source={source!r} failure={failure!r}",
+        )
+
+    print()
+    print("[Section 11] Invalid project.yaml checkTimeoutSecs edges are named in timeout_source (from hardening spec)")
+
+    with tempfile.TemporaryDirectory() as tmp, _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+        root = Path(tmp)
+        wt, main = root / "wt", root / "main"
+        wt.mkdir()
+        main.mkdir()
+        _write(wt / ".claude" / "project.yaml", "commands:\n  check: just check\ncheckTimeoutSecs: -5\n")
+        command, source, failure = resolve_check_command(wt, main)
+        project_yaml = wt / ".claude" / "project.yaml"
+        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml", "worktree")
+        test_result(
+            "negative project.yaml checkTimeoutSecs (-5) is ignored; falls back to the 300 default",
+            seconds == 300
+            and timeout_source == "default (ignored invalid checkTimeoutSecs in worktree project.yaml)",
+            f"seconds={seconds!r} timeout_source={timeout_source!r}",
+        )
+        test_result(
+            "negative project.yaml checkTimeoutSecs (-5) is named in timeout_source",
+            "ignored invalid checkTimeoutSecs in worktree project.yaml" in timeout_source,
+            f"timeout_source={timeout_source!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp, _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+        root = Path(tmp)
+        wt, main = root / "wt", root / "main"
+        wt.mkdir()
+        main.mkdir()
+        _write(wt / ".claude" / "project.yaml", "commands:\n  check: just check\ncheckTimeoutSecs: \"900\"\n")
+        command, source, failure = resolve_check_command(wt, main)
+        project_yaml = wt / ".claude" / "project.yaml"
+        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml", "worktree")
+        test_result(
+            "string project.yaml checkTimeoutSecs (\"900\") is named in timeout_source as ignored",
+            "ignored invalid checkTimeoutSecs in worktree project.yaml" in timeout_source and seconds == 300,
+            f"seconds={seconds!r} timeout_source={timeout_source!r}",
+        )
+
+    print()
+    print("[Section 12] No-check-configured message: sources tried on its own line (from hardening spec)")
+
+    with tempfile.TemporaryDirectory() as tmp, _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+        root = Path(tmp)
+        wt, main = root / "wt", root / "main"
+        wt.mkdir()
+        main.mkdir()
+        command, source, failure = resolve_check_command(wt, main)
+        lines = (failure or "").splitlines()
+        test_result(
+            "nothing configured: failure is the message's lines plus one 'sources tried' line",
+            len(lines) == len(NO_CHECK_CONFIGURED_MESSAGE.splitlines()) + 1,
+            f"failure={failure!r}",
+        )
+        test_result(
+            "nothing configured: first line carries 'no check command configured'",
+            bool(lines) and "no check command configured" in lines[0],
+            f"lines={lines!r}",
+        )
+        tried_lines = [ln for ln in lines[1:] if "sources tried" in ln.lower()]
+        test_result(
+            "nothing configured: 'sources tried' is on its own line, separate from the first sentence",
+            len(tried_lines) == 1 and "no check command configured" not in tried_lines[0],
+            f"lines={lines!r}",
+        )
+
+    print()
+    print("[Section 13] project.yaml checkTimeoutSecs and invalid checkOptOut (#338 directives 1-3)")
 
     with tempfile.TemporaryDirectory() as tmp, _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
         root = Path(tmp)

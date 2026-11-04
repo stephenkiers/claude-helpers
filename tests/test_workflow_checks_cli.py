@@ -12,13 +12,25 @@ Run with: python3 tests/test_workflow_checks_cli.py
 
 import sys
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from _test_harness import Harness
+from _test_harness import Harness, REPO_ROOT
+
+
+def _run_checks_cli(cache, env_extra=None):
+    """Run `checks run -` with the given repo-cache dict on stdin; return the CompletedProcess."""
+    env = {k: v for k, v in os.environ.items() if k != "SHIPIT_CHECK_TIMEOUT_SECS"}
+    env.update(env_extra or {})
+    return subprocess.run(
+        [sys.executable, "-m", "scripts.workflow.cli", "checks", "run", "-"],
+        input=json.dumps(cache), capture_output=True, text=True,
+        cwd=str(REPO_ROOT), env=env,
+    )
 
 
 if __name__ == "__main__":
@@ -191,7 +203,7 @@ if __name__ == "__main__":
 
     def run_slow(extra_args, env_extra, cache_timeout):
         import os
-        cache = {"commands": {"test": "sleep 3"}}
+        cache = {"commands": {"test": "sleep 1.5"}}
         if cache_timeout is not None:
             cache["checkTimeoutSecs"] = cache_timeout
         env = {k: v for k, v in os.environ.items() if k != "SHIPIT_CHECK_TIMEOUT_SECS"}
@@ -203,15 +215,15 @@ if __name__ == "__main__":
         )
 
     proc = run_slow([], {}, 1)
-    test_result("cache checkTimeoutSecs=1 times out a 3s check", proc.returncode == 1 and "timed out after 1s" in proc.stdout)
+    test_result("cache checkTimeoutSecs=1 times out a 1.5s check", proc.returncode == 1 and "timed out after 1s" in proc.stdout)
     proc = run_slow([], {}, 10)
-    test_result("cache checkTimeoutSecs=10 lets a 3s check pass", proc.returncode == 0)
+    test_result("cache checkTimeoutSecs=10 lets a 1.5s check pass", proc.returncode == 0)
     proc = run_slow([], {"SHIPIT_CHECK_TIMEOUT_SECS": "1"}, 10)
     test_result("env overrides cache", proc.returncode == 1 and "timed out after 1s" in proc.stdout)
     proc = run_slow(["--timeout", "10"], {"SHIPIT_CHECK_TIMEOUT_SECS": "1"}, 1)
     test_result("--timeout overrides env and cache", proc.returncode == 0)
     proc = run_slow([], {}, -5)
-    test_result("invalid cache checkTimeoutSecs falls back to default (3s check passes)", proc.returncode == 0)
+    test_result("invalid cache checkTimeoutSecs falls back to default (1.5s check passes)", proc.returncode == 0)
 
     print()
     print("[Section 7] checks resolve-check: JSON fields, opt-out vs not-configured exit 1 (#338)")
@@ -456,6 +468,22 @@ if __name__ == "__main__":
             proc.returncode == 2,
             f"rc={proc.returncode} err={proc.stderr[-200:]!r}",
         )
+
+    print()
+    print("[Section 4] A timed-out check's failure output names checkTimeoutSecs (from hardening spec)")
+
+    proc = _run_checks_cli({"commands": {"test": "sleep 3"}, "checkTimeoutSecs": 1})
+    combined = proc.stdout + proc.stderr
+    test_result(
+        "timed-out check (checkTimeoutSecs=1, sleep 3): exit 1 and the timeout is reported",
+        proc.returncode == 1 and "timed out after 1s" in combined,
+        f"rc={proc.returncode} out={combined[:300]!r}",
+    )
+    test_result(
+        "timed-out check failure output names checkTimeoutSecs",
+        "(checkTimeoutSecs or SHIPIT_CHECK_TIMEOUT_SECS sets the limit)" in combined,
+        f"out={combined[:300]!r}",
+    )
 
     print()
     h.summarize_and_exit()
