@@ -571,6 +571,19 @@ def main():
     h.test_result("Every Exit Path has both Rebase rows",
                   re.search(r"^\| Hard stop → auto-Rebase[^\n]*clean", exit_sec, re.M) is not None
                   and re.search(r"^\| Hard stop → auto-Rebase[^\n]*conflicts", exit_sec, re.M) is not None)
+    hflat = " ".join(hard.replace("`", "").split())
+    h.test_result("Unknown-skill auto-retry is gated on the exact receipt reason and the step's own skill",
+                  "Auto-retry (Unknown skill only)" in hard
+                  and "skill invocation failed: Unknown skill: <S>" in hflat
+                  and "<SKILL> this step's spawn prompt carried" in hflat
+                  and 'stop_source[STEP]' in hard)
+    h.test_result("Unknown-skill auto-retry is bounded to one per step and under the failure cap",
+                  "skill_retries[STEP]" in hard and "failures[STEP] < 2" in hard and "at most one such retry per step per flow" in hflat)
+    h.test_result("Unknown-skill auto-retry sets no healed and keeps --auto-merge",
+                  "sets no `healed`, suspends no `--auto-merge`" in hard)
+    h.test_result("skill_retries is a documented state field and the retry has an Exit Path row",
+                  "| `skill_retries` |" in flow_state
+                  and re.search(r"^\| Hard stop → Unknown-skill auto-retry", exit_sec, re.M) is not None)
     fm_tools = frontmatter(text)
     h.test_result("allowed-tools grants only the exact git fetch origin / rebase grants for Rebase",
                   all(f"Bash({g})" in fm_tools for g in
