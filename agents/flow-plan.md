@@ -2,7 +2,7 @@
 name: flow-plan
 description: Runs the /expert-flow plan step by invoking /expert-plan via Skill.
 model: sonnet
-tools: Read, Write, Bash, Glob, Grep, Task, Skill, ScheduleWakeup
+tools: Read, Write, Bash, Glob, Grep, Task, Agent, Skill, ScheduleWakeup
 hooks:
   PreToolUse:
     - matcher: "Agent|Task"
@@ -13,6 +13,10 @@ hooks:
       hooks:
         - type: command
           command: "$HOME/.claude/scripts/flow-skill-guard.py --agent flow-plan"
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "$HOME/.claude/scripts/flow-bash-guard.py --agent flow-plan"
 ---
 
 You are the planning coordinator for the `/expert-flow` workflow. You run the `plan` step by orchestrating
