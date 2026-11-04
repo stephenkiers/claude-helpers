@@ -173,6 +173,29 @@ def main():
         and doc.find("**Test deletions (every run):**") < doc.find("   Key extractions:"),
     )
 
+    print("[Section 7] Inlining in Pass 2 and Amalgamator panels")
+    # Locate Pass 2 section: from "Supply inline only the **Business Context**" to just before "**Reframed as skeptic-verifier**"
+    pass2_supply = section_between(panel, "Supply inline only the **Business Context**", "**Reframed as skeptic-verifier")
+    h.test_result(
+        "Pass 2 section mentions TEST_DELETIONS_BLOCK inline instructions",
+        "TEST_DELETIONS_BLOCK" in pass2_supply,
+    )
+    h.test_result(
+        "Pass 2 section mentions the test cleanup heading",
+        "Test cleanup" in pass2_supply,
+    )
+
+    # Locate Amalgamator section: from "Its job: synthesis" to "Its mandate and the"
+    amalgamator = section_between(panel, "Its job: synthesis, not review. It reads:", "Its mandate and the")
+    h.test_result(
+        "Amalgamator section mentions TEST_DELETIONS_BLOCK in its reads",
+        "TEST_DELETIONS_BLOCK" in amalgamator,
+    )
+    h.test_result(
+        "Amalgamator section mentions the test cleanup heading",
+        "Test cleanup" in amalgamator,
+    )
+
     h.summarize_and_exit()
 
 
