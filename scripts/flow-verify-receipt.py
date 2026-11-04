@@ -59,6 +59,8 @@ except ImportError:
 
 # Constants for timeouts and mtime skew tolerance
 MTIME_SKEW_SECS = 5
+
+
 def _env_secs(name: str, default: int) -> int:
     """Read a whole-seconds timeout from the environment. Unset, non-integer, or <= 0 values fall
     back to `default`, so a bad value cannot crash the script at import."""

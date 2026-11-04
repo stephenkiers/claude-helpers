@@ -42,7 +42,7 @@ def run_verifier_inproc(args, env):
     guarantee exit-code parity with a real subprocess; the `_e2e` tests own that contract."""
     env = dict(env)
     env.setdefault("FLOW_VERIFY_GIT_TIMEOUT_SECS", "60")
-    return run_python([VERIFIER, *args], env=env)
+    return run_python([VERIFIER, *args], env=env, replace_env=True)
 
 
 def run_verifier(args, home):

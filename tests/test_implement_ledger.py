@@ -125,7 +125,7 @@ class Sandbox:
             env["CLAUDE_CODE_SESSION_ID"] = session
         return run_python(
             [str(SCRIPT), *args],
-            cwd=str(cwd or self.repo), env=env,
+            cwd=str(cwd or self.repo), env=env, replace_env=True,
         )
 
     def command_ends(self):

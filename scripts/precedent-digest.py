@@ -234,6 +234,8 @@ STOPWORDS = frozenset({
 KEY_RE = re.compile(r"^[^/\s]+/[^/\s]+$")  # matches owner/name
 SCP_RE = re.compile(r"^[^@/\s]+@[^:/\s]+:(.+)$")  # matches git@host:path
 URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+/(.+)$")  # matches scheme://host/path
+
+
 def _env_secs(name: str, default: int) -> int:
     """Read a whole-seconds timeout from the environment. Unset, non-integer, or <= 0 values fall
     back to `default`, so a bad value cannot crash the script at import."""

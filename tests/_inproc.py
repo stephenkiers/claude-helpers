@@ -10,6 +10,7 @@ once per call.
 `env=` overlays `os.environ` by default: keys given in `env` are set and every other inherited key
 stays. Pass `replace_env=True` to make `env` the whole environment. Use it when a caller removes an
 inherited key (e.g. CLAUDE_CODE_SESSION_ID), because an overlay would put that key back.
+`replace_env` is ignored when `env` is None (the inherited environment is used as is).
 
 Single-threaded only: os.environ, the cwd, sys.argv/sys.path, the std streams and sys.modules are
 process-global, so run one `run_python` at a time per process. A nested call raises RuntimeError.
@@ -62,12 +63,12 @@ def _code_for(path):
 def state_snapshot():
     """Restore process state on exit, including when the block raises: os.environ, the cwd,
     sys.argv, sys.path, sys.stdin/stdout/stderr, sys.modules['__main__'], and sys.modules itself
-    (modules added inside the block are dropped, so the next import runs them fresh)."""
+    (modules added inside the block are dropped, so the next import runs them fresh; modules
+    removed or replaced inside it are put back)."""
     saved_env, saved_cwd = dict(os.environ), os.getcwd()
     saved_argv, saved_path = sys.argv, list(sys.path)
     saved_streams = (sys.stdin, sys.stdout, sys.stderr)
-    saved_main = sys.modules.get("__main__")
-    saved_modules = set(sys.modules)
+    saved_modules = dict(sys.modules)
     try:
         yield
     finally:
@@ -77,10 +78,7 @@ def state_snapshot():
         for name in list(sys.modules):
             if name not in saved_modules:
                 del sys.modules[name]
-        if saved_main is None:
-            sys.modules.pop("__main__", None)
-        else:
-            sys.modules["__main__"] = saved_main
+        sys.modules.update(saved_modules)  # undo removals and replacements too
         os.environ.clear()
         os.environ.update(saved_env)
         os.chdir(saved_cwd)

@@ -103,7 +103,7 @@ def run_verify(receipt_path: str, repo: str, base_sha: str, home: str, main_work
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
     env["HOME"] = home
     env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
-    result = run_python(cmd, env=env)
+    result = run_python(cmd, env=env, replace_env=True)
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 

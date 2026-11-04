@@ -63,6 +63,7 @@ def run_verifier(args, home, cwd):
         [str(VERIFIER)] + args,
         cwd=str(cwd),
         env=env,
+        replace_env=True,
     )
     return result.returncode, result.stdout, result.stderr
 
