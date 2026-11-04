@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PreToolUse hook for flow-implement, flow-review, flow-ship, and flow-merge agents:
+PreToolUse hook for flow-implement, flow-plan, flow-review, flow-ship, and flow-merge agents:
 best-effort Bash command guard with per-agent rules.
 
 Threat model: prevent accidental shell wrappers and publishing commands.
@@ -24,12 +24,30 @@ tracking.
 
 Per-agent behavior:
   - flow-implement: full wrapper and publishing-verb checks (existing behavior)
+  - flow-plan: best-effort publish-deny (see docstring entry below)
   - flow-review: pass-through (allow all Bash commands)
   - flow-ship: restricted wrappers, allowed python3/eval forms, restricted git push forms,
     gh stack sync allowed, gh pr merge (any flags) denied
   - flow-merge: restricted wrappers, allowed python3/eval forms, allowed git push forms,
     gh stack sync allowed, gh pr merge --admin denied, gh pr merge --squash allowed only
     when no merge-queue config exists
+
+flow-plan (best-effort publish-deny):
+  Denies publishing verbs and interpreter verb pairs only. All other Bash commands are allowed.
+  Unparseable commands (unterminated quotes, unclosed $( or backticks) are allowed (not blocked),
+  since we cannot confirm they are publishing and the guard is best-effort. Heredoc and comment
+  constructs trigger the quote-blind fallback.
+  Known bypasses: python3 -c and eval with arbitrary code bypass this rule (same as
+  flow-implement). Write-then-run scripts also bypass it (the agent writes a script file,
+  then Bash executes it separately, outside this guard).
+
+flow-assessor:
+  Pass-through (allow all Bash commands); its tool-level Bash restrictions already limit
+  it to scoped git and ls commands (#380; ADR-0023 2026-10-29 amendment).
+
+flow-healer:
+  Pass-through (allow all Bash commands); its tool-level Bash restrictions already limit
+  it to scoped git commands (#380; ADR-0023 2026-10-29 amendment).
 
 Exit codes:
   - 0: allow (command is safe)
@@ -46,7 +64,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 
 # Known flow agents that are governed by this guard.
-KNOWN_FLOW_AGENTS = ("flow-implement", "flow-review", "flow-ship", "flow-merge", "flow-healer")
+KNOWN_FLOW_AGENTS = ("flow-implement", "flow-plan", "flow-review", "flow-ship", "flow-merge", "flow-healer", "flow-assessor")
 
 # Escalation hint for denied push/merge commands: tells the agent to surface via Ask block.
 ESCALATION_HINT = "If this command is legitimate, do not retry a variant: surface it to the human through the Ask block (prompts/flow-reference.md) instead."
@@ -1005,18 +1023,19 @@ def check_command_for_agent(command: str, agent: str) -> Tuple[bool, str, str]:
 
     Per-agent rules:
     - flow-implement: full checks (wrappers and publishing verbs)
+    - flow-plan: best-effort publish-deny (publishing verbs and interpreter pairs only)
     - flow-review: pass through (allow all)
     - flow-healer: pass through (its tools list already restricts Bash to scoped git)
+    - flow-assessor: pass through (its tools list already restricts Bash to scoped git and ls)
     - flow-ship: restricted wrappers, allowed git push forms, all gh pr merge denied
     - flow-merge: restricted wrappers, allowed git push forms, gh pr merge --admin denied,
       gh pr merge --squash allowed only if no merge-queue config exists
 
     Returns: (is_blocked: bool, reason: str if blocked, rule_id: str)
     """
-    if agent in ("flow-review", "flow-healer"):
-        # flow-review: pass through. flow-healer: pass through too; its Bash is already limited
-        # by its tools list to git diff/status/rev-parse/add/commit/checkout HEAD -- (no push,
-        # no gh), so this guard adds nothing (#380; ADR-0023 2026-10-29 amendment).
+    if agent in ("flow-review", "flow-healer", "flow-assessor"):
+        # flow-review, flow-healer, flow-assessor: pass through. Their Bash is already limited
+        # by their tool-level restrictions (#380; ADR-0023 2026-10-29 amendment).
         return False, "", ""
 
     # Fail closed on unknown flow-* agents; allow non-flow agents (e.g., general-purpose)
@@ -1035,6 +1054,10 @@ def check_command_for_agent(command: str, agent: str) -> Tuple[bool, str, str]:
     try:
         segments = split_segments(command)
     except UnparseableCommand as exc:
+        # flow-plan is best-effort publish-deny: allow unparseable commands since we cannot
+        # confirm they are publishing. All other agents fail closed on unparseable.
+        if agent == "flow-plan":
+            return False, "", ""
         return True, f"Unparseable command: {exc}", "parse-error"
     cwd = None
     try:
@@ -1060,6 +1083,14 @@ def check_command_for_agent(command: str, agent: str) -> Tuple[bool, str, str]:
             if is_wrapper_form(tokens):
                 return True, "shell wrappers (sh -c, bash -c, eval, etc.) are not allowed", "wrapper-form"
 
+            if is_publishing_verb(tokens):
+                return True, "publishing commands (git push, gh pr create, etc.) are not allowed", "publishing-verb"
+
+            if is_interpreter_verb_pair(tokens):
+                return True, "interpreter -c/-e program runs a publishing command (git push, gh pr create, etc.)", "publishing-verb"
+
+        elif agent == "flow-plan":
+            # flow-plan: best-effort publish-deny (publishing verbs and interpreter pairs only)
             if is_publishing_verb(tokens):
                 return True, "publishing commands (git push, gh pr create, etc.) are not allowed", "publishing-verb"
 
@@ -1349,7 +1380,7 @@ def main():
     try:
         # Parse CLI argument
         if len(sys.argv) < 3 or sys.argv[1] != "--agent":
-            print("Usage: flow-bash-guard.py --agent <flow-implement|flow-review|flow-ship|flow-merge|flow-healer|auto>", file=sys.stderr)
+            print("Usage: flow-bash-guard.py --agent <flow-implement|flow-plan|flow-review|flow-ship|flow-merge|flow-healer|flow-assessor|auto>", file=sys.stderr)
             sys.exit(2)
 
         agent = sys.argv[2]
@@ -1369,12 +1400,12 @@ def main():
         if agent == "auto":
             agent_type = payload.get("agent_type")
 
-            # If agent_type is missing or not flow-*, allow
+            # If agent_type is missing or does not start with "flow-", allow (not governed by this guard)
             if not agent_type or not agent_type.startswith("flow-"):
                 print(f"Auto mode: agent_type '{agent_type}' is not a flow agent, allowing", file=sys.stderr)
                 sys.exit(0)
 
-            # If agent_type starts with flow- but not in known set, fail closed
+            # If agent_type starts with "flow-" but not in known set, fail closed
             if agent_type not in KNOWN_FLOW_AGENTS:
                 print(f"Auto mode: agent_type '{agent_type}' is unknown, denying", file=sys.stderr)
                 sys.exit(2)
@@ -1387,8 +1418,8 @@ def main():
                 print(f"Explicit agent '{agent}' is unknown, denying", file=sys.stderr)
                 sys.exit(2)
 
-        # flow-review and flow-healer have no Bash restrictions here; pass through before payload checks
-        if agent in ("flow-review", "flow-healer"):
+        # flow-review, flow-healer, and flow-assessor have no Bash restrictions here; pass through
+        if agent in ("flow-review", "flow-healer", "flow-assessor"):
             sys.exit(0)
 
         tool_name = payload.get("tool_name")

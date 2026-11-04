@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PreToolUse hook for flow-implement and flow-review agents: validates subagent_type allowlist.
+PreToolUse hook for flow-implement, flow-plan and flow-review agents: validates subagent_type allowlist.
 
 Threat model: prevent accidental or casual agent misuse. Fail closed on any ambiguity.
 """
@@ -11,10 +11,12 @@ import sys
 # Allowlist: maps agent name to the set of subagent_type values it may spawn.
 ALLOWED_SUBAGENT_TYPES = {
     "flow-implement": {"plan-implementer"},
+    "flow-plan": {"expert-reviewer", "expert-scout"},
     "flow-review": {"expert-reviewer", "expert-scout"},
     "flow-ship": set(),
     "flow-merge": set(),
     "flow-healer": set(),  # no Agent/Task at all; spawned only by the orchestrator verify check-heal
+    "flow-assessor": set(),  # no Agent/Task at all; assessment worker spawned by flow orchestrator
 }
 
 
@@ -63,7 +65,7 @@ def main():
     try:
         # Parse CLI argument
         if len(sys.argv) < 3 or sys.argv[1] != "--agent":
-            print("Usage: flow-agent-guard.py --agent <flow-implement|flow-review|flow-ship|flow-merge|flow-healer|auto>", file=sys.stderr)
+            print("Usage: flow-agent-guard.py --agent <flow-implement|flow-plan|flow-review|flow-ship|flow-merge|flow-healer|flow-assessor|auto>", file=sys.stderr)
             sys.exit(2)
 
         agent = sys.argv[2]
@@ -80,10 +82,15 @@ def main():
         if agent == "auto":
             agent_type = payload.get("agent_type")
 
-            # If agent_type is missing or not a flow agent, allow
-            if not agent_type or agent_type not in ("flow-implement", "flow-review", "flow-ship", "flow-merge", "flow-healer"):
+            # If agent_type is missing or does not start with "flow-", allow (not governed by this guard)
+            if not agent_type or not agent_type.startswith("flow-"):
                 print(f"Auto mode: agent_type '{agent_type}' is not a flow agent, allowing", file=sys.stderr)
                 sys.exit(0)
+
+            # If agent_type starts with "flow-" but not in registry, fail closed
+            if agent_type not in ALLOWED_SUBAGENT_TYPES:
+                print(f"Auto mode: agent_type '{agent_type}' is unknown, denying", file=sys.stderr)
+                sys.exit(2)
 
             # Use the agent_type from payload
             agent = agent_type
