@@ -915,14 +915,14 @@ The assessor runs on **Sonnet**, because this is judgment work (ADR-0004).
 
 **Agent file note:** `agents/flow-assessor.md` predates the #358-#360 step-agent conventions and should be conformed when next touched (adding any convention table entries or preflight procedures that land after this amendment). A dated note (2026-11-03): conforming both flow-assessor and flow-healer to the defence-block/contract-line/Step-identity convention is deferred. The convention test lists both by name with a dated reason pointing at this ADR. Flow-assessor is registered as pass-through in the Bash guard.
 
-### Plan step hard-stop on missing agent files (amendment 2026-11-03)
+### Plan step hard-stop on missing agent files (amendment 2026-11-03, #446)
 
-When the plan step runs under `flow-plan`, a missing `agents/flow-plan.md`, the three hook scripts
+When a restricted agent step runs, a missing agent file, the three hook scripts
 (`flow-agent-guard.py`, `flow-skill-guard.py`, `flow-bash-guard.py`), or `prompts/flow-step-contract.md`
 in `~/.claude/` is a hard stop at spawn time, before the attempt is counted. The stop message names
 the missing file(s) and instructs the human to run `/setup-local`. There is no general-purpose
-fallback. The check gates (`commands.check` detection, `/expert-plan` invocation, spawn-time preflight)
-run from the orchestrator before spawning the step, per ADR-0023 §1.
+fallback. The check gates (`commands.check` detection, step invocation, run-start preflight)
+run from the orchestrator before spawning any restricted agent, per ADR-0023 §1.
 
 ### 4. Verify-first is mandatory
 

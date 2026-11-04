@@ -143,9 +143,9 @@ When `/expert-flow` spawns the implement, fix, and review steps, they run on pur
 
 When `/expert-flow` spawns the plan step, it runs on the `flow-plan` restricted agent (see ADR-0008
 2026-11-03 amendment). The agent frontmatter pins `model: sonnet`. This governs the plan-step
-orchestrator, and its contributors and synthesis inherit it: all `/expert-plan` reviewers and the
-synthesis step (`plan-synthesis`) run on Sonnet. This restores the documented `/expert-plan` panel
-default tier.
+orchestrator shell; judgment-step tiers (contributors, Carl, synthesis, auditor) are determined per
+ADR-0020's effort levels and `--models` flag in `/expert-plan`. This restores the documented
+`/expert-plan` panel default tier.
 
 **Plan-side consequence of #358's panel re-tiering (2026-10-26 amendment):** The amendment above
 documented that restricted flow-* agents carry their own model pins in frontmatter, and their
@@ -157,8 +157,7 @@ model, not the session model.
 
 **Task-time model override (cite probe #358, Step 2.1, decision unchanged):** When a Task-time `model`
 override is passed to a flow-plan invocation (e.g., during a manual escalation to Opus for a single
-plan run), it beats the agent file's pin per the already-documented probe result. The override path
-stays available through `--plan-effort` style model hints, should the orchestrator add such a feature.
+plan run), it beats the agent file's pin per the already-documented probe result.
 
 **Why the dated model pins stay on expert-scout, plan-implementer, and spike-researcher:** The three
 mechanical roles pinned to `claude-haiku-4-5-20251001` (`expert-scout` Q&A and Code Rot Cody,

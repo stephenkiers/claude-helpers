@@ -253,7 +253,7 @@ is already a restricted `expert-scout`).
 
 The implement and fix steps run `flow-implement.md` (model pinned to `sonnet`, no `Edit`, Bash guard);
 the review step runs `flow-review.md` (model pinned to `sonnet`, `Edit` kept for red-lined
-`claude-action-plan.md`). All other steps spawn `general-purpose` agents as before.
+`claude-action-plan.md`). Worktree, track, verify, the retro grader and the auto-rebase worker spawn `general-purpose` agents as before (see amendment 2026-11-03).
 
 ### Control matrix for restricted steps
 
@@ -377,6 +377,8 @@ This supersedes the 2.2, 2.3 and 2.4 results above where they differ.
 
 Open: interactive-session permission behaviour, and behaviour under a recorded parent permission mode, are still unprobed (needs a human session; watch for prompts during
 a real `/expert-flow` run). "Machine-enforced" is evidenced for the hook-denied paths and the allowed Skill path.
+
+**Settings-level hooks are primary.** The `PreToolUse` hooks registered at settings level (`~/.claude/settings.json`) are the primary enforcement mechanism. Frontmatter hooks in agent files are belt-and-braces for redundancy and are not required for enforcement; they fire when loaded but settings-level hooks are always authoritative.
 
 ## Amendment 2026-10-30: Issue comments read by general-purpose steps
 
@@ -526,8 +528,8 @@ only (see "Bash guard for push validation" below).
    (full-match anchored: `$(jq -r '.commands.check // .commands.test // empty' ...)`). This enforces that
    the agent cannot invoke arbitrary commands by name.
 
-3. **Agent name validation** — a non-empty agent name outside the known six (`flow-plan`,
-   `flow-implement`, `flow-review`, `flow-ship`, `flow-merge`, `flow-healer`) is denied with exit 2.
+3. **Agent name validation** — a non-empty agent name outside the known seven (`flow-plan`,
+   `flow-implement`, `flow-review`, `flow-ship`, `flow-merge`, `flow-healer`, `flow-assessor`) is denied with exit 2.
 
 4. **Push-form matching** — exact literal-string matching only (no pattern/prefix matching). Three forms
    are sanctioned:
