@@ -844,6 +844,91 @@ def test_flow_step_agent_files_detected_by_check():
         return True, ""
 
 
+def test_install_sh_hooks_guarded_with_error_suppression():
+    """install.sh hook_command variable is guarded with 2>/dev/null || true."""
+    try:
+        with open(INSTALL_SH, 'r') as f:
+            lines = f.readlines()
+
+        # Find the hook_command assignment line
+        hook_command_line = None
+        for i, line in enumerate(lines):
+            if 'hook_command=' in line and 'run-metrics.py' in line:
+                hook_command_line = line
+                break
+
+        if hook_command_line is None:
+            return False, "install.sh missing hook_command assignment with run-metrics.py"
+
+        # Verify the guard is included in the hook_command assignment
+        if '2>/dev/null || true' not in hook_command_line:
+            return False, f"hook_command missing '2>/dev/null || true' guard. line: {hook_command_line}"
+
+        # Verify all 4 hook types are defined
+        hook_types = ["SessionStart", "SessionEnd", "SubagentStart", "SubagentStop"]
+        found_hooks = sum(1 for hook_type in hook_types if hook_type in ''.join(lines))
+
+        if found_hooks < 4:
+            return False, f"install.sh only mentions {found_hooks}/4 hook types"
+
+        return True, ""
+    except Exception as e:
+        return False, f"error reading install.sh: {e}"
+
+
+def test_install_sh_no_flag_prints_telemetry_already_registered():
+    """install.sh no-flag branch prints already-registered message when hooks exist."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a minimal HOME and CLAUDE_DIR for install.sh
+        test_home = Path(tmpdir) / "home"
+        test_home.mkdir()
+        claude_dir = test_home / ".claude"
+        claude_dir.mkdir()
+
+        # Create a fake repo with all five directories and preferences.yaml.template
+        source_repo = Path(tmpdir) / "repo"
+        source_repo.mkdir()
+        for dirname in ["commands", "reviewers", "prompts", "agents", "scripts"]:
+            (source_repo / dirname).mkdir()
+            (source_repo / dirname / "keep.md").write_text("keep\n")
+
+        # Create preferences.yaml.template (required by install.sh)
+        (source_repo / "prompts" / "preferences.yaml.template").write_text("# Preferences template\n")
+
+        # Create a settings.json with an already-registered hook
+        settings_file = claude_dir / "settings.json"
+        import json
+        settings_file.write_text(json.dumps({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "python3 $HOME/.claude/scripts/run-metrics.py session-begin 2>/dev/null || true"
+                            }
+                        ]
+                    }
+                ]
+            }
+        }))
+
+        # Copy install.sh into the test repo so REPO_DIR resolves correctly
+        setup_test_repo_with_install_sh(Path(tmpdir), source_repo)
+
+        # Run install.sh without --with-telemetry flag
+        env = os.environ.copy()
+        env["HOME"] = str(test_home)
+        code, stdout, stderr = run_bash_script([str(source_repo / "install.sh")], env=env)
+
+        # Should print "already registered" message
+        output = stdout + stderr
+        if "already registered" not in output.lower():
+            return False, f"output missing 'already registered' message. stdout: {stdout}, stderr: {stderr}"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("INSTALL.SH RECURSIVE SYMLINK TEST SUITE")
     test_result = h.test_result
@@ -914,6 +999,15 @@ if __name__ == "__main__":
     print("[Section 10] Flow step agent files (ticket #358)")
     passed, msg = test_flow_step_agent_files_detected_by_check()
     test_result("--check detects flow-*.md, flow-step-contract.md, and flow-*-guard.py files", passed, msg)
+
+    print()
+
+    print("[Section 7] Telemetry hooks")
+    passed, msg = test_install_sh_hooks_guarded_with_error_suppression()
+    test_result("hook registrations guarded with 2>/dev/null || true", passed, msg)
+
+    passed, msg = test_install_sh_no_flag_prints_telemetry_already_registered()
+    test_result("no-flag branch prints already-registered message", passed, msg)
 
     print()
 

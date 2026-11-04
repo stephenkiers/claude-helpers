@@ -7,6 +7,7 @@ Run with: python3 tests/test_expert_review_status.py
 
 import sys
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -14,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import Harness
+from _git_fixture import GitFixture
 
 
 def create_temp_git_repo(initial_commit: bool = True) -> Path:

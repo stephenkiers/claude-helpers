@@ -349,6 +349,96 @@ fi
         return True, ""
 
 
+def test_check_stage_pairing_prints_caveat_to_stderr_with_findings():
+    """check_stage_pairing.py prints caveat to stderr when findings exist."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir) / "test.md"
+
+        # Write markdown with an orphaned begin (has findings)
+        content = """```bash
+run-metrics.py stage-begin --stage build --log "$LOG"
+# Missing stage-end!
+```
+"""
+        test_file.write_text(content)
+
+        code, stdout, stderr = run_script([str(test_file)])
+
+        # Should exit non-zero
+        if code == 0:
+            return False, "should exit non-zero with findings"
+
+        # Should print caveat to stderr
+        if not stderr:
+            return False, "caveat not printed to stderr (stderr is empty)"
+
+        # Caveat should mention blind spots
+        caveat_keywords = ["blind", "spot", "mismatch", "VAR", "scope", "leak"]
+        has_caveat = any(kw.lower() in stderr.lower() for kw in caveat_keywords)
+        if not has_caveat:
+            return False, f"caveat in stderr missing expected keywords. stderr: {stderr}"
+
+        return True, ""
+
+
+def test_check_stage_pairing_prints_caveat_to_stderr_without_findings():
+    """check_stage_pairing.py prints caveat to stderr unconditionally."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir) / "test.md"
+
+        # Write well-formed markdown (no findings)
+        content = """```bash
+run-metrics.py stage-begin --stage build --log "$LOG"
+run-metrics.py stage-end --stage build --log "$LOG"
+```
+"""
+        test_file.write_text(content)
+
+        code, stdout, stderr = run_script([str(test_file)])
+
+        # Should exit 0 (no findings)
+        if code != 0:
+            return False, f"should exit 0 without findings, got {code}. stdout: {stdout}"
+
+        # Caveat should STILL be printed to stderr (unconditional)
+        if not stderr:
+            return False, "caveat not printed to stderr (stderr is empty) - caveat should be unconditional"
+
+        # Caveat should mention blind spots
+        caveat_keywords = ["blind", "spot", "mismatch", "VAR", "scope", "leak"]
+        has_caveat = any(kw.lower() in stderr.lower() for kw in caveat_keywords)
+        if not has_caveat:
+            return False, f"caveat in stderr missing expected keywords. stderr: {stderr}"
+
+        return True, ""
+
+
+def test_check_stage_pairing_caveat_appears_after_findings():
+    """Caveat to stderr appears after findings output (if any)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir) / "test.md"
+
+        # Write markdown with an orphaned begin
+        content = """```bash
+run-metrics.py stage-begin --stage build --log "$LOG"
+```
+"""
+        test_file.write_text(content)
+
+        code, stdout, stderr = run_script([str(test_file)])
+
+        # Should have both stdout findings and stderr caveat
+        has_findings = "ORPHANED_BEGIN" in stdout
+        if not has_findings:
+            return False, f"no findings in stdout: {stdout}"
+
+        has_caveat = len(stderr) > 0
+        if not has_caveat:
+            return False, "caveat not printed to stderr"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("STAGE PAIRING LINTER TEST SUITE")
 
@@ -405,6 +495,18 @@ if __name__ == "__main__":
     print("[Section 7] Complex scenarios")
     passed, msg = test_lint_complex_doc_multiple_issues()
     test_result("detects multiple issues in one document", passed, msg)
+
+    print()
+
+    print("[Section 8] stderr caveat")
+    passed, msg = test_check_stage_pairing_prints_caveat_to_stderr_with_findings()
+    test_result("caveat printed to stderr when findings exist", passed, msg)
+
+    passed, msg = test_check_stage_pairing_prints_caveat_to_stderr_without_findings()
+    test_result("caveat printed to stderr unconditionally", passed, msg)
+
+    passed, msg = test_check_stage_pairing_caveat_appears_after_findings()
+    test_result("caveat appears after findings output", passed, msg)
 
     print()
 
