@@ -24,6 +24,7 @@ Operational notes:
     Its residual gaps are listed beside INSTALL_CONFIG_FILES.
 """
 
+import fcntl
 import hashlib
 import json
 import os
@@ -80,6 +81,7 @@ TAIL_LINE_LIMIT = 40
 OUTPUT_TAIL_BYTES = 64 * 1024
 STAMP_DIR_NAME = "claude-helpers"
 STAMP_FILE_NAME = "deps-stamp.json"
+INSTALL_LOCK_NAME = "install.lock"  # beside the stamp; held for the life of the installer process group
 APPROVAL_KEY = "approved-manifest-sha"
 DEP_FIELDS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
 
@@ -510,7 +512,8 @@ def _exit_on_term(signum: int, frame: Any) -> None:
 
 
 def _execute_install(
-    argv: List[str], worktree: Path, env: Dict[str, str], timeout: int, sink: IO[bytes]
+    argv: List[str], worktree: Path, env: Dict[str, str], timeout: int, sink: IO[bytes],
+    pass_fds: Tuple[int, ...] = (),
 ) -> InstallOutcome:
     proc: Optional["subprocess.Popen[bytes]"] = None
     timed_out = False
@@ -524,6 +527,7 @@ def _execute_install(
                 stderr=subprocess.STDOUT,
                 env=env,
                 start_new_session=True,
+                pass_fds=pass_fds,
             )
         except OSError as e:
             return InstallOutcome(None, "", launch_error=f"could not start {argv[0]}: {e}")
@@ -541,13 +545,14 @@ def _execute_install(
     return InstallOutcome(proc.returncode, tail)
 
 
-def _run_install(argv: List[str], worktree: Path, timeout: int) -> InstallOutcome:
+def _run_install(argv: List[str], worktree: Path, timeout: int, pass_fds: Tuple[int, ...] = ()) -> InstallOutcome:
     """
     Run one install with shell=False, stdin from DEVNULL, a hard timeout and Corepack prompts off.
 
     The install runs in its own session, so its process group can be killed as a whole. The group is
     killed on timeout, on KeyboardInterrupt, and on SIGTERM (which is turned into SystemExit first).
-    A SIGKILL to this process cannot run that cleanup.
+    A SIGKILL to this process cannot run that cleanup. pass_fds hands the install lock to the installer,
+    so an installer orphaned by that SIGKILL keeps the worktree locked until it exits (#425 D2).
 
     Deliberate residual (human decision B): the full environment is passed, not a scrubbed one, so
     lifecycle scripts see tokens such as GH_TOKEN and NPM_TOKEN. Installs already run branch-controlled
@@ -565,7 +570,7 @@ def _run_install(argv: List[str], worktree: Path, timeout: int) -> InstallOutcom
         pass  # Not the main thread: signal handlers cannot be installed, so the default applies.
     try:
         with tempfile.TemporaryFile() as sink:
-            return _execute_install(argv, worktree, env, timeout, sink)
+            return _execute_install(argv, worktree, env, timeout, sink, pass_fds)
     finally:
         if guarded:
             signal.signal(signal.SIGTERM, previous)
@@ -620,6 +625,28 @@ def _install_plan(
     return _InstallPlan(list(argv_tuple), " ".join(argv_tuple)), None
 
 
+def _acquire_install_lock(stamp_file: Path) -> Tuple[Optional[int], Optional[str]]:
+    """
+    Take the per-worktree install lock without blocking. Returns (fd, None) or (None, reason).
+
+    The lock lives beside the stamp in the worktree's git dir. Its fd is passed to the installer, so the
+    lock is held by whichever of this process or the installer group lives longer: a heal CLI killed
+    with SIGKILL cannot run its cleanup, and the next install in that worktree then refuses instead of
+    racing the orphaned installer.
+    """
+    try:
+        stamp_file.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(stamp_file.parent / INSTALL_LOCK_NAME), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as e:
+        return None, f"could not open install lock: {e}"
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None, "another install is still running in this worktree"
+    return fd, None
+
+
 def _install_and_record(
     worktree: Path,
     plan: _InstallPlan,
@@ -627,6 +654,24 @@ def _install_and_record(
     stamp_file: Path,
     stamp: Dict[str, Any],
     timeout: int,
+) -> DepsResult:
+    lock_fd, lock_error = _acquire_install_lock(stamp_file)
+    if lock_fd is None:
+        return DepsResult("failed", lock_error)
+    try:
+        return _locked_install_and_record(worktree, plan, fingerprint, stamp_file, stamp, timeout, lock_fd)
+    finally:
+        os.close(lock_fd)
+
+
+def _locked_install_and_record(
+    worktree: Path,
+    plan: _InstallPlan,
+    fingerprint: _Fingerprint,
+    stamp_file: Path,
+    stamp: Dict[str, Any],
+    timeout: int,
+    lock_fd: int,
 ) -> DepsResult:
     # The stamp goes before the install starts; a failed or killed install never looks installed.
     # A manifest approval survives in an approval-only stamp so a failed install does not force a new one.
@@ -639,7 +684,7 @@ def _install_and_record(
         if write_error is not None:
             return DepsResult("failed", write_error)
 
-    outcome = _run_install(plan.argv, worktree, timeout)
+    outcome = _run_install(plan.argv, worktree, timeout, (lock_fd,))
     if outcome.timed_out:
         return DepsResult("failed", "timeout", redact_output(outcome.output_tail))
     if outcome.launch_error is not None:

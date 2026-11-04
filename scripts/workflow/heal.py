@@ -105,7 +105,8 @@ class Tool:
     inputs: Tuple[str, ...]  # Repo paths compared against merge-base
     params: Tuple[str, ...]  # Declared parameter names
     precondition: Callable[[Path, Path, Optional[str]], bool]  # (worktree, main, base) -> can-run
-    run: Callable[[Path, Path, Optional[str], int, Optional[Path]], RunOutcome]  # (worktree, main, base, timeout, tail_file)
+    # (worktree, main, base, timeout). The redacted tail comes back in RunOutcome["tail"]; cli_run writes it.
+    run: Callable[[Path, Path, Optional[str], int], RunOutcome]
     verify: Callable[[Path, Path, Optional[str]], bool]  # (worktree, main, base) -> changed
 
 
@@ -178,7 +179,6 @@ def _install_run(
     main_worktree: Path,
     base: Optional[str],
     timeout: int,
-    tail_file: Optional[Path],  # reserved: the tail travels in the RunOutcome and cli_run writes it
 ) -> RunOutcome:
     """Run ensure_deps with ignore_approvals=True. The redacted tail comes back under "tail"."""
     if base is None:
@@ -886,7 +886,7 @@ def cli_run(
                 0o600,
             )
 
-        raw = tool.run(worktree, main_worktree, base, _effective_timeout(tool, override), tail_file)
+        raw = tool.run(worktree, main_worktree, base, _effective_timeout(tool, override))
         status, reason, changed = _checked_outcome(raw)
 
         # The tail is best effort: a failed write is noted inside _write_tail and never changes the result.

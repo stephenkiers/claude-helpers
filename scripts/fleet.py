@@ -78,6 +78,8 @@ def load_fleet(fleet_dir: Path) -> Dict[str, Any]:
     return data
 
 
+# fleet.py stays stdlib-only and reaches scripts/workflow only through the CLI subprocess, so it keeps its
+# own small JSON helpers here (this one and read_json) instead of importing scripts.workflow.fsutil.
 def _write_fleet(fleet_dir: Path, data: Dict[str, Any]) -> None:
     fd, tmp = tempfile.mkstemp(dir=str(fleet_dir), prefix=".fleet.", suffix=".json")
     with os.fdopen(fd, "w") as f:
@@ -482,6 +484,10 @@ def _heal_pass(fleet_dir: Path, issue: int, repo: str, flow_dir: Path, main_work
     common = ["--worktree", worktree, "--main-worktree", str(main_worktree), "--base", base,
               "--flow-dir", str(flow_dir), "--issue", str(issue)]
     cli = ["python3", "-m", "scripts.workflow.cli", "heal"]
+
+    # Every cause already spent: no tool could run, so skip the probe (it runs repo-reading code) as well.
+    if all(_cap_spent(fleet_dir, issue, c) for c in set(HEAL_TOOL_CAUSES.values())):
+        return
 
     stage[0] = "probe"
     probe = _run_cli(cli + ["probe"] + common, helpers_dir, HEAL_PROBE_TIMEOUT_SECS)

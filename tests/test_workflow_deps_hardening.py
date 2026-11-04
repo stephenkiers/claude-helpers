@@ -428,6 +428,28 @@ def section_git_fsmonitor(t):
           not bare, f"without_flag={bare}")
 
 
+def section_install_lock(t):
+    """#425 D2: a held per-worktree install lock (e.g. by an orphaned installer) refuses a second install."""
+    import fcntl
+    with case({"package-lock.json": "v1\n", "package.json": package_json()}) as c:
+        lock = stamp_path(c.wt).parent / "install.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            busy = c.run()
+            t("install lock: a held lock fails the install instead of racing it",
+              busy.first_line == "DEPS: failed: another install is still running in this worktree",
+              f"line={busy.first_line!r}")
+            t("install lock: no package manager ran while the lock was held", c.calls() == [],
+              f"calls={c.calls()}")
+        finally:
+            os.close(fd)
+        freed = c.run()
+        t("install lock: once released, the install runs (DEPS: installed)",
+          freed.first_line == "DEPS: installed", f"line={freed.first_line!r}")
+
+
 if __name__ == "__main__":
     h = Harness("DEPS HARDENING TEST SUITE")
     t = h.test_result
@@ -441,6 +463,7 @@ if __name__ == "__main__":
         section_process_group,
         section_symlinked_stamp,
         section_git_fsmonitor,
+        section_install_lock,
     ):
         print(f"[{section.__name__}]")
         section(t)

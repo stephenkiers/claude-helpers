@@ -263,9 +263,9 @@ def main():
             # A second pass for the same capped cause runs nothing and leaves no new reservation behind.
             seq_count = len(list(heals_dir.glob("*.seq")))
             fl.heal_pass(fleet_dir, 1, "test/repo", flow_dir, main_wt)
-            h.test_result("capped cause: probe only, no second run and no leaked reservation",
-                          len(calls) == 3 and "probe" in calls[2] and "run" not in calls[2]
-                          and len(list(heals_dir.glob("*.seq"))) == seq_count,
+            # With every cause spent, the pass skips the probe too (#425 D5), so no CLI call is made at all.
+            h.test_result("capped cause: no probe, no second run and no leaked reservation",
+                          len(calls) == 2 and len(list(heals_dir.glob("*.seq"))) == seq_count,
                           f"calls={calls}")
 
         # heal_pass should never raise on an injected failure; the stage and class go to stderr.

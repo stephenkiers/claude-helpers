@@ -83,6 +83,7 @@ The table below lists gaps fixed elsewhere (in numbered sibling issues or the ca
 | Error and crash paths are untested | none | POC tests as landed on 2026-10-26; tests not yet written. Tracked by this table. |
 | `SETTLED` constant is unused in `fleet.py` | none | Not removed at the 2026-10-26 landing. Remove or use when the Hold fix lands. Tracked by this table. |
 | Heal nomination evidence is read from ticket-writable `state.json`: `step`, `status`, `stop_reason[step]` and the `stop_key` built from them come from the flow's own `state.json`, which the ticket's flow writes. The probe is read-only and checks the worktree, but a ticket can write the evidence that nominates a tool for its own stop. Only `install` ships, and its own gates still apply (manifest unchanged against the base, one attempt per cause). | none | Accepted residual for the one shipped tool, not a fix. Revisit before a second tool or any automatic retry ships. |
+| A heal CLI killed by SIGKILL cannot kill its installer, and `heal_child` records only the CLI pid, so the record can clear while the installer still runs | #425 | Partly closed: `deps` takes a per-worktree install lock (`install.lock` beside the deps stamp) and passes it to the installer, so any later install in that worktree fails with "another install is still running" until the orphan exits. The orphan itself is not reaped. |
 
 ## Consequences
 
