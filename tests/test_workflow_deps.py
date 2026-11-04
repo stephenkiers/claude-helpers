@@ -462,4 +462,74 @@ if __name__ == "__main__":
             )
 
     print()
+    print("[Section 5] ignore_approvals parameter (heal harness, Step 2)")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main, feat = make_layout(root, {"package-lock.json": NPM_LOCK, "package.json": BASE_PACKAGE})
+        changed = json.loads(BASE_PACKAGE)
+        changed["dependencies"] = {"left-pad": "1.3.0"}
+        (feat / "package.json").write_text(json.dumps(changed))
+
+        with fake_npm(root) as marker:
+            # First approval
+            approved = deps.ensure_deps(feat, main, base="main", approve_manifest=True)
+            test_result(
+                "approval stamps the manifest hash",
+                approved.status == "installed",
+                f"status={approved.status}",
+            )
+
+            # Now test ignore_approvals: manifest hasn't changed, but flag should force manifest-changed
+            refused = deps.ensure_deps(feat, main, base="main", ignore_approvals=True)
+            test_result(
+                "ignore_approvals=True refuses even when manifest was approved before",
+                refused.status == "manifest-changed",
+                f"status={refused.status}",
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main, feat = make_layout(root, {"package-lock.json": NPM_LOCK, "package.json": BASE_PACKAGE})
+        with fake_npm(root) as marker:
+            # No approval, ignore_approvals flag should still respect actual manifest state
+            installed = deps.ensure_deps(feat, main, base="main", ignore_approvals=True)
+            test_result(
+                "ignore_approvals=True with unchanged manifest installs normally",
+                installed.status == "installed",
+                f"status={installed.status}",
+            )
+
+            current = deps.ensure_deps(feat, main, base="main", ignore_approvals=True)
+            test_result(
+                "ignore_approvals=True with current deps returns current",
+                current.status == "current",
+                f"status={current.status}",
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main, feat = make_layout(root, {"package-lock.json": NPM_LOCK, "package.json": BASE_PACKAGE})
+        changed = json.loads(BASE_PACKAGE)
+        changed["dependencies"] = {"lodash": "4.17.21"}
+        (feat / "package.json").write_text(json.dumps(changed))
+
+        with fake_npm(root) as marker:
+            # Approval with changed manifest
+            approved = deps.ensure_deps(feat, main, base="main", approve_manifest=True)
+            test_result(
+                "approve_manifest=True allows install of changed manifest",
+                approved.status == "installed",
+                f"status={approved.status}",
+            )
+
+            # With ignore_approvals, even with the approval stamp in place, it should refuse
+            refused = deps.ensure_deps(feat, main, base="main", ignore_approvals=True)
+            test_result(
+                "ignore_approvals=True overrides approval stamp and refuses changed manifest",
+                refused.status == "manifest-changed",
+                f"status={refused.status}",
+            )
+
+    print()
     h.summarize_and_exit()

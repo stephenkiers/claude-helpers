@@ -58,6 +58,21 @@ commands:
 # SHIPIT_CHECK_TIMEOUT_SECS overrides it when set.
 # checkTimeoutSecs: 900
 
+# ─── Fleet Heal Configuration ─────────────────────────────────────────────────
+# Used by /expert-fleet to disable or customize heal tools (expert-flow #425).
+# This is local, gitignored state (never shared with collaborators).
+# Each tool entry can specify `enabled: false` to disable it, or override declared
+# parameters (e.g. `timeout_secs`). Parameter values must be positive integers and
+# are bounded above by the tool's limits (e.g. install's timeout capped at 900 seconds).
+# No raw argv or unknown keys are accepted; fail-closed on any parse error.
+# Defaults (from tracked code) apply to tools or parameters omitted here.
+# fleet:
+#   heal:
+#     tools:
+#       install:
+#         enabled: true
+#         timeout_secs: 600
+
 # ─── Documentation Style ──────────────────────────────────────────────────────
 # Used by Contract Chris to frame docstring findings.
 # Options: google | numpy | sphinx | jsdoc | rustdoc | godoc | none

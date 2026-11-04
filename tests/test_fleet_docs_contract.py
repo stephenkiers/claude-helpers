@@ -9,7 +9,6 @@ Covers the documentation requirements from the expert-review action plan for the
     "one answer away from merging" sentence is gone from commands/expert-flow.md.
   - The main.lock guarantee is described as fresh-vs-fresh only, in both the ADR and the command doc.
   - Free-text answers are framed with a fixed header, and the `--` argv question is recorded.
-  - scripts/fleet.py is byte-identical to the POC base 8e97cbf (commit 982a75e on this branch).
   - Section 6 (#421): the fleet's 4(a)/4(b) relay slices, green on the current doc and red on the
     frozen pre-#421 fixture for the new-wording checks.
   - Section 7 (#421): both commands use the shared question renderer (flow-render-questions.py).
@@ -24,7 +23,6 @@ Run with:
 """
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 from typing import Dict
@@ -39,8 +37,6 @@ FLOW_CMD_PATH = REPO_ROOT / "commands" / "expert-flow.md"
 FLEET_PY_PATH = REPO_ROOT / "scripts" / "fleet.py"
 PRE_421_FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "expert-fleet-pre-421.md"
 RENDERER_PATH = REPO_ROOT / "scripts" / "flow-render-questions.py"
-
-POC_SHA = "982a75e"
 
 RENDER_SCRIPT = "flow-render-questions.py"
 RENDER_GRANT = 'Bash(python3 "$HOME/.claude/scripts/flow-render-questions.py":*)'
@@ -295,43 +291,6 @@ def main():
     )
 
     print()
-    print(f"[Section 5] scripts/fleet.py is byte-identical to POC commit {POC_SHA}")
-
-    try:
-        poc = subprocess.run(
-            ["git", "show", f"{POC_SHA}:scripts/fleet.py"],
-            cwd=REPO_ROOT, capture_output=True, timeout=60,
-        )
-        poc_ok = poc.returncode == 0
-        poc_bytes = poc.stdout
-        poc_err = poc.stderr.decode(errors="replace").strip()
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        poc_ok, poc_bytes, poc_err = False, b"", str(exc)
-
-    h.test_result(
-        f"git can read scripts/fleet.py at {POC_SHA}",
-        poc_ok,
-        poc_err,
-    )
-
-    current = FLEET_PY_PATH.read_bytes()
-    same = poc_ok and current == poc_bytes
-    detail = ""
-    if poc_ok and not same:
-        cur_lines = current.decode(errors="replace").splitlines()
-        poc_lines = poc_bytes.decode(errors="replace").splitlines()
-        first = next(
-            (i + 1 for i, (a, b) in enumerate(zip(cur_lines, poc_lines)) if a != b),
-            min(len(cur_lines), len(poc_lines)) + 1,
-        )
-        detail = f"differs from {POC_SHA} starting at line {first}"
-    h.test_result(
-        f"scripts/fleet.py matches {POC_SHA} byte for byte",
-        same,
-        detail,
-    )
-
-    print()
     print("[Section 9] #417 check-command preflight and deps chore in commands/expert-fleet.md")
 
     fm_match = re.search(r"^allowed-tools:\s*(.*)$", fleet_cmd, re.MULTILINE)
@@ -558,6 +517,42 @@ def main():
         "stall recovery note missing from Step 5" if not (
             "--resume" in step5_sec and "wake" in step5_sec
         ) else "",
+    )
+
+    print()
+    print("[Section 10] Step 4(a): Heal line in FLEET output")
+
+    step4_idx = fleet_cmd.find("## Step 4")
+    if step4_idx >= 0:
+        step5_idx = fleet_cmd.find("## Step 5", step4_idx + 1)
+        step4_section = fleet_cmd[step4_idx:step5_idx if step5_idx >= 0 else None]
+        heal_mention = "heal" in step4_section.lower()
+        h.test_result(
+            "Step 4 section mentions heal output",
+            heal_mention,
+            "no heal mention in Step 4" if not heal_mention else "",
+        )
+    else:
+        h.test_result("Step 4 section found", False, "## Step 4 not found in expert-fleet.md")
+
+    print()
+    print("[Section 11] ADR-0025 amendment: Byte-identical POC claim retired")
+
+    # The byte-identical claim is retired (2026-11-02 amendment).
+    # Check that the ADR mentions this retirement with the key phrase "that claim is retired"
+    retired_mention = "that claim is retired" in adr.lower() or "retired claim" in adr.lower()
+    h.test_result(
+        "ADR-0025 documents retirement of the byte-identical claim (2026-11-02 amendment)",
+        retired_mention,
+        "no 'that claim is retired' or 'retired claim' in ADR" if not retired_mention else "",
+    )
+
+    # The amendment should name 2026-11-02 (or the specific amendment date)
+    amendment_date = "2026-11-02" in adr
+    h.test_result(
+        "ADR-0025 cites the 2026-11-02 amendment date for the retirement",
+        amendment_date,
+        "amendment date not found" if not amendment_date else "",
     )
 
     print()

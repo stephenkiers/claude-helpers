@@ -24,6 +24,7 @@ Operational notes:
     Its residual gaps are listed beside INSTALL_CONFIG_FILES.
 """
 
+import fcntl
 import hashlib
 import json
 import os
@@ -80,6 +81,7 @@ TAIL_LINE_LIMIT = 40
 OUTPUT_TAIL_BYTES = 64 * 1024
 STAMP_DIR_NAME = "claude-helpers"
 STAMP_FILE_NAME = "deps-stamp.json"
+INSTALL_LOCK_NAME = "install.lock"  # beside the stamp; held for the life of the installer process group
 APPROVAL_KEY = "approved-manifest-sha"
 DEP_FIELDS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
 
@@ -289,8 +291,12 @@ def redact_output(text: str) -> List[str]:
 
 
 def _git(args: List[str], cwd: Path) -> "subprocess.CompletedProcess[str]":
+    """
+    git with the fsmonitor hook disabled, matching heal.py's _git_wt: a ticket worktree's config is
+    ticket-controlled, so a core.fsmonitor it sets must never run on the heal path.
+    """
     return subprocess.run(
-        ["git"] + args,
+        ["git", "-c", "core.fsmonitor=false"] + args,
         cwd=str(cwd),
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -377,7 +383,7 @@ def _write_stamp(path: Path, data: Dict[str, Any]) -> Optional[str]:
 
 def _remove_file(path: Path) -> Optional[str]:
     """
-    Delete path, preserving symlinks. If path is a symlink, delete its target instead of the link.
+    Delete path. If path is a symlink, the link itself is kept and its target is deleted instead.
     A missing file is fine; any other failure is returned so the caller can stop.
     """
     try:
@@ -442,7 +448,7 @@ def _manifest_change(worktree: Path, base: str) -> _ManifestChange:
         return _ManifestChange(False, [])
 
     old_obj: Dict[str, Any] = {}
-    old_show = _git(["show", f"{base_sha}:package.json"], worktree)
+    old_show = _git(["show", "--no-textconv", f"{base_sha}:package.json"], worktree)
     if old_show.returncode == 0:
         try:
             parsed_old = json.loads(old_show.stdout)
@@ -506,7 +512,8 @@ def _exit_on_term(signum: int, frame: Any) -> None:
 
 
 def _execute_install(
-    argv: List[str], worktree: Path, env: Dict[str, str], timeout: int, sink: IO[bytes]
+    argv: List[str], worktree: Path, env: Dict[str, str], timeout: int, sink: IO[bytes],
+    pass_fds: Tuple[int, ...] = (),
 ) -> InstallOutcome:
     proc: Optional["subprocess.Popen[bytes]"] = None
     timed_out = False
@@ -520,6 +527,7 @@ def _execute_install(
                 stderr=subprocess.STDOUT,
                 env=env,
                 start_new_session=True,
+                pass_fds=pass_fds,
             )
         except OSError as e:
             return InstallOutcome(None, "", launch_error=f"could not start {argv[0]}: {e}")
@@ -537,13 +545,14 @@ def _execute_install(
     return InstallOutcome(proc.returncode, tail)
 
 
-def _run_install(argv: List[str], worktree: Path, timeout: int) -> InstallOutcome:
+def _run_install(argv: List[str], worktree: Path, timeout: int, pass_fds: Tuple[int, ...] = ()) -> InstallOutcome:
     """
     Run one install with shell=False, stdin from DEVNULL, a hard timeout and Corepack prompts off.
 
     The install runs in its own session, so its process group can be killed as a whole. The group is
     killed on timeout, on KeyboardInterrupt, and on SIGTERM (which is turned into SystemExit first).
-    A SIGKILL to this process cannot run that cleanup.
+    A SIGKILL to this process cannot run that cleanup. pass_fds hands the install lock to the installer,
+    so an installer orphaned by that SIGKILL keeps the worktree locked until it exits (#425 D2).
 
     Deliberate residual (human decision B): the full environment is passed, not a scrubbed one, so
     lifecycle scripts see tokens such as GH_TOKEN and NPM_TOKEN. Installs already run branch-controlled
@@ -561,21 +570,22 @@ def _run_install(argv: List[str], worktree: Path, timeout: int) -> InstallOutcom
         pass  # Not the main thread: signal handlers cannot be installed, so the default applies.
     try:
         with tempfile.TemporaryFile() as sink:
-            return _execute_install(argv, worktree, env, timeout, sink)
+            return _execute_install(argv, worktree, env, timeout, sink, pass_fds)
     finally:
         if guarded:
             signal.signal(signal.SIGTERM, previous)
 
 
 def _manifest_gate(
-    worktree: Path, base: str, stamp: Dict[str, Any], current_manifest: str
+    worktree: Path, base: str, stamp: Dict[str, Any], current_manifest: str, ignore_approvals: bool = False
 ) -> Optional[DepsResult]:
     """manifest-changed or failed when the manifest differs from base and is not approved; None to proceed."""
     change = _manifest_change(worktree, base)
     if change.error is not None:
         return DepsResult("failed", change.error)
-    if change.changed and stamp.get(APPROVAL_KEY) != current_manifest:
-        return DepsResult("manifest-changed", _describe_change(change.names))
+    if change.changed:
+        if ignore_approvals or stamp.get(APPROVAL_KEY) != current_manifest:
+            return DepsResult("manifest-changed", _describe_change(change.names))
     return None
 
 
@@ -615,6 +625,28 @@ def _install_plan(
     return _InstallPlan(list(argv_tuple), " ".join(argv_tuple)), None
 
 
+def _acquire_install_lock(stamp_file: Path) -> Tuple[Optional[int], Optional[str]]:
+    """
+    Take the per-worktree install lock without blocking. Returns (fd, None) or (None, reason).
+
+    The lock lives beside the stamp in the worktree's git dir. Its fd is passed to the installer, so the
+    lock is held by whichever of this process or the installer group lives longer: a heal CLI killed
+    with SIGKILL cannot run its cleanup, and the next install in that worktree then refuses instead of
+    racing the orphaned installer.
+    """
+    try:
+        stamp_file.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(stamp_file.parent / INSTALL_LOCK_NAME), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as e:
+        return None, f"could not open install lock: {e}"
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None, "another install is still running in this worktree"
+    return fd, None
+
+
 def _install_and_record(
     worktree: Path,
     plan: _InstallPlan,
@@ -622,6 +654,24 @@ def _install_and_record(
     stamp_file: Path,
     stamp: Dict[str, Any],
     timeout: int,
+) -> DepsResult:
+    lock_fd, lock_error = _acquire_install_lock(stamp_file)
+    if lock_fd is None:
+        return DepsResult("failed", lock_error)
+    try:
+        return _locked_install_and_record(worktree, plan, fingerprint, stamp_file, stamp, timeout, lock_fd)
+    finally:
+        os.close(lock_fd)
+
+
+def _locked_install_and_record(
+    worktree: Path,
+    plan: _InstallPlan,
+    fingerprint: _Fingerprint,
+    stamp_file: Path,
+    stamp: Dict[str, Any],
+    timeout: int,
+    lock_fd: int,
 ) -> DepsResult:
     # The stamp goes before the install starts; a failed or killed install never looks installed.
     # A manifest approval survives in an approval-only stamp so a failed install does not force a new one.
@@ -634,7 +684,7 @@ def _install_and_record(
         if write_error is not None:
             return DepsResult("failed", write_error)
 
-    outcome = _run_install(plan.argv, worktree, timeout)
+    outcome = _run_install(plan.argv, worktree, timeout, (lock_fd,))
     if outcome.timed_out:
         return DepsResult("failed", "timeout", redact_output(outcome.output_tail))
     if outcome.launch_error is not None:
@@ -651,61 +701,132 @@ def _install_and_record(
     return DepsResult("installed")
 
 
+@dataclass(frozen=True)
+class _Assessment:
+    """The resolved install of one worktree: where it runs, what it runs, what a stamp must record."""
+    worktree: Path
+    plan: _InstallPlan
+    fingerprint: _Fingerprint
+    stamp_file: Path
+    stamp: Dict[str, Any]
+
+
+def _assess(worktree: Path, main_worktree: Path) -> Tuple[Optional[_Assessment], Optional[DepsResult]]:
+    """
+    The shared read-only assessment that deps ensure and deps_currency both start from.
+
+    Returns (assessment, None) when an install can be planned, or (None, result) when the run stops
+    before any install: failed, ambiguous or skipped. Nothing is written and no install runs here.
+    """
+    real_worktree, error = _validated_worktree(worktree, main_worktree)
+    if error is not None or real_worktree is None:
+        return None, DepsResult("failed", error or "invalid worktree")
+
+    install_command, error = _main_install_command(main_worktree)
+    if error is not None:
+        return None, DepsResult("failed", error)
+
+    lockfile, ambiguous = find_lockfile(real_worktree)
+    if ambiguous is not None:
+        return None, DepsResult("ambiguous", ambiguous)
+    if lockfile is None and install_command is None:
+        return None, DepsResult("skipped", "no lockfile")
+
+    plan, error = _install_plan(real_worktree, lockfile, install_command)
+    if plan is None:
+        return None, DepsResult("failed", error or "no install plan")
+
+    stamp_file, error = _stamp_path(real_worktree)
+    if error is not None or stamp_file is None:
+        return None, DepsResult("failed", error or "no stamp location")
+
+    fingerprint = _Fingerprint(
+        command=plan.command_key,
+        lockfile=lockfile.name if lockfile is not None else None,
+        lockfile_sha=_lockfile_sha(real_worktree, lockfile),
+        manifest=manifest_sha(real_worktree),
+    )
+    assessment = _Assessment(real_worktree, plan, fingerprint, stamp_file, _read_stamp(stamp_file))
+    return assessment, None
+
+
 def _ensure(
     worktree: Path,
     main_worktree: Path,
     base: Optional[str],
     approve_manifest: bool,
     timeout: int,
+    ignore_approvals: bool = False,
 ) -> DepsResult:
-    real_worktree, error = _validated_worktree(worktree, main_worktree)
-    if error is not None or real_worktree is None:
-        return DepsResult("failed", error or "invalid worktree")
+    assessed, failure = _assess(worktree, main_worktree)
+    if assessed is None:
+        return failure if failure is not None else DepsResult("failed", "invalid worktree")
 
-    install_command, error = _main_install_command(main_worktree)
-    if error is not None:
-        return DepsResult("failed", error)
-
-    lockfile, ambiguous = find_lockfile(real_worktree)
-    if ambiguous is not None:
-        return DepsResult("ambiguous", ambiguous)
-    if lockfile is None and install_command is None:
-        return DepsResult("skipped", "no lockfile")
-
-    plan, error = _install_plan(real_worktree, lockfile, install_command)
-    if plan is None:
-        return DepsResult("failed", error or "no install plan")
-
-    stamp_file, error = _stamp_path(real_worktree)
-    if error is not None or stamp_file is None:
-        return DepsResult("failed", error or "no stamp location")
-
-    current_manifest = manifest_sha(real_worktree)
-    fingerprint = _Fingerprint(
-        command=plan.command_key,
-        lockfile=lockfile.name if lockfile is not None else None,
-        lockfile_sha=_lockfile_sha(real_worktree, lockfile),
-        manifest=current_manifest,
-    )
-
-    stamp = _read_stamp(stamp_file)
+    stamp = assessed.stamp
+    current_manifest = assessed.fingerprint.manifest
     if approve_manifest:
         # Merged into the existing stamp, so an approval never erases the record of the current install.
         stamp = dict(stamp)
         stamp[APPROVAL_KEY] = current_manifest
-        write_error = _write_stamp(stamp_file, stamp)
+        write_error = _write_stamp(assessed.stamp_file, stamp)
         if write_error is not None:
             return DepsResult("failed", write_error)
 
     if base is not None:
-        gated = _manifest_gate(real_worktree, base, stamp, current_manifest)
+        gated = _manifest_gate(assessed.worktree, base, stamp, current_manifest, ignore_approvals)
         if gated is not None:
             return gated
 
-    if fingerprint.matches(stamp) and _has_install_artifact(real_worktree):
+    if assessed.fingerprint.matches(stamp) and _has_install_artifact(assessed.worktree):
         return DepsResult("current")
 
-    return _install_and_record(real_worktree, plan, fingerprint, stamp_file, stamp, timeout)
+    return _install_and_record(
+        assessed.worktree, assessed.plan, assessed.fingerprint, assessed.stamp_file, stamp, timeout
+    )
+
+
+def deps_currency(worktree: Path, main_worktree: Path, base: Optional[str] = None) -> str:
+    """
+    Read-only check whether an install is needed for the worktree, never raising.
+
+    Args:
+        worktree: The step's worktree (must sit under the worktree parent).
+        main_worktree: The main worktree whose project.yaml supplies commands.install.
+        base: Flow base ref (e.g. origin/main). When given, the manifest gate runs against
+            merge-base(base, HEAD). Omitted at worktree time, where the branch equals its base.
+
+    Returns:
+        Exactly one of:
+        - "stale": an install would run
+        - "current": dependencies are current
+        - "unknown": any error, ambiguous, skipped, or manifest-changed (including under
+            ignore-approvals semantics, since a stored approval may be forged)
+
+    Never raises. Any read error returns "unknown".
+    """
+    try:
+        assessed, failure = _assess(worktree, main_worktree)
+        if assessed is None or failure is not None:
+            # Any failed, ambiguous or skipped assessment is unknown, never stale.
+            return "unknown"
+
+        # Check manifest gate with ignore_approvals=True to detect if manifest changed.
+        # Any stored approval is potentially forged, so we ignore it.
+        if base is not None:
+            gated = _manifest_gate(
+                assessed.worktree, base, assessed.stamp, assessed.fingerprint.manifest, ignore_approvals=True
+            )
+            if gated is not None:
+                # manifest-changed or failed -> unknown
+                return "unknown"
+
+        if assessed.fingerprint.matches(assessed.stamp) and _has_install_artifact(assessed.worktree):
+            return "current"
+
+        return "stale"
+    except Exception:
+        # Never raise: any exception returns "unknown"
+        return "unknown"
 
 
 def ensure_deps(
@@ -714,6 +835,7 @@ def ensure_deps(
     base: Optional[str] = None,
     approve_manifest: bool = False,
     timeout: int = DEPS_TIMEOUT_SECS,
+    ignore_approvals: bool = False,
 ) -> DepsResult:
     """
     Make dependencies current for the worktree's lockfile, installing only when needed.
@@ -726,6 +848,19 @@ def ensure_deps(
         approve_manifest: Record approval of the current manifest hash in the stamp, so the gate
             clears. Only the orchestrator passes this, at a manifest-changed stop the human chose to retry.
         timeout: Hard limit on the install, in seconds.
+        ignore_approvals: When True, ignore the stored APPROVAL_KEY in the manifest gate, so a
+            manifest that differs from the merge-base returns manifest-changed even if an approval
+            exists. Default False keeps the behavior unchanged.
+
+    Flag precedence (one call, in this order):
+        - base is None: the manifest gate is skipped, so ignore_approvals has no effect on the result.
+          approve_manifest still writes its approval to the stamp.
+        - approve_manifest writes the approval before the gate runs, so with ignore_approvals False a
+          manifest that differs from the merge-base clears the gate in the same call.
+        - ignore_approvals wins over approve_manifest for the gate's decision: with both set, a changed
+          manifest still returns manifest-changed. The approval is still recorded in the stamp, so a
+          later call that does not set ignore_approvals can clear the gate with it.
+        - A current stamp with an install artifact returns current only after the gate has passed.
 
     Returns:
         A DepsResult whose status is one of the Status categories. Every failure is returned, not raised:
@@ -733,6 +868,6 @@ def ensure_deps(
         status "failed" with a detail.
     """
     try:
-        return _ensure(worktree, main_worktree, base, approve_manifest, timeout)
+        return _ensure(worktree, main_worktree, base, approve_manifest, timeout, ignore_approvals)
     except OSError as e:
         return DepsResult("failed", f"filesystem error: {e}")

@@ -18,7 +18,9 @@ Usage:
   python3 -m scripts.workflow.cli checks resolve-check --worktree <dir> [--main-worktree <dir>]
   python3 -m scripts.workflow.cli checks ensure-check --worktree <dir> --main-worktree <dir>
   python3 -m scripts.workflow.cli checks record-check-answer --main-worktree <dir> (--command <cmd> | --opt-out <reason>)
-  python3 -m scripts.workflow.cli deps ensure --worktree <dir> --main-worktree <dir> [--base <ref>] [--approve-manifest]
+  python3 -m scripts.workflow.cli deps ensure --worktree <dir> --main-worktree <dir> [--base <ref>] [--approve-manifest] [--ignore-approvals]
+  python3 -m scripts.workflow.cli heal probe --worktree <dir> --main-worktree <dir> [--base <ref>] --flow-dir <dir> --issue <num>
+  python3 -m scripts.workflow.cli heal run --worktree <dir> --main-worktree <dir> [--base <ref>] --flow-dir <dir> --issue <num> --tool <name> [--tail-file <path>]
 
 Exit codes for `checks resolve-check`: 0 when a command resolved; 1 whenever failure_reason is
 set, including an explicit checkOptOut. A caller that must tell opt-out from not-configured
@@ -26,7 +28,10 @@ reads `source` ("opt-out" vs null) from the JSON, not the exit code.
 
 Exit codes for `deps ensure`: 0 current or installed; 1 failed; 3 ambiguous lockfiles;
 4 manifest-changed (needs approval); 5 skipped (no lockfile and no commands.install).
-argparse usage errors keep exit 2.
+
+Exit codes for `heal probe` and `heal run`: 0 once the arguments parse, whatever the outcome. Refusals
+and internal errors are reported inside the printed JSON, never as a non-zero exit. Both print one JSON
+object on stdout. argparse usage errors keep exit 2; a bare `heal` prints help and exits 1.
 """
 
 import sys
@@ -35,7 +40,7 @@ import json
 from pathlib import Path
 from typing import Callable, Any, Tuple
 
-from . import cleanup, merge, shipit, checks, deps, track, verify_queue, issue_comments
+from . import cleanup, merge, shipit, checks, deps, track, verify_queue, issue_comments, heal
 from .cache import read_repo_cache
 from .models import RepoCacheData
 from .providers import GithubProvider, LocalProvider
@@ -385,6 +390,37 @@ def main() -> None:
         "--approve-manifest", action="store_true",
         help="Approve the current package.json/lockfile hash so the manifest gate clears"
     )
+    deps_ensure_parser.add_argument(
+        "--ignore-approvals", action="store_true",
+        help="Ignore stored manifest approval (used by heal tools)"
+    )
+
+    heal_parser = subparsers.add_parser("heal", help="Bounded heal harness for fleet")
+    heal_subparsers = heal_parser.add_subparsers(dest="heal_action")
+
+    heal_probe_parser = heal_subparsers.add_parser(
+        "probe",
+        help="Probe for a tool to heal a stopped ticket (read-only)",
+        description="Probe for a tool to heal a stopped ticket (read-only, no cap spent). Prints JSON: {tool, timeout_secs, stop_key} or {line, stop_key}, or {stop_key: null} when there is nothing to do. Exits 0 once the arguments parse, whatever the outcome (refusals and internal errors are in the JSON); argparse usage errors exit 2."
+    )
+    heal_probe_parser.add_argument("--worktree", required=True, help="Step worktree path")
+    heal_probe_parser.add_argument("--main-worktree", required=True, help="Main worktree path")
+    heal_probe_parser.add_argument("--base", default=None, help="Flow base ref")
+    heal_probe_parser.add_argument("--flow-dir", required=True, help="Flow directory")
+    heal_probe_parser.add_argument("--issue", type=int, required=True, help="Issue number")
+
+    heal_run_parser = heal_subparsers.add_parser(
+        "run",
+        help="Run a heal tool and return the result",
+        description="Run a heal tool and return the result. Prints JSON: {tool, status, reason, changed, recommendation, stop_key}. Exits 0 once the arguments parse, whatever the outcome (refusals and internal errors are in the JSON); argparse usage errors exit 2."
+    )
+    heal_run_parser.add_argument("--worktree", required=True, help="Step worktree path")
+    heal_run_parser.add_argument("--main-worktree", required=True, help="Main worktree path")
+    heal_run_parser.add_argument("--base", default=None, help="Flow base ref")
+    heal_run_parser.add_argument("--flow-dir", required=True, help="Flow directory")
+    heal_run_parser.add_argument("--issue", type=int, required=True, help="Issue number")
+    heal_run_parser.add_argument("--tool", required=True, help="Tool name to run")
+    heal_run_parser.add_argument("--tail-file", default=None, help="File to write output tail (mode 0600)")
 
     worktree_parser = subparsers.add_parser("worktree", help="Worktree layout detection")
     worktree_subparsers = worktree_parser.add_subparsers(dest="worktree_action")
@@ -892,6 +928,7 @@ def main() -> None:
                     Path(args.main_worktree),
                     base=args.base,
                     approve_manifest=args.approve_manifest,
+                    ignore_approvals=getattr(args, "ignore_approvals", False),
                 )
             except KeyboardInterrupt:
                 print("DEPS: failed: interrupted")
@@ -906,6 +943,33 @@ def main() -> None:
             sys.exit(deps_result.exit_code)
         else:
             deps_parser.print_help()
+            sys.exit(1)
+    elif args.command == "heal":
+        if args.heal_action == "probe":
+            heal_result = heal.cli_probe(
+                Path(args.worktree),
+                Path(args.main_worktree),
+                args.base,
+                Path(args.flow_dir),
+                args.issue,
+            )
+            print(json.dumps(heal_result))
+            sys.exit(0)
+        elif args.heal_action == "run":
+            tail_file = Path(args.tail_file) if args.tail_file else None
+            heal_result = heal.cli_run(
+                Path(args.worktree),
+                Path(args.main_worktree),
+                args.base,
+                Path(args.flow_dir),
+                args.issue,
+                args.tool,
+                tail_file,
+            )
+            print(json.dumps(heal_result))
+            sys.exit(0)
+        else:
+            heal_parser.print_help()
             sys.exit(1)
     else:
         parser.print_help()

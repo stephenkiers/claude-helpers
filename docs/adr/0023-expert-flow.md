@@ -49,7 +49,7 @@ nothing else, except that base-stale verify failures also offer a fourth, human-
 (see the gated Rebase amendment below), and single-unit implement/fix shortfalls offer a fourth option, `Retry with sonnet`, for manual escalation (live; the automatic escalation path is dormant per the 2026-10-16 and 2026-10-25 amendments). `/expert-rebase` is suggested in the stop message when a step's receipt suggests it,
 never invoked. This is the same stance ADR-0021 took for the merge queue: no auto-remediation,
 because remediation is where an orchestrator starts making engineering decisions nobody reviewed.
-There are three bounded exceptions: (1) the automatic base-stale Rebase (2026-10-14 amendment); (2) the single-unit implement/fix Sonnet escalation (manual `Retry with sonnet` live, automatic path dormant); (3) the bounded self-heal for check failures and Fix now (2026-10-29 amendment, #380). The rationale still holds, and the bounded heal does not violate it: the orchestrator never edits code. A step subagent does the edits, the result is mechanically scanned, and the human merge gate always stays.
+There are four bounded exceptions: (1) the automatic base-stale Rebase (2026-10-14 amendment); (2) the single-unit implement/fix Sonnet escalation (manual `Retry with sonnet` live, automatic path dormant); (3) the bounded self-heal for check failures and Fix now (2026-10-29 amendment, #380); (4) the fleet heal (2026-11-02 amendment, #425), which runs in `fleet.py` outside any flow, never in this orchestrator. The rationale still holds, and the bounded heal does not violate it: the orchestrator never edits code. A step subagent does the edits, the result is mechanically scanned, and the human merge gate always stays.
 A further addition is not a remediation of a failed step: a bounded, logged environment chore (the
 dependency precondition) that runs before a step, as the 2026-11-01 amendment records.
 
@@ -1257,3 +1257,12 @@ This amendment fixes a context-loss bug in `/expert-fleet` and gives flow and fl
   - The one-ticket-per-call rule: each /expert-fleet dispatcher invocation processes one ticket to completion.
   These five rules are symptoms of holding unrenderable state and per-call chunking in the model's memory rather than fleet.py. They remain until the dispatcher logic moves into fleet.py and the fleet is dogfooded on #426.
 - **Producer header checks (follow-up).** Producers should verify that `header` text puts meaning in the first 12 characters (the cap under `--prefix`), so that fleet headers are not truncated in a way that loses distinction. This is not enforced; it is a convention producers must observe.
+
+## Amendment (2026-11-02) — fleet heal is a further bounded exception (#425)
+
+This amendment adds the fleet heal to §1's list of bounded exceptions to "no auto-remediation". The list is now four, and slice 2 would be the fifth (the count is reconciled here, since the 2026-10-27 and 2026-10-29 wording called them "third").
+
+- **What the fourth exception is.** `fleet.py` (ADR-0025's 2026-11-02 amendment, `scripts/workflow/heal.py`) may run one allow-listed environment tool in a stopped or failed ticket's worktree, between runs, once per cause per ticket. The only tool shipped is `install`, a wrapper over the deps precondition's `ensure_deps`, run under its existing gate. It edits no code, writes no flow file, and answers no gate.
+- **Where it runs.** Outside the flow. This orchestrator and the flow steps are unchanged by it, and no flow step runs the heal. A heal is recorded in the fleet's own state, not in the flow's `steps/` or `state.json`.
+- **Accept and continue.** The heal never reaches or selects Accept and continue. A human can still choose it at a parked hard-stop gate, as Fleet mode already states; no fleet default, heal or retry path picks it.
+- **Unowned accounting.** The flow-side `failures[STEP]` counter is not changed by the heal. The heal attempts only while `failures[STEP] < 2`, and the question of how the flow's own counter should behave is unowned. It must be revisited before any switch to fresh resume.
