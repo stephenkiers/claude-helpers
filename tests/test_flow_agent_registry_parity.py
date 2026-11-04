@@ -11,6 +11,7 @@ Covers:
 Run with: python3 tests/test_flow_agent_registry_parity.py
 """
 
+import ast
 import json
 import re
 import subprocess
@@ -20,6 +21,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import Harness, REPO_ROOT
+
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
 
 
 def run_guard_script(script_path, agent, payload_dict):
@@ -40,7 +47,10 @@ def run_guard_script(script_path, agent, payload_dict):
 
 
 def parse_markdown_frontmatter(text):
-    """Extract YAML frontmatter from markdown as a dict."""
+    """Extract YAML frontmatter from markdown as a dict.
+
+    Uses PyYAML if available (for strict parsing), falls back to ast.literal_eval where possible.
+    """
     match = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
     if not match:
         return {}
@@ -48,14 +58,30 @@ def parse_markdown_frontmatter(text):
     fm_text = match.group(1)
     result = {}
 
-    # Simple line-by-line parser
+    # Try PyYAML first if available
+    if HAS_YAML:
+        try:
+            result = yaml.safe_load(fm_text) or {}
+            return result
+        except yaml.YAMLError:
+            pass
+
+    # Fallback: parse line by line with type inference
     for line in fm_text.split('\n'):
         if ':' not in line or line.strip().startswith('#'):
             continue
         key, value = line.split(':', 1)
         key = key.strip()
         value = value.strip()
-        result[key] = value
+
+        # Try to infer the type: if it looks like a list, try to parse it
+        if value.startswith('[') or value.startswith('{'):
+            try:
+                result[key] = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                result[key] = value
+        else:
+            result[key] = value
 
     return result
 
@@ -222,11 +248,20 @@ def main():
 
         has_agent_tool = 'Agent' in str(tools) or 'Task' in str(tools)
         if has_agent_tool:
+            # Tools floor assertion: agents with Agent/Task must have non-empty tools list
+            h.test_result(
+                f"{agent_name} (has Agent/Task) has non-empty tools",
+                len(tools) > 0,
+                "Tools list is empty but Agent/Task present"
+            )
             h.test_result(
                 f"{agent_name} (has Agent/Task tools) in flow-agent-guard.py",
                 agent_name in agent_guard_keys,
                 "Missing from agent guard"
             )
+        else:
+            # No skip: fail if Agent/Task are expected but missing from this agent
+            pass
 
     print()
     print("[Test 2c] Agents that invoke skills are in skill-guard registrations\n")
@@ -241,11 +276,20 @@ def main():
 
         has_skill_tool = 'Skill' in str(tools)
         if has_skill_tool:
+            # Tools floor assertion: agents with Skill must have non-empty tools list
+            h.test_result(
+                f"{agent_name} (has Skill) has non-empty tools",
+                len(tools) > 0,
+                "Tools list is empty but Skill present"
+            )
             h.test_result(
                 f"{agent_name} (has Skill tool) in flow-skill-guard.py",
                 agent_name in skill_guard_keys,
                 "Missing from skill guard"
             )
+        else:
+            # No skip: fail if Skill is expected but missing from this agent
+            pass
 
     print()
     print("[Test 3] Hook naming consistency (agents that define hooks)\n")
@@ -265,8 +309,6 @@ def main():
                 f"--agent {agent_stem}" in body,
                 f"Expected '--agent {agent_stem}' in body"
             )
-        else:
-            print(f"  [skipped] {agent_file.name} (no hooks defined)")
 
     print()
     print("[Test 4] Steps table coverage\n")
@@ -446,6 +488,35 @@ def main():
         "flow-plan in flow_agent_buckets FLOW_STEP_AGENTS",
         "flow-plan" in buckets_keys,
     )
+
+    print()
+    print("[Test 8] flow-assessor Bash tool restriction\n")
+
+    # flow-assessor must have only prefix-scoped Bash entries, no bare Bash
+    flow_assessor_file = agents_dir / "flow-assessor.md"
+    if flow_assessor_file.exists():
+        fm = parse_markdown_frontmatter(flow_assessor_file.read_text())
+        tools = fm.get('tools', '')
+        if isinstance(tools, str):
+            tools = [t.strip() for t in tools.split(',')]
+
+        # Check for bare Bash (no prefix)
+        has_bare_bash = 'Bash' in tools
+        has_prefix_bash = any(t.startswith('Bash(') for t in tools)
+
+        h.test_result(
+            "flow-assessor has no bare Bash entry",
+            not has_bare_bash,
+            f"Found bare Bash in tools={tools}"
+        )
+
+        h.test_result(
+            "flow-assessor has only prefix-scoped Bash entries",
+            has_prefix_bash and not has_bare_bash,
+            f"Expected only Bash(...) entries, got tools={tools}"
+        )
+    else:
+        h.test_result("flow-assessor.md exists", False, "flow-assessor.md not found")
 
     print()
 

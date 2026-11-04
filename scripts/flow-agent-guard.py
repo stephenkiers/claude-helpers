@@ -82,6 +82,11 @@ def main():
         if agent == "auto":
             agent_type = payload.get("agent_type")
 
+            # Narrow agent_type to string; non-strings fail closed (deny)
+            if not isinstance(agent_type, str):
+                print("Auto mode: agent_type is not a string, denying (fail-closed)", file=sys.stderr)
+                sys.exit(2)
+
             # If agent_type is missing or does not start with "flow-", allow (not governed by this guard)
             if not agent_type or not agent_type.startswith("flow-"):
                 print(f"Auto mode: agent_type '{agent_type}' is not a flow agent, allowing", file=sys.stderr)

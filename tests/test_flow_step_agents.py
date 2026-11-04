@@ -600,9 +600,28 @@ def main():
         # Check frontmatter has hooks
         h.test_result(
             "flow-plan frontmatter defines hooks",
-            'hooks' in fm or ('Agent|Task' in str(fm) or 'Skill' in str(fm) or 'Bash' in str(fm)),
+            'hooks' in fm,
             "Expected hooks defined in frontmatter"
         )
+
+        # Check that the three hook commands are present
+        if 'hooks' in fm:
+            body = flow_plan.read_text()
+            h.test_result(
+                "flow-plan has --agent flow-plan hook for Agent|Task",
+                "flow-agent-guard.py --agent flow-plan" in body,
+                "Missing flow-agent-guard.py hook"
+            )
+            h.test_result(
+                "flow-plan has --agent flow-plan hook for Skill",
+                "flow-skill-guard.py --agent flow-plan" in body,
+                "Missing flow-skill-guard.py hook"
+            )
+            h.test_result(
+                "flow-plan has --agent flow-plan hook for Bash",
+                "flow-bash-guard.py --agent flow-plan" in body,
+                "Missing flow-bash-guard.py hook"
+            )
 
     else:
         h.test_result("flow-plan exists", False, "flow-plan.md not found")
