@@ -24,6 +24,7 @@ Spec facts used:
 Run with: python3 tests/test_spec_blind_round1_verifier.py
 """
 
+import functools
 import importlib.util
 import subprocess
 import sys
@@ -33,6 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _check_gate_fixture import with_check_lines
+from _inproc import run_python
 from _test_harness import REPO_ROOT, Harness
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
@@ -42,6 +44,7 @@ ROUND1_MISS = "ROUND 1"  # the miss reason must name ROUND 1
 TAIL_OK = "OUTSTANDING: none\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n<!-- step-end -->\n"
 
 
+@functools.lru_cache(maxsize=None)
 def git_rev_parse(rev):
     r = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", rev],
                        capture_output=True, text=True)
@@ -55,8 +58,8 @@ if not BASE:
     BASE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
-def verify(receipt_text, step="implement"):
-    """Run the verifier CLI on one receipt. Returns (returncode, combined output)."""
+def verify_e2e(receipt_text, step="implement"):
+    """Run the verifier CLI on one receipt (subprocess, end-to-end). Returns (returncode, combined output)."""
     with tempfile.TemporaryDirectory() as tmp:
         receipt = Path(tmp) / "receipt.md"
         receipt_text, check_argv = with_check_lines(receipt_text, REPO_ROOT, Path(tmp))
@@ -70,18 +73,35 @@ def verify(receipt_text, step="implement"):
     return r.returncode, r.stdout + r.stderr
 
 
-def verify_expect_model(receipt_text, step="implement"):
-    """Run the verifier CLI with --expect-model. Returns (returncode, combined output)."""
+def verify(receipt_text, step="implement"):
+    """Run the verifier CLI on one receipt (in-process). Returns (returncode, combined output)."""
+    env = {"FLOW_VERIFY_GIT_TIMEOUT_SECS": "60"}
     with tempfile.TemporaryDirectory() as tmp:
         receipt = Path(tmp) / "receipt.md"
         receipt_text, check_argv = with_check_lines(receipt_text, REPO_ROOT, Path(tmp))
         receipt.write_text(receipt_text)
-        argv = [sys.executable, str(VERIFIER), "--step", step, "--receipt", str(receipt),
+        argv = [str(VERIFIER), "--step", step, "--receipt", str(receipt),
+                "--since", SINCE, "--repo", str(REPO_ROOT), "--branch", "HEAD", "--base", BASE]
+        argv += check_argv
+        if step == "fix":
+            argv += ["--review-dir", tmp]
+        r = run_python(argv, env=env, cwd=REPO_ROOT)
+    return r.returncode, r.stdout + r.stderr
+
+
+def verify_expect_model(receipt_text, step="implement"):
+    """Run the verifier CLI with --expect-model (in-process). Returns (returncode, combined output)."""
+    env = {"FLOW_VERIFY_GIT_TIMEOUT_SECS": "60"}
+    with tempfile.TemporaryDirectory() as tmp:
+        receipt = Path(tmp) / "receipt.md"
+        receipt_text, check_argv = with_check_lines(receipt_text, REPO_ROOT, Path(tmp))
+        receipt.write_text(receipt_text)
+        argv = [str(VERIFIER), "--step", step, "--receipt", str(receipt),
                 "--expect-model", "haiku", "--repo", str(REPO_ROOT), "--branch", "HEAD", "--base", BASE]
         argv += check_argv
         if step == "fix":
             argv += ["--review-dir", tmp]
-        r = subprocess.run(argv, capture_output=True, text=True)
+        r = run_python(argv, env=env, cwd=REPO_ROOT)
     return r.returncode, r.stdout + r.stderr
 
 
@@ -124,8 +144,8 @@ POSITIVE_HEADERS = {
     "double space before 1": "ROUND  1 — double space",
     "lowercase separator-less end of line": "round 1",
 }
-for name, header in POSITIVE_HEADERS.items():
-    rc, out = verify(header + "\n" + TAIL_OK)
+for i, (name, header) in enumerate(POSITIVE_HEADERS.items()):
+    rc, out = verify_e2e(header + "\n" + TAIL_OK) if i == 0 else verify(header + "\n" + TAIL_OK)
     t(f"accepts header: {name}", rc == 0,
       f"rc={rc}, last line: {last_line(out)}" if rc != 0 else "")
 
@@ -261,6 +281,17 @@ no_header_receipt = (
 rc, out = verify_expect_model(no_header_receipt)
 t("expect-model on OK receipt without ROUND 1 header now fails (NY1)",
   rc == 1 and ROUND1_MISS in out,
+  f"rc={rc}, last line: {last_line(out)}")
+
+no_outstanding_receipt = (
+    "IMPLEMENTER_MODEL: haiku\n"
+    "ROUND 1 — Implementer (parallel)\n"
+    "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n"
+    "<!-- step-end -->\n"
+)
+rc, out = verify_expect_model(no_outstanding_receipt)
+t("expect-model on OK receipt without OUTSTANDING line fails with OUTSTANDING in reason",
+  rc == 1 and "OUTSTANDING" in out,
   f"rc={rc}, last line: {last_line(out)}")
 
 # ---------------------------------------------------------------------------
