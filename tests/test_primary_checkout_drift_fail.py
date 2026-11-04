@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 DRIFT_SCRIPT = REPO_ROOT / "scripts" / "primary-checkout-drift.py"
 DOC = REPO_ROOT / "commands" / "implement-with-haiku.md"
@@ -32,6 +33,11 @@ def make_script_dir(tmp: str, metrics_body: str) -> Path:
 
 
 def run_fail(script: Path, *args: str):
+    r = run_python([str(script), "fail", *args])
+    return r.returncode, r.stdout, r.stderr
+
+
+def run_fail_e2e(script: Path, *args: str):
     r = subprocess.run([sys.executable, str(script), "fail", *args], capture_output=True, text=True)
     return r.returncode, r.stdout, r.stderr
 
@@ -49,7 +55,7 @@ def main() -> None:
         receipt = Path(tmp) / "receipt.md"
 
         print("[Test 1] drift: stderr line, telemetry, exit code, exact receipt")
-        code, out, err = run_fail(
+        code, out, err = run_fail_e2e(
             script, "--compare-exit", "1", "--label", "in Round 2", "--receipt", str(receipt),
             "--attempt", "2", "--implementer-model", "sonnet", "--units", "3", "--max-turns", "40",
             "--fail-paths", "a.py,b.py")

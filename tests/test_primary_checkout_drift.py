@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python, RepoTemplate
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import telemetry_schema
@@ -22,34 +23,33 @@ import telemetry_schema
 DRIFT_SCRIPT = REPO_ROOT / "scripts" / "primary-checkout-drift.py"
 
 
-def init_git_repo(repo_path: str) -> str:
+def _init_git_repo_uncached(root: Path) -> str:
     """Initialize a git repo and return the HEAD commit SHA."""
-    Path(repo_path).mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init"], cwd=repo_path, capture_output=True, check=True)
+    subprocess.run(["git", "init"], cwd=root, capture_output=True, check=True)
     subprocess.run(
         ["git", "config", "user.email", "test@example.com"],
-        cwd=repo_path,
+        cwd=root,
         capture_output=True,
         check=True,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test User"],
-        cwd=repo_path,
+        cwd=root,
         capture_output=True,
         check=True,
     )
 
     # Create initial commit
-    Path(repo_path, "initial.txt").write_text("initial content")
+    (root / "initial.txt").write_text("initial content")
     subprocess.run(
         ["git", "add", "initial.txt"],
-        cwd=repo_path,
+        cwd=root,
         capture_output=True,
         check=True,
     )
     result = subprocess.run(
         ["git", "commit", "-m", "initial commit"],
-        cwd=repo_path,
+        cwd=root,
         capture_output=True,
         check=True,
     )
@@ -57,12 +57,24 @@ def init_git_repo(repo_path: str) -> str:
     # Get HEAD
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=repo_path,
+        cwd=root,
         capture_output=True,
         text=True,
         check=True,
     )
     return result.stdout.strip()
+
+
+_INIT = RepoTemplate(lambda root: _init_git_repo_uncached(root))
+
+
+def init_git_repo(repo_path: str) -> str:
+    """Initialize a git repo and return the HEAD commit SHA."""
+    p = Path(repo_path)
+    if p.exists():
+        p.rmdir()  # callers pass a fresh path; rmdir fails loudly if it is not empty
+    _INIT.copy(p)
+    return _INIT.meta
 
 
 def create_worktree(primary_path: str, worktree_path: str, branch_name: str = "feature") -> str:
@@ -86,7 +98,13 @@ def create_worktree(primary_path: str, worktree_path: str, branch_name: str = "f
 
 
 def run_drift_script(cmd: str, *args: str) -> tuple:
-    """Run the drift script and return (exit_code, stdout, stderr)."""
+    """Run the drift script in-process and return (exit_code, stdout, stderr)."""
+    result = run_python([str(DRIFT_SCRIPT), cmd] + list(args))
+    return result.returncode, result.stdout, result.stderr
+
+
+def run_drift_script_e2e(cmd: str, *args: str) -> tuple:
+    """Run the drift script as a real subprocess and return (exit_code, stdout, stderr)."""
     result = subprocess.run(
         [sys.executable, str(DRIFT_SCRIPT), cmd] + list(args),
         capture_output=True,
@@ -678,6 +696,40 @@ def main():
             initial_status == status_after_snapshot == status_after_compare,
             f"lengths: initial={len(initial_status)}, after_snapshot={len(status_after_snapshot)}, after_compare={len(status_after_compare)}",
         )
+    print()
+
+    # Test 16: snapshot with git error (non-repo path) -> exit non-zero
+    print("[Test 16] snapshot with git error (non-repo path) -> exit non-zero")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        non_repo = Path(tmpdir) / "not_a_repo"
+
+        non_repo.mkdir()
+
+        init_git_repo(str(primary_path))
+        create_worktree(str(primary_path), str(ticket_path))
+
+        exit_code, stdout, stderr = run_drift_script(
+            "snapshot",
+            "--checkout", str(non_repo),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        h.test_result(
+            "snapshot exits non-zero when checkout path is not a git repo",
+            exit_code != 0,
+            f"exit_code={exit_code}",
+        )
+
+        h.test_result(
+            "snapshot does not write JSON on git error",
+            not baseline_path.exists(),
+            "baseline.json should not be created on error",
+        )
+
     print()
 
     h.summarize_and_exit()

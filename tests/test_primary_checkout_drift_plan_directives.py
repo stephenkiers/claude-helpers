@@ -24,12 +24,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 DRIFT_SCRIPT = REPO_ROOT / "scripts" / "primary-checkout-drift.py"
 
 
 def run_script(cmd: str, *args: str) -> tuple:
-    """Run the drift script and return (exit_code, stdout, stderr)."""
+    """Run the drift script in-process and return (exit_code, stdout, stderr)."""
+    result = run_python([str(DRIFT_SCRIPT), cmd] + list(args))
+    return result.returncode, result.stdout, result.stderr
+
+
+def run_script_e2e(cmd: str, *args: str) -> tuple:
+    """Run the drift script as a real subprocess and return (exit_code, stdout, stderr)."""
     result = subprocess.run(
         [sys.executable, str(DRIFT_SCRIPT), cmd] + list(args),
         capture_output=True,
@@ -153,7 +160,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        exit_code, stdout, stderr = run_script(
+        exit_code, stdout, stderr = run_script_e2e(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
