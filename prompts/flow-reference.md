@@ -177,7 +177,9 @@ Initial redo spawns (the redo procedure in `commands/expert-flow.md`, from eithe
    `attempt` is the step prompt's `ATTEMPT=<k>`, with `1` when absent. The verifier never counts a question file without an integer `attempt` ≥ 1 and reports it as malformed, which fails the plan or review check closed.
 
    `id` is `q1`, `q2`, … in the order asked, unique within the file, and it is the key the answers
-   file uses. `id` and `brief` are the only additions to each `questions[]` entry; the orchestrator
+   file uses. The `question` text (the human-facing prompt) must also be unique within the file, since
+   answers are mapped by question text; the renderer rejects duplicate question text as invalid input.
+   `id` and `brief` are the only additions to each `questions[]` entry; the orchestrator
    strips both before the call, along with `item` (for `assess` questions) and `comment_id` (for
    "new comment since plan" questions). Each entry otherwise keeps the tool's own schema — `question`,
    `header`, `options[]` with `label` and `description`, and `multiSelect` — so the orchestrator can
@@ -191,14 +193,19 @@ Initial redo spawns (the redo procedure in `commands/expert-flow.md`, from eithe
 
    **Context travels with the question.** The human answers in the orchestrator's conversation and
    never sees this command's output, so a bare option list is not enough to decide on. `summary` and
-   `brief` are markdown the orchestrator prints verbatim above the form (`summary` once, then each
-   question's `brief` under its `id`): put in them what the human would have read in chat outside a
+   `brief` are markdown that the renderer prints verbatim above the form. Both `/expert-flow` and
+   `/expert-fleet` render the question file with `scripts/flow-render-questions.py`, which prints
+   `summary` once, then each question's `brief` verbatim with no `<id>:` label (a brief carries its own
+   `#### Q[n]` heading); `id` is used only to map answers back. The header cap is set by the caller:
+   only when it passes a `#N` prefix (the fleet does; `/expert-flow` passes none and its headers are
+   unchanged) is each header capped at 12 characters including the prefix, so producers should put
+   meaning in the first characters of `header`. Put in them what the human would have read in chat outside a
    flow, not a pointer to it, written for a reader who has lost all context. **Required** for
    `/expert-plan` outside a flow (`summary` = the ticket refresher, the North Star line, and the expert
    round-up; `brief` = that question's `#### Q[n]` decision brief, verbatim); and for the **plan checkpoint
    report variant**, the summary concept (ticket refresher and expert round-up) is instead carried as separate fields `ticket` and `roundup` (see "Report variant" section below); and `/expert-review`'s
    rulings (`summary` = the triage digest; `brief` = that item's *Needs you* block, verbatim). Other
-   commands may set both to `null`; when a file has neither, the orchestrator prints the whole
+   commands may set both to `null`; when a file has neither, the renderer prints the whole
    `context_path` file instead, so a question is never shown bare.
 
 3. **Record the awaiting marker in the step receipt.** The receipt path is the one in the Receipt

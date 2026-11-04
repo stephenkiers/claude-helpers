@@ -1,7 +1,7 @@
 ---
 description: Run a whole epic — one headless /expert-flow per sub-issue, independent tickets in parallel, every question parked in one inbox and asked in batches while the other tickets keep moving. Optional big-stones pre-pass settles direction before any ticket starts.
 argument-hint: <epic-url|number> [--max K] [--only N,N,...] [--prepass] | --resume [fleet-dir|epic#] | --status [fleet-dir|epic#]
-allowed-tools: Bash(python3 "$HOME/.claude/scripts/fleet.py":*), Bash(gh issue view:*), Bash(gh issue edit:*), Bash(gh repo view:*), Bash(git rev-parse:*), Bash(git worktree list:*), Bash(ls:*), Bash(cat:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 -m scripts.workflow.cli checks ensure-check:*), Bash(python3 -m scripts.workflow.cli checks record-check-answer:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Read, Write, Task, AskUserQuestion
+allowed-tools: Bash(python3 "$HOME/.claude/scripts/fleet.py":*), Bash(python3 "$HOME/.claude/scripts/flow-render-questions.py":*), Bash(gh issue view:*), Bash(gh issue edit:*), Bash(gh repo view:*), Bash(git rev-parse:*), Bash(git worktree list:*), Bash(ls:*), Bash(cat:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 -m scripts.workflow.cli checks ensure-check:*), Bash(python3 -m scripts.workflow.cli checks record-check-answer:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Read, Write, Task, AskUserQuestion
 ---
 
 # Expert Fleet
@@ -60,7 +60,7 @@ dependency checks, the inbox) is `scripts/fleet.py`; this document says when to 
 `gh repo view --json nameWithOwner -q .nameWithOwner`). An epic number picks the newest directory
 whose name starts with `<epic>-`; no value picks the newest overall; a path is used as given. No
 match → print `no fleet found` and stop. `--status` prints `fleet.py status FLEET` and a one-line
-summary per inbox item, then stops. `--resume` goes to Step 4.
+summary per inbox item, built from `python3 "$HOME/.claude/scripts/fleet.py" inbox FLEET | jq '[.[] | del(.question_data)]'`, then stops. `--resume` goes to Step 4.
 
 Otherwise, a new fleet:
 
@@ -185,7 +185,10 @@ then `/expert-flow --resume <N> --fleet` inside the new ticket worktree.
 
 Each time you are re-invoked (a background run exited, or the human replied):
 
-1. `fleet.py status FLEET --json` and `fleet.py inbox FLEET`.
+1. `fleet.py status FLEET --json` and the slimmed inbox listing:
+   `python3 "$HOME/.claude/scripts/fleet.py" inbox FLEET | jq '[.[] | del(.question_data)]'`. The full
+   inbox inlines every question file and comes back as a truncated preview, so question content is read
+   only through the renderer in (a).
 2. **Launch** everything in `ready` (Step 3's call shape), before asking anything, so new tickets
    run while the human reads. Skip any ticket you launched in the previous turn that `status --json`
    does not yet show as `running`.
@@ -194,18 +197,54 @@ Each time you are re-invoked (a background run exited, or the human replied):
    - `parked` (any open ask, including a `failed` flow with an open `gate` ask) is in the inbox (below), not here.
    - `stopped` (paused for a human outside the fleet): print the flow dir and
      `/expert-flow --resume <N>` for the human to drive by hand.
-4. **Inbox.** If it is empty and no ticket is `running`, go to Step 5. If it is empty and something
-   is running, print the one-line table (`#N state step`) and end the turn. Otherwise, in this order:
-   - **(a) Forms and gates.** Collect every question from `relay` items
-     (`question_data.questions[]`) and every `gate` item. Before each `AskUserQuestion` call print,
-     per ticket, `#N <title> — <step>` and that item's context: for `relay`, the file's `summary` and
-     every `brief`, and `context_path` if present; for `gate`, `gate.context`. Then call
-     `AskUserQuestion` with up to 4 questions, header prefixed `#N` (≤12 chars), labels and
-     descriptions copied from the file, never shortened into new meaning. Repeat until all are asked.
-     Keep each question's `id`.
+4. **Inbox.** If it is empty (after removing tickets reported unrenderable under (a)) and no ticket is
+   `running` (a ticket skipped under (a) clause 1 because it was delivered or launched in the previous
+   turn counts as `running` here, even if `status --json` does not yet report it so), go to Step 5. If
+   it is empty and something is running, print the one-line table (`#N state step`) and end the turn.
+   When such a skipped ticket exists, do not go to Step 5 either: print the one-line table and end the
+   turn. Otherwise, in this order:
+   - **(a) Forms and gates.** Work through the inbox one ticket at a time:
+     1. **Skip delivered tickets first.** Before rendering anything, drop any inbox item whose ticket is
+        `running` in this turn's `status --json`, or whose ticket you delivered an answer to or launched
+        in the previous turn. `flow_status` reports `running` only once the pid is recorded, so a
+        just-delivered ticket can still look parked.
+     2. **Relay items, one ticket at a time.** Render the item's question file with the renderer.
+        Before rendering, validate `<step>`: it must match `^[a-z0-9-]+$`; if it does not, treat the ticket as unrenderable (see clause 3 below).
+        Run `python3 "$HOME/.claude/scripts/flow-render-questions.py" <flow_dir>/<question_file> --out FLEET/render/<N>-<step>-<seq>.json --prefix "#<N> "`, where `<seq>` is the question file's sequence number (or other unique suffix) to avoid stale cached files across rounds.
+        Write the output under `FLEET`, never into the flow directory. `Read` the `--out` file.
+        
+        This step enforces the single-ticket-per-ask rule from prose; there is no mechanical backstop — the fleet depends on following this rule (dogfood under #426).
+        
+        For each batch:
+        - Before the first batch, print a one-line queue header: e.g. `Parked questions: <N> tickets, <M> batches`.
+        - in an assistant message, print `#<N> <title> — <step>` (prepend the batch number if not the first: e.g. `[Batch 2 of <M>] #<N> …`), then that batch's `preamble` verbatim (it
+          carries no `<id>:` label lines; do not add any). If `warnings` is non-empty, print it as a one-line caution before the preamble.
+        - in the same turn, immediately call `AskUserQuestion` with only that batch's `ask` entries,
+          unchanged.
+
+        Include this sentence verbatim: "A Bash result is not shown to the human, so the context must be
+        in an assistant message." The print is mandatory and is never folded away, summarised or skipped.
+        The print goes before the call. Question text, labels and descriptions are copied unchanged. One
+        call holds one ticket's batch only; never fill a call with another ticket's questions, because
+        answers are keyed by question text. Keep each question's `id`.
+     3. **Renderer failure.**
+        - If the renderer is **missing** (exit 2 with `can't open file`) or **crashed** (exit 1), print
+          `⚠️ question renderer unavailable (<missing|crashed>): showing raw context. Run /setup-local.`
+          and fall back to the current behaviour: `Read` the question file, print its `summary` and every
+          `brief` (or the `context_path` file), and ask with the header prefixed `#N` (12 characters or
+          fewer). Four at a time, one ticket per call.
+        - If the renderer reports an **invalid file** (exit 3 or 4): do not ask. Report
+          `#N: question file could not be rendered at <file_path> (stderr: <error_reason>). Fix or delete the file and re-run /expert-fleet --resume: left parked.` and leave the ticket parked.
+          Run /setup-local if the renderer is not found.
+        - A reported ticket does not count as open inbox for the rest of this turn or for Step 5 (unrenderable tickets are recomputed from the inbox each turn, not remembered). The parked-then-stop rule means: when you have rendered all available tickets and some reported unrenderable, do not go to Step 5.
+     4. **Gate items:** unchanged. Print `#N <title> — <step>` and `gate.context` in an assistant message,
+        then call `AskUserQuestion` with the header prefixed `#N` (12 characters or fewer) and the options
+        copied unchanged. Repeat until all are asked.
    - **(b) Deliver answers.** Deliver every answer you now have **before** any report is printed, so a
      form or gate answer never waits behind a plan report. This covers the answers from (a) and any
-     report replies in the human's current message (see (c) for the reply format). For each answered
+     report replies in the human's current message (see (c) for the reply format). For every answered
+     `relay` or `gate` question, print one line `delivering #N: <header>: <label>` (the header as
+     displayed, with its `#N` prefix stripped; the chosen label, or `Other: "<text>"`). For each answered
      item, write a message file `FLEET/messages/<N>-<seq>.txt` with `Write` and launch
      `fleet.py run FLEET <N> --message-file <that file>` in the background:
      Before writing any message file, run `mkdir -p FLEET/messages`.
@@ -237,7 +276,11 @@ and print `/expert-flow --resume <N>` for the human to run by hand when they are
 When nothing is running, nothing is ready, and the inbox is empty, print the final table: one line per
 ticket with its state and PR URL, then the tickets left `blocked`/`held`/`stopped`/`failed`/`parked`/`stalled` with what
 each one is waiting on. `fleet: done` if every ticket is `done`, else
-`fleet: idle — /expert-fleet --resume FLEET to continue`.
+`fleet: idle — /expert-fleet --resume FLEET to continue`. A ticket reported unrenderable under Step 4.4(a)
+is listed among the `parked` lines with the reason `question file could not be rendered`, so the fleet
+reaches `fleet: idle` instead of looping.
+
+If the fleet reaches idle without every ticket moving (all parked or blocked), and one or more tickets were delivered an answer or launched in this session but their state has not progressed, re-running the dispatcher with `--resume` will wake them and resume the loop.
 
 ## What this command deliberately does not do
 
@@ -246,8 +289,9 @@ each one is waiting on. `fleet: done` if every ticket is `done`, else
 - Run tickets with unmet dependencies "optimistically", or stack PRs; a dependant starts only once
   its dependency merged (or is CLOSED).
 - Write into flow directories or worktrees. Its own writes are under `FLEET` (issue-body drafts in
-  `FLEET/direction/<N>.md`, Step 2.3; delivery messages in `FLEET/messages/`, Step 4(b)) and the scratch
-  ticket list in `~/.claude/fleet-scratch/` (Step 1.6), which holds no fleet state. The other writes
+  `FLEET/direction/<N>.md`, Step 2.3; rendered question files in `FLEET/render/`, Step 4.4(a); delivery
+  messages in `FLEET/messages/`, Step 4(b)) and the scratch ticket list in `~/.claude/fleet-scratch/`
+  (Step 1.6), which holds no fleet state. The other writes
   are the check writes the CLI makes to MAIN's configuration, never the orchestrator's: `checks ensure-check`
   writes a `package.json`-detected command into MAIN's `repo-cache.json` (Check-command preflight, step 1),
   and `checks record-check-answer` persists a human answer to MAIN's `project.yaml` (step 3).

@@ -82,6 +82,9 @@ READ_ONLY_BASH = (
     r".*flow-verify-receipt\.py['\"]?(?: .*)?",
     r".*fleet\.py['\"]? wait(?: .*)?",
     r".*flow-ledger\.py['\"]?(?: .*)?",
+    # flow-render-questions.py (#421) writes only its --out file (under FLOW_DIR or FLEET), which the
+    # caller then Reads; its stdout is one status line.
+    r".*flow-render-questions\.py['\"]?(?: .*)?",
     r"python3 \"\$HOME/\.claude/scripts/flow-redo\.py['\"]?(?: .*)?",
     # Named exceptions for the human-only Accept and continue (Hard stop item 3c and the Accept
     # procedure; ADR-0023 2026-10-29 amendment). Narrow on purpose: only the `eligible` read and the
@@ -622,6 +625,8 @@ def main():
                   any("flow-verify-receipt" in pat for pat in READ_ONLY_BASH))
     h.test_result("READ_ONLY_BASH allowlist updated for flow-ledger",
                   any("flow-ledger" in pat for pat in READ_ONLY_BASH))
+    h.test_result("READ_ONLY_BASH allowlist updated for flow-render-questions",
+                  any("flow-render-questions" in pat for pat in READ_ONLY_BASH))
     h.test_result("flow-ledger grants pass the read-only allowlist check",
                   all(disallowed_grants(g) == [] for g in LEDGER_GRANTS),
                   str([disallowed_grants(g) for g in LEDGER_GRANTS]))

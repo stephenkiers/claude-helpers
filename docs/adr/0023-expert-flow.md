@@ -1229,3 +1229,31 @@ On a scratch repo, run `/expert-flow` (or `/implement-with-haiku` with `FLOW_DIR
 ### 10. Consequences
 
 A `/expert-flow` run on a 12-step coupled plan now sizes units automatically, splits sequentially when coupled work is detected, and persists unit state in a versioned record. Partial failures in sequential runs surface properly and require explicit human disposition (Retry with finer split, Take over, or Abort). Retry does not auto-remediate; the partial-work contract applies on each retry. Cold-build cost is measurable and logged for future threshold tuning.
+
+## Amendment (2026-11-02): one question renderer for flow and fleet (#421)
+
+This amendment fixes a context-loss bug in `/expert-fleet` and gives flow and fleet one renderer for the context that travels with a question. It refines the "Context travels with the question" rule in `prompts/flow-reference.md` (Ask block, step 2). It does not change the question-file schema, `fleet.py`, or ADR-0025.
+
+**The bug.** The fleet did not show each parked question's context (`summary`, briefs, or the `context_path` fallback) to the human before the form, which is the bare-form failure the Ask block exists to prevent. Ticket item 1 of #421 is this fix.
+
+**Decision.**
+
+- **One renderer.** `scripts/flow-render-questions.py` renders a question file for both `/expert-flow` and `/expert-fleet`. A report-kind file renders to markdown. A form-kind file renders to JSON batches of at most four questions each, where each batch carries a `preamble` and ready `ask` entries. The renderer prints `summary` once, then each question's `brief` verbatim, or the `context_path` file's contents when a file carries neither.
+- **`--out`, then `Read`.** The renderer always writes to a `--out` file. The caller then `Read`s that file and prints it. The reason is the Bash-preview limit. A Bash result is not shown to the human, and a large Bash result comes back to the model as a truncated preview. Real form files reach about 13.5K characters and the fleet inbox about 36K, so the rendered output must not travel through a Bash result. The fleet writes under `FLEET`, and flows write under `FLOW_DIR`.
+- **Sixth orchestrator script grant.** The orchestrator's added script grants go from five to six, with `scripts/flow-render-questions.py` as the sixth.
+- **Header cap, `--prefix` only.** #304 ruled that headers are never truncated. This amendment reverses that for fleet headers only. When the caller passes a `--prefix` of `#N`, the renderer caps the whole header, prefix included, at 12 characters. `/expert-flow` passes no prefix, so its headers pass through unchanged. Producers should put meaning in the first characters of `header`.
+- **No `<id>:` label.** The preamble carries no `<id>:` label. Each brief is printed verbatim, because it carries its own `#### Q[n]` heading. `id` stays only in `questions[].id`, to map answers back. This is consistent with #304's ruling Q2.
+- **Gates bypass the renderer.** Step gates (Continue, Redo, Pause, Abort) and the hard-stop menus do not go through the renderer. Their text is unchanged. Only report and form question files are rendered.
+- **Failure contract.** The failure contract was confirmed by the human.
+  - A missing script, or a crash of the script, falls back to the raw print of the question file's context, with a `/setup-local` warning. This holds in both commands.
+  - An invalid file (exit 3 or 4, including duplicate question text on exit 4) is not a fallback. In `/expert-flow` it is a `question file unreadable` hard stop, recorded as `FAILED`, the same outcome as an unparseable file in common step 1. In `/expert-fleet` the ticket is reported and left parked, and it does not count as open inbox. A fallback there would collide in the answer mapping.
+- **#304 unchanged otherwise.** #304's compression and caps stay where they are. This amendment changes only what is rendered and how the header is capped under `--prefix`.
+- **Untouched: `fleet.py` and ADR-0025.** The `/expert-fleet` dispatcher is prose the model follows; `scripts/fleet.py` is deliberately not modified (per ADR-0025 §6). The fleet's parking and resume behaviour is unchanged. Only the question file presentation changes, through the shared renderer.
+- **Dispatch-loop changes (INTERIM).** The dispatcher implements five temporary changes pending a follow-up move to fleet.py (#426):
+  - The "skip-delivered" rule: the dispatcher does not re-ask a question once delivered to the fleet.
+  - The "unrenderable-parked" rule: a question file the renderer cannot read parks the ticket and is not retried by the dispatcher.
+  - The `del(.question_data)` inbox slimming: answered questions are removed from the fleet's inbox to save memory.
+  - The `delivering #N` echo: the dispatcher prints progress as it relays each parked ticket's answer batch.
+  - The one-ticket-per-call rule: each /expert-fleet dispatcher invocation processes one ticket to completion.
+  These five rules are symptoms of holding unrenderable state and per-call chunking in the model's memory rather than fleet.py. They remain until the dispatcher logic moves into fleet.py and the fleet is dogfooded on #426.
+- **Producer header checks (follow-up).** Producers should verify that `header` text puts meaning in the first 12 characters (the cap under `--prefix`), so that fleet headers are not truncated in a way that loses distinction. This is not enforced; it is a convention producers must observe.
