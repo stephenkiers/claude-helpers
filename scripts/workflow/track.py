@@ -30,7 +30,7 @@ STEP_WRITE_CACHE = "write_cache"
 STEP_SEED_CACHE = "seed_cache"
 
 
-def slugify(title: str, max_len: int = 50) -> str:
+def slugify(title: str, max_len: int = 46) -> str:
     """
     Generate kebab-case slug from title.
 
@@ -51,6 +51,10 @@ def slugify(title: str, max_len: int = 50) -> str:
     slug = slug.strip("-")
     # Truncate and strip trailing - that may have been created by cut
     slug = slug[:max_len].rstrip("-")
+    # Never end in a bare "test" segment: Todoed's DB-name rule refuses worktree
+    # names equal to "test" or ending in "-test" (tier disjointness).
+    while slug == "test" or slug.endswith("-test"):
+        slug = slug[: -len("test")].rstrip("-")
     return slug
 
 
@@ -236,7 +240,7 @@ def plan_track(
             return None, Unknown("could not detect project root")
 
         # 2. Infer type and labels, generate slug
-        slug = slugify(title, max_len=50)
+        slug = slugify(title, max_len=46)
         issue_type = infer_type(title, plan_content)
         labels = infer_labels(title, plan_content)
 
@@ -350,7 +354,7 @@ def apply_track(provider: Provider, plan_json: str, cwd: Optional[Path] = None) 
             # 2. Identity hash validation: independently re-derive worktree_parent, slug, issue_type
             # and verify they match the plan's stored values directly
             fresh_worktree_parent = worktrees.detect_worktree_parent(cwd=main_wt)
-            fresh_slug = slugify(plan.issue_title, max_len=50)
+            fresh_slug = slugify(plan.issue_title, max_len=46)
             fresh_issue_type = infer_type(plan.issue_title, plan.plan_content)
 
             # Direct field comparisons: reject if any field was tampered with

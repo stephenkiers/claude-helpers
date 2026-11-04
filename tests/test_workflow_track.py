@@ -66,6 +66,26 @@ if __name__ == "__main__":
         slugify("") == ""
     )
 
+    test_result(
+        "slugify: default cap is 46",
+        len(slugify("a" * 10 + " " + "b" * 60)) <= 46
+    )
+
+    test_result(
+        "slugify: title ending in test drops the test segment",
+        slugify("Fix flaky test") == "fix-flaky"
+    )
+
+    test_result(
+        "slugify: truncation leaving -test drops the segment",
+        slugify("alpha testing suite", max_len=10) == "alpha"
+    )
+
+    test_result(
+        "slugify: title that is just test gives empty slug",
+        slugify("test") == ""
+    )
+
     print()
     print("[Section 2] infer_type helper function")
 
