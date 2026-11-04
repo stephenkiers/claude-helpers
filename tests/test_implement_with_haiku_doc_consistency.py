@@ -1027,6 +1027,13 @@ if single_unit_section:
 round2_match = re.search(r"### Round 2:.*?(?=\n### |\n## |\Z)", IMPLEMENT_WITH_HAIKU, re.S)
 round3_match = re.search(r"### Round 3 pass 1:.*?(?=\n### |\n## |\Z)", IMPLEMENT_WITH_HAIKU, re.S)
 
+# NEW: Check that Round 2 section contains the rule about adding tests to existing files
+round2_text = round2_match.group(0) if round2_match else ""
+has_existing_test_file_rule = "Add them to the existing test file" in round2_text
+t("Round 2 section contains rule about adding tests to existing test file",
+  has_existing_test_file_rule,
+  "Round 2 section should mention 'Add them to the existing test file'")
+
 has_round2_wd = round2_match and "Working directory:" in round2_match.group(0)
 has_round3_wd = round3_match and "Working directory:" in round3_match.group(0)
 
