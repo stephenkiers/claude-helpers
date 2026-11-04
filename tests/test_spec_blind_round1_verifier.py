@@ -26,6 +26,7 @@ Run with: python3 tests/test_spec_blind_round1_verifier.py
 
 import functools
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
@@ -75,7 +76,7 @@ def verify_e2e(receipt_text, step="implement"):
 
 def verify(receipt_text, step="implement"):
     """Run the verifier CLI on one receipt (in-process). Returns (returncode, combined output)."""
-    env = {"FLOW_VERIFY_GIT_TIMEOUT_SECS": "60"}
+    env = {**os.environ, "FLOW_VERIFY_GIT_TIMEOUT_SECS": "60"}
     with tempfile.TemporaryDirectory() as tmp:
         receipt = Path(tmp) / "receipt.md"
         receipt_text, check_argv = with_check_lines(receipt_text, REPO_ROOT, Path(tmp))
@@ -91,7 +92,7 @@ def verify(receipt_text, step="implement"):
 
 def verify_expect_model(receipt_text, step="implement"):
     """Run the verifier CLI with --expect-model (in-process). Returns (returncode, combined output)."""
-    env = {"FLOW_VERIFY_GIT_TIMEOUT_SECS": "60"}
+    env = {**os.environ, "FLOW_VERIFY_GIT_TIMEOUT_SECS": "60"}
     with tempfile.TemporaryDirectory() as tmp:
         receipt = Path(tmp) / "receipt.md"
         receipt_text, check_argv = with_check_lines(receipt_text, REPO_ROOT, Path(tmp))

@@ -14,6 +14,13 @@ Known limit: a child that replaces its environment rather than extending it (e.g
 ``test_session_id_env_fallback``) loses HOME; ``Path.home()`` then falls back to the pwd database,
 which is the real home, and this guard cannot see that write. The guard does not claim more.
 
+Concurrency: suites run in parallel (``--jobs``, default: CPU count) except those in SERIAL_ONLY,
+which run alone after the pool. A suite that is wall-clock-bounded (timing asserts, or waits on real
+child processes) belongs in SERIAL_ONLY. Parallel-safe invariant: a suite must not read, clear, or
+assert on a fixed path shared with other suites (the system temp dir, a fixed name under it). Use its
+own temp HOME, a ``mkdtemp`` name, or a per-pid name instead. A suite that cannot meet this goes in
+SERIAL_ONLY. Each suite is killed after SUITE_TIMEOUT_SECS and counted as a failure (exit 124).
+
 Run with: python3 tests/run_all.py
 """
 
@@ -23,9 +30,8 @@ import site
 import subprocess
 import sys
 import tempfile
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -33,8 +39,11 @@ TESTS_DIR = Path(__file__).resolve().parent
 # Computed once in the parent, before any HOME override.
 REAL_USER_BASE = os.environ.get("PYTHONUSERBASE") or site.getuserbase()
 
-# Wall-clock-bounded subprocess cases; run alone after the pool.
-SERIAL_ONLY = frozenset({"test_flow_guard_fail_closed.py"})
+# Wall-clock-bounded suites (timing asserts, or waits on real child processes); run alone after the pool.
+SERIAL_ONLY = frozenset({"test_flow_guard_fail_closed.py", "test_fleet.py"})
+
+# A suite that runs longer than this is killed and counted as a failure (exit 124).
+SUITE_TIMEOUT_SECS = 900
 
 
 def suite_env(tmp_home):
@@ -61,67 +70,88 @@ def _run_one(suite):
     """Run a single suite and return (suite, rc, stdout, leaked, elapsed)."""
     start = time.monotonic()
     with tempfile.TemporaryDirectory() as tmp_home:
-        result = subprocess.run(
-            [sys.executable, str(suite)],
-            env=suite_env(tmp_home),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
+        try:
+            result = subprocess.run(
+                [sys.executable, str(suite)],
+                env=suite_env(tmp_home),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=SUITE_TIMEOUT_SECS,
+            )
+            rc, output = result.returncode, result.stdout or b""
+        except subprocess.TimeoutExpired as exc:
+            rc = 124
+            note = f"\n[runner] {Path(suite).name} timed out after {SUITE_TIMEOUT_SECS}s and was killed\n"
+            output = (exc.stdout or b"") + note.encode("utf-8")
         leaked = telemetry_leak(tmp_home)
-    return (suite, result.returncode, result.stdout.decode("utf-8", "replace"), leaked, time.monotonic() - start)
+    return (suite, rc, output.decode("utf-8", "replace"), leaked, time.monotonic() - start)
+
+
+def _failed_run(suite, exc):
+    """Result tuple for a suite whose runner raised instead of returning (counted as a failure)."""
+    text = f"[runner] {Path(suite).name} did not complete: {type(exc).__name__}: {exc}\n"
+    return (suite, 1, text, [], 0.0)
+
+
+def _report(result, index, total, timings):
+    """Print one suite's block and return its failure label, or None when it passed."""
+    suite, rc, stdout, leaked, elapsed = result
+    suite_name = Path(suite).name
+    print(f"[{index}/{total}] {suite_name} finished (exit {rc})")
+    print(f"\n{'#' * 70}\n# {suite_name}\n{'#' * 70}")
+    print(stdout, end='')
+    print(f"# {suite_name}: {elapsed:.1f}s (exit {rc})")
+
+    if timings is not None:
+        timings[suite_name] = elapsed
+
+    if leaked:
+        detail = f"leaked telemetry: {', '.join(leaked)}"
+        if rc != 0:
+            detail += f"; exit {rc}"
+        print(f"✗ {suite_name} wrote under the real-telemetry path: {', '.join(leaked)}"
+              + (f" (exit {rc})" if rc != 0 else ""))
+        return f"{suite_name} ({detail})"
+    if rc != 0:
+        return suite_name
+    return None
 
 
 def run_suites(suites, jobs=1, timings=None):
-    """Run each suite under its own temp HOME; return the list of failure labels."""
-    failures = []
-    lock = threading.Lock()
+    """Run each suite under its own temp HOME; return the sorted list of failure labels.
 
-    # Split suites into parallel and serial
+    Parallel suites are reported as each one finishes (streamed, in completion order). All reporting
+    happens in this thread, so no lock is needed. SERIAL_ONLY suites run after the pool, one at a time."""
     parallel = [s for s in suites if Path(s).name not in SERIAL_ONLY]
     serial = [s for s in suites if Path(s).name in SERIAL_ONLY]
+    total = len(suites)
+    done = 0
+    failures = []
 
-    # Run parallel suites through ThreadPoolExecutor
-    results = []
+    def finish(result):
+        nonlocal done
+        done += 1
+        failure = _report(result, done, total, timings)
+        if failure:
+            failures.append(failure)
+
     if parallel:
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as executor:
             futures = {executor.submit(_run_one, suite): suite for suite in parallel}
-            from concurrent.futures import as_completed
             for future in as_completed(futures):
-                suite, rc, stdout, leaked, elapsed = future.result()
-                results.append((suite, rc, stdout, leaked, elapsed))
+                try:
+                    result = future.result()
+                except Exception as exc:  # one broken suite must not abort the whole run
+                    result = _failed_run(futures[future], exc)
+                finish(result)
 
-    # Run serial suites directly
     for suite in serial:
-        suite_path, rc, stdout, leaked, elapsed = _run_one(suite)
-        results.append((suite_path, rc, stdout, leaked, elapsed))
-
-    # Process all results
-    for suite_path, rc, stdout, leaked, elapsed in results:
-        suite_name = Path(suite_path).name
-        with lock:
-            # Print header
-            print(f"\n{'#' * 70}\n# {suite_name}\n{'#' * 70}")
-            # Print captured output
-            print(stdout, end='')
-            # Print timing line
-            print(f"# {suite_name}: {elapsed:.1f}s (exit {rc})")
-
-        # Record timing if requested
-        if timings is not None:
-            timings[suite_name] = elapsed
-
-        # Check for failures
-        if leaked:
-            detail = f"leaked telemetry: {', '.join(leaked)}"
-            if rc != 0:
-                detail += f"; exit {rc}"
-            failures.append(f"{suite_name} ({detail})")
-            with lock:
-                print(f"✗ {suite_name} wrote under the real-telemetry path: {', '.join(leaked)}"
-                      + (f" (exit {rc})" if rc != 0 else ""))
-        elif rc != 0:
-            failures.append(suite_name)
+        try:
+            result = _run_one(suite)
+        except Exception as exc:
+            result = _failed_run(suite, exc)
+        finish(result)
 
     return sorted(failures)
 

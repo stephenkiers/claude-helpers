@@ -37,8 +37,9 @@ DEFAULT_LOG = [f"{TS} implement ok", f"{TS} fix skipped"]
 
 
 def run_verifier_inproc(args, env):
-    """In-process flow-verify-receipt.py run (see tests/_inproc.py). Mirrors the script's own
-    `if __name__ == "__main__"` wrapper, so an uncaught exception still exits 2."""
+    """In-process flow-verify-receipt.py run (see tests/_inproc.py). Approximates the script's own
+    `if __name__ == "__main__"` wrapper (an uncaught exception maps to exit 2) but does not
+    guarantee exit-code parity with a real subprocess; the `_e2e` tests own that contract."""
     env = dict(env)
     env.setdefault("FLOW_VERIFY_GIT_TIMEOUT_SECS", "60")
     return run_python([VERIFIER, *args], env=env)

@@ -110,7 +110,7 @@ def run_digest(home, args, cwd=None, env=None):
     full_env = {**os.environ, "HOME": str(home), "TZ": "UTC", "PRECEDENT_DIGEST_GIT_TIMEOUT_SECS": "60"}
     full_env.pop("CLAUDE_CODE_SESSION_ID", None)
     full_env.update(env or {})
-    proc = run_python([str(SCRIPT), *args], env=full_env, cwd=str(cwd or home))
+    proc = run_python([str(SCRIPT), *args], env=full_env, cwd=str(cwd or home), replace_env=True)
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -626,12 +626,14 @@ def case_determinism(h):
         build(fx)
         pending = fx.pending({"questions": [fq("q1", "Shared header", ["Keep it", "Drop it"])]})
         runs = {}
+        # PYTHONHASHSEED is read once at interpreter startup, so an in-process run ignores it. These
+        # runs must be real subprocesses (run_digest_e2e) or the determinism check is vacuous.
         for seed in ("1", "2"):
             env = {"PYTHONHASHSEED": seed}
             runs[seed] = {
-                "default": run_digest(fx.home, ["owner/name"], env=env),
-                "match": run_digest(fx.home, ["owner/name", "--match", str(pending), "--top", "5"], env=env),
-                "stats": run_digest(fx.home, ["owner/name", "--stats"], env=env),
+                "default": run_digest_e2e(fx.home, ["owner/name"], env=env),
+                "match": run_digest_e2e(fx.home, ["owner/name", "--match", str(pending), "--top", "5"], env=env),
+                "stats": run_digest_e2e(fx.home, ["owner/name", "--stats"], env=env),
             }
         for mode in ("default", "match", "stats"):
             a, b = runs["1"][mode], runs["2"][mode]

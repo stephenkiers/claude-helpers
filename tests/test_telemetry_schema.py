@@ -633,8 +633,9 @@ def test_append_event_preserves_existing_parent_permissions():
 
 def test_append_event_to_existing_common_dir():
     """append_event works when pointing to an existing directory like /tmp without crashing."""
-    tmpbase = Path(tempfile.gettempdir()) / ".test-append-existing"
-    tmpbase.mkdir(exist_ok=True)
+    # Parallel-safe (run_all.py runs suites concurrently): a unique dir per call, not a fixed name
+    # under the shared temp dir, so a peer suite cannot race this one's unlink/rmdir.
+    tmpbase = Path(tempfile.mkdtemp(prefix=".test-append-existing-"))
 
     log_path = tmpbase / "test.jsonl"
     try:

@@ -6,6 +6,7 @@ full-output log files, bounded failure excerpts, and best-effort environment sna
 Run with: python3 tests/test_workflow_check_diagnostics.py
 """
 
+import os
 import shutil
 import sys
 import tempfile
@@ -187,17 +188,13 @@ if __name__ == "__main__":
                     all(k in s for k in ("main HEAD", "git status --porcelain", "cargo/rustc/just", "free disk")), s)
 
         # --- make_log_dir with pruning ---
-        # Create multiple old log dirs and verify pruning keeps only the most recent N
-        temp_root = Path(tempfile.gettempdir())
-        # Clean up any existing test dirs first
-        import glob as glob_module
-        for old_dir in glob_module.glob(str(temp_root / f"{diag.LOG_DIR_PREFIX}test-*")):
-            shutil.rmtree(old_dir, ignore_errors=True)
-
-        # Create more dirs than the retention count
+        # Create multiple old log dirs and verify pruning keeps only the most recent N.
+        # Parallel-safe (run_all.py runs suites concurrently): this block only creates and removes the
+        # dirs it made, under a per-pid prefix, and never globs or clears the shared prefix. The
+        # make_log_dir prune can remove a peer suite's dirs, but no assertion here depends on them.
         created_test_dirs = []
         for i in range(diag.LOG_DIR_RETENTION_COUNT + 5):
-            test_dir = Path(tempfile.mkdtemp(prefix=f"{diag.LOG_DIR_PREFIX}test-"))
+            test_dir = Path(tempfile.mkdtemp(prefix=f"{diag.LOG_DIR_PREFIX}test-{os.getpid()}-"))
             created_test_dirs.append(test_dir)
 
         # Verify all were created

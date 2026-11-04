@@ -234,8 +234,18 @@ STOPWORDS = frozenset({
 KEY_RE = re.compile(r"^[^/\s]+/[^/\s]+$")  # matches owner/name
 SCP_RE = re.compile(r"^[^@/\s]+@[^:/\s]+:(.+)$")  # matches git@host:path
 URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+/(.+)$")  # matches scheme://host/path
+def _env_secs(name: str, default: int) -> int:
+    """Read a whole-seconds timeout from the environment. Unset, non-integer, or <= 0 values fall
+    back to `default`, so a bad value cannot crash the script at import."""
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 # Tests raise this under load (PRECEDENT_DIGEST_GIT_TIMEOUT_SECS); the default is unchanged.
-GIT_TIMEOUT_SECS = int(os.environ.get("PRECEDENT_DIGEST_GIT_TIMEOUT_SECS", "5"))
+GIT_TIMEOUT_SECS = _env_secs("PRECEDENT_DIGEST_GIT_TIMEOUT_SECS", 5)
 STAMP_RE = re.compile(r"(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})")  # matches YYYYMMDDTHHMMSS
 LEADING_NUM_RE = re.compile(r"^(\d+)-")  # matches leading digits before hyphen (e.g., "9-run-name")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")  # matches markdown headings
