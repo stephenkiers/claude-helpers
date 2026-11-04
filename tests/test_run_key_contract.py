@@ -123,7 +123,7 @@ def marker_less_receipt(head_sha: str) -> str:
     """An OK implement receipt from before RECEIPT_CONTRACT existed (no RUN_KEY lines)."""
     return ("ROUND 1\n" + check_block(head_sha) +
             "OUTSTANDING: none\n"
-            "Decision: OK\n"
+            "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n"
             "<!-- step-end -->")
 
 
@@ -132,7 +132,7 @@ def keyed_receipt(head_sha: str, header_extra: str = "RECEIPT_CONTRACT: 1\nRUN_K
     """An OK implement receipt with the RECEIPT_CONTRACT and RUN_KEY header lines (#346)."""
     return ("ROUND 1\n" + check_block(head_sha) + header_extra +
             "OUTSTANDING: none\n"
-            "Decision: OK\n"
+            "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n"
             "<!-- step-end -->" + body_extra)
 
 
@@ -151,7 +151,7 @@ def make_plan_fixture(home: str) -> tuple:
     (session / "plan.md").write_text("# plan\n")
     (session / "decisions.md").write_text("# decisions\n")
     receipt = flow_dir / "steps" / "plan.json"
-    receipt.write_text(f"FINAL_PLAN_PATH: {plan_file}\nATTEMPT: 1\nDecision: OK\n<!-- step-end -->\n")
+    receipt.write_text(f"FINAL_PLAN_PATH: {plan_file}\nATTEMPT: 1\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n<!-- step-end -->\n")
     return flow_dir, receipt
 
 

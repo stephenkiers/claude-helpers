@@ -104,7 +104,7 @@ def make_receipt(
         if include_outstanding:
             lines.append("OUTSTANDING: none")
 
-        lines.append("Decision: OK")
+        lines.append("SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK")
         lines.append("<!-- step-end -->")
 
         # Add content after step-end marker (below header)
@@ -177,7 +177,7 @@ def make_plan_fixture(home):
     (session / "plan.md").write_text("# plan\n")
     (session / "decisions.md").write_text("# decisions\n")
     receipt = flow_dir / "steps" / "plan.json"
-    receipt.write_text(f"FINAL_PLAN_PATH: {plan_file}\nATTEMPT: 1\nDecision: OK\n<!-- step-end -->\n")
+    receipt.write_text(f"FINAL_PLAN_PATH: {plan_file}\nATTEMPT: 1\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n<!-- step-end -->\n")
     return flow_dir, receipt
 
 
@@ -268,7 +268,7 @@ def test_parse_run_ref_duplicated_key(h):
 def test_parse_run_ref_key_below_header(h):
     """Test _parse_run_ref with RUN_KEY below the header block."""
     # This receipt has RUN_KEY after the blank line that ends the header
-    receipt_text = "ATTEMPT: 1\nROUND 1\nCHECK: pass\nCHECK_EXIT: 0\nCHECK_SOURCE: configured\nCHECK_SHA: 0000000000000000000000000000000000000001\nRECEIPT_CONTRACT: 1\nOUTSTANDING: none\nDecision: OK\n\nRUN_KEY: run-key-abc\n"
+    receipt_text = "ATTEMPT: 1\nROUND 1\nCHECK: pass\nCHECK_EXIT: 0\nCHECK_SOURCE: configured\nCHECK_SHA: 0000000000000000000000000000000000000001\nRECEIPT_CONTRACT: 1\nOUTSTANDING: none\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n\nRUN_KEY: run-key-abc\n"
     result = _parse_run_ref(receipt_text)
     h.test_result("RUN_KEY below header block: status=invalid",
                   result.status == "invalid" and "outside the header block" in result.reason,
@@ -298,7 +298,7 @@ def test_parse_run_ref_near_miss(h):
     for variant in variants:
         # No strict lines at all: without the near-miss rule this receipt would be grandfathered.
         receipt = make_receipt(include_receipt_contract=False, include_run_key=False)
-        receipt = receipt.replace("Decision: OK", f"{variant}\nDecision: OK")
+        receipt = receipt.replace("SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK", f"{variant}\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK")
         result = _parse_run_ref(receipt)
         h.test_result(f"Near-miss {variant!r}: status=invalid with a near-miss reason",
                       result.status == "invalid" and result.reason is not None and "near-miss" in result.reason,
@@ -308,7 +308,7 @@ def test_parse_run_ref_near_miss(h):
 def test_parse_run_ref_prose_is_not_near_miss(h):
     """A sentence that merely mentions RUN_KEY is not a near-miss and keeps the grandfathered fallback."""
     receipt = make_receipt(include_receipt_contract=False, include_run_key=False)
-    receipt = receipt.replace("Decision: OK", "The RUN_KEY: field is documented elsewhere\nDecision: OK")
+    receipt = receipt.replace("SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK", "The RUN_KEY: field is documented elsewhere\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK")
     result = _parse_run_ref(receipt)
     h.test_result("Prose mention of RUN_KEY: status=grandfathered",
                   result.status == "grandfathered" and result.reason is None,
@@ -421,7 +421,7 @@ def test_verifier_near_miss_rejected(h):
         home = Path(tmp)
         repo, base, head = make_feature_repo(home)
         text = make_receipt(include_receipt_contract=False, include_run_key=False, check_sha=head)
-        text = text.replace("Decision: OK", "- RUN_KEY: run-key-abc\nDecision: OK")
+        text = text.replace("SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK", "- RUN_KEY: run-key-abc\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK")
         rc, stdout, stderr = verify_implement(home, text, repo, base)
         lines = stdout.splitlines()
         h.test_result("Verifier: indented or bulleted RUN_KEY exits 1",

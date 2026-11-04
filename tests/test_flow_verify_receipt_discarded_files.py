@@ -180,6 +180,10 @@ def main():
                 "  - test.py",
                 "  - doc.md",
                 "OUTSTANDING: none",
+                "SPLIT_BASIS: parallel",
+                "MIN_UNITS: 1",
+                "PRIOR_SPLIT_BASIS: none",
+                "UNITS: 1",
                 "Decision: OK",
                 "<!-- step-end -->",
             ]
@@ -225,6 +229,10 @@ def main():
                 "DISCARDED_ADDED_FILES:",
                 "single.py",
                 "OUTSTANDING: none",
+                "SPLIT_BASIS: parallel",
+                "MIN_UNITS: 1",
+                "PRIOR_SPLIT_BASIS: none",
+                "UNITS: 1",
                 "Decision: OK",
                 "<!-- step-end -->",
             ]
@@ -270,6 +278,10 @@ def main():
                 "DISCARDED_ADDED_FILES:",
                 "  - /absolute/path.py",
                 "OUTSTANDING: none",
+                "SPLIT_BASIS: parallel",
+                "MIN_UNITS: 1",
+                "PRIOR_SPLIT_BASIS: none",
+                "UNITS: 1",
                 "Decision: OK",
                 "<!-- step-end -->",
             ]
@@ -312,6 +324,10 @@ def main():
                 "DISCARDED_ADDED_FILES:",
                 "  - ../escape.py",
                 "OUTSTANDING: none",
+                "SPLIT_BASIS: parallel",
+                "MIN_UNITS: 1",
+                "PRIOR_SPLIT_BASIS: none",
+                "UNITS: 1",
                 "Decision: OK",
                 "<!-- step-end -->",
             ]
@@ -358,6 +374,10 @@ def main():
                 *fx.check_lines(),
                 "Decision: WRONG",
                 "OUTSTANDING: none",
+                "SPLIT_BASIS: parallel",
+                "MIN_UNITS: 1",
+                "PRIOR_SPLIT_BASIS: none",
+                "UNITS: 1",
                 "Decision: OK",  # Last one should win
                 "<!-- step-end -->",
             ]
@@ -399,6 +419,10 @@ def main():
                 "FLOW_DIR: " + str(fx.flow),
                 *fx.check_lines(),
                 "OUTSTANDING: none",
+                "SPLIT_BASIS: parallel",
+                "MIN_UNITS: 1",
+                "PRIOR_SPLIT_BASIS: none",
+                "UNITS: 1",
                 "Decision: OK",
                 "<!-- step-end -->",
                 "Decision: AFTER_END",  # This should not count

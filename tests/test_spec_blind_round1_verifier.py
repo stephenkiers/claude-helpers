@@ -39,7 +39,7 @@ VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 SINCE = "2020-01-01T00:00:00Z"
 ROUND1_MISS = "ROUND 1"  # the miss reason must name ROUND 1
 
-TAIL_OK = "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->\n"
+TAIL_OK = "OUTSTANDING: none\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n<!-- step-end -->\n"
 
 
 def git_rev_parse(rev):
@@ -220,7 +220,7 @@ print()
 print("[Other reasons survive when the ROUND 1 header is present]")
 print("=" * 70)
 
-missing_outstanding = "ROUND 1 — Implementer (parallel)\nDecision: OK\n<!-- step-end -->\n"
+missing_outstanding = "ROUND 1 — Implementer (parallel)\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n<!-- step-end -->\n"
 rc, out = verify(missing_outstanding)
 t("OK receipt with header but no OUTSTANDING still fails on OUTSTANDING",
   rc != 0 and "OUTSTANDING" in out and "ROUND 1" not in last_line(out),
@@ -231,7 +231,7 @@ print()
 print("[CRLF line endings (D6)]")
 print("=" * 70)
 
-crlf_header_receipt = "ROUND 1 — Implementer (parallel)\r\nOUTSTANDING: none\r\nDecision: OK\r\n<!-- step-end -->\r\n"
+crlf_header_receipt = "ROUND 1 — Implementer (parallel)\r\nOUTSTANDING: none\r\nSPLIT_BASIS: parallel\r\nMIN_UNITS: 1\r\nPRIOR_SPLIT_BASIS: none\r\nUNITS: 1\r\nDecision: OK\r\n<!-- step-end -->\r\n"
 rc, out = verify(crlf_header_receipt)
 t("ROUND 1 header with CRLF line endings is accepted (D6)",
   rc == 0, f"rc={rc}, last line: {last_line(out)}")
@@ -245,7 +245,7 @@ header_ok_receipt = (
     "IMPLEMENTER_MODEL: haiku\n"
     "ROUND 1 — Implementer (parallel)\n"
     "OUTSTANDING: none\n"
-    "Decision: OK\n"
+    "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n"
     "<!-- step-end -->\n"
 )
 rc, out = verify_expect_model(header_ok_receipt)
@@ -255,7 +255,7 @@ t("expect-model on OK receipt with header passes",
 no_header_receipt = (
     "IMPLEMENTER_MODEL: haiku\n"
     "OUTSTANDING: none\n"
-    "Decision: OK\n"
+    "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK\n"
     "<!-- step-end -->\n"
 )
 rc, out = verify_expect_model(no_header_receipt)

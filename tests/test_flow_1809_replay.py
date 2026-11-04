@@ -290,7 +290,7 @@ echo "$REASON"
         receipt_path = f"{tmpdir}/receipt.md"
         # Create receipt with OUTSTANDING: none
         Path(receipt_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(receipt_path).write_text("ROUND 1 — Implementer (parallel)\n" + check_lines(branch_sha) + "Decision: OK\nOUTSTANDING: none\n<!-- step-end -->")
+        Path(receipt_path).write_text("ROUND 1 — Implementer (parallel)\n" + check_lines(branch_sha) + "Decision: OK\nSPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nOUTSTANDING: none\n<!-- step-end -->")
 
         # Use relative --since: a few seconds ago
         since_time = (datetime.utcnow() - timedelta(seconds=5)).isoformat() + "Z"
@@ -318,6 +318,10 @@ echo "$REASON"
         Path(receipt_path).parent.mkdir(parents=True, exist_ok=True)
         content = """ROUND 1 — Implementer (parallel)
 """ + check_lines(branch_sha) + """Decision: OK
+SPLIT_BASIS: parallel
+MIN_UNITS: 1
+PRIOR_SPLIT_BASIS: none
+UNITS: 1
 OUTSTANDING: Step 8 (not built) [self-report]
 OUTSTANDING: Step 10 (GitHub housekeeping) [both]
 <!-- step-end -->

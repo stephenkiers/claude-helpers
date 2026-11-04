@@ -104,6 +104,13 @@ DIRECTION_SCOPE: Tuple[str, ...] = ("plan", "implement", "review", "fix")
 # D2 quote matching constants
 QUOTE_MIN_LENGTH = 20
 
+# Step 3 receipt split-basis grammar and field names (unit sizing #319)
+SPLIT_BASIS_VALUES = ("parallel", "sequential", "none")  # "single" must be in form single(<reason>)
+MIN_UNITS_FIELD = "MIN_UNITS"
+SPLIT_BASIS_FIELD = "SPLIT_BASIS"
+PRIOR_SPLIT_BASIS_FIELD = "PRIOR_SPLIT_BASIS"
+MIN_UNITS_LOWER_BOUND = 0  # minimum valid value for MIN_UNITS integer field
+
 
 class RelayCount(NamedTuple):
     """Result of counting relayed questions from disk, scoped by attempt.
@@ -2717,6 +2724,12 @@ def check_implement(
         if discard_error:
             return discard_error
 
+    # Check split basis fields (unit sizing grammar and validation, #319)
+    decision = parse_receipt_field(receipt, "Decision")
+    split_basis_error = validate_split_basis_fields(receipt, decision)
+    if split_basis_error:
+        return split_basis_error
+
     # An OK receipt must carry a check outcome that matches the resolver and the final HEAD.
     undecided = _undecided_reason(receipt)
     if undecided:
@@ -2760,6 +2773,13 @@ def check_fix(
         return artifact_reason
 
     receipt = read_file(receipt_file)
+
+    # Check split basis fields (unit sizing grammar and validation, #319)
+    decision = parse_receipt_field(receipt, "Decision")
+    split_basis_error = validate_split_basis_fields(receipt, decision)
+    if split_basis_error:
+        return split_basis_error
+
     undecided = _undecided_reason(receipt)
     if undecided:
         return undecided
@@ -2976,6 +2996,145 @@ def parse_receipt_field(receipt: str, field_name: str) -> Optional[str]:
         if line.startswith(f"{field_name}:"):
             result = line.split(":", 1)[1].strip()
     return result
+
+
+def validate_split_basis_fields(receipt: str, decision: Optional[str]) -> Optional[str]:
+    """Validate SPLIT_BASIS, MIN_UNITS, and PRIOR_SPLIT_BASIS header fields.
+
+    Rules:
+    - OK receipts must have all three fields with real values (basis not 'none')
+    - FAILED receipts written after split was decided must have all three with real basis
+    - FAILED receipts written before split was decided have 'none' basis (others as needed)
+    - All three fields absent on FAILED receipt is treated as 'none' (legacy receipts)
+    - Partly present set (1 or 2 of 3) on FAILED receipt is rejected
+    - Basis value must be in SPLIT_BASIS_VALUES
+    - 'none' is rejected on OK receipts
+    - 'single()' or whitespace-only reason is rejected
+    - 'sequential' with UNITS: 1 is rejected
+    - 'single' with integer MIN_UNITS > 1 is rejected
+    - UNITS < integer MIN_UNITS (only when basis is not 'none')
+
+    Returns error reason or None if valid.
+    """
+    split_basis_val = parse_receipt_field(receipt, SPLIT_BASIS_FIELD)
+    min_units_val = parse_receipt_field(receipt, MIN_UNITS_FIELD)
+    prior_basis_val = parse_receipt_field(receipt, PRIOR_SPLIT_BASIS_FIELD)
+
+    # Early check: bare 'single' is invalid (must be single(<reason>))
+    if split_basis_val == "single":
+        return f"invalid {SPLIT_BASIS_FIELD}: single must be in form single(<reason>)"
+    if prior_basis_val == "single":
+        return f"invalid {PRIOR_SPLIT_BASIS_FIELD}: single must be in form single(<reason>)"
+
+    # Count which fields are present
+    fields_present = sum([split_basis_val is not None, min_units_val is not None, prior_basis_val is not None])
+
+    # If OK receipt, must have all three fields with real values
+    if decision == "OK":
+        if fields_present != 3:
+            if fields_present == 0:
+                return "OK receipt missing all three split-basis fields"
+            missing_field_names: List[str] = []
+            if split_basis_val is None:
+                missing_field_names.append(SPLIT_BASIS_FIELD)
+            if min_units_val is None:
+                missing_field_names.append(MIN_UNITS_FIELD)
+            if prior_basis_val is None:
+                missing_field_names.append(PRIOR_SPLIT_BASIS_FIELD)
+            return f"OK receipt missing split-basis field(s): {', '.join(missing_field_names)}"
+        # Reject 'none' on OK receipt
+        if split_basis_val == "none":
+            return f"OK receipt has {SPLIT_BASIS_FIELD}: none (must be parallel, sequential, or single)"
+        # Basis must be valid (single(<reason>) is checked in detail below)
+        if split_basis_val not in SPLIT_BASIS_VALUES and not (split_basis_val or "").startswith("single("):
+            return f"invalid {SPLIT_BASIS_FIELD}: {split_basis_val!r}"
+
+    # If FAILED receipt, check field presence rules
+    elif decision == "FAILED":
+        # All three absent is legacy OK (treated as 'none')
+        if fields_present == 0:
+            return None
+        # Partly present set (1 or 2 of 3) is rejected
+        if 1 <= fields_present <= 2:
+            return f"FAILED receipt has {fields_present} of 3 split-basis fields (must have all 3 or none)"
+
+        # All three present: validate their values
+        # Basis value must be valid (single(<reason>) is checked in detail below)
+        if split_basis_val not in SPLIT_BASIS_VALUES and not (split_basis_val or "").startswith("single("):
+            return f"invalid {SPLIT_BASIS_FIELD}: {split_basis_val!r}"
+
+    # Validate split_basis_val if present (both OK and FAILED cases with values)
+    if split_basis_val and split_basis_val != "none":
+        # Check for 'single' with reason in parentheses
+        if split_basis_val.startswith("single("):
+            if not split_basis_val.endswith(")"):
+                return f"malformed {SPLIT_BASIS_FIELD}: {split_basis_val!r} (missing closing paren)"
+            reason = split_basis_val[7:-1]  # Extract text between 'single(' and ')'
+            if not reason or not reason.strip():
+                return f"empty reason in {SPLIT_BASIS_FIELD}: single() requires non-empty reason"
+        elif split_basis_val not in SPLIT_BASIS_VALUES:
+            return f"invalid {SPLIT_BASIS_FIELD}: {split_basis_val!r}"
+
+    # Validate MIN_UNITS value if present
+    if min_units_val:
+        if min_units_val != "unknown":
+            try:
+                min_units = int(min_units_val)
+                if min_units < MIN_UNITS_LOWER_BOUND:
+                    return f"{MIN_UNITS_FIELD} must be >= {MIN_UNITS_LOWER_BOUND} or 'unknown', got {min_units_val!r}"
+            except ValueError:
+                return f"invalid {MIN_UNITS_FIELD}: {min_units_val!r} (must be integer or 'unknown')"
+
+    # Validate PRIOR_SPLIT_BASIS value if present
+    if prior_basis_val:
+        # Must be a valid basis value or 'none', or 'single(reason)' form
+        if prior_basis_val == "none":
+            pass
+        elif prior_basis_val.startswith("single("):
+            if not prior_basis_val.endswith(")"):
+                return f"malformed {PRIOR_SPLIT_BASIS_FIELD}: {prior_basis_val!r} (missing closing paren)"
+            reason = prior_basis_val[7:-1]
+            if not reason or not reason.strip():
+                return f"empty reason in {PRIOR_SPLIT_BASIS_FIELD}: single() requires non-empty reason"
+        elif prior_basis_val not in SPLIT_BASIS_VALUES:
+            return f"invalid {PRIOR_SPLIT_BASIS_FIELD}: {prior_basis_val!r}"
+
+    # Cross-field validations (only when basis is not 'none')
+    if split_basis_val and split_basis_val != "none":
+        # UNITS field must be a valid integer
+        units_val = parse_receipt_field(receipt, "UNITS")
+        units_int = None
+        if units_val:
+            try:
+                units_int = int(units_val)
+            except ValueError:
+                return f"invalid UNITS: {units_val!r} (must be integer)"
+
+        # 'sequential' with UNITS: 1 is rejected (sequential run is multi-unit)
+        if split_basis_val == "sequential":
+            if units_int is not None and units_int == 1:
+                return "sequential split basis cannot have UNITS: 1 (sequential implies multi-unit)"
+
+        # 'single' with integer MIN_UNITS > 1 is rejected
+        if split_basis_val.startswith("single"):
+            if min_units_val and min_units_val != "unknown":
+                try:
+                    min_units = int(min_units_val)
+                    if min_units > 1:
+                        return f"single split basis cannot have {MIN_UNITS_FIELD}: {min_units} (single implies <= 1 unit)"
+                except ValueError:
+                    pass
+
+        # UNITS < MIN_UNITS (only when basis is not 'none')
+        if units_int is not None and min_units_val and min_units_val != "unknown":
+            try:
+                min_units = int(min_units_val)
+                if units_int < min_units:
+                    return f"UNITS ({units_int}) cannot be less than {MIN_UNITS_FIELD} ({min_units})"
+            except ValueError:
+                pass
+
+    return None
 
 
 def parse_discarded_files_block(receipt: str) -> List[str]:

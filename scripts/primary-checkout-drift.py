@@ -432,6 +432,9 @@ def build_fail_receipt(args: argparse.Namespace, reason: str) -> str:
         "Decision: FAILED",
         f"Reason: {reason}",
         "FAILURE_CLASS: cwd-drift",
+        f"SPLIT_BASIS: {_one_line(args.split_basis)}",
+        f"MIN_UNITS: {_one_line(args.min_units)}",
+        f"PRIOR_SPLIT_BASIS: {_one_line(args.prior_split_basis)}",
     ]
     if args.detail and args.compare_exit == EXIT_DRIFT:
         lines.append(f"FAIL_PATHS: {_one_line(args.fail_paths)}")
@@ -530,6 +533,13 @@ def main() -> int:
     fail_parser.add_argument("--patch-path", default="", help="Path of the saved drifted patch")
     fail_parser.add_argument("--drifted-files", default="", help="Comma-separated drifted files")
     fail_parser.add_argument("--untracked-files", default="", help="Comma-separated untracked drifted files")
+
+    fail_parser.add_argument("--split-basis", default="none",
+                             help="Unit split basis (parallel, sequential, single(...), or none)")
+    fail_parser.add_argument("--min-units", default="unknown",
+                             help="Minimum number of units (integer or 'unknown')")
+    fail_parser.add_argument("--prior-split-basis", default="none",
+                             help="Prior attempt's split basis (parallel, sequential, single(...), or none)")
 
     args = parser.parse_args()
 

@@ -108,7 +108,7 @@ def make_receipt(check_sha, header_extra=(), strict_run_key=False, strict_contra
         lines.append("RUN_KEY: run-key-abc")
     lines.extend(header_extra)
     lines.append("OUTSTANDING: none")
-    lines.append("Decision: OK")
+    lines.append("SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\nDecision: OK")
     lines.append("<!-- step-end -->")
     return "\n".join(lines) + "\n"
 

@@ -173,6 +173,11 @@ def check_lines(head_sha: str) -> str:
     return f"CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\nCHECK_SHA: {head_sha}\n"
 
 
+def split_basis_lines() -> str:
+    """The split-basis fields an OK implement/fix receipt must carry."""
+    return "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\n"
+
+
 def run_verifier_argv(args: list, env_home: str) -> tuple:
     """Run the verifier with an exact argv (for modes that take no --since); return (exit_code, stdout, stderr)."""
     env = os.environ.copy()
@@ -369,7 +374,7 @@ def main():
         write_check_cache(repo_path)
         head_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True).stdout.strip()
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, "ROUND 1\n" + check_lines(head_sha) + "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, "ROUND 1\n" + check_lines(head_sha) + split_basis_lines() + "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
 
         exit_code, stdout, stderr = run_verifier(
             "implement", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
@@ -920,7 +925,7 @@ No items."""
         # #338: zero commits, so the final HEAD is the base SHA.
         write_check_cache(repo_path)
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nRound 1\n" + check_lines(base_sha) + "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nRound 1\n" + check_lines(base_sha) + split_basis_lines() + "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
 
         exit_code, stdout, stderr = run_verifier(
             "fix", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
@@ -2153,7 +2158,7 @@ No items."""
         write_check_cache(repo_path)
         head_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True).stdout.strip()
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, "ROUND 1\n" + check_lines(head_sha) + "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, "ROUND 1\n" + check_lines(head_sha) + split_basis_lines() + "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
         ts = iso_z(time.time() - 3600)
         flow_dir = f"{tmp_home}/.claude/flows/flow-79"
         Path(flow_dir).mkdir(parents=True, exist_ok=True)
