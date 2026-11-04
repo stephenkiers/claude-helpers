@@ -219,3 +219,54 @@ and `usage-check` telemetry still run either way.
 **What's now stale:** earlier amendments describe `round1-join` as the run's "one mandatory
 checkpoint"; read that as "the one checkpoint, mandatory only under `--pause`". The kill criterion
 above measures the resume arm and only accumulates data from `--pause` runs.
+
+## Amendment (2026-11-04): Round 4 opens with disagreement closure and cleans up tests at test level
+
+A red spec-blind (Round 2) test is a finding, not a fixture to bend. Round 4 now has new
+responsibilities, and it runs them in this order. No ledger stage changed: the `round4` row and its
+`round4: <D> deleted, <R> relocated` first line keep their shape, and the new state lives in evidence
+files (`disagreements.json`, `round4-deletions.md`, `round4-merged.txt`), not in new step ids.
+
+1. **Disagreement closure first (Round 4.0a).** Each red or open spec-blind test is judged against the
+   original plan by a Sonnet judge, then by an Opus judge only if Sonnet escalates. A judge may conclude
+   "the test is correct, the implementation is wrong", which sends the test to the Haiku fix loop. A
+   judge may never rule "spec was wrong". The ladder only prepares the case.
+2. **The human is the only owner of a "spec was wrong" ruling.** Any amendment to, or deletion of, a
+   test's oracle needs a human answer through the Ask block (`~/.claude/prompts/flow-reference.md`; a
+   plain question outside a flow; fleet parks it), and the answer must carry a reason. Any other edit to a
+   failing spec-blind test is fenced: only import lines, call-site names and argument counts may change,
+   checked mechanically by `scripts/test-cleanup-check.py fence`. Anything else goes to the human. A
+   Round 3 support-edit flip (a shared fixture or helper that turns a red test green) also goes to the human.
+   "Take over" is a defined terminal path, and a red test the judges say is correct stays committed red
+   and blocks the PR (ruling 1a).
+3. **Test-level cleanup with named survivors.** Only once everything is green, except the ruling-1a
+   blockers, Round 4 sorts the tests added since `ROUND2_START_SHA` (never pre-existing tests) into
+   Exempt, Duplicate, No-op, judgment-delete and Unique. Each deletion names the surviving test that
+   still covers the behaviour, or its mechanical proof (`comm` dedup or the reference-check). Unique
+   tests, and Exempt tests, are merged into the module's normal test file with their bodies unchanged;
+   Exempt tests are never deleted. The merged ids go into the commit body as provenance.
+4. **Post-conditions before the commit.** The named-survivor check runs against a fresh collection, and
+   a changed-public-behaviour floor requires each public symbol added or changed in the implementation
+   to keep at least one test. Any deletion that breaks either is restored and re-merged as Unique. The
+   red set must equal exactly the blocking set. `test-cleanup-check.py names` must find no surviving
+   `spec-blind` name in the run's own working set. Only then is the cleanup commit made.
+5. **Widened working-set invariant.** Round 4 only ever touches files in the working set plus the 4.5
+   merge targets recorded in `round4-merged.txt` (recorded before the first write to each target). It
+   never deletes or edits a pre-existing test in those targets; it only appends. Resume restores the
+   union of the two when a cleanup was interrupted, and stops on any change outside it.
+
+**Deferred to #367:** test budgets and the "fails at base" proof belong to
+[#367](https://github.com/stephenkiers/claude-helpers/issues/367), not this amendment. The No-op bucket
+is the slot a future at-base proof joins. Nothing here decides a budget or a fails-at-base rule.
+
+**Unchanged:** the earlier amendments' pause semantics (`--pause`, the `round1-join` checkpoint, the
+`round4` checkpoint in the table above) are not altered. The table's `round4` row still means "before
+Round 4 starts", which now begins with disagreement closure.
+
+**What's now stale:** the 2026-09-12 and earlier descriptions of Round 4 as "delete clearly-junk tests and
+relocate the survivors" describe the pre-2026-11-04 cleanup. Read them as the cleanup's classification
+step (4.1–4.5), now preceded by 4.0a and bounded by the post-conditions above.
+
+**Operator note:** `scripts/test-cleanup-check.py` is new. Run `/setup-local` after pulling so the
+`~/.claude/scripts/` symlink exists. The command calls the helper by its `$HOME/.claude/scripts/` path,
+so a machine without the symlink has no helper to call for the Round 3 fence and the Round 4 post-conditions.
