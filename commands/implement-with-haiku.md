@@ -588,7 +588,7 @@ same command, where `<RESUMED_FROM_ID>` is the `--resumed-from` value parsed in 
 the baseline state of the primary checkout (the first `git worktree list` entry) so drift can be detected later:
 
 ```bash
-PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
+PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep -B2 -E '^branch refs/heads/(main|master)$' | sed -n 's/^worktree //p' | head -1)  # default-branch worktree (bare-clone layouts list .bare first); no awk/$0: skill arg substitution mangles it
 python3 "$HOME/.claude/scripts/primary-checkout-drift.py" snapshot --checkout "$PRIMARY_CHECKOUT" --orchestrator-cwd "$(pwd)" --out "<SCRATCH_PATH>/primary-baseline.json"
 SNAPSHOT_EXIT=$?
 if [[ $SNAPSHOT_EXIT -ne 0 ]]; then
@@ -658,7 +658,7 @@ if [[ -z "$BRANCH" ]]; then
   printf '%s\n' "Error: Repository is in detached HEAD state. Check out a branch before proceeding." >&2
   exit 1
 fi
-PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
+PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep -B2 -E '^branch refs/heads/(main|master)$' | sed -n 's/^worktree //p' | head -1)  # default-branch worktree (bare-clone layouts list .bare first); no awk/$0: skill arg substitution mangles it
 
 # Prune stale entries first
 git worktree prune
@@ -887,7 +887,7 @@ any build tool, in any project.
 
 ```bash
 BRANCH=$(git branch --show-current)
-PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
+PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep -B2 -E '^branch refs/heads/(main|master)$' | sed -n 's/^worktree //p' | head -1)  # default-branch worktree (bare-clone layouts list .bare first); no awk/$0: skill arg substitution mangles it
 WT_PARENT="$(dirname "$PRIMARY_CHECKOUT")"
 mkdir -p "$WT_PARENT"
 
