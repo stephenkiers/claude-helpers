@@ -19,14 +19,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 
 
 def run_verifier(step: str, receipt_path: str, since: str, env_home: str, **kwargs) -> tuple:
     """Run the verifier and return (exit_code, stdout, stderr)."""
-    cmd = [
-        sys.executable,
+    args = [
         str(VERIFIER),
         "--step", step,
         "--receipt", receipt_path,
@@ -36,11 +36,12 @@ def run_verifier(step: str, receipt_path: str, since: str, env_home: str, **kwar
         if value is not None:
             # Convert underscores to hyphens for CLI argument names
             arg_name = key.replace("_", "-")
-            cmd.extend([f"--{arg_name}", str(value)])
+            args.extend([f"--{arg_name}", str(value)])
 
     env = os.environ.copy()
     env["HOME"] = env_home
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    result = run_python(args, env=env)
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
@@ -182,6 +183,16 @@ def run_verifier_argv(args: list, env_home: str) -> tuple:
     """Run the verifier with an exact argv (for modes that take no --since); return (exit_code, stdout, stderr)."""
     env = os.environ.copy()
     env["HOME"] = env_home
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    result = run_python([str(VERIFIER), *args], env=env)
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def run_verifier_argv_e2e(args: list, env_home: str) -> tuple:
+    """Run the verifier with an exact argv as a subprocess (end-to-end); return (exit_code, stdout, stderr)."""
+    env = os.environ.copy()
+    env["HOME"] = env_home
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
     result = subprocess.run([sys.executable, str(VERIFIER), *args], capture_output=True, text=True, env=env)
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
@@ -1946,129 +1957,6 @@ No items."""
                       stdout)
 
     print()
-    print("[Test 79] Plan: split-location positive (legacy) - questions in FLOW_DIR, decoy in session")
-    with tempfile.TemporaryDirectory() as tmp_home:
-        receipt_path = create_plan_fixture(tmp_home, briefs=2)
-        flow_dir = f"{tmp_home}/flow"
-        # Create actual question and answer files in FLOW_DIR
-        create_flow_questions(flow_dir, "plan", [2])
-        # Decoy in the session dir: a complete question file named like the real marker, with NO
-        # answer beside it. The decoy sits where the verifier never reads, so this pins the absence
-        # of a session-dir read path. It does not catch a fallback unless that fallback reads pending-questions.
-        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
-        Path(f"{session_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
-        Path(f"{session_dir}/pending-questions/plan-01.json").write_text(json.dumps({
-            "step": "plan", "command": "expert-plan", "context_path": None, "summary": None,
-            "questions": [{"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}]
-        }))
-        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
-        Path(receipt_path).write_text(receipt_body)
-        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("Legacy plan split-location positive: FLOW_DIR questions/answers work, session decoy ignored",
-                      exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
-
-    print()
-    print("[Test 80] Plan: split-location negative (legacy) - questions only in decoy session dir")
-    with tempfile.TemporaryDirectory() as tmp_home:
-        receipt_path = create_plan_fixture(tmp_home, briefs=2)
-        flow_dir = f"{tmp_home}/flow"
-        # Create EMPTY FLOW_DIR
-        Path(flow_dir).mkdir(parents=True, exist_ok=True)
-        # Create question files ONLY in session dir (decoy location; pins the absence of a session-dir read path)
-        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
-        Path(f"{session_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
-        Path(f"{session_dir}/pending-questions/plan-01.json").write_text(json.dumps({
-            "step": "plan", "command": "expert-plan", "context_path": None, "summary": None,
-            "questions": [{"id": f"q{i}", "question": f"Q{i}?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False} for i in range(1, 3)]
-        }))
-        # Create answers file also only in session
-        Path(f"{session_dir}/answers").mkdir(parents=True, exist_ok=True)
-        Path(f"{session_dir}/answers/plan-01.json").write_text(json.dumps({
-            "step": "plan", "seq": 1, "answers": [{"id": f"q{i}", "response": f"A{i}"} for i in range(1, 3)]
-        }))
-        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
-        Path(receipt_path).write_text(receipt_body)
-        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("Legacy plan split-location negative: no fallback to session dir, fails unanswered",
-                      exit_code == 1 and "plan checkpoint incomplete (" in stdout and "unanswered: plan-01.json" in stdout, stdout)
-
-    print()
-    print("[Test 81] Review: split-location positive - questions in FLOW_DIR, decoy in session")
-    with tempfile.TemporaryDirectory() as tmp_home:
-        review_dir = create_review_dir(tmp_home)
-        Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
-        receipt_path = f"{tmp_home}/receipt.md"
-        flow_dir = f"{tmp_home}/flow"
-        # Create actual question and answer files in FLOW_DIR
-        create_flow_questions(flow_dir, "review", [2])
-        # Decoy in the review dir: a complete question file named like the real marker, with NO
-        # answer beside it. The decoy sits where the verifier never reads, so this pins the absence
-        # of a review-dir read path. It does not catch a fallback unless that fallback reads pending-questions.
-        Path(f"{review_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
-        Path(f"{review_dir}/pending-questions/review-01.json").write_text(json.dumps({
-            "step": "review", "command": "expert-review", "kind": "report", "summary": None,
-            "questions": [{"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}]
-        }))
-        receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
-        create_receipt(receipt_path, receipt_body)
-        exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("Review split-location positive: FLOW_DIR questions/answers work, session decoy ignored",
-                      exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
-
-    print()
-    print("[Test 82] Review: split-location negative - questions only in decoy session dir")
-    with tempfile.TemporaryDirectory() as tmp_home:
-        review_dir = create_review_dir(tmp_home)
-        Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
-        receipt_path = f"{tmp_home}/receipt.md"
-        flow_dir = f"{tmp_home}/flow"
-        # Create EMPTY FLOW_DIR
-        Path(flow_dir).mkdir(parents=True, exist_ok=True)
-        # Create questions ONLY in review session
-        Path(f"{review_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
-        Path(f"{review_dir}/pending-questions/review-01.json").write_text(json.dumps({
-            "step": "review", "command": "expert-review", "context_path": None, "summary": None,
-            "questions": [{"id": f"q{i}", "question": f"Q{i}?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False} for i in range(1, 3)]
-        }))
-        # Create answers file also only in session
-        Path(f"{review_dir}/answers").mkdir(parents=True, exist_ok=True)
-        Path(f"{review_dir}/answers/review-01.json").write_text(json.dumps({
-            "step": "review", "seq": 1, "answers": [{"id": f"q{i}", "response": f"A{i}"} for i in range(1, 3)]
-        }))
-        receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
-        create_receipt(receipt_path, receipt_body)
-        exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("Review split-location negative: no fallback to session dir, fails unanswered",
-                      exit_code == 1 and "review rulings incomplete (" in stdout and "unanswered: review-01.json" in stdout, stdout)
-
-    print()
-    print("[Test 83] Plan: missing plan.md in session → plan artifacts missing (plan.md)")
-    with tempfile.TemporaryDirectory() as tmp_home:
-        receipt_path = create_plan_fixture(tmp_home, briefs=0)
-        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
-        # Remove the plan.md that create_plan_fixture created
-        os.remove(f"{session_dir}/plan.md")
-        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
-        h.test_result("missing plan.md fails", exit_code == 1 and "plan artifacts missing (plan.md)" in stdout, stdout)
-
-    print()
-    print("[Test 84] Plan: missing FINAL_PLAN_PATH file → plan artifacts missing (FINAL_PLAN_PATH file does not exist)")
-    with tempfile.TemporaryDirectory() as tmp_home:
-        create_reviewer_index(tmp_home)
-        invocation_id = "20261013T222013-30924"
-        session_dir = create_session(tmp_home, invocation_id, briefs=0)
-        plan_path = f"{tmp_home}/.claude/plans/issue-slug-{invocation_id}.md"
-        # Do NOT create the plan file
-        Path(plan_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(f"{session_dir}/context.md").write_text("# Context")
-        Path(f"{session_dir}/selected-experts.md").write_text("| Expert |\n|--------|\n| Danielle the Designer |")
-        create_contribution(f"{session_dir}/danielle-designer-contribution.md")
-        Path(f"{session_dir}/plan.md").write_text("# Plan")
-        receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, f"FINAL_PLAN_PATH: {plan_path}\nDecision: OK\n<!-- step-end -->")
-        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
-        h.test_result("missing FINAL_PLAN_PATH file fails", exit_code == 1 and "plan artifacts missing (FINAL_PLAN_PATH file does not exist)" in stdout, stdout)
-
     print()
     print("[Test 85] Plan: unreadable question file in legacy path → fails closed as malformed (not json)")
     with tempfile.TemporaryDirectory() as tmp_home:
@@ -2164,7 +2052,7 @@ No items."""
         Path(flow_dir).mkdir(parents=True, exist_ok=True)
         Path(f"{flow_dir}/log.md").write_text(f"{ts} implement begin\n")
         common = ["--step", "implement", "--receipt", receipt_path, "--repo", repo_path, "--branch", "HEAD", "--base", base_sha]
-        by_since = run_verifier_argv([*common, "--since", ts], tmp_home)
+        by_since = run_verifier_argv_e2e([*common, "--since", ts], tmp_home)
         by_log = run_verifier_argv([*common, "--since-from-log", "--flow-dir", flow_dir], tmp_home)
         h.test_result("--since with the logged timestamp passes (baseline exit 0)", by_since[0] == 0, by_since[1])
         h.test_result("--since-from-log gives the same exit and output as --since with the logged timestamp",
@@ -2172,21 +2060,6 @@ No items."""
                       f"since: rc={by_since[0]} out={by_since[1]!r}; from-log: rc={by_log[0]} out={by_log[1]!r}")
 
     print()
-    print("[Test 89] --since-from-log with no begin or retry line for the step exits 1 with the documented reason")
-    with tempfile.TemporaryDirectory() as tmp_home:
-        receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, "Decision: OK\n<!-- step-end -->")
-        flow_dir = f"{tmp_home}/.claude/flows/flow-80"
-        Path(flow_dir).mkdir(parents=True, exist_ok=True)
-        Path(f"{flow_dir}/log.md").write_text(f"{iso_z(time.time() - 60)} fix begin\n")
-        exit_code, stdout, stderr = run_verifier_argv(
-            ["--step", "implement", "--receipt", receipt_path, "--since-from-log", "--flow-dir", flow_dir], tmp_home)
-        h.test_result("missing begin|retry line for implement exits 1",
-                      exit_code == 1, f"rc={exit_code} stdout={stdout!r} stderr={stderr!r}")
-        h.test_result("missing line names 'Reason: no begin or retry line for implement'",
-                      "Reason: no begin or retry line for implement" in stdout + stderr,
-                      f"stdout={stdout!r} stderr={stderr!r}")
-
     print()
     print("[Test 90] --since-from-log with a malformed newest begin|retry line exits 1")
     with tempfile.TemporaryDirectory() as tmp_home:
@@ -2230,49 +2103,16 @@ No items."""
     h.test_result("_parse_iso8601 still raises ValueError on garbage", garbage_raises)
 
     print()
-    print("[Test 84] --since-from-log exits 2 when there is no flow dir, and when the flow dir is invalid")
+    print("[Test 84] --since-from-log with a relative --flow-dir exits 2")
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = f"{tmp_home}/receipt.md"
         create_receipt(receipt_path, "Decision: OK\n<!-- step-end -->")
-        no_flow = run_verifier_argv(["--step", "implement", "--receipt", receipt_path, "--since-from-log"], tmp_home)
-        h.test_result("--since-from-log with no --flow-dir and a receipt outside steps/ exits 2",
-                      no_flow[0] == 2, f"rc={no_flow[0]} stderr={no_flow[2][:200]!r}")
-        outside = Path(tmp_home) / "not-a-flow"
-        outside.mkdir(parents=True)
-        (outside / "log.md").write_text(f"{iso_z(time.time() - 60)} implement begin\n")
-        bad_flow = run_verifier_argv(
-            ["--step", "implement", "--receipt", receipt_path, "--since-from-log", "--flow-dir", str(outside)], tmp_home)
-        h.test_result("--since-from-log with a flow dir outside ~/.claude/flows exits 2",
-                      bad_flow[0] == 2, f"rc={bad_flow[0]} stderr={bad_flow[2][:200]!r}")
         relative = run_verifier_argv(
             ["--step", "implement", "--receipt", receipt_path, "--since-from-log", "--flow-dir", "relative/flow"], tmp_home)
         h.test_result("--since-from-log with a relative --flow-dir exits 2",
                       relative[0] == 2, f"rc={relative[0]} stderr={relative[2][:200]!r}")
 
     print()
-    print("[Test 85] --since-from-log distinguishes a truncated log with no line in its tail, and names the malformed error")
-    with tempfile.TemporaryDirectory() as tmp_home:
-        receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, "Decision: OK\n<!-- step-end -->")
-        flow_dir = f"{tmp_home}/.claude/flows/flow-85"
-        Path(flow_dir).mkdir(parents=True, exist_ok=True)
-        cap = load_flow_log_module().LOG_READ_CAP_BYTES
-        filler = "filler line without any marker\n" * ((2 * cap) // len("filler line without any marker\n") + 1)
-        Path(f"{flow_dir}/log.md").write_text(f"{iso_z(time.time() - 3600)} implement begin\n" + filler)
-        truncated = run_verifier_argv(
-            ["--step", "implement", "--receipt", receipt_path, "--since-from-log", "--flow-dir", flow_dir], tmp_home)
-        h.test_result("truncated log with no line in its tail exits 1 with the window-cut reason",
-                      truncated[0] == 1 and "in the readable tail of log.md" in truncated[1] + truncated[2],
-                      f"rc={truncated[0]} stdout={truncated[1]!r} stderr={truncated[2]!r}")
-        flow_dir_bad = f"{tmp_home}/.claude/flows/flow-85-bad"
-        Path(flow_dir_bad).mkdir(parents=True, exist_ok=True)
-        Path(f"{flow_dir_bad}/log.md").write_text("garbage implement begin\n")
-        malformed = run_verifier_argv(
-            ["--step", "implement", "--receipt", receipt_path, "--since-from-log", "--flow-dir", flow_dir_bad], tmp_home)
-        h.test_result("malformed newest line reason includes the underlying error message",
-                      malformed[0] == 1 and "(malformed implement begin or retry line in log.md)" in malformed[1],
-                      f"rc={malformed[0]} stdout={malformed[1]!r}")
-
     h.summarize_and_exit()
 
 

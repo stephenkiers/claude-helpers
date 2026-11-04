@@ -50,7 +50,9 @@ own PR bot — not a lint/test gate). The `justfile` at the repo root is the act
   `pip install -r requirements-dev.txt` to get `mypy==1.16.1`. Type-checks the workflow CLI layer
   and all its dependencies at signature level, targeting Python 3.8+. `flow-verify-receipt.py` also
   opts into `strict-equality` with an inline `# mypy: strict-equality`.
-- `just test` — `python3 tests/run_all.py`, the existing custom test runner.
+- `just test` — `python3 tests/run_all.py`, the existing custom test runner. It runs suites in parallel
+  (`--jobs`, default: CPU count; `just test` takes no flag, so pass it directly for a serial run), and
+  the wall-clock-bounded suites listed in `SERIAL_ONLY` in `tests/run_all.py` run alone after the pool.
 - `just fix` — `ruff check . --fix` for what's auto-fixable.
 
 This is wired into `.claude/repo-cache.json` (`commands.check` = `"just check"`, etc.), the same

@@ -27,6 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 FLOW_REDO = REPO_ROOT / "scripts" / "flow-redo.py"
 FLOW_SUBCOMMANDS = ("archive", "restore", "check")
@@ -34,8 +35,8 @@ DEFAULT_AUDIT = "# Audit\nContent\n"
 DEFAULT_DIGEST = "# Gate digest\nContent\n"
 
 
-def run(sub, flow=None, *args, stdin=None):
-    """Run `flow-redo.py <sub> ...`. For archive/restore/check, flow adds --flow-dir."""
+def run_e2e(sub, flow=None, *args, stdin=None):
+    """Run `flow-redo.py <sub> ...` as real subprocess. For archive/restore/check, flow adds --flow-dir."""
     cmd = [sys.executable, str(FLOW_REDO), sub]
     if flow is not None and sub in FLOW_SUBCOMMANDS:
         cmd.extend(["--flow-dir", str(flow)])
@@ -46,6 +47,16 @@ def run(sub, flow=None, *args, stdin=None):
     else:
         kwargs["input"] = stdin
     result = subprocess.run(cmd, **kwargs)
+    return result.returncode, result.stdout, result.stderr
+
+
+def run(sub, flow=None, *args, stdin=None):
+    """Run `flow-redo.py <sub> ...` in-process. For archive/restore/check, flow adds --flow-dir."""
+    cmd = [str(FLOW_REDO), sub]
+    if flow is not None and sub in FLOW_SUBCOMMANDS:
+        cmd.extend(["--flow-dir", str(flow)])
+    cmd.extend(args)
+    result = run_python(cmd, input=stdin)
     return result.returncode, result.stdout, result.stderr
 
 
@@ -81,6 +92,10 @@ def populate(flow, nn="01", step="plan", receipt=None, receipt_attempt=1, decisi
 
 def archive_attempt(flow, attempt=1, nn="01", step="plan"):
     return run("archive", flow, "--nn", nn, "--step", step, "--attempt", str(attempt))
+
+
+def archive_attempt_e2e(flow, attempt=1, nn="01", step="plan"):
+    return run_e2e("archive", flow, "--nn", nn, "--step", step, "--attempt", str(attempt))
 
 
 def live_files(flow, nn="01", step="plan"):
@@ -144,7 +159,7 @@ def main():
 
         print("[Section 1] Sanitise")
         for name, stdin, expected in SANITIZE_EXACT:
-            rc, out, err = run("sanitize", stdin=stdin)
+            rc, out, err = run_e2e("sanitize", stdin=stdin)
             h.test_result(f"{name}: rc 0 and exact output", rc == 0 and out == expected,
                           f"rc={rc}, out={out!r}, err={err!r}")
 
@@ -185,7 +200,7 @@ def main():
         print("[Section 2] Archive")
         flow = flow_dir(root, "archive-basic")
         populate(flow)
-        rc, out, err = archive_attempt(flow, 1)
+        rc, out, err = archive_attempt_e2e(flow, 1)
         h.test_result("archive exits 0 for valid OK receipt", rc == 0, f"rc={rc}, err={err}")
         h.test_result("archive prints the archived attempt J on stdout", out == "1\n", repr(out))
         h.test_result("archive creates *.a1.md files",

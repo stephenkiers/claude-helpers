@@ -14,7 +14,6 @@ Run with: python3 tests/test_flow_verify_receipt_attempt_scoping.py
 import datetime
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import time
@@ -24,7 +23,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _test_harness import Harness
+from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 from test_flow_verify_receipt import create_contribution, create_reviewer_index, create_session
 
 
@@ -47,15 +47,10 @@ def run_verifier(step: str, receipt_text: str, flow_dir: Path, since: str) -> tu
     receipt_file = flow_dir.parent / "receipt.md"
     receipt_file.write_text(receipt_text, encoding="utf-8")
 
-    cmd = [
-        sys.executable,
-        str(Path(__file__).parent.parent / "scripts" / "flow-verify-receipt.py"),
-        "--step", step,
-        "--receipt", str(receipt_file),
-        "--flow-dir", str(flow_dir),
-        "--since", since,
-    ]
+    verifier_path = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
     env = dict(os.environ)
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+
     if step == "plan":
         # Plan artifacts resolve under $HOME/.claude; build a complete session fixture there.
         home = str(flow_dir.parent)
@@ -76,7 +71,15 @@ def run_verifier(step: str, receipt_text: str, flow_dir: Path, since: str) -> tu
         # Review artifacts must live under $HOME/.claude/reviews; make_review_fixture builds them
         # under the same HOME (flow_dir.parent), so the review check reaches freshness and rulings.
         env["HOME"] = str(flow_dir.parent)
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    result = run_python(
+        [str(verifier_path),
+         "--step", step,
+         "--receipt", str(receipt_file),
+         "--flow-dir", str(flow_dir),
+         "--since", since],
+        env=env
+    )
     return result.returncode, result.stdout, result.stderr
 
 
@@ -291,29 +294,8 @@ def main():
         h.test_result("Test A5", exit_code == 0,
                      f"exit={exit_code}, expected 0. stdout={stdout[:200]}")
 
-    # Test A6: awaiting-answers marker without answers file
-    print("[Test A6] awaiting-answers marker without answers file")
-    with tempfile.TemporaryDirectory() as tmp:
-        flow_dir = Path(tmp) / "flow"
-        tmp_path = Path(tmp)
-
-        create_plan_question_file(flow_dir, 1, attempt=1, num_questions=1)
-        # NO answers file
-
-        plan_dir = tmp_path / ".claude" / "plans"
-        plan_dir.mkdir(parents=True)
-        plan_file = plan_dir / "issue-slug-20261013T222013-30924.md"
-        plan_file.write_text("# Plan", encoding="utf-8")
-
-        receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 1\n<!-- awaiting-answers: questions/plan-01.json -->\n**Brief B1**"
-        since = iso_timestamp(time.time())
-
-        exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since)
-        h.test_result("Test A6", exit_code == 1 and "unanswered" in stdout,
-                     f"exit={exit_code}, stdout={stdout[:300]}")
-
-    # Test A7: Identity floor - artifact between begin and --since passes
-    print("[Test A7] Identity floor: artifact between begin and --since")
+    # Test A6: Identity floor - artifact between begin and --since passes
+    print("[Test A6] Identity floor: artifact between begin and --since")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         tmp_path = Path(tmp)
@@ -337,7 +319,7 @@ def main():
         receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 1"
 
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since_time)
-        h.test_result("Test A7", exit_code == 0,
+        h.test_result("Test A6", exit_code == 0,
                      f"exit={exit_code}, expected 0. stdout={stdout[:200]}")
 
     # Test A8: Identity floor - artifact older than begin

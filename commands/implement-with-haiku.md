@@ -588,7 +588,7 @@ same command, where `<RESUMED_FROM_ID>` is the `--resumed-from` value parsed in 
 the baseline state of the primary checkout (the first `git worktree list` entry) so drift can be detected later:
 
 ```bash
-PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep -B2 -E '^branch refs/heads/(main|master)$' | sed -n 's/^worktree //p' | head -1)  # default-branch worktree (bare-clone layouts list .bare first); no awk/$0: skill arg substitution mangles it
+PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep -B2 -E '^branch refs/heads/(main|master)$' | sed -n 's/^worktree //p' | head -1)  # default-branch worktree (bare-clone layouts list .bare first); no awk: skill arg substitution mangles its record variable
 python3 "$HOME/.claude/scripts/primary-checkout-drift.py" snapshot --checkout "$PRIMARY_CHECKOUT" --orchestrator-cwd "$(pwd)" --out "<SCRATCH_PATH>/primary-baseline.json"
 SNAPSHOT_EXIT=$?
 if [[ $SNAPSHOT_EXIT -ne 0 ]]; then
@@ -658,7 +658,7 @@ if [[ -z "$BRANCH" ]]; then
   printf '%s\n' "Error: Repository is in detached HEAD state. Check out a branch before proceeding." >&2
   exit 1
 fi
-PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep -B2 -E '^branch refs/heads/(main|master)$' | sed -n 's/^worktree //p' | head -1)  # default-branch worktree (bare-clone layouts list .bare first); no awk/$0: skill arg substitution mangles it
+PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep -B2 -E '^branch refs/heads/(main|master)$' | sed -n 's/^worktree //p' | head -1)  # default-branch worktree (bare-clone layouts list .bare first); no awk: skill arg substitution mangles its record variable
 
 # Prune stale entries first
 git worktree prune
@@ -887,7 +887,7 @@ any build tool, in any project.
 
 ```bash
 BRANCH=$(git branch --show-current)
-PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep -B2 -E '^branch refs/heads/(main|master)$' | sed -n 's/^worktree //p' | head -1)  # default-branch worktree (bare-clone layouts list .bare first); no awk/$0: skill arg substitution mangles it
+PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep -B2 -E '^branch refs/heads/(main|master)$' | sed -n 's/^worktree //p' | head -1)  # default-branch worktree (bare-clone layouts list .bare first); no awk: skill arg substitution mangles its record variable
 WT_PARENT="$(dirname "$PRIMARY_CHECKOUT")"
 mkdir -p "$WT_PARENT"
 
@@ -1586,14 +1586,14 @@ Launch a background `plan-implementer` in `$R2_WT_PATH` with a **spec-blind test
 >    that already cover the plan's symbols.** List what you find. Do not add near-duplicate coverage
 >    for behavior something already tests — this is the single most common failure of this pass.
 > 3. Identify what behavior the plan implies should be testable that isn't already covered.
-> 4. Write tests covering that behavior — happy path plus at least one edge case per testable unit.
+> 4. Write tests covering that behavior — happy path plus at least one edge case per testable unit. **Add them to the existing test file for the module or feature under test** (the file step 2 found covering the plan's symbols), registered in that file's existing runner (its `main()` call list, case list, or top-level calls). Create a new test file only when no test file for that module exists, and name it after the module under test (`test_<module>.py`), never after this pass, the plan, or a wave or unit (`_spec_blind`, `_spec`, `_hardening`, `_blackbox`, `_review_fixes`, `_followups`, `_phase_N`, `_wave_a`). Before adding a test function, check its name is not already defined in the target file.
 >    **Every new test must import and call the real production symbol it claims to cover.** A test
 >    that asserts against a hand-built local copy of the logic, or that would still pass if the
 >    implementation were deleted, is not coverage — it's a defect.
 > 5. Run the tests. **Do not fix the implementation if tests fail** — failing tests are signal.
 > 6. **Stage your changes (`git add -A`) and do not commit.** The orchestrator applies your diff
 >    and commits it.
-> 7. Report: framework used, existing coverage found (step 2), test paths added, pass/fail summary,
+> 7. Report: framework used, existing coverage found (step 2), test files changed (existing files appended to, and any new files with why no existing file fitted), pass/fail summary,
 >    failure messages verbatim if any.
 > 8. **Self-check (required):** end your report with a line `SPEC_BLIND: yes` if you did not read
 >    any forbidden file or run `git diff`/`git status`, or `SPEC_BLIND: no` followed by what you
@@ -1788,7 +1788,7 @@ printf '%s SKIPPED partc-mutation-b %s\n' "<RUN_KEY>" "no-new-tests" >> "<LEDGER
 
 **Additional Part C machine checks, orchestrator-run (not trusted from any report):**
 
-1. **Dedup check** — compare the set of test names in `TEST_FILES` against the set that existed at
+1. **Dedup check** — compare the set of test names *added* in `git diff -U0 "$ROUND2_START_SHA"..HEAD -- <TEST_FILES>` against the set that existed at
    `ROUND2_START_SHA` (`comm` on sorted unique test-fn-name lists, not a count — a duplicated block
    plus a dropped test cancel out in a count). Near-duplicates → flag.
    Then record the result as one line — `dedup: <N> flagged` (`dedup: 0 flagged` when none) — in
@@ -1797,7 +1797,7 @@ printf '%s SKIPPED partc-mutation-b %s\n' "<RUN_KEY>" "no-new-tests" >> "<LEDGER
    printf '%s\n' "dedup: <N> flagged" > "<SCRATCH_PATH>/partc-dedup.txt"
    printf '%s DONE partc-dedup %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/partc-dedup.txt" >> "<LEDGER_PATH>"
    ```
-2. **Reference check** — each file in `TEST_FILES` must reference at least one symbol from
+2. **Reference check** — each new file, or the added hunks of each existing file in `TEST_FILES` must reference at least one symbol from
    `IMPL_FILES`. Zero references → flag as `vacuous`.
    An empty set of flagged files is the healthy result. Record `reference-check: <N> vacuous`
    (`reference-check: 0 vacuous` when none) in `partc-reference-check.txt` and append the row:
@@ -1824,7 +1824,7 @@ printf '%s SKIPPED partc-mutation-b %s\n' "<RUN_KEY>" "no-new-tests" >> "<LEDGER
    git checkout HEAD -- <that file>   # restore, always, even on failure
    git status --porcelain -- <file>   # postcondition: must be empty
    ```
-   Expect at least one new-test failure. Zero failures → flag as `vacuous`.
+   Expect at least one new-test failure among the added tests. Zero failures among added tests → flag as `vacuous`.
    Record `mutation-a: <N> new-test failures` in `partc-mutation-a.txt` (with the flag if `N` is zero)
    and append the row:
    ```bash
@@ -1901,6 +1901,8 @@ Launch a background `plan-implementer` (main worktree) with:
 >    problems? If a flagged test is genuinely `vacuous`, duplicate, or `weak-assertion` as you judged
 >    above, note it (do not delete another pass's tests unless clearly wrong).
 > 5. **Do not touch style, naming, formatting, or comments** unless they directly impact behavior.
+> 
+>    Any test you add goes into the existing test file for that module, under the same rule as Round 2 step 4.
 > 6. Stage any fixes (`git add -A`, do not commit) and report.
 > 7. Report findings in two sections:
 >
@@ -1981,9 +1983,9 @@ J fixed, W weak assertions flagged]. Sweep findings: [duplication: N, doc-drift:
 
 ## Round 4 — Test cleanup (orchestrator-run)
 
-Round 2's spec-blind author invents its own test filenames — the command gives it **no** naming
-scheme, so when a plan is organized into "Wave A / Wave B / …" units the author mirrors those labels
-into filenames like `tests/test_wave_a_spec.py`. That's an artifact of *this* orchestration process,
+Round 2's author is told to append to the module's existing test file, but it can still create a file — and when it does,
+that file may be named after this pass (`*_spec_blind`, `*_spec`, `*_hardening`, etc.) rather than following the repo's
+convention. The spec also allows Round 3 to add test files. That's an artifact of *this* orchestration process,
 not the repo's real convention, and nothing downstream has relocated or deleted them: Part C and
 Round 3 only **flag** `vacuous` / `weak-assertion` / `dedup` and are told never to delete another
 pass's tests unless clearly wrong. Round 4 closes that gap: the orchestrator (you, Sonnet) deletes
@@ -2018,8 +2020,7 @@ TEST_FILES=$(git diff --name-only "$ROUND2_START_SHA"..HEAD)
 ```
 HEAD has advanced since Part C computed `TEST_FILES` (right after Round 2's apply), so recomputing now
 naturally folds in **both** Round 2's tests **and** any test files Round 3's follow-up added — the
-stale cached value would miss the latter. This is the **working set** — Round 4 only ever touches
-files in it, never pre-existing tests.
+stale cached value would miss the latter. This is the **working set** — Round 4 only ever touches tests added since `ROUND2_START_SHA`: whole new files, or the functions added to an existing file. Never the tests that file already had.
 
 ### 4.2 Learn the repo's convention (evidence, not assumption)
 
@@ -2081,8 +2082,7 @@ Move each survivor to the 4.2 convention:
 - Move with `git mv` so history is preserved.
 - Rewrite the moved file's own imports for its new location, and update any references to it elsewhere
   (test config include globs, `conftest.py`, barrel files) — grep for the old path/name first.
-- **Merge rather than clobber:** if a survivor's target path collides with an existing test file, fold
-  the new tests into the existing file under the repo's conventions instead of overwriting.
+- **Fold, don't add files:** if a test file for the same module already existed at `START_SHA`, fold the survivor's tests into that file (register them in its runner, rename on any name collision) and `git rm` the new file. This applies whether or not the paths collide; a pass-named file (`*_spec_blind`, `*_spec`, `*_hardening`, `*_blackbox`, `*_review_fixes`, `*_followups`, `*_phase_N`) is never a valid end state.
 
 ### 4.6 Verify green, then commit
 
@@ -2095,7 +2095,7 @@ one module) silently shadows one test with no error, and only a per-file count c
 Re-run gate step 1 (build/type-check), since moves can break import paths. Only then:
 
 ```bash
-git commit -m "test: relocate spec-blind tests to repo convention and drop vacuous tests"
+git commit -m "test: fold spec-blind tests into existing test files and drop vacuous tests"
 ```
 
 Once the commit has landed and the re-run above is green, record the Round 4 row. The line written to

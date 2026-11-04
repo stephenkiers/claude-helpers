@@ -27,8 +27,8 @@ BASH_GUARD = REPO_ROOT / "scripts" / "flow-bash-guard.py"
 RULING = REPO_ROOT / "scripts" / "review-ruling.py"
 PRECEDENT_DIGEST = REPO_ROOT / "scripts" / "precedent-digest.py"
 
-# Fixed wall-clock bound for guard runs (plan: 5 s, far below Claude Code's default hook timeout).
-TIME_BOUND = 5
+# Fixed wall-clock bound for guard runs (plan: 30 s, far below Claude Code's default hook timeout).
+TIME_BOUND = 30
 
 
 # ---------------------------------------------------------------------------

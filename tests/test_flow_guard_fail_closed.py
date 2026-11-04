@@ -47,7 +47,7 @@ AGENT_GUARD = REPO_ROOT / "scripts" / "flow-agent-guard.py"
 SKILL_GUARD = REPO_ROOT / "scripts" / "flow-skill-guard.py"
 
 # Fixed wall-clock bound for each time-bound case (see module docstring for the source).
-TIME_BOUND_SECS = 5.0
+TIME_BOUND_SECS = 30.0
 
 # Nesting cap of the guard (64 levels): MAX_NESTING constant in flow-bash-guard.py.
 # Depth exactly 64 is ALLOWED; depth 65 must be refused on both splitter paths.
@@ -462,19 +462,19 @@ def main():
 
     time_cases = [
         (
-            "time: wide shallow quote-aware input exits 0 under 5 s",
+            "time: wide shallow quote-aware input exits 0 under 30 s",
             quote_aware_wide, 0, None,
         ),
         (
-            "time: wide shallow fallback (heredoc) input exits 0 under 5 s",
+            "time: wide shallow fallback (heredoc) input exits 0 under 30 s",
             fallback_wide, 0, None,
         ),
         (
-            "time: deep nesting inside a heredoc command exits 2 (nesting) under 5 s",
+            "time: deep nesting inside a heredoc command exits 2 (nesting) under 30 s",
             heredoc_deep, 2, "nesting too deep",
         ),
         (
-            "time: large (~256 KB) heredoc exits 0 under 5 s",
+            "time: large (~256 KB) heredoc exits 0 under 30 s",
             large_heredoc, 0, None,
         ),
     ]

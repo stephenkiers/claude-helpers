@@ -16,7 +16,7 @@ These fixtures were hand-synthesized on 2026-09-17 to match the post-fix token p
 
 ## Consumers
 
-`sample-uncle-bob-pass1.jsonl` is loaded by `tests/test_routing_metrics_phase_0.py` through the real
+`sample-uncle-bob-pass1.jsonl` is loaded by `tests/test_reviewer_yield.py` (its Phase 0 section) through the real
 `parse_tokens_from_subagent` and `_subagent_reviewer_for_review_dir`. Expected totals: input 1850,
 output 875, cache_read 150, cache_creation 75 (the second `msg-1` entry is a deliberate duplicate id
 and the last assistant entry has no id, so it is counted). The Write `tool_use` targets a path under

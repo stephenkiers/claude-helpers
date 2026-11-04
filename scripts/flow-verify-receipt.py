@@ -33,6 +33,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -58,7 +59,20 @@ except ImportError:
 
 # Constants for timeouts and mtime skew tolerance
 MTIME_SKEW_SECS = 5
-GIT_TIMEOUT_SECS = 10
+
+
+def _env_secs(name: str, default: int) -> int:
+    """Read a whole-seconds timeout from the environment. Unset, non-integer, or <= 0 values fall
+    back to `default`, so a bad value cannot crash the script at import."""
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+# Tests raise this under load (FLOW_VERIFY_GIT_TIMEOUT_SECS); the default is unchanged.
+GIT_TIMEOUT_SECS = _env_secs("FLOW_VERIFY_GIT_TIMEOUT_SECS", 10)
 
 # Implement/fix check outcome (#338): the receipt's CHECK value for an explicit opt-out. The resolver
 # source that must back it is OPT_OUT_SOURCE, imported from scripts/workflow/checks.py in the gate.

@@ -184,7 +184,7 @@ branch refs/heads/bugfix/5678
             },
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=60
         )
 
         self.assertEqual(result.returncode, 0, f"Script exited with {result.returncode}: {result.stderr}")
@@ -235,7 +235,7 @@ branch refs/heads/bugfix/5678
             ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=60,
             cwd=Path(__file__).parent.parent  # Run from repo root
         )
 

@@ -45,6 +45,7 @@ HEADING_LINE = re.compile(r"^#{1,3} ")
 LEVEL2_LINE = re.compile(r"^## ")
 KEPT_MARKER = "; kept-previous attempt="
 BRANCH_MARKER = "Newest line is `accepted`"
+ACCEPT_REPLY_REGEX = r"^accept( and continue)?\s*([:\-—]|$)"
 
 
 def read(path):
@@ -364,6 +365,65 @@ def test_resume_behaviour(h, doc):
                           len(counted) == 1, f"counted={counted}")
 
 
+def test_accept_reply_regex(h, doc):
+    print()
+    print("[Section 6] Accept reply regex validation")
+    h.test_result("the ACCEPT_REPLY_REGEX string appears in expert-flow.md",
+                  ACCEPT_REPLY_REGEX in doc,
+                  f"regex {ACCEPT_REPLY_REGEX!r} not found in doc")
+
+    # Positive cases: should match
+    positive = [
+        ("accept", "bare accept with end"),
+        ("Accept", "capital Accept"),
+        ("ACCEPT", "all-caps ACCEPT"),
+        ("accept:", "accept with colon"),
+        ("Accept:", "capital with colon"),
+        ("accept -", "accept with dash"),
+        ("Accept -", "capital with dash"),
+        ("accept —", "accept with em-dash"),
+        ("accept and continue", "full phrase"),
+        ("Accept and continue", "full phrase capital"),
+        ("accept and continue:", "full phrase with colon"),
+        ("Accept and continue:", "full phrase capital with colon"),
+        ("accept and continue -", "full phrase with dash"),
+        ("accept and continue —", "full phrase with em-dash"),
+        ("accept and continue: my note", "full phrase with note after colon"),
+        ("accept: my reason", "short form with note"),
+        ("Accept — some explanation", "capital with em-dash and note"),
+        ("accept  :", "extra spaces before colon - \\s* matches any whitespace"),
+    ]
+
+    pattern = re.compile(ACCEPT_REPLY_REGEX, re.IGNORECASE)
+    for text, desc in positive:
+        match = pattern.match(text)
+        h.test_result(f"positive: {desc}: '{text}'",
+                      match is not None,
+                      f"regex={ACCEPT_REPLY_REGEX!r}, text={text!r}, match={match}")
+
+    # Negative cases: should NOT match
+    negative = [
+        ("Acceptance of the finding", "Acceptance (not accept)"),
+        ("accepting the change", "accepting (not accept)"),
+        ("accept me", "accept without separator"),
+        ("accept x", "accept followed by word character"),
+        ("accept1", "accept followed by digit"),
+        ("accept.", "accept followed by period (not allowed)"),
+        ("accept,", "accept followed by comma"),
+        ("accept and continue but not really", "full phrase without separator before text"),
+        ("Accept and continued", "different form of verb"),
+        ("ACCEPT_AND_CONTINUE", "underscores instead of spaces"),
+        (" accept", "leading space before accept"),
+        ("  accept:", "multiple leading spaces"),
+    ]
+
+    for text, desc in negative:
+        match = pattern.match(text)
+        h.test_result(f"negative: {desc}: '{text}'",
+                      match is None,
+                      f"regex={ACCEPT_REPLY_REGEX!r}, text={text!r}, match={match}")
+
+
 def main():
     h = Harness("FLOW ACCEPT DOCS (expert-flow.md, ADR-0023, CLAUDE.md) TEST SUITE")
     doc = read(EXPERT_FLOW)
@@ -375,6 +435,7 @@ def main():
     test_log_resume_and_grants(h, doc)
     test_adr_and_claude(h, adr, claude)
     test_resume_behaviour(h, doc)
+    test_accept_reply_regex(h, doc)
 
     print()
     h.summarize_and_exit()

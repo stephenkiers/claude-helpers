@@ -77,6 +77,33 @@ def main():
         )
         h.summarize_and_exit()
 
+    # File mode check: git ls-files -s should show 100755
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-s", "--", str(SCRIPT)],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        mode_str = ""
+        if result.returncode == 0 and result.stdout.strip():
+            # Format: [mode] SHA1 stage filename
+            # Example: 100755 abcd1234... 0 scripts/slugify.sh
+            parts = result.stdout.split()
+            if parts:
+                mode_str = parts[0]
+        h.test_result(
+            "scripts/slugify.sh has mode 100755",
+            mode_str == "100755",
+            f"mode={mode_str!r}",
+        )
+    except Exception as e:
+        h.test_result(
+            "git ls-files check completed",
+            False,
+            str(e),
+        )
+
     # Test 1: Basic benign titles
     benign_cases = [
         (b"Fix: Thing", "fix-thing"),

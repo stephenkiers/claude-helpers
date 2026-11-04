@@ -22,7 +22,6 @@ Run with: python3 tests/test_flow_verify_receipt_split_location.py
 
 import json
 import os
-import subprocess
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -31,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 
@@ -130,16 +130,15 @@ def write_answer_file(adir: Path, step: str, seq: int, count: int) -> None:
 
 def run_verifier(step: str, receipt_path: str, flow_dir: str, home: str) -> tuple:
     """Run the verifier and return (exit_code, stdout+stderr)."""
-    cmd = [
-        sys.executable,
+    args = [
         str(VERIFIER),
         "--step", step,
         "--receipt", receipt_path,
         "--since", since_timestamp(),
         "--flow-dir", flow_dir,
     ]
-    env = {**os.environ, "HOME": home}
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    env = {**os.environ, "HOME": home, "FLOW_VERIFY_GIT_TIMEOUT_SECS": "60"}
+    result = run_python(args, env=env)
     return result.returncode, result.stdout + result.stderr
 
 

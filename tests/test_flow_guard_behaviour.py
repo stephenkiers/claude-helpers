@@ -43,7 +43,7 @@ def run_guard(guard_path, stdin_text, agent_type_arg=None):
         input=stdin_text,
         capture_output=True,
         text=True,
-        timeout=5,
+        timeout=60,
     )
     return result.returncode, result.stdout, result.stderr
 

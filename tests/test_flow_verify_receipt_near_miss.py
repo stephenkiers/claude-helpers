@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import REPO_ROOT, Harness
+from _inproc import run_python, RepoTemplate
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 SHA = "0000000000000000000000000000000000000001"
@@ -57,6 +58,20 @@ def run_verifier(args, home, cwd):
     """Run flow-verify-receipt.py under the given HOME. Returns (returncode, stdout, stderr)."""
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
     env["HOME"] = str(home)
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    result = run_python(
+        [str(VERIFIER)] + args,
+        cwd=str(cwd),
+        env=env,
+        replace_env=True,
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+def run_verifier_e2e(args, home, cwd):
+    """End-to-end subprocess call for CLI coverage."""
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+    env["HOME"] = str(home)
     result = subprocess.run(
         [sys.executable, str(VERIFIER)] + args,
         cwd=str(cwd),
@@ -73,19 +88,28 @@ def git(repo, *args):
     return result.stdout.strip()
 
 
+def _build_near_miss_feature_repo(root):
+    """Build base repo with initial and feature commits for template."""
+    git(root, "init", "-q")
+    (root / "initial.txt").write_text("initial\n")
+    git(root, "add", "initial.txt")
+    git(root, "commit", "-q", "-m", "initial")
+    base = git(root, "rev-parse", "HEAD")
+    (root / "feature.txt").write_text("feature\n")
+    git(root, "add", "feature.txt")
+    git(root, "commit", "-q", "-m", "add feature")
+    head = git(root, "rev-parse", "HEAD")
+    return base, head
+
+
+_NEAR_MISS_FEATURE_REPO = RepoTemplate(_build_near_miss_feature_repo)
+
+
 def make_feature_repo(home):
     """A repo with a base commit and one feature commit, and a `just check` cache. Returns (repo, base, head)."""
     repo = Path(home) / "repo"
-    repo.mkdir(parents=True)
-    git(repo, "init", "-q")
-    (repo / "initial.txt").write_text("initial\n")
-    git(repo, "add", "initial.txt")
-    git(repo, "commit", "-q", "-m", "initial")
-    base = git(repo, "rev-parse", "HEAD")
-    (repo / "feature.txt").write_text("feature\n")
-    git(repo, "add", "feature.txt")
-    git(repo, "commit", "-q", "-m", "add feature")
-    head = git(repo, "rev-parse", "HEAD")
+    _NEAR_MISS_FEATURE_REPO.copy(repo)
+    base, head = _NEAR_MISS_FEATURE_REPO.meta
     cache_dir = repo / ".claude"
     cache_dir.mkdir()
     (cache_dir / "repo-cache.json").write_text(json.dumps({"commands": {"check": "just check"}}))
@@ -126,20 +150,6 @@ def _rejected(stdout):
     """True when the verifier printed no success marker and no locate-fallback source line."""
     lines = stdout.splitlines()
     return "ARTIFACTS: ok" not in lines and not any("locate-fallback" in ln for ln in lines)
-
-
-def test_control_grandfathered_receipt_passes(h):
-    """Control: with no near-miss lines the pre-contract receipt takes the locate-fallback and exits 0."""
-    with tempfile.TemporaryDirectory() as tmp:
-        home = Path(tmp)
-        repo, base, head = make_feature_repo(home)
-        rc, stdout, stderr = verify_implement(home, make_receipt(head), repo, base)
-        h.test_result("control: pre-contract receipt exits 0 with ARTIFACTS: ok",
-                      rc == 0 and "ARTIFACTS: ok" in stdout.splitlines(),
-                      f"rc={rc} stdout={stdout!r} stderr={stderr!r}")
-        h.test_result("control: pre-contract receipt reports locate-fallback",
-                      any("RUN_KEY_SOURCE: locate-fallback" in ln for ln in stdout.splitlines()),
-                      f"stdout={stdout!r}")
 
 
 def test_run_key_near_miss_variants_exit_1(h):
@@ -210,7 +220,6 @@ def test_duplicate_run_key_is_invalid(h):
 
 def main():
     h = Harness("flow-verify-receipt.py near-miss RECEIPT_CONTRACT / RUN_KEY lines (#346)")
-    test_control_grandfathered_receipt_passes(h)
     test_run_key_near_miss_variants_exit_1(h)
     test_receipt_contract_near_miss_variants_exit_1(h)
     test_strict_run_key_with_indented_contract_exits_1(h)

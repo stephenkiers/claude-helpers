@@ -494,6 +494,20 @@ def test_brief_fenced_as_text(h, tmp):
                   preamble)
 
 
+def test_missing_out_flag(h, tmp):
+    """Missing --out flag should exit 1 (usage error)."""
+    q1 = make_question(1)
+    src = write_json(tmp / "no_out.json", make_form([q1]))
+    # Run without --out flag
+    result = subprocess.run(
+        [sys.executable, str(RENDER), str(src)],
+        capture_output=True, text=True
+    )
+    h.test_result("missing --out flag exits 1",
+                  result.returncode == 1,
+                  f"expected exit 1, got {result.returncode}")
+
+
 def main():
     h = Harness("FLOW RENDER QUESTIONS UNIT TESTS")
     with tempfile.TemporaryDirectory() as tmp_name:
@@ -518,6 +532,7 @@ def main():
         test_prefix_boundary_12_chars(h, tmp)
         test_header_truncate_word_boundary(h, tmp)
         test_brief_fenced_as_text(h, tmp)
+        test_missing_out_flag(h, tmp)
     print()
     h.summarize_and_exit()
 

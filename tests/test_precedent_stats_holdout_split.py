@@ -13,8 +13,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness  # noqa: E402
-from test_precedent_log import Fixture, _predictions, run_digest_stats  # noqa: E402
-from test_precedent_log_review_hardening import _row, _write_rows, run_digest_md  # noqa: E402
+from test_precedent_log import (  # noqa: E402
+    Fixture, _predictions, run_digest_stats, _row, _write_rows, run_digest_md
+)
 
 
 def _held(row):

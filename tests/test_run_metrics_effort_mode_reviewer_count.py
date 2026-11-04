@@ -473,6 +473,51 @@ def test_stage_end_omits_flags_when_not_provided():
         return True, ""
 
 
+# ============================================================================
+# Section 3: Item 4 - cmd_command_begin() ValueError handling
+# ============================================================================
+
+def test_cmd_command_begin_and_stage_end_have_error_handling():
+    """Verify that cmd_command_begin and cmd_stage_end both have ValueError handling.
+
+    Code inspection test: both command-begin and stage-end should catch ValueError
+    from telemetry_schema.append_event and exit cleanly (not with a traceback).
+
+    This is a structural test that verifies both functions have matching error handling
+    (command-end already has it, and command-begin was fixed to match).
+    """
+    # Read the run-metrics.py source and isolate each function's own body (up to the next
+    # top-level "def "), so this test checks that specific function's error handling rather
+    # than counting "except ValueError" occurrences anywhere in the file — a file-wide count
+    # stays >= 2 even if one function's own try/except is reverted, as long as some other
+    # function elsewhere still has its own ValueError handler.
+    script_source = (SCRIPTS_DIR / "run-metrics.py").read_text()
+
+    def function_body(name):
+        marker = f"def {name}("
+        start = script_source.find(marker)
+        if start == -1:
+            return None
+        next_def = script_source.find("\ndef ", start + 1)
+        return script_source[start: next_def if next_def != -1 else len(script_source)]
+
+    begin_body = function_body("cmd_command_begin")
+    if begin_body is None:
+        return False, "cmd_command_begin function not found"
+
+    if "except ValueError" not in begin_body or "sys.exit(1)" not in begin_body:
+        return False, "cmd_command_begin should have try/except ValueError handling with sys.exit(1)"
+
+    stage_end_body = function_body("cmd_stage_end")
+    if stage_end_body is None:
+        return False, "cmd_stage_end function not found"
+
+    if "except ValueError" not in stage_end_body or "sys.exit(1)" not in stage_end_body:
+        return False, "cmd_stage_end should have try/except ValueError handling with sys.exit(1)"
+
+    return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("RUN_METRICS CLI EFFORT/MODE/REVIEWER_COUNT TEST SUITE")
     test_result = h.test_result
@@ -527,6 +572,11 @@ if __name__ == "__main__":
 
     passed, msg = test_stage_end_omits_flags_when_not_provided()
     test_result("stage-end omits fields when flags not provided", passed, msg)
+
+    print()
+    print("[Section 3] ValueError handling")
+    passed, msg = test_cmd_command_begin_and_stage_end_have_error_handling()
+    test_result("cmd_command_begin and cmd_stage_end have ValueError handling", passed, msg)
 
     print()
     h.summarize_and_exit()

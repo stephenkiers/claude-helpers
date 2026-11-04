@@ -33,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import REPO_ROOT, Harness
+from _inproc import run_python
 
 PREFLIGHT = REPO_ROOT / "scripts" / "north-star-preflight.py"
 TELEMETRY_SCHEMA = REPO_ROOT / "scripts" / "telemetry_schema.py"
@@ -70,7 +71,8 @@ def fake_gh_dir(tmp, exit_code=0):
     return str(d)
 
 
-def run_preflight(args, path_value=None, cwd=None):
+def run_preflight_e2e(args, path_value=None, cwd=None):
+    """Run north-star-preflight.py via subprocess (end-to-end; used for a few coverage tests)."""
     env = dict(os.environ)
     if path_value is not None:
         env["PATH"] = path_value
@@ -81,6 +83,15 @@ def run_preflight(args, path_value=None, cwd=None):
         env=env,
         cwd=cwd,
     )
+    return result.returncode, result.stdout, result.stderr
+
+
+def run_preflight(args, path_value=None, cwd=None):
+    """Run north-star-preflight.py in-process."""
+    env = dict(os.environ)
+    if path_value is not None:
+        env["PATH"] = path_value
+    result = run_python([str(PREFLIGHT)] + args, env=env, cwd=cwd, text=True)
     return result.returncode, result.stdout, result.stderr
 
 
@@ -271,7 +282,7 @@ def main():
         tokens = Path(tmp) / "tokens.txt"
         tokens.write_text("", encoding="utf-8")
 
-        rc, out, err = run_preflight(["blind-line", "--tokens-file", str(tokens)])
+        rc, out, err = run_preflight_e2e(["blind-line", "--tokens-file", str(tokens)])
         t("blind-line: no tokens and no nick prints no blind line, exit 0",
           rc == 0 and BLIND_PREFIX not in out, f"rc={rc} out={out!r}")
 

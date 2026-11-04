@@ -153,6 +153,15 @@ if __name__ == "__main__":
         "git rm -f somefile",
         "git mv a b",
         "git --no-pager status",
+        "git rm file.txt",
+        "git rm -r dir/",
+        "git rm --force file.txt",
+        "git mv old.txt new.txt",
+        "git mv --force dir/ newdir/",
+        "'git' rm file.txt",
+        "/usr/bin/git mv old new",
+        "git -c core.pager=cat reset --hard",
+        "git --verbose add file.txt",
     ]
     for cmd in blocked_commands:
         code, stderr = run_guard(payload(cmd))
@@ -190,6 +199,16 @@ if __name__ == "__main__":
         "git -C /tmp/wt add -A",
         "git -c core.pager=cat status",
         "echo done",
+        "'git' add -A",
+        "/usr/bin/git status --porcelain",
+        "git -C /path/to/wt add -A",
+        "git -cuser.name=x status",
+        "git -c a=b -c x=y add file.txt",
+        "git add file1.txt file2.txt",
+        "git\tadd\t-A",
+        "/usr/bin-x86/git add -A",
+        "git ls-files",
+        "git log",
     ]
     for cmd in allowed_commands:
         code, stderr = run_guard(payload(cmd))
@@ -245,6 +264,38 @@ if __name__ == "__main__":
     test_result(
         "find_git_subcommands: git with no subcommand renders <none>",
         guard_module.find_git_subcommands("git") == ["<none>"],
+    )
+
+    print()
+
+    # ============================================================================
+    # SECTION 6: Additional hardening checks
+    # ============================================================================
+    print("[Section 6] Additional hardening checks")
+
+    # Check 1: git -c core.pager=cat blocked without "None" in message
+    code, stderr = run_guard(payload("git -c core.pager=cat reset --hard"))
+    test_result(
+        "git -c core.pager=cat (blocked) exits 2 without 'None' in stderr",
+        code == 2 and "None" not in stderr,
+        f"expected exit 2 and no 'None' in stderr, got code={code} stderr={stderr!r}"
+    )
+
+    # Check 2: list-typed command fails closed
+    list_payload = json.dumps({"tool_input": {"command": ["git", "status"]}})
+    code, stderr = run_guard(list_payload)
+    test_result(
+        "list-typed command fails closed (exit 2)",
+        code == 2,
+        f"expected exit 2, got {code}"
+    )
+
+    # Check 3: block message names staging-only and git add
+    code, stderr = run_guard(payload("git reset --hard"))
+    test_result(
+        "block message names staging-only and git add",
+        code == 2 and ("staging-only" in stderr or "add" in stderr),
+        f"expected exit 2 and 'staging-only' or 'add' in stderr, got code={code} stderr={stderr!r}"
     )
 
     print()

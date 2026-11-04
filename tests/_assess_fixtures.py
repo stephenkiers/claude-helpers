@@ -9,12 +9,12 @@ scripts/flow-verify-receipt.py as a subprocess. The shared line grammar is the #
 import hashlib
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _test_harness import REPO_ROOT  # noqa: E402
+from _inproc import run_python  # noqa: E402
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 TS = "2026-10-27T10:00:00Z"
@@ -36,11 +36,20 @@ BASE_IMPL = {
 DEFAULT_LOG = [f"{TS} implement ok", f"{TS} fix skipped"]
 
 
+def run_verifier_inproc(args, env):
+    """In-process flow-verify-receipt.py run (see tests/_inproc.py). Approximates the script's own
+    `if __name__ == "__main__"` wrapper (an uncaught exception maps to exit 2) but does not
+    guarantee exit-code parity with a real subprocess; the `_e2e` tests own that contract."""
+    env = dict(env)
+    env.setdefault("FLOW_VERIFY_GIT_TIMEOUT_SECS", "60")
+    return run_python([VERIFIER, *args], env=env, replace_env=True)
+
+
 def run_verifier(args, home):
     """Run the verifier CLI with HOME pinned to `home`. Returns (returncode, stdout, stderr)."""
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
     env["HOME"] = str(home)
-    result = subprocess.run([sys.executable, str(VERIFIER), *args], capture_output=True, text=True, env=env)
+    result = run_verifier_inproc(args, env)
     return result.returncode, result.stdout, result.stderr
 
 

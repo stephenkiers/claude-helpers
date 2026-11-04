@@ -31,7 +31,7 @@ def run_guard_script(script_path, agent, payload_dict):
             input=json.dumps(payload_dict),
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=60
         )
         return result.returncode, result.stderr
     except subprocess.TimeoutExpired:
@@ -95,7 +95,7 @@ def main():
             input='[]',  # Array, not dict
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=60
         )
         h.test_result(
             "Agent guard exits 2 on non-dict payload",
@@ -207,7 +207,7 @@ def main():
             input='[]',  # Array, not dict
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=60
         )
         h.test_result(
             "Skill guard exits 2 on non-dict payload",
@@ -326,7 +326,7 @@ def main():
             input='[]',  # Array, not dict
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=60
         )
         h.test_result(
             "Bash guard exits 2 on non-dict payload",

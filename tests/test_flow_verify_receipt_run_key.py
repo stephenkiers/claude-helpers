@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import REPO_ROOT, Harness
+from _inproc import run_python, RepoTemplate
 
 # Import the verifier module
 script_path = Path(__file__).parent.parent / "scripts" / "flow-verify-receipt.py"
@@ -42,6 +43,20 @@ EXPECT_MODEL_PREFIX = "IMPLEMENTER_MODEL: haiku\n"
 
 def run_verifier(args, home=None, cwd=None):
     """Run flow-verify-receipt.py and return (returncode, stdout, stderr)."""
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+    if home:
+        env["HOME"] = str(home)
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    result = run_python(
+        [str(VERIFIER)] + args,
+        cwd=str(cwd or REPO_ROOT),
+        env=env,
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+def run_verifier_e2e(args, home=None, cwd=None):
+    """End-to-end subprocess call for CLI coverage."""
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
     if home:
         env["HOME"] = str(home)
@@ -134,19 +149,28 @@ def git(repo, *args):
     return result.stdout.strip()
 
 
+def _build_run_key_feature_repo(root):
+    """Build base repo with initial and feature commits for template."""
+    git(root, "init", "-q")
+    (root / "initial.txt").write_text("initial\n")
+    git(root, "add", "initial.txt")
+    git(root, "commit", "-q", "-m", "initial")
+    base = git(root, "rev-parse", "HEAD")
+    (root / "feature.txt").write_text("feature\n")
+    git(root, "add", "feature.txt")
+    git(root, "commit", "-q", "-m", "add feature")
+    head = git(root, "rev-parse", "HEAD")
+    return base, head
+
+
+_RUN_KEY_FEATURE_REPO = RepoTemplate(_build_run_key_feature_repo)
+
+
 def make_feature_repo(home):
     """A repo with a base commit and one feature commit, and a `just check` cache. Returns (repo, base, head)."""
     repo = Path(home) / "repo"
-    repo.mkdir(parents=True)
-    git(repo, "init", "-q")
-    (repo / "initial.txt").write_text("initial\n")
-    git(repo, "add", "initial.txt")
-    git(repo, "commit", "-q", "-m", "initial")
-    base = git(repo, "rev-parse", "HEAD")
-    (repo / "feature.txt").write_text("feature\n")
-    git(repo, "add", "feature.txt")
-    git(repo, "commit", "-q", "-m", "add feature")
-    head = git(repo, "rev-parse", "HEAD")
+    _RUN_KEY_FEATURE_REPO.copy(repo)
+    base, head = _RUN_KEY_FEATURE_REPO.meta
     cache_dir = repo / ".claude"
     cache_dir.mkdir()
     (cache_dir / "repo-cache.json").write_text(json.dumps({"commands": {"check": "just check"}}))
@@ -160,6 +184,15 @@ def verify_implement(home, receipt_text, repo, base, extra=()):
     args = ["--step", "implement", "--receipt", str(receipt), "--since", ISO_TIMESTAMP,
             "--repo", str(repo), "--branch", "HEAD", "--base", base, *extra]
     return run_verifier(args, home=home, cwd=home)
+
+
+def verify_implement_e2e(home, receipt_text, repo, base, extra=()):
+    """End-to-end subprocess call for CLI coverage."""
+    receipt = Path(home) / "receipt.md"
+    receipt.write_text(receipt_text)
+    args = ["--step", "implement", "--receipt", str(receipt), "--since", ISO_TIMESTAMP,
+            "--repo", str(repo), "--branch", "HEAD", "--base", base, *extra]
+    return run_verifier_e2e(args, home=home, cwd=home)
 
 
 def make_plan_fixture(home):
@@ -367,12 +400,17 @@ def test_verifier_ok_receipt_source_lines(h):
 def test_verifier_ok_receipt_locate_fallback(h):
     """An OK receipt with neither line takes the locate-fallback, on both paths (#346)."""
     modes = (("standard", (), lambda text: text), ("expect-model", EXPECT_MODEL_ARGS, lambda text: EXPECT_MODEL_PREFIX + text))
+    is_first = True
     for label, extra, wrap in modes:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             repo, base, head = make_feature_repo(home)
             text = wrap(make_receipt(include_receipt_contract=False, include_run_key=False, check_sha=head))
-            rc, stdout, stderr = verify_implement(home, text, repo, base, extra)
+            if is_first:
+                rc, stdout, stderr = verify_implement_e2e(home, text, repo, base, extra)
+                is_first = False
+            else:
+                rc, stdout, stderr = verify_implement(home, text, repo, base, extra)
             lines = stdout.splitlines()
             h.test_result(f"{label}: grandfathered OK receipt exits 0",
                           rc == 0, f"rc={rc} stdout={stdout!r} stderr={stderr!r}")

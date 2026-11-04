@@ -42,6 +42,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import REPO_ROOT, Harness
+from _inproc import run_python
 
 LEDGER = REPO_ROOT / "scripts" / "implement-ledger.py"
 START_SHA = "0000000000000000000000000000000000000001"
@@ -70,7 +71,7 @@ BARE_EXPECTED_LINES = [
 ]
 
 
-def run_ledger(args, home, cwd):
+def run_ledger_e2e(args, home, cwd):
     """Run implement-ledger.py under the given HOME. Returns (returncode, stdout, stderr)."""
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
     env["HOME"] = str(home)
@@ -80,6 +81,18 @@ def run_ledger(args, home, cwd):
         env=env,
         capture_output=True,
         text=True,
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+def run_ledger(args, home, cwd):
+    """Run implement-ledger.py under the given HOME. Returns (returncode, stdout, stderr)."""
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+    env["HOME"] = str(home)
+    result = run_python(
+        [str(LEDGER)] + args,
+        cwd=str(cwd),
+        env=env,
     )
     return result.returncode, result.stdout, result.stderr
 
@@ -105,7 +118,7 @@ class RenderBoundFixture:
         scratch = self.scratch_root / run_key
         scratch.mkdir()
         # If a different repo is passed, we'll manually edit the pointer after init.
-        rc, _, _ = run_ledger(
+        rc, _, _ = run_ledger_e2e(
             ["init", "--scratch", str(scratch), "--start-sha", START_SHA, "--run-key", run_key],
             self.home,
             repo or self.repo,

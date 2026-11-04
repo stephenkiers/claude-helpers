@@ -10,9 +10,11 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from workflow import checks
 from _test_harness import Harness
+from _inproc import RepoTemplate
 
 CMDS = {"check": "true", "test": None}
 
@@ -23,8 +25,7 @@ def git(cwd, *args):
                         "GIT_COMMITTER_EMAIL": "t@t", "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"})
 
 
-def make_repo():
-    root = Path(tempfile.mkdtemp())
+def _build(root):
     origin, wt = root / "origin.git", root / "wt"
     git(root, "init", "-q", "--bare", "-b", "main", str(origin))
     git(root, "clone", "-q", str(origin), str(wt))
@@ -36,7 +37,15 @@ def make_repo():
     (wt / "b.txt").write_text("b")
     git(wt, "add", ".")
     git(wt, "commit", "-qm", "work")
-    return root, wt
+
+
+_TPL = RepoTemplate(_build, fix_paths=["wt/.git/config"])
+
+
+def make_repo():
+    root = Path(tempfile.mkdtemp()) / "r"
+    _TPL.copy(root)
+    return root, root / "wt"
 
 
 def _attest(wt, cmds, base, result):

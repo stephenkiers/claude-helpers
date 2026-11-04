@@ -633,8 +633,9 @@ def test_append_event_preserves_existing_parent_permissions():
 
 def test_append_event_to_existing_common_dir():
     """append_event works when pointing to an existing directory like /tmp without crashing."""
-    tmpbase = Path(tempfile.gettempdir()) / ".test-append-existing"
-    tmpbase.mkdir(exist_ok=True)
+    # Parallel-safe (run_all.py runs suites concurrently): a unique dir per call, not a fixed name
+    # under the shared temp dir, so a peer suite cannot race this one's unlink/rmdir.
+    tmpbase = Path(tempfile.mkdtemp(prefix=".test-append-existing-"))
 
     log_path = tmpbase / "test.jsonl"
     try:
@@ -2021,6 +2022,78 @@ def test_content_chars_direct_contract():
     return True, ""
 
 
+def test_content_chars_codepoints_thinking_and_ascii_escapes():
+    """_content_chars counts codepoints for text, thinking text, and tool_use JSON with ASCII escapes."""
+    # Test 1: text block counts raw codepoints (not UTF-8 bytes)
+    # "héllo😀" = h + é + l + l + o + 😀 = 6 codepoints
+    got = telemetry_schema._content_chars({"content": [{"type": "text", "text": "héllo\U0001F600"}]})
+    if got != 6:
+        return False, f"text 'héllo😀' should be 6 codepoints, got {got}"
+
+    # Test 2: thinking block counts its thinking text
+    got = telemetry_schema._content_chars({"content": [{"type": "thinking", "thinking": "abcd"}]})
+    if got != 4:
+        return False, f"thinking 'abcd' should be 4, got {got}"
+
+    # Test 3: tool_use counts len(json.dumps(input)) with ASCII escaping
+    # json.dumps({"k": "é"}) = '{"k": "\\u00e9"}' = 15 chars
+    inp = {"k": "é"}
+    expected = len(json.dumps(inp))  # 15
+    got = telemetry_schema._content_chars({"content": [{"type": "tool_use", "id": "t1", "name": "x", "input": inp}]})
+    if got != expected:
+        return False, f"tool_use input json should be {expected}, got {got}"
+
+    # Test 4: mixed blocks from test 5.7 of the spec
+    # ab (2) + tool_use (8) + c (1) = 11
+    got = telemetry_schema._content_chars({"content": [
+        {"type": "text", "text": "ab"},
+        {"type": "tool_use", "id": "t4", "name": "x", "input": {"a": 1}},
+        {"type": "thinking", "thinking": "c"},
+    ]})
+    expected = 2 + len(json.dumps({"a": 1})) + 1
+    if got != expected:
+        return False, f"mixed blocks should sum per type ({expected}), got {got}"
+
+    return True, ""
+
+
+def test_transcript_parse_result_declares_documented_keys():
+    """TranscriptParseResult TypedDict declares exactly the 9 documented keys."""
+    expected_keys = {
+        "tokens", "turns", "lines_parsed", "lines_skipped", "cost_state",
+        "first_assistant_event", "unfinalized_messages",
+        "unfinalized_output_tokens_recorded", "unfinalized_content_chars",
+    }
+    try:
+        rtd = telemetry_schema.TranscriptParseResult
+        ann = set(getattr(rtd, "__annotations__", {}).keys())
+        if ann != expected_keys:
+            return False, f"missing={expected_keys - ann} extra={ann - expected_keys}"
+        return True, ""
+    except Exception as e:
+        return False, f"raised {type(e).__name__}: {e}"
+
+
+def test_parse_transcript_tokens_last_cost_state_wins():
+    """parse_transcript_tokens selects the last cost-state line verbatim."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        p = Path(tmpdir) / "transcript.jsonl"
+        lines = [
+            {"type": "cost-state", "modelUsage": {"outputTokens": 1}},
+            {"type": "assistant", "message": {"id": "msg_i", "stop_reason": "end_turn", "usage": {"output_tokens": 4}}},
+            {"type": "cost-state", "modelUsage": {"outputTokens": 9}},
+        ]
+        p.write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+
+        try:
+            r = telemetry_schema.parse_transcript_tokens(p)
+            if r["cost_state"] != {"type": "cost-state", "modelUsage": {"outputTokens": 9}}:
+                return False, f"expected last cost-state to win, got {r['cost_state']}"
+            return True, ""
+        except Exception as e:
+            return False, f"raised {type(e).__name__}: {e}"
+
+
 def test_transcript_metrics_cli_emits_keys():
     """CLI parse command emits the three unfinalized keys in JSON output."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -3040,6 +3113,15 @@ if __name__ == "__main__":
 
     passed, msg = test_content_chars_direct_contract()
     test_result("_content_chars direct never-raise contract", passed, msg)
+
+    passed, msg = test_content_chars_codepoints_thinking_and_ascii_escapes()
+    test_result("_content_chars: codepoints (text/thinking) and ASCII escapes (tool_use)", passed, msg)
+
+    passed, msg = test_transcript_parse_result_declares_documented_keys()
+    test_result("TranscriptParseResult declares the 9 documented keys", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_last_cost_state_wins()
+    test_result("parse_transcript_tokens: last cost_state wins", passed, msg)
 
     passed, msg = test_transcript_metrics_cli_emits_keys()
     test_result("CLI parse command emits the three unfinalized keys", passed, msg)

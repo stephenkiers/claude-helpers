@@ -27,7 +27,6 @@ Run with: python3 tests/test_flow_verify_receipt_spec.py
 
 import json
 import os
-import subprocess
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -36,6 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import REPO_ROOT, Harness
+from _inproc import run_python
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 
@@ -124,17 +124,17 @@ def marker(name):
 
 def run_verifier(fx, receipt=None, flow_dir=None):
     """Run the verifier CLI with HOME pinned to the fixture. Returns (exit code, combined output)."""
-    args = [
-        sys.executable,
+    cmd_args = [
         str(VERIFIER),
         "--step", "review",
         "--receipt", str(receipt or fx.receipt),
         "--since", since_timestamp(),
     ]
     if flow_dir is not None:
-        args += ["--flow-dir", str(flow_dir)]
+        cmd_args += ["--flow-dir", str(flow_dir)]
     env = {**os.environ, "HOME": str(fx.home)}
-    result = subprocess.run(args, capture_output=True, text=True, env=env)
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    result = run_python(cmd_args, env=env)
     return result.returncode, result.stdout + result.stderr
 
 

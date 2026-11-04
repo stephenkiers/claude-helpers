@@ -22,7 +22,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import REPO_ROOT, Harness
+from _inproc import run_python
 
 SCRIPT = REPO_ROOT / "scripts" / "run-metrics.py"
 
@@ -38,8 +40,8 @@ _DEFAULT_LOG_DIR = tempfile.mkdtemp(prefix="run-metrics-test-log-")
 atexit.register(shutil.rmtree, _DEFAULT_LOG_DIR, ignore_errors=True)
 
 
-def run_script(args, stdin_text=None, env=None):
-    """Run the script as a subprocess. Returns (returncode, stdout, stderr)."""
+def run_script_e2e(args, stdin_text=None, env=None):
+    """Run the script as a real subprocess. Returns (returncode, stdout, stderr)."""
     if "--state-dir" not in args:
         args = ["--state-dir", _DEFAULT_STATE_DIR] + list(args)
     if "--log" not in args:
@@ -52,6 +54,16 @@ def run_script(args, stdin_text=None, env=None):
         text=True,
         env=env,
     )
+    return result.returncode, result.stdout, result.stderr
+
+
+def run_script(args, stdin_text=None, env=None):
+    """Run the script in-process. Returns (returncode, stdout, stderr)."""
+    if "--state-dir" not in args:
+        args = ["--state-dir", _DEFAULT_STATE_DIR] + list(args)
+    if "--log" not in args:
+        args = ["--log", os.path.join(_DEFAULT_LOG_DIR, "events.jsonl")] + list(args)
+    result = run_python([str(SCRIPT)] + args, input=stdin_text, env=env)
     return result.returncode, result.stdout, result.stderr
 
 
@@ -81,12 +93,39 @@ def _read_usage_state_or_fail(state_dir, session_id):
     return usage_state, None
 
 
+def _backdate_began_at(state_dir, seconds=2):
+    """Backdate all *began_at keys in JSON files in state_dir by seconds."""
+    def recurse_backdate(obj):
+        """Recursively backdate began_at keys in a nested structure."""
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if key.endswith("began_at") and isinstance(value, str):
+                    try:
+                        dt = datetime.fromisoformat(value)
+                        obj[key] = (dt - timedelta(seconds=seconds)).isoformat()
+                    except (ValueError, TypeError):
+                        pass
+                else:
+                    recurse_backdate(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                recurse_backdate(item)
+
+    for json_file in Path(state_dir).rglob("*.json"):
+        try:
+            data = json.loads(json_file.read_text())
+            recurse_backdate(data)
+            json_file.write_text(json.dumps(data))
+        except (json.JSONDecodeError, IOError):
+            pass
+
+
 def test_session_begin():
     """session-begin reads JSON from stdin and writes an event."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         payload = json.dumps({"session_id": "s123", "cwd": "/tmp/repo"})
-        code, stdout, stderr = run_script(
+        code, stdout, stderr = run_script_e2e(
             ["--log", str(log_path), "session-begin"],
             stdin_text=payload,
         )
@@ -155,7 +194,7 @@ def test_command_begin_prints_id():
     """command-begin prints bare command_id to stdout."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
-        code, stdout, stderr = run_script(
+        code, stdout, stderr = run_script_e2e(
             ["--log", str(log_path), "command-begin", "--command", "test-cmd"],
             env={**os.environ, "CLAUDE_CODE_SESSION_ID": "s123"},
         )
@@ -2068,7 +2107,7 @@ def test_stage_end_computes_elapsed_seconds():
 
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "c"], env=env)
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "s"], env=env)
-        time.sleep(1.1)
+        _backdate_began_at(state_dir)
         code, stdout, stderr = run_script(["--log", str(log_path), "--state-dir", str(state_dir), "stage-end", "--stage", "s", "--outcome", "success"], env=env)
 
         if code != 0:
@@ -2096,7 +2135,7 @@ def test_command_end_computes_elapsed_seconds():
         env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "c"], env=env)
-        time.sleep(1.1)
+        _backdate_began_at(state_dir)
         code, stdout, stderr = run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "c", "--outcome", "success"], env=env)
 
         if code != 0:
@@ -2126,7 +2165,7 @@ def test_agent_end_computes_elapsed_seconds():
         end_payload = json.dumps({"session_id": session_id, "agent_id": "a1", "agent_type": "t"})
 
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"], stdin_text=begin_payload)
-        time.sleep(1.1)
+        _backdate_began_at(state_dir)
         code, stdout, stderr = run_script(["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"], stdin_text=end_payload)
 
         if code != 0:
@@ -2155,7 +2194,7 @@ def test_session_end_computes_elapsed_seconds():
         payload = json.dumps({"session_id": session_id, "cwd": "/tmp"})
 
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "session-begin"], stdin_text=payload)
-        time.sleep(1.1)
+        _backdate_began_at(state_dir)
         code, stdout, stderr = run_script(["--log", str(log_path), "--state-dir", str(state_dir), "session-end"], stdin_text=payload)
 
         if code != 0:
@@ -2254,7 +2293,7 @@ def test_agent_elapsed_survives_command_end():
         agent_begin_payload = json.dumps({"session_id": session_id, "agent_id": "a1", "agent_type": "t", "cwd": "/tmp"})
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"], stdin_text=agent_begin_payload)
 
-        time.sleep(1.1)
+        _backdate_began_at(state_dir)
 
         # command-end fires while the agent is still "in flight"
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "c", "--outcome", "success"], env=env)

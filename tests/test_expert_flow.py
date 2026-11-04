@@ -37,6 +37,7 @@ from _test_harness import Harness, REPO_ROOT
 
 COMMAND = REPO_ROOT / "commands" / "expert-flow.md"
 ADR = REPO_ROOT / "docs" / "adr" / "0023-expert-flow.md"
+ADR_0004 = REPO_ROOT / "docs" / "adr" / "0004-model-cost-routing.md"
 ADR_INDEX = REPO_ROOT / "docs" / "adr" / "README.md"
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 FLOW_REF = REPO_ROOT / "prompts" / "flow-reference.md"
@@ -170,6 +171,79 @@ def disallowed_grants(tools):
     bare = re.findall(r"[A-Za-z]\w*", re.sub(r"Bash\([^)]*\)", "", tools))
     offenders.extend(tool for tool in bare if tool not in ORCHESTRATOR_TOOLS)
     return offenders
+
+
+def _para_around(text, needle):
+    """Return the blank-line-delimited paragraph containing needle (case-insensitive), or ''."""
+    idx = text.lower().find(needle.lower())
+    if idx < 0:
+        return ""
+    start = text.rfind("\n\n", 0, idx)
+    end = text.find("\n\n", idx)
+    start = 0 if start < 0 else start
+    end = len(text) if end < 0 else end
+    return text[start:end]
+
+
+def _line_containing(text, needle):
+    """Return the first line containing needle (case-insensitive), or ''."""
+    for line in text.splitlines():
+        if needle.lower() in line.lower():
+            return line
+    return ""
+
+
+def test_341_doc_facts(h):
+    """Test #341 doc facts: ROUND 1 contract and maxTurns look-back."""
+    def read(path):
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    expert_flow = read(COMMAND)
+    implement = read(IMPL_CMD)
+    adr23 = read(ADR)
+    adr04 = read(ADR_0004)
+    claude_md = read(CLAUDE_MD)
+
+    # Step 6(c): expert-flow.md does not restate the strict ^ROUND 1\b pattern
+    h.test_result("commands/expert-flow.md does not restate the strict ^ROUND 1\\b pattern",
+                  COMMAND.exists() and r"^ROUND 1\b" not in expert_flow)
+    h.test_result("implement-with-haiku.md keeps the producer contract 'summary exactly as emitted'",
+                  "summary exactly as emitted" in implement)
+
+    # Items 1 and 2: ADR-0023 carries a dated 2026-10-2x amendment
+    amend_heading = re.search(r"^#+\s.*Amendment \(2026-10-2\d\)", adr23, re.MULTILINE)
+    h.test_result("ADR-0023 has a dated 2026-10-2x amendment heading",
+                  amend_heading is not None)
+    amend_text = adr23[amend_heading.start():] if amend_heading else ""
+    h.test_result("amendment records 'insufficient data' for maxTurns look-back",
+                  "insufficient data" in amend_text.lower())
+    h.test_result("amendment keeps maxTurns at 120",
+                  bool(re.search(r"maxTurns[^\n]*120", amend_text)))
+    h.test_result("amendment names escalations.jsonl as the re-check stream",
+                  "escalations.jsonl" in amend_text)
+    h.test_result("amendment names the event: \"attempt\" lines as trigger",
+                  'event: "attempt"' in amend_text)
+    h.test_result("ADR-0023 keeps the 'Raising or overriding maxTurns' out-of-scope line",
+                  bool(re.search(r"Raising or overriding[^\n]*maxTurns", adr23, re.IGNORECASE)))
+
+    # Step 8: ADR-0004 turns-source statement
+    adr04_phrase = "reserved for when a turns source becomes available"
+    para = _para_around(adr04, adr04_phrase)
+    h.test_result("ADR-0004 turns-source statement points at ADR-0023 or is removed",
+                  (not para) or ("0023" in para))
+
+    # Step 8: CLAUDE.md /expert-flow bullet
+    claude_line = _line_containing(claude_md, "automatic escalation is dormant until a turns source exists")
+    h.test_result("CLAUDE.md dormant-escalation bullet cites a 2026-10-2x amendment",
+                  bool(re.search(r"2026-10-2\d", claude_line)))
+
+    # #341 follow-ups: doc claims verification
+    h.test_result("ADR amendment mentions Refs #325 (not Closes #325)",
+                  "Refs #325" in adr23 and "#325" in adr23)
+    h.test_result("expert-flow.md rule 5 points to ROUND1_HEADER_PATTERN (pattern owned by script)",
+                  "ROUND1_HEADER_PATTERN" in expert_flow and "pattern owned by" in expert_flow)
+    h.test_result("expert-flow.md rule 5 clarifies that any ROUND 1 line suffices",
+                  "for `ROUND 1`, any matching line suffices" in expert_flow)
 
 
 def main():
@@ -843,6 +917,14 @@ def main():
                    "AskUserQuestion" in non_flow_section and
                    "Open-ended questions" in non_flow_section and
                    "Effort-2 escalation trigger" in non_flow_section))
+    flow_branch_match = re.search(r"\*\*Flow branch:\*\*(.*?)(?=\*\*Non-flow branch:\*\*|\*\*Step \d+|\Z)", plan_step5, re.DOTALL)
+    flow_branch = flow_branch_match.group(1) if flow_branch_match else ""
+    h.test_result("Step 5 Flow branch specifies report-kind checkpoint with `kind: report`",
+                  bool(re.search(r"kind:\s*report", flow_branch)))
+    h.test_result("Step 5 Flow branch documents reply file (`.reply.md`) or reply-mode reaction pass",
+                  bool(re.search(r"\.reply\.md|reply-mode\s+reaction", flow_branch, re.IGNORECASE)))
+    h.test_result("ADR has explicit 'This amendment supersedes' statement",
+                  bool(re.search(r"This\s+amendment\s+supersedes", adr)))
     h.test_result("expert-review Step 12 carries summary/brief and fails dropped rulings",
                   "reduced run:\nrulings dropped" in review_cmd and "`summary`" in review_cmd and "`review-01`, `review-02`" in review_cmd)
     h.test_result("ADR has the more-human-in-the-loop amendment",
@@ -1257,6 +1339,8 @@ def main():
     adr_text = ADR.read_text() if ADR.is_file() else ""
     h.test_result("ADR-0023 keeps exit 126/127 as check-not-run (unchanged wording)",
                   "runner or shell exit `126`/`127`" in adr_text)
+
+    test_341_doc_facts(h)
 
     print()
     h.summarize_and_exit()

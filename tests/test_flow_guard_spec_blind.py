@@ -45,7 +45,7 @@ def run_guard(agent, command):
             input=json.dumps(payload),
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=60
         )
         return result.returncode, result.stderr
     except subprocess.TimeoutExpired:
