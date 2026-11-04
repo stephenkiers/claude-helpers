@@ -168,7 +168,7 @@ def main():
         'fix': 'flow-implement',
         'review': 'flow-review',
         'worktree': 'general-purpose',
-        'plan': 'general-purpose',
+        'plan': 'flow-plan',
         'track': 'general-purpose',
         'verify': 'general-purpose',
         'ship': 'flow-ship',
@@ -524,6 +524,192 @@ def main():
         "expert-flow confirms the PR is MERGED after merge",
         "= MERGED" in flow_doc and "`MERGED: yes`" in flow_doc,
     )
+
+    print()
+
+    print("[Test 8] flow-plan agent shape (Step 4, Step 6)\n")
+
+    flow_plan = REPO_ROOT / "agents" / "flow-plan.md"
+    if flow_plan.exists():
+        fm = parse_markdown_frontmatter(flow_plan.read_text())
+        h.test_result(
+            "flow-plan exists",
+            True
+        )
+
+        h.test_result(
+            "flow-plan model is 'sonnet'",
+            fm.get('model') == 'sonnet',
+            f"Expected 'sonnet', got '{fm.get('model')}'"
+        )
+
+        flow_plan_tools = fm.get('tools', [])
+        if isinstance(flow_plan_tools, str):
+            flow_plan_tools = [t.strip() for t in flow_plan_tools.split(',')]
+
+        h.test_result(
+            "flow-plan tools include Write",
+            'Write' in flow_plan_tools,
+            f"tools={flow_plan_tools}"
+        )
+
+        h.test_result(
+            "flow-plan tools include Bash",
+            'Bash' in flow_plan_tools,
+            f"tools={flow_plan_tools}"
+        )
+
+        h.test_result(
+            "flow-plan tools include Skill",
+            'Skill' in flow_plan_tools,
+            f"tools={flow_plan_tools}"
+        )
+
+        h.test_result(
+            "flow-plan tools include Agent",
+            'Agent' in flow_plan_tools,
+            f"tools={flow_plan_tools}"
+        )
+
+        h.test_result(
+            "flow-plan tools include ScheduleWakeup",
+            'ScheduleWakeup' in flow_plan_tools,
+            f"tools={flow_plan_tools}"
+        )
+
+        h.test_result(
+            "flow-plan tools lack Edit",
+            'Edit' not in flow_plan_tools,
+            f"Edit should not be in tools={flow_plan_tools}"
+        )
+
+        # #389 regression guard: check for the slugify.sh reference
+        body = flow_plan.read_text()
+        h.test_result(
+            "flow-plan body names bash ~/.claude/scripts/slugify.sh",
+            "bash ~/.claude/scripts/slugify.sh" in body,
+            "Missing slugify.sh reference (#389)"
+        )
+
+        h.test_result(
+            "flow-plan body names ticket-title.txt",
+            "ticket-title.txt" in body,
+            "Missing ticket-title.txt reference (#389)"
+        )
+
+        # Check frontmatter has hooks
+        h.test_result(
+            "flow-plan frontmatter defines hooks",
+            'hooks' in fm or ('Agent|Task' in str(fm) or 'Skill' in str(fm) or 'Bash' in str(fm)),
+            "Expected hooks defined in frontmatter"
+        )
+
+    else:
+        h.test_result("flow-plan exists", False, "flow-plan.md not found")
+
+    print()
+    print("[Test 9] Derived subagent allowlist from /expert-plan (Step 6, Step 1)\n")
+
+    expert_plan = REPO_ROOT / "commands" / "expert-plan.md"
+    if not expert_plan.exists():
+        h.test_result("expert-plan.md exists", False)
+    else:
+        expert_plan_text = expert_plan.read_text()
+
+        # Extract every subagent_type: "value" from /expert-plan
+        spawns = extract_subagent_spawns(expert_plan_text)
+
+        h.test_result(
+            "expert-plan spawns non-empty subagent set",
+            len(spawns) > 0,
+            f"Found {len(spawns)} spawns"
+        )
+
+        # Check that expert-scout and expert-reviewer are in the set
+        h.test_result(
+            "expert-plan spawns include expert-scout",
+            'expert-scout' in spawns,
+            f"Expected 'expert-scout' in {spawns}"
+        )
+
+        h.test_result(
+            "expert-plan spawns include expert-reviewer",
+            'expert-reviewer' in spawns,
+            f"Expected 'expert-reviewer' in {spawns}"
+        )
+
+        # Check that general-purpose is NOT in the set (Step 1 requirement)
+        h.test_result(
+            "expert-plan does NOT spawn general-purpose",
+            'general-purpose' not in spawns,
+            f"general-purpose should not be in {spawns}"
+        )
+
+        # Load flow-plan's allowlist from flow-agent-guard.py
+        flow_agent_guard = REPO_ROOT / "scripts" / "flow-agent-guard.py"
+        guard_text = flow_agent_guard.read_text()
+
+        # Extract ALLOWED_SUBAGENT_TYPES["flow-plan"]
+        flow_plan_allow = set()
+        match = re.search(
+            r'"flow-plan":\s*\{([^}]+)\}',
+            guard_text
+        )
+        if match:
+            agents_str = match.group(1)
+            flow_plan_allow = {a.strip().strip('"\'') for a in agents_str.split(',')}
+
+        h.test_result(
+            "flow-plan allowlist is non-empty",
+            len(flow_plan_allow) > 0,
+            f"Found {len(flow_plan_allow)} allowed agents"
+        )
+
+        if len(spawns) > 0 and len(flow_plan_allow) > 0:
+            h.test_result(
+                "expert-plan spawns are subset of flow-plan allowlist",
+                spawns <= flow_plan_allow,
+                f"Spawns {spawns} not subset of allowed {flow_plan_allow}"
+            )
+
+    print()
+    print("[Test 10] Convention test: defence block, contract line, Step identity (Step 6)\n")
+
+    # Check every flow-*.md (except exemptions) for required sections
+    agents_dir = REPO_ROOT / "agents"
+    agent_files = sorted(agents_dir.glob("flow-*.md"))
+
+    # D2: flow-assessor and flow-healer are exempt with a dated reason
+    exemptions = {"flow-assessor", "flow-healer"}
+    exemption_reason = "D2 (ADR-0023): defer conforming when next touched"
+
+    for agent_file in agent_files:
+        agent_name = agent_file.stem
+
+        # Skip exemptions
+        if agent_name in exemptions:
+            print(f"  [skipped] {agent_file.name} ({exemption_reason})")
+            continue
+
+        body = agent_file.read_text()
+
+        h.test_result(
+            f"{agent_file.name} includes defence block",
+            "flow-step-defence" in body,
+            f"Missing defence block"
+        )
+
+        h.test_result(
+            f"{agent_file.name} references flow-step-contract",
+            "flow-step-contract.md" in body,
+            f"Missing contract reference"
+        )
+
+        h.test_result(
+            f"{agent_file.name} has Step identity section",
+            "Step identity" in body or "step identity" in body.lower(),
+            f"Missing step identity section"
+        )
 
     print()
 
