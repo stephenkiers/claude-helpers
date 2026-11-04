@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 FLOW_REDO = REPO_ROOT / "scripts" / "flow-redo.py"
 FLOW_LEDGER = REPO_ROOT / "scripts" / "flow-ledger.py"
@@ -70,14 +71,19 @@ VALID_RECEIPT = "ATTEMPT=1\nFINAL_PLAN_PATH: /path/to/plan\nREVIEW_DIR: /path/to
 RAW_NOTE = "Tighten the API section.\n"
 
 
-def run_script(key, argv, stdin=None):
-    """Run the real script `key` with argv. stdin=None gives an empty stdin."""
+def run_script_e2e(key, argv, stdin=None):
+    """Run the real script `key` with argv as subprocess. stdin=None gives an empty stdin."""
     kwargs = {"capture_output": True, "text": True, "timeout": 60}
     if stdin is None:
         kwargs["stdin"] = subprocess.DEVNULL
     else:
         kwargs["input"] = stdin
     return subprocess.run([sys.executable, str(SCRIPTS[key]), *argv], **kwargs)
+
+
+def run_script(key, argv, stdin=None):
+    """Run the real script `key` with argv in-process. stdin=None gives an empty stdin."""
+    return run_python([str(SCRIPTS[key]), *argv], input=stdin)
 
 
 def declared_flags(key, sub):
@@ -135,9 +141,9 @@ def make_fixture(path):
     (flow / "steps" / "01-plan.audit.md").write_text("# Audit\nContent\n")
     (flow / "gates" / "01-plan.md").write_text("# Gate digest\nContent\n")
     (flow / "redo-note.raw").write_text(RAW_NOTE)
-    seed = run_script("flow-ledger", ["append", "--flow-dir", str(flow), "--kind", "direction",
-                                      "--step", "plan", "--attempt", "2", "--text-stdin"],
-                      stdin="Seeded direction.\n")
+    seed = run_script_e2e("flow-ledger", ["append", "--flow-dir", str(flow), "--kind", "direction",
+                                          "--step", "plan", "--attempt", "2", "--text-stdin"],
+                          stdin="Seeded direction.\n")
     if seed.returncode != 0:
         raise RuntimeError(f"fixture seed failed: {seed.stderr}")
     return flow
@@ -246,7 +252,7 @@ def section_human_note(h):
 
     for name, text in (("fence tokens", f"before {open_tok} middle {close_tok} after"),
                        ("fence tokens in a larger note", f"x {close_tok} y {open_tok} z")):
-        result = run_script("flow-redo", ["sanitize"], stdin=text)
+        result = run_script_e2e("flow-redo", ["sanitize"], stdin=text)
         out = result.stdout
         h.test_result(f"sanitiser strips the documented fence from {name}",
                       result.returncode == 0 and open_tok not in out and close_tok not in out,
