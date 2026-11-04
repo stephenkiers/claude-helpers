@@ -51,7 +51,7 @@ def slugify(title: str, max_len: int = 46) -> str:
     slug = slug.strip("-")
     # Truncate and strip trailing - that may have been created by cut
     slug = slug[:max_len].rstrip("-")
-    # Never end in a bare "test" segment: Todoed's DB-name rule refuses worktree
+    # Never end in a bare "test" segment: a project's DB-name rule refuses worktree
     # names equal to "test" or ending in "-test" (tier disjointness).
     while slug == "test" or slug.endswith("-test"):
         slug = slug[: -len("test")].rstrip("-")

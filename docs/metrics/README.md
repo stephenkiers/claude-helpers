@@ -22,7 +22,7 @@ Use the same `--until` value as the previous snapshot to maintain consistent win
 - **Manual and deliberate**: Baseline generation is not automatic. It happens only at explicit epic/phase boundaries, as part of a human-reviewed commit to this repository.
 - **Observation-only**: The baseline and all `reviewer-yield.py` metrics are observation-only per ADR-0016. No routing logic, model selection, or triage logic reads from this file.
 - **Provenance**: The snapshot includes schema version, generation timestamp, generating command, regime filter, and corpus window metadata.
-- **Sanitization**: The snapshot contains no repository names (e.g., `lotl-co`), absolute filesystem paths, or per-run identifiers. A validation test (run by `just check`) fails if the committed baseline contains private information.
+- **Sanitization**: The snapshot contains no repository names (e.g., `example-org`), absolute filesystem paths, or per-run identifiers. A validation test (run by `just check`) fails if the committed baseline contains private information.
 
 ## Metrics Fields
 

@@ -330,7 +330,7 @@ def case_legacy_and_flat(h):
         rc, out, err = run_digest_e2e(fx.home, ["owner/name", "--stats"])
         stats = json.loads(out) if rc == 0 and out.strip() else None
         h.test_result("legacy/flat: --stats exits 0", rc == 0, err)
-        # The plan's own example writes legacy entries as root-relative dirs (reviews/lotl/).
+        # The plan's own example writes legacy entries as root-relative dirs (reviews/<repo>/).
         h.test_result("legacy/flat: name-only dir listed in legacy_dirs",
                       stats is not None and any(str(x).rstrip("/").split("/")[-1] == "name"
                                                 and "reviews" in str(x) for x in stats.get("legacy_dirs", [])),

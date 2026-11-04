@@ -4,7 +4,7 @@
 
 ## Context
 
-ADR-0023's §4 item 3 chose sequential epic execution: each ticket runs in a flow after the previous one merges. The proof-of-concept `/expert-fleet` dispatcher ran epic #122 (Todoed) from 2026-10-16 to 2026-10-25 with **parallel ticket execution** — up to 3 headless `/expert-flow` processes running at once, their questions batched and asked together, and dependants unblocking as soon as their dependencies merged. Per the author's POC notes, the dispatcher was exercised via fresh launches only through 2026-10-23. This ADR documents the landed implementation and the gaps known at landing.
+ADR-0023's §4 item 3 chose sequential epic execution: each ticket runs in a flow after the previous one merges. The proof-of-concept `/expert-fleet` dispatcher ran a private project's epic from 2026-10-16 to 2026-10-25 with **parallel ticket execution** — up to 3 headless `/expert-flow` processes running at once, their questions batched and asked together, and dependants unblocking as soon as their dependencies merged. Per the author's POC notes, the dispatcher was exercised via fresh launches only through 2026-10-23. This ADR documents the landed implementation and the gaps known at landing.
 
 ## Decision
 

@@ -120,7 +120,7 @@ A structural pre-gate exclusion must satisfy both conditions:
 
 The harness learns from corpus review runs with these constraints (carried forward without re-validation in this audit):
 
-- **Repo concentration**: lotl-co-lotl 32.9%, stephenkiers-InsuranceTracking 12.7%, claude-helpers 9.1%; top 3 repos > 54% of corpus
+- **Repo concentration**: the top 3 repos account for > 54% of the corpus
 - **Branch repetition**: moderate; 78–80% unique branches per-repo
 - **Effort level reconstruction**: effort-scout.json exists in only 1 of 772 review dirs, so per-run effort is not reliably reconstructible for historical analysis
 

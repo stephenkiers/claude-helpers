@@ -53,6 +53,7 @@ own PR bot — not a lint/test gate). The `justfile` at the repo root is the act
 - `just test` — `python3 tests/run_all.py`, the existing custom test runner. It runs suites in parallel
   (`--jobs`, default: CPU count; `just test` takes no flag, so pass it directly for a serial run), and
   the wall-clock-bounded suites listed in `SERIAL_ONLY` in `tests/run_all.py` run alone after the pool.
+- `scripts/check-pseudonyms.py` (run by `just lint`) — fails with `file:line` only if a tracked file contains a term from the local, uncommitted `~/.claude/pseudonyms.txt` (override: `CLAUDE_PSEUDONYMS_FILE`); skips silently when the file is absent, so forks are unaffected.
 - `just fix` — `ruff check . --fix` for what's auto-fixable.
 
 This is wired into `.claude/repo-cache.json` (`commands.check` = `"just check"`, etc.), the same

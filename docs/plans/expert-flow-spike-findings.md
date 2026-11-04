@@ -104,7 +104,7 @@ quoted inline because transcripts may be purged.
 | Review worktree + branch `spike/246-review-target` | `~/spike-246/review-wt` | 20:21:13 | 20:25:37 |
 | Scratch issue #261 (body replaced, plan comment) | GitHub | 20:24:13 | comment deleted 20:25:30; closed 20:25:32 (issues cannot be deleted) |
 | Worktree + branch `feature/261-scratch-plan-p` | `worktrees/261-scratch-plan-p` | Q4 run | 20:25:37 |
-| Review dir `spike-246-review-target-a1a28e3-20261009T132127-31836` | `~/.claude/reviews/stephenkiers-claude-helpers/` | Q2 real run | 20:26:43 |
+| Review dir `spike-246-review-target-a1a28e3-20261009T132127-31836` | `~/.claude/reviews/<owner>-claude-helpers/` | Q2 real run | 20:26:43 |
 | Scratch root | `~/spike-246/` | start | removed after evidence was quoted here |
 
 Not inspected: any reviewer-yield or review-cache entry the nested `/expert-review` run may have appended. Treat as an unremoved side effect. Background agents: user confirmed none remain.

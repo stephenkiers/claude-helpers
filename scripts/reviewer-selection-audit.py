@@ -49,8 +49,7 @@ def get_review_run_id(review_dir: Path) -> str:
 def print_caveat_header() -> None:
     """Print fixed caveat header for all reports."""
     print(
-        "Corpus caveats: repo-concentrated (lotl-co-lotl 32.9%, stephenkiers-InsuranceTracking 12.7%, "
-        "claude-helpers 9.1%; three repos > 54%); branch repetition moderate (78-80% unique branches); "
+        "Corpus caveats: repo-concentrated (the top three repos > 54%); branch repetition moderate (78-80% unique branches); "
         "per-run --effort level is NOT reconstructible (effort-scout.json exists in 1 of 772 review dirs)."
     )
     print()

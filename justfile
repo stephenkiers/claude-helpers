@@ -8,6 +8,7 @@ check: lint typecheck test
 # deliberately narrow rule set) + shellcheck (every tracked *.sh file).
 lint:
     ruff check .
+    python3 scripts/check-pseudonyms.py
     shellcheck $(find . -name '*.sh' -not -path './.git/*')
 
 test:
