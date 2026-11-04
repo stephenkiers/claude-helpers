@@ -355,12 +355,14 @@ if __name__ == "__main__":
             large_diff_lines.append(f"+def foo{i}(): pass")
         large_diff = "\n".join(large_diff_lines)
 
-        start = time.time()
+        # CPU time, not wall time: the suite runs in parallel with others, so wall time measures
+        # machine load. CPU time still catches an algorithmic blowup.
+        start = time.process_time()
         result = route_score.score_diff(large_diff, configs)
-        elapsed = time.time() - start
+        elapsed = time.process_time() - start
 
-        t("large diff finishes within time budget (< 30 seconds)",
-          elapsed < 30.0, f"took {elapsed:.2f}s")
+        t("large diff finishes within CPU budget (< 5 seconds)",
+          elapsed < 5.0, f"took {elapsed:.2f}s CPU")
         t("result has degraded flag",
           hasattr(result, 'degraded'),
           f"degraded={getattr(result, 'degraded', 'N/A')}")
