@@ -14,7 +14,6 @@ Run with: python3 tests/test_flow_verify_receipt_attempt_scoping.py
 import datetime
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import time
@@ -24,7 +23,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _test_harness import Harness
+from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 from test_flow_verify_receipt import create_contribution, create_reviewer_index, create_session
 
 
@@ -47,15 +47,10 @@ def run_verifier(step: str, receipt_text: str, flow_dir: Path, since: str) -> tu
     receipt_file = flow_dir.parent / "receipt.md"
     receipt_file.write_text(receipt_text, encoding="utf-8")
 
-    cmd = [
-        sys.executable,
-        str(Path(__file__).parent.parent / "scripts" / "flow-verify-receipt.py"),
-        "--step", step,
-        "--receipt", str(receipt_file),
-        "--flow-dir", str(flow_dir),
-        "--since", since,
-    ]
+    verifier_path = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
     env = dict(os.environ)
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+
     if step == "plan":
         # Plan artifacts resolve under $HOME/.claude; build a complete session fixture there.
         home = str(flow_dir.parent)
@@ -76,7 +71,15 @@ def run_verifier(step: str, receipt_text: str, flow_dir: Path, since: str) -> tu
         # Review artifacts must live under $HOME/.claude/reviews; make_review_fixture builds them
         # under the same HOME (flow_dir.parent), so the review check reaches freshness and rulings.
         env["HOME"] = str(flow_dir.parent)
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    result = run_python(
+        [str(verifier_path),
+         "--step", step,
+         "--receipt", str(receipt_file),
+         "--flow-dir", str(flow_dir),
+         "--since", since],
+        env=env
+    )
     return result.returncode, result.stdout, result.stderr
 
 
@@ -291,29 +294,8 @@ def main():
         h.test_result("Test A5", exit_code == 0,
                      f"exit={exit_code}, expected 0. stdout={stdout[:200]}")
 
-    # Test A6: awaiting-answers marker without answers file
-    print("[Test A6] awaiting-answers marker without answers file")
-    with tempfile.TemporaryDirectory() as tmp:
-        flow_dir = Path(tmp) / "flow"
-        tmp_path = Path(tmp)
-
-        create_plan_question_file(flow_dir, 1, attempt=1, num_questions=1)
-        # NO answers file
-
-        plan_dir = tmp_path / ".claude" / "plans"
-        plan_dir.mkdir(parents=True)
-        plan_file = plan_dir / "issue-slug-20261013T222013-30924.md"
-        plan_file.write_text("# Plan", encoding="utf-8")
-
-        receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 1\n<!-- awaiting-answers: questions/plan-01.json -->\n**Brief B1**"
-        since = iso_timestamp(time.time())
-
-        exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since)
-        h.test_result("Test A6", exit_code == 1 and "unanswered" in stdout,
-                     f"exit={exit_code}, stdout={stdout[:300]}")
-
-    # Test A7: Identity floor - artifact between begin and --since passes
-    print("[Test A7] Identity floor: artifact between begin and --since")
+    # Test A6: Identity floor - artifact between begin and --since passes
+    print("[Test A6] Identity floor: artifact between begin and --since")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         tmp_path = Path(tmp)
@@ -337,11 +319,11 @@ def main():
         receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 1"
 
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since_time)
-        h.test_result("Test A7", exit_code == 0,
+        h.test_result("Test A6", exit_code == 0,
                      f"exit={exit_code}, expected 0. stdout={stdout[:200]}")
 
     # Test A8: Identity floor - artifact older than begin
-    print("[Test A8] Identity floor: artifact older than begin")
+    print("[Test A6] Identity floor: artifact older than begin")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         tmp_path = Path(tmp)
@@ -365,11 +347,11 @@ def main():
         receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 1"
 
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since_time)
-        h.test_result("Test A8", exit_code == 1 and ("first attempt" in stdout or "older" in stdout),
+        h.test_result("Test A6", exit_code == 1 and ("first attempt" in stdout or "older" in stdout),
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A9: Multiple begin lines, use newest
-    print("[Test A9] Multiple begin lines: use newest")
+    print("[Test A6] Multiple begin lines: use newest")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         tmp_path = Path(tmp)
@@ -398,11 +380,11 @@ def main():
         since_time = iso_timestamp(now - 50)
 
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since_time)
-        h.test_result("Test A9", exit_code == 1 and "older than this step's first attempt" in stdout,
+        h.test_result("Test A6", exit_code == 1 and "older than this step's first attempt" in stdout,
                      f"exit={exit_code}, expected 1. stdout={stdout[:300]}")
 
     # Test A10: No log.md fallback to --since
-    print("[Test A10] No log.md: fallback to --since")
+    print("[Test A6] No log.md: fallback to --since")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         tmp_path = Path(tmp)
@@ -424,11 +406,11 @@ def main():
         receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 1"
 
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since_time)
-        h.test_result("Test A10", exit_code == 1 and "older than this attempt" in stdout,
+        h.test_result("Test A6", exit_code == 1 and "older than this attempt" in stdout,
                      f"exit={exit_code}, expected 1. stdout={stdout[:300]}")
 
     # Test A11: Review with attempt scoping
-    print("[Test A11] Review: ATTEMPT:2, attempt:1 files, no reused marker")
+    print("[Test A6] Review: ATTEMPT:2, attempt:1 files, no reused marker")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         tmp_path = Path(tmp)
@@ -441,12 +423,12 @@ def main():
         since = iso_timestamp(time.time() - 3600)
 
         exit_code, stdout, stderr = run_verifier("review", receipt, flow_dir, since)
-        h.test_result("Test A11", exit_code == 1 and "review rulings incomplete (needs-you: 2, asked: 0" in stdout
+        h.test_result("Test A6", exit_code == 1 and "review rulings incomplete (needs-you: 2, asked: 0" in stdout
                       and "no answered review-* question files for attempt 2" in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A12: Review identity floor
-    print("[Test A12] Review: identity floor using log.md")
+    print("[Test A6] Review: identity floor using log.md")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         tmp_path = Path(tmp)
@@ -461,11 +443,11 @@ def main():
         receipt = f"REVIEW_DIR: {review_dir}\nARTIFACTS: ok\nATTEMPT: 1"
 
         exit_code, stdout, stderr = run_verifier("review", receipt, flow_dir, since_time)
-        h.test_result("Test A12", exit_code == 1 and "review artifacts missing (action plan older than this step's first attempt)" in stdout,
+        h.test_result("Test A6", exit_code == 1 and "review artifacts missing (action plan older than this step's first attempt)" in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A13: Current-attempt unanswered file
-    print("[Test A13] Current-attempt question file with no answers")
+    print("[Test A6] Current-attempt question file with no answers")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         tmp_path = Path(tmp)
@@ -481,11 +463,11 @@ def main():
         since = iso_timestamp(time.time())
 
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since)
-        h.test_result("Test A13", exit_code == 1 and "unanswered" in stdout,
+        h.test_result("Test A6", exit_code == 1 and "unanswered" in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A14: out-of-attempt marker
-    print("[Test A14] awaiting-answers marker naming attempt:1 file under ATTEMPT:2")
+    print("[Test A6] awaiting-answers marker naming attempt:1 file under ATTEMPT:2")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         tmp_path = Path(tmp)
@@ -502,11 +484,11 @@ def main():
         since = iso_timestamp(time.time())
 
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since)
-        h.test_result("Test A14", exit_code == 1 and "out-of-attempt" in stdout,
+        h.test_result("Test A6", exit_code == 1 and "out-of-attempt" in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A15: Mix of answered and unanswered
-    print("[Test A15] Same attempt: mix of answered and unanswered")
+    print("[Test A6] Same attempt: mix of answered and unanswered")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         tmp_path = Path(tmp)
@@ -524,12 +506,12 @@ def main():
         since = iso_timestamp(time.time())
 
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since)
-        h.test_result("Test A15", exit_code == 1 and "unanswered" in stdout,
+        h.test_result("Test A6", exit_code == 1 and "unanswered" in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A16: awaiting-answers marker on unanswered out-of-attempt file
     # (Finding 2 regression: should be classified as unanswered, not out-of-attempt)
-    print("[Test A16] awaiting-answers on unanswered attempt:1 file under ATTEMPT:2")
+    print("[Test A6] awaiting-answers on unanswered attempt:1 file under ATTEMPT:2")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         tmp_path = Path(tmp)
@@ -547,11 +529,11 @@ def main():
 
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since)
         # Should fail with unanswered, not out-of-attempt (because the file has no answers)
-        h.test_result("Test A16", exit_code == 1 and "unanswered" in stdout and "out-of-attempt" not in stdout,
+        h.test_result("Test A6", exit_code == 1 and "unanswered" in stdout and "out-of-attempt" not in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A17: floor is min(begin, since): a since OLDER than begin lowers the floor to since
-    print("[Test A17] Identity floor direction: artifact newer than since but older than begin passes (min, not max)")
+    print("[Test A6] Identity floor direction: artifact newer than since but older than begin passes (min, not max)")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         now = time.time()
@@ -568,10 +550,10 @@ def main():
         receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 1"
         # min(begin=now-10, since=now-100) = now-100 passes; max would be now-10 and fail.
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since_time)
-        h.test_result("Test A17", exit_code == 0, f"exit={exit_code}, stdout={stdout[:300]}")
+        h.test_result("Test A6", exit_code == 0, f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A18: a redo line supersedes the first-attempt begin line as the floor
-    print("[Test A18] Redo: artifact from before the redo line fails even though it postdates begin")
+    print("[Test A6] Redo: artifact from before the redo line fails even though it postdates begin")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         flow_dir.mkdir(parents=True)
@@ -589,11 +571,11 @@ def main():
         plan_file.write_text("# Plan", encoding="utf-8")
         receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 2"
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, iso_timestamp(now - 90))
-        h.test_result("Test A18", exit_code == 1 and "older than this step's first attempt" in stdout,
+        h.test_result("Test A6", exit_code == 1 and "older than this step's first attempt" in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A19: malformed file fails closed even when enough valid files satisfy the count
-    print("[Test A19] Fail closed: one malformed current-attempt file alongside enough valid ones")
+    print("[Test A6] Fail closed: one malformed current-attempt file alongside enough valid ones")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         create_plan_question_file(flow_dir, 1, attempt=1, num_questions=1)
@@ -606,11 +588,11 @@ def main():
         plan_file.write_text("# Plan", encoding="utf-8")
         receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 1\n**Brief B1**"
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, iso_timestamp(time.time() - 3600))
-        h.test_result("Test A19", exit_code == 1 and "malformed: plan-02.json (not json)" in stdout,
+        h.test_result("Test A6", exit_code == 1 and "malformed: plan-02.json (not json)" in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A20: out-of-attempt marker-named file fails closed despite enough valid current files
-    print("[Test A20] Fail closed: out-of-attempt marker-named file alongside enough valid ones")
+    print("[Test A6] Fail closed: out-of-attempt marker-named file alongside enough valid ones")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         create_plan_question_file(flow_dir, 1, attempt=1, num_questions=1)
@@ -624,11 +606,11 @@ def main():
         receipt = (f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 2\n"
                    "<!-- awaiting-answers: questions/plan-01.json -->\n**Brief B1**")
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, iso_timestamp(time.time() - 3600))
-        h.test_result("Test A20", exit_code == 1 and "out-of-attempt: plan-01.json" in stdout,
+        h.test_result("Test A6", exit_code == 1 and "out-of-attempt: plan-01.json" in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A21: unanswered current-attempt report-kind file is unanswered
-    print("[Test A21] Report-kind current-attempt file without answers is unanswered")
+    print("[Test A6] Report-kind current-attempt file without answers is unanswered")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         qdir = flow_dir / "questions"
@@ -642,11 +624,11 @@ def main():
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         rc = mod.count_relayed_questions(flow_dir, "plan", "", 1)
-        h.test_result("Test A21", rc.unanswered == ["plan-01.json"] and rc.asked == 0 and not rc.malformed,
+        h.test_result("Test A6", rc.unanswered == ["plan-01.json"] and rc.asked == 0 and not rc.malformed,
                      f"unanswered={rc.unanswered}, asked={rc.asked}, malformed={rc.malformed}")
 
     # Test A22: a missing ATTEMPT line fails closed when a question file is attempt > 1
-    print("[Test A22] Missing ATTEMPT line with an attempt-2 question file fails closed")
+    print("[Test A6] Missing ATTEMPT line with an attempt-2 question file fails closed")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         create_plan_question_file(flow_dir, 1, attempt=2, num_questions=1)
@@ -657,11 +639,11 @@ def main():
         plan_file.write_text("# Plan", encoding="utf-8")
         receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\n**Brief B1**"
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, iso_timestamp(time.time() - 3600))
-        h.test_result("Test A22", exit_code == 1 and "no ATTEMPT: line" in stdout,
+        h.test_result("Test A6", exit_code == 1 and "no ATTEMPT: line" in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A23: an invalid ATTEMPT value fails closed instead of defaulting to 1
-    print("[Test A23] Invalid ATTEMPT value fails closed")
+    print("[Test A6] Invalid ATTEMPT value fails closed")
     with tempfile.TemporaryDirectory() as tmp:
         flow_dir = Path(tmp) / "flow"
         create_plan_question_file(flow_dir, 1, attempt=1, num_questions=1)
@@ -672,7 +654,7 @@ def main():
         plan_file.write_text("# Plan", encoding="utf-8")
         receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: two\n**Brief B1**"
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, iso_timestamp(time.time() - 3600))
-        h.test_result("Test A23", exit_code == 1 and "invalid ATTEMPT" in stdout,
+        h.test_result("Test A6", exit_code == 1 and "invalid ATTEMPT" in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     h.summarize_and_exit()

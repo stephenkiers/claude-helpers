@@ -26,7 +26,6 @@ Run with: python3 tests/test_flow_verify_receipt_ledger_handles.py
 
 import json
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -34,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import REPO_ROOT, Harness
+from _inproc import run_python
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 INVOCATION_ID = "20261015T100000-30926"
@@ -147,15 +147,16 @@ class PlanFixture:
 
 def run_verifier(fx):
     """Run the verifier CLI against a plan fixture. Returns (exit code, combined output)."""
-    args = [
-        sys.executable, str(VERIFIER),
+    cmd_args = [
+        str(VERIFIER),
         "--step", "plan",
         "--receipt", str(fx.receipt),
         "--since", "1970-01-01T00:00:00Z",
         "--flow-dir", str(fx.flow),
     ]
     env = {**os.environ, "HOME": str(fx.home)}
-    result = subprocess.run(args, capture_output=True, text=True, env=env)
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    result = run_python(cmd_args, env=env)
     return result.returncode, result.stdout + result.stderr
 
 

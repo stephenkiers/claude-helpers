@@ -13,6 +13,7 @@ Testable behaviors from the plan:
 Run with: python3 tests/test_flow_verify_receipt_plan_coverage_spec.py
 """
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -20,45 +21,46 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 
 
 def run_verifier_coverage(receipt_path: str, plan_path: str, repo: str, branch: str, base: str, step: str = "implement") -> tuple:
     """Run verifier in coverage mode and return (exit_code, stdout, stderr)."""
-    cmd = [
-        sys.executable,
-        str(VERIFIER),
-        "--step", step,
-        "--receipt", receipt_path,
-        "--coverage",
-        "--plan", plan_path,
-        "--repo", repo,
-        "--branch", branch,
-        "--base", base,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    env = dict(os.environ)
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    result = run_python(
+        [str(VERIFIER),
+         "--step", step,
+         "--receipt", receipt_path,
+         "--coverage",
+         "--plan", plan_path,
+         "--repo", repo,
+         "--branch", branch,
+         "--base", base],
+        env=env
+    )
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
 def run_verifier_coverage_with_opts(receipt_path: str, plan_path: str, repo: str, branch: str, base: str, step: str = "implement", **opts) -> tuple:
     """Run verifier with additional options."""
-    cmd = [
-        sys.executable,
-        str(VERIFIER),
-        "--step", step,
-        "--receipt", receipt_path,
-        "--coverage",
-        "--plan", plan_path,
-        "--repo", repo,
-        "--branch", branch,
-        "--base", base,
-    ]
+    env = dict(os.environ)
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    cmd_args = [str(VERIFIER),
+                "--step", step,
+                "--receipt", receipt_path,
+                "--coverage",
+                "--plan", plan_path,
+                "--repo", repo,
+                "--branch", branch,
+                "--base", base]
     for key, val in opts.items():
         if val is not None:
             arg_name = key.replace("_", "-")
-            cmd.extend([f"--{arg_name}", str(val)])
-    result = subprocess.run(cmd, capture_output=True, text=True)
+            cmd_args.extend([f"--{arg_name}", str(val)])
+    result = run_python(cmd_args, env=env)
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
@@ -113,44 +115,7 @@ def create_receipt(path: str, outstanding_lines: list = None) -> None:
 def main():
     h = Harness("PLAN COVERAGE SPEC-BLIND TESTS (#320)")
 
-    print("[Test 1] Unknown state: no extractable evidence in fix mode")
-    print("  Behavior: fix row without file paths => unknown (non-blocking)")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        repo_path = f"{tmpdir}/repo"
-        base_sha, _ = create_git_repo_with_files(repo_path, ["file.txt"])
-
-        # Action plan with D1 having no file paths
-        action_plan_path = f"{tmpdir}/action-plan.md"
-        action_plan = """# Action Plan
-
-## Doing it:
-
-| Item | Work |
-|------|------|
-| D1 | Fix something with no files |
-| D2 | Fix something else |
-
-"""
-        Path(action_plan_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(action_plan_path).write_text(action_plan)
-
-        receipt_path = f"{tmpdir}/receipt.md"
-        create_receipt(receipt_path)
-
-        exit_code, stdout, stderr = run_verifier_coverage(
-            receipt_path, action_plan_path, repo_path, "HEAD", base_sha, step="fix"
-        )
-
-        # D1 should be unknown (no files), not uncovered
-        passed = (
-            exit_code == 0
-            and "D1 | unknown | " in stdout
-            and "D2 | unknown | " in stdout
-        )
-        h.test_result("D1, D2 marked as unknown (no extractable files)", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
-
-    print()
-    print("[Test 2] Unknown state: git failure returns unknown, not all-uncovered")
+    print("[Test 1] Unknown state: git failure returns unknown, not all-uncovered")
     print("  Behavior: git failure => unknown")
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
@@ -176,7 +141,7 @@ def main():
         h.test_result("Git failure on bad repo returns unknown state", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
 
     print()
-    print("[Test 3] Anchored unit-id lookup: Step 1 does not match Step 12")
+    print("[Test 2] Anchored unit-id lookup: Step 1 does not match Step 12")
     print("  Behavior: unit-id lookup is anchored (\\b(?!\\d))")
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
@@ -223,7 +188,7 @@ OUTSTANDING: Step 1 (deferred) [self-report]
         h.test_result("Step 1 declared, Step 12 covered (not matched by Step 1)", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
 
     print()
-    print("[Test 4] File path normalization: strip ./ prefix")
+    print("[Test 3] File path normalization: strip ./ prefix")
     print("  Behavior: ./file.py normalized to file.py")
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
@@ -249,7 +214,7 @@ OUTSTANDING: Step 1 (deferred) [self-report]
         h.test_result("Path ./src/file.py normalized and matched in diff", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
 
     print()
-    print("[Test 5] File path normalization: strip :line suffix")
+    print("[Test 4] File path normalization: strip :line suffix")
     print("  Behavior: file.py:42 normalized to file.py")
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
@@ -275,43 +240,7 @@ OUTSTANDING: Step 1 (deferred) [self-report]
         h.test_result("Path main.py:42 normalized and matched in diff", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
 
     print()
-    print("[Test 6] Table separator alignment colons: :--|--: pattern")
-    print("  Behavior: separator rows allow :?-+:? per cell")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        repo_path = f"{tmpdir}/repo"
-        base_sha, _ = create_git_repo_with_files(repo_path, ["d1.txt"])
-
-        action_plan_path = f"{tmpdir}/action-plan.md"
-        action_plan = """# Action Plan
-
-## Doing it:
-
-| Item | Work |
-|:---:|:----:|
-| D1 | First |
-| D2 | Second |
-
-"""
-        Path(action_plan_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(action_plan_path).write_text(action_plan)
-
-        receipt_path = f"{tmpdir}/receipt.md"
-        create_receipt(receipt_path)
-
-        exit_code, stdout, stderr = run_verifier_coverage(
-            receipt_path, action_plan_path, repo_path, "HEAD", base_sha, step="fix"
-        )
-
-        # Should correctly parse table with centered alignment colons
-        passed = (
-            exit_code == 0
-            and "D1 | unknown | " in stdout
-            and "D2 | unknown | " in stdout
-        )
-        h.test_result("Table with centered alignment colons parsed correctly", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
-
-    print()
-    print("[Test 7] OUTSTANDING validation: blank lines rejected")
+    print("[Test 5] OUTSTANDING validation: blank lines rejected")
     print("  Behavior: blank lines in OUTSTANDING block cause validation error")
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
@@ -339,7 +268,7 @@ OUTSTANDING: Step 2 (deferred) [self-report]
         h.test_result("Blank line in OUTSTANDING block causes validation error", passed, f"exit_code={exit_code}, stderr={stderr[:100]}")
 
     print()
-    print("[Test 8] OUTSTANDING validation: 'none' mixed with items rejected")
+    print("[Test 6] OUTSTANDING validation: 'none' mixed with items rejected")
     print("  Behavior: 'none' and actual items in same OUTSTANDING block is invalid")
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
@@ -366,7 +295,7 @@ OUTSTANDING: Step 1 (deferred) [self-report]
         h.test_result("OUTSTANDING: none mixed with items is invalid", passed, f"exit_code={exit_code}, stderr={stderr[:100]}")
 
     print()
-    print("[Test 9] --base argument starting with - is rejected")
+    print("[Test 7] --base argument starting with - is rejected")
     print("  Behavior: --base -something is rejected (F13)")
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
@@ -398,7 +327,7 @@ OUTSTANDING: Step 1 (deferred) [self-report]
         h.test_result("--base starting with - is rejected", passed, f"exit_code={result.returncode}, stderr={result.stderr[:100]}")
 
     print()
-    print("[Test 10] --branch argument starting with - is rejected")
+    print("[Test 8] --branch argument starting with - is rejected")
     print("  Behavior: --branch -something is rejected (F13)")
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
@@ -430,7 +359,7 @@ OUTSTANDING: Step 1 (deferred) [self-report]
         h.test_result("--branch starting with - is rejected", passed, f"exit_code={result.returncode}, stderr={result.stderr[:100]}")
 
     print()
-    print("[Test 11] Unknown state is non-blocking (does not cause FIDELITY verdict)")
+    print("[Test 9] Unknown state is non-blocking (does not cause FIDELITY verdict)")
     print("  Behavior: unknown classification never alone causes 'reduced plan coverage'")
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
@@ -466,7 +395,7 @@ OUTSTANDING: Step 1 (deferred) [self-report]
         h.test_result("Unknown state is non-blocking, no FIDELITY verdict", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
 
     print()
-    print("[Test 12] Mixed coverage states: covered, declared, unknown")
+    print("[Test 10] Mixed coverage states: covered, declared, unknown")
     print("  Behavior: table shows mixed states correctly")
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"

@@ -11,6 +11,7 @@ Tests the plan-coverage table feature (Step 5 and part of Step 6 of #320):
 Run with: python3 tests/test_flow_verify_receipt_coverage.py
 """
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -18,24 +19,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 
 
 def run_verifier_coverage(receipt_path: str, plan_path: str, repo: str, branch: str, base: str, step: str = "implement") -> tuple:
     """Run verifier in coverage mode and return (exit_code, stdout, stderr)."""
-    cmd = [
-        sys.executable,
-        str(VERIFIER),
-        "--step", step,
-        "--receipt", receipt_path,
-        "--coverage",
-        "--plan", plan_path,
-        "--repo", repo,
-        "--branch", branch,
-        "--base", base,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    env = dict(os.environ)
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    result = run_python(
+        [str(VERIFIER),
+         "--step", step,
+         "--receipt", receipt_path,
+         "--coverage",
+         "--plan", plan_path,
+         "--repo", repo,
+         "--branch", branch,
+         "--base", base],
+        env=env
+    )
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
