@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _test_harness import Harness, REPO_ROOT
+from _test_harness import Harness, REPO_ROOT, repo_has_merge_queue
 
 # Number of push forms in the ADR-0008 flow-bash-push-allowlist block (Forms 1-4; Form 4 has two
 # variants). Update together with that block.
@@ -33,7 +33,7 @@ SHA_A, SHA_B = "a" * 40, "b" * 40
 
 def run(guard, payload, agent):
     r = subprocess.run([sys.executable, str(guard), "--agent", agent], input=json.dumps(payload),
-                       capture_output=True, text=True, timeout=10)
+                       capture_output=True, text=True, timeout=10, cwd=str(REPO_ROOT))
     return r.returncode, r.stderr
 
 
@@ -106,7 +106,7 @@ def main():
     # Test flow-merge gh pr merge --squash: behavior depends on merge-queue config
     # If merge-queue exists (deny), if it doesn't exist (allow)
     rc, err = bash("gh pr merge 1 --squash", "flow-merge")
-    has_merge_queue = (REPO_ROOT.parent.parent / "merge-queue.json").exists()
+    has_merge_queue = repo_has_merge_queue()
     if has_merge_queue:
         h.test_result("flow-merge denies gh pr merge --squash (merge-queue exists)", rc == 2 and "gh-pr-merge-queue" in err, err.strip())
     else:

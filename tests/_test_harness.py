@@ -11,6 +11,23 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SCRIPT = REPO_ROOT / "scripts" / "run-metrics.py"
 
+
+def repo_has_merge_queue() -> bool:
+    """Whether the bash guard will see a merge-queue.json when run with cwd=REPO_ROOT.
+
+    The guard locates the config through ``git rev-parse --git-common-dir`` from its cwd, which
+    differs from a path derived from this file's location in scratch worktrees (merge-queue
+    bootstrap/verify) and other non-standard layouts. Tests must ask the same question the guard
+    asks, and run the guard with cwd=REPO_ROOT, or they flake outside the standard layout.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_flow_bash_guard_for_tests", REPO_ROOT / "scripts" / "flow-bash-guard.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return bool(mod.has_merge_queue_config(str(REPO_ROOT)))
+
 # Shared constants for slug and flag-loop tests
 SLUG_PREFIX = "SLUG=$(printf"
 FALLBACK_LINE = '[ -n "$SLUG" ] || SLUG="plan"'

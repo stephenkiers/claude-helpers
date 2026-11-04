@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _test_harness import Harness, REPO_ROOT
+from _test_harness import Harness, REPO_ROOT, repo_has_merge_queue
 
 
 BASH_GUARD = REPO_ROOT / "scripts" / "flow-bash-guard.py"
@@ -45,7 +45,8 @@ def run_guard(agent, command):
             input=json.dumps(payload),
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=60,
+            cwd=str(REPO_ROOT),
         )
         return result.returncode, result.stderr
     except subprocess.TimeoutExpired:
@@ -156,11 +157,10 @@ def main():
     print("[Test Group 3] N2: flow-merge gh pr merge behavior (merge-queue config dependent)\n")
 
     # Check if merge-queue.json exists
-    merge_queue_path = REPO_ROOT.parent.parent / "merge-queue.json"
-    has_merge_queue = merge_queue_path.exists()
+    has_merge_queue = repo_has_merge_queue()
 
     if has_merge_queue:
-        print(f"merge-queue.json found at {merge_queue_path}")
+        print("merge-queue.json found for this repo layout")
         # When merge-queue exists, flow-merge must deny gh pr merge entirely
         code, err = run_guard("flow-merge", "gh pr merge --squash")
         h.test_result(
@@ -176,7 +176,7 @@ def main():
             f"exit={code}"
         )
     else:
-        print(f"merge-queue.json NOT found at {merge_queue_path}")
+        print("merge-queue.json NOT found for this repo layout")
         # When merge-queue doesn't exist, flow-merge allows gh pr merge --squash
         code, err = run_guard("flow-merge", "gh pr merge --squash")
         h.test_result(
