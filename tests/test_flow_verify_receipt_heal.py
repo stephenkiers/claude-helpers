@@ -26,6 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python, RepoTemplate
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 SINCE = "2026-10-13T00:00:00Z"
@@ -49,6 +50,17 @@ def commit(repo, name, text, message):
     return run_git(repo, "rev-parse", "HEAD")
 
 
+def _build_heal_base(root):
+    """Build the base repo with C0 -> C1 for template."""
+    run_git(root, "init", "-q")
+    c0 = commit(root, "a.py", "x = 1\n", "base")
+    c1 = commit(root, "a.py", "import os\nx = 1\n", "implement work")
+    return c0, c1
+
+
+_HEAL_BASE = RepoTemplate(_build_heal_base)
+
+
 class World:
     """A HOME, a flow dir, and a repo with C0 -> C1 already committed."""
 
@@ -57,10 +69,8 @@ class World:
         self.flow = self.home / ".claude" / "flows" / "repo" / "12-slug-abc123"
         (self.flow / "steps").mkdir(parents=True)
         self.repo = Path(tmp) / "repo"
-        self.repo.mkdir()
-        run_git(self.repo, "init", "-q")
-        self.c0 = commit(self.repo, "a.py", "x = 1\n", "base")
-        self.c1 = commit(self.repo, "a.py", "import os\nx = 1\n", "implement work")
+        _HEAL_BASE.copy(self.repo)
+        self.c0, self.c1 = _HEAL_BASE.meta
         self.write_state()
 
     def write_state(self, gate_passed=False, healed=None):
@@ -83,11 +93,19 @@ class World:
         return commit(self.repo, filename, text, message)
 
     def run(self, step, receipt, extra=()):
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        env["HOME"] = str(self.home)
+        env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+        result = run_python([str(VERIFIER), "--step", step, "--receipt", str(receipt), "--since", SINCE,
+                             "--flow-dir", str(self.flow), "--repo", str(self.repo), "--branch", "HEAD", *extra], env=env)
+        return result.returncode, (result.stdout + result.stderr).strip()
+
+    def run_e2e(self, step, receipt, extra=()):
+        """End-to-end subprocess call for CLI coverage."""
         cmd = [sys.executable, str(VERIFIER), "--step", step, "--receipt", str(receipt), "--since", SINCE,
                "--flow-dir", str(self.flow), "--repo", str(self.repo), "--branch", "HEAD", *extra]
-        env = os.environ.copy()
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
         env["HOME"] = str(self.home)
-        env.pop("CLAUDE_CODE_SESSION_ID", None)
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         return result.returncode, (result.stdout + result.stderr).strip()
 
@@ -174,7 +192,7 @@ def test_check_heals(h):
     print("[Section 1] --step heal: source=check")
     with tempfile.TemporaryDirectory() as tmp:
         w, record, receipt, _ = build_check_world(tmp)
-        rc, out = w.run("heal", record)
+        rc, out = w.run_e2e("heal", record)
         results(h, "converged check heal, one Flow-Heal commit, healer receipt present", rc, out, True)
         rc, out = w.run("verify", receipt)
         results(h, "verify after the heal: HEALED + CHECK_SHA == sha_after", rc, out, True)

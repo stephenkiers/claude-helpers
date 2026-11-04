@@ -28,6 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python, RepoTemplate
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 SINCE = "2026-10-13T00:00:00Z"
@@ -39,20 +40,30 @@ def git(repo: str, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _build_check_gate_repo(root):
+    """Build base repo with initial and feature commits for template."""
+    git_obj = git
+    git_obj(str(root), "init", "-q")
+    Path(f"{root}/initial.txt").write_text("initial\n")
+    git_obj(str(root), "add", "initial.txt")
+    git_obj(str(root), "commit", "-q", "-m", "initial")
+    base_sha = git_obj(str(root), "rev-parse", "HEAD")
+    Path(f"{root}/feature.txt").write_text("feature\n")
+    git_obj(str(root), "add", "feature.txt")
+    git_obj(str(root), "commit", "-q", "-m", "add feature")
+    head_sha = git_obj(str(root), "rev-parse", "HEAD")
+    return base_sha, head_sha
+
+
+_CHECK_GATE_REPO = RepoTemplate(_build_check_gate_repo)
+
+
 def make_repo(root: str) -> tuple:
     """A git repo with an initial commit and one feature commit. Returns (repo, base_sha, head_sha)."""
-    repo = f"{root}/repo"
-    Path(repo).mkdir(parents=True)
-    git(repo, "init", "-q")
-    Path(f"{repo}/initial.txt").write_text("initial\n")
-    git(repo, "add", "initial.txt")
-    git(repo, "commit", "-q", "-m", "initial")
-    base_sha = git(repo, "rev-parse", "HEAD")
-    Path(f"{repo}/feature.txt").write_text("feature\n")
-    git(repo, "add", "feature.txt")
-    git(repo, "commit", "-q", "-m", "add feature")
-    head_sha = git(repo, "rev-parse", "HEAD")
-    return repo, base_sha, head_sha
+    repo_path = Path(root) / "repo"
+    _CHECK_GATE_REPO.copy(repo_path)
+    base_sha, head_sha = _CHECK_GATE_REPO.meta
+    return str(repo_path), base_sha, head_sha
 
 
 def write_cache(repo: str, command: str = "just check") -> None:
@@ -79,6 +90,26 @@ def receipt_text(check_block: str) -> str:
 
 def run_verify(receipt_path: str, repo: str, base_sha: str, home: str, main_worktree=None) -> tuple:
     cmd = [
+        str(VERIFIER),
+        "--step", "implement",
+        "--receipt", receipt_path,
+        "--since", SINCE,
+        "--repo", repo,
+        "--branch", "HEAD",
+        "--base", base_sha,
+    ]
+    if main_worktree is not None:
+        cmd.extend(["--main-worktree", main_worktree])
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+    env["HOME"] = home
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    result = run_python(cmd, env=env)
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def run_verify_e2e(receipt_path: str, repo: str, base_sha: str, home: str, main_worktree=None) -> tuple:
+    """End-to-end subprocess call for CLI coverage."""
+    cmd = [
         sys.executable, str(VERIFIER),
         "--step", "implement",
         "--receipt", receipt_path,
@@ -89,7 +120,7 @@ def run_verify(receipt_path: str, repo: str, base_sha: str, home: str, main_work
     ]
     if main_worktree is not None:
         cmd.extend(["--main-worktree", main_worktree])
-    env = os.environ.copy()
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
     env["HOME"] = home
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     return result.returncode, result.stdout.strip(), result.stderr.strip()
@@ -114,7 +145,7 @@ if __name__ == "__main__":
         receipt = write_receipt(home, "ROUND 1\nBuild/type-check: pass (ruff, doc tests)\n"
                                       "SPLIT_BASIS: parallel\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\nUNITS: 1\n"
                                       "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
-        exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
+        exit_code, stdout, stderr = run_verify_e2e(receipt, repo, base_sha, home)
         test_result(
             "#293 repro: prose 'pass' with no CHECK lines is rejected (exit 1)",
             exit_code == 1,

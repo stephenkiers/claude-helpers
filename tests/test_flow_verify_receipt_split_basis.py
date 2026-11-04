@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python, RepoTemplate
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 SINCE = "2026-10-13T00:00:00Z"
@@ -28,19 +29,30 @@ def git(repo, *args):
     return result.stdout.strip()
 
 
+def _build_split_basis_repo(root):
+    """Build base repo with initial and feature commits for template."""
+    git_obj = git
+    git_obj(str(root), "init", "-q")
+    Path(f"{root}/initial.txt").write_text("initial\n")
+    git_obj(str(root), "add", "initial.txt")
+    git_obj(str(root), "commit", "-q", "-m", "initial")
+    base_sha = git_obj(str(root), "rev-parse", "HEAD")
+    Path(f"{root}/feature.txt").write_text("feature\n")
+    git_obj(str(root), "add", "feature.txt")
+    git_obj(str(root), "commit", "-q", "-m", "add feature")
+    head_sha = git_obj(str(root), "rev-parse", "HEAD")
+    return base_sha, head_sha
+
+
+_SPLIT_BASIS_REPO = RepoTemplate(_build_split_basis_repo)
+
+
 def make_repo(root):
     """Repo with a base commit and one feature commit. Returns (repo, base_sha, head_sha)."""
-    repo = f"{root}/repo"
-    Path(repo).mkdir(parents=True)
-    git(repo, "init", "-q")
-    Path(f"{repo}/initial.txt").write_text("initial\n")
-    git(repo, "add", "initial.txt")
-    git(repo, "commit", "-q", "-m", "initial")
-    base_sha = git(repo, "rev-parse", "HEAD")
-    Path(f"{repo}/feature.txt").write_text("feature\n")
-    git(repo, "add", "feature.txt")
-    git(repo, "commit", "-q", "-m", "add feature")
-    return repo, base_sha, git(repo, "rev-parse", "HEAD")
+    repo_path = Path(root) / "repo"
+    _SPLIT_BASIS_REPO.copy(repo_path)
+    base_sha, head_sha = _SPLIT_BASIS_REPO.meta
+    return str(repo_path), base_sha, head_sha
 
 
 def write_cache(repo):
@@ -64,7 +76,20 @@ def receipt(head_sha, split_line, min_units="1", units="1"):
 def verify(home, repo, base_sha, text):
     path = f"{home}/receipt.md"
     Path(path).write_text(text)
-    env = os.environ.copy()
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+    env["HOME"] = home
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    cmd = [str(VERIFIER), "--step", "implement", "--receipt", path, "--since", SINCE,
+           "--repo", repo, "--branch", "HEAD", "--base", base_sha]
+    result = run_python(cmd, env=env)
+    return result.returncode, (result.stdout + result.stderr)
+
+
+def verify_e2e(home, repo, base_sha, text):
+    """End-to-end subprocess call for CLI coverage."""
+    path = f"{home}/receipt.md"
+    Path(path).write_text(text)
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
     env["HOME"] = home
     cmd = [sys.executable, str(VERIFIER), "--step", "implement", "--receipt", path, "--since", SINCE,
            "--repo", repo, "--branch", "HEAD", "--base", base_sha]
@@ -79,7 +104,7 @@ def main():
         write_cache(repo)
 
         print("[SPLIT_BASIS] the single basis requires a reason")
-        rc, out = verify(tmp, repo, base_sha, receipt(head_sha, "SPLIT_BASIS: parallel"))
+        rc, out = verify_e2e(tmp, repo, base_sha, receipt(head_sha, "SPLIT_BASIS: parallel"))
         h.test_result("control: SPLIT_BASIS: parallel is accepted", rc == 0 and "ARTIFACTS: ok" in out, f"rc={rc} out={out[:300]!r}")
 
         rc, out = verify(tmp, repo, base_sha, receipt(head_sha, "SPLIT_BASIS: single(coupled files)"))
