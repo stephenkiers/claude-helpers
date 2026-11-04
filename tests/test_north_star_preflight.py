@@ -184,6 +184,12 @@ def section_files(h, t):
           (rc, out) == (0, "BLIND snapshot-script gh-auth"), "%s %s" % (rc, out))
 
 
+def snapshot_state(directory):
+    """Bytes and mtime of every regular file in a directory, for before/after comparison."""
+    return {p.name: (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in directory.iterdir() if p.is_file()}
+
+
 def section_snapshot(h, t):
     print("\n[Section 2] snapshot phase")
 
@@ -221,6 +227,13 @@ def section_snapshot(h, t):
     with tempfile.TemporaryDirectory() as tmp:
         rc, out, _ = snap(mk(tmp, md="# x\n", bodies=""))
         t("snapshot: empty issue bodies is a notice", (rc, out) == (0, "BLIND snapshot-partial=issue-bodies"), out)
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = mk(tmp, md="# In-flight\n", err="issues: timeout\n")
+        before = snapshot_state(session_dir)
+        rc, out, err = snap(session_dir)
+        after = snapshot_state(session_dir)
+        t("snapshot phase: does not create or modify files (names, bytes, mtimes)", before == after,
+          "Files changed: before=%s, after=%s" % (sorted(before), sorted(after)))
 
 
 def section_blind_line(h, t):
@@ -261,6 +274,14 @@ def section_blind_line(h, t):
         t("blind-line --nick-file: no blind line from Nick prints nothing", (rc, out) == (0, ""), out)
         rc, out, _ = blind(Path(tmp) / "missing", "--nick-file", str(Path(tmp) / "absent.md"))
         t("blind-line --nick-file: missing file prints nothing", (rc, out) == (0, ""), out)
+        at_cap = "x" * 200
+        over_cap = "x" * 201
+        rc1, out1, _ = blind(Path(tmp) / "missing", "nick=" + at_cap)
+        rc2, out2, _ = blind(Path(tmp) / "missing", "nick=" + over_cap)
+        t("blind-line: nick text of 200 chars is kept, 201 chars collapses to nick=unparseable",
+          (rc1 == 0 and out1 == "NORTH STAR BLIND: nick=" + at_cap
+           and rc2 == 0 and out2 == "NORTH STAR BLIND: nick=unparseable"),
+          "at_cap_out_len=%s, over_cap_out=%r" % (len(out1), out2))
 
 
 def section_exit_table(h, t):
