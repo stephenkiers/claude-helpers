@@ -21,7 +21,10 @@ from _test_harness import Harness, REPO_ROOT
 
 
 def run_guard_script(script_path, agent, payload_dict):
-    """Run a guard script with JSON payload and return (exit_code, stderr)."""
+    """Run a guard script with JSON payload and return (exit_code, stderr).
+
+    On timeout or crash, returns (None, stderr) to distinguish from deny (exit 2).
+    """
     try:
         result = subprocess.run(
             ["python3", str(script_path), "--agent", agent],
@@ -32,9 +35,9 @@ def run_guard_script(script_path, agent, payload_dict):
         )
         return result.returncode, result.stderr
     except subprocess.TimeoutExpired:
-        return 2, "Timeout"
+        return None, "Timeout"
     except Exception as e:
-        return 2, str(e)
+        return None, str(e)
 
 
 def main():
@@ -59,14 +62,16 @@ def main():
         ("gh issue comment --body test", "gh issue comment", True),
         ("gh issue close", "gh issue close", True),
         ("python3 -c \"import subprocess; subprocess.run(['git', 'push'])\"", "python3 -c with git push", True),
-        # Note: gh api -X POST and --method PATCH may not be denied by flow-plan if they don't appear
-        # in /expert-plan's corpus (per Step 5 corpus filtering). These remain as best-effort.
-        ("gh api -X POST /repos/owner/repo", "gh api -X POST (best-effort)", False),
-        ("gh api --method PATCH /repos/owner/repo", "gh api --method PATCH (best-effort)", False),
+        ("gh api -X POST /repos/owner/repo", "gh api -X POST", True),
+        ("gh api --method PATCH /repos/owner/repo", "gh api --method PATCH", True),
+        ("gh api -f key=value /repos/owner/repo", "gh api -f (body flag)", True),
+        ("gh api -F key=value /repos/owner/repo", "gh api -F (body flag)", True),
+        ("gh api --field key=value /repos/owner/repo", "gh api --field", True),
+        ("gh api --input stdin /repos/owner/repo", "gh api --input", True),
     ]
 
     for command, desc, should_deny in deny_forms:
-        code, _ = run_guard_script(flow_bash_guard, "flow-plan", {
+        code, stderr = run_guard_script(flow_bash_guard, "flow-plan", {
             "tool_name": "Bash",
             "tool_input": {"command": command}
         })
@@ -76,9 +81,9 @@ def main():
                 code == 2,
                 f"Expected 2, got {code}"
             )
-        else:
-            # Best-effort items: document actual behavior rather than enforcing
-            print(f"  [best-effort] '{desc}' -> {code}")
+            # Assert deny message appears in stderr for clarity
+            if code == 2 and stderr:
+                print(f"    (deny reason: {stderr.strip()})")
 
     print()
     print("[Test 2] flow-plan allows legitimate git/gh commands\n")
@@ -107,17 +112,18 @@ def main():
         )
 
     print()
-    print("[Test 3] Known bypass: obfuscated verb is allowed (residual)\n")
+    print("[Test 3] Known bypass: obfuscated verb is allowed (documented residual)\n")
 
-    # Q1 = B decision: the known bypass of using string concatenation to hide the verb
-    # should be allowed (and is documented as a residual)
+    # Documented residual: the known bypass of using string concatenation to hide the verb
+    # cannot be caught by this guard and is documented as a safe fallback assumption
+    # (python3 -c with arbitrary code is already a known bypass per ADR-0008).
     bypass_code, _ = run_guard_script(flow_bash_guard, "flow-plan", {
         "tool_name": "Bash",
         "tool_input": {"command": "python3 -c \"subprocess.run(['g'+'it','push'])\""}
     })
 
     h.test_result(
-        "flow-plan allows known bypass (g+'it'+'push' obfuscation)",
+        "flow-plan allows known bypass (g+'it'+'push' obfuscation, documented residual)",
         bypass_code == 0,
         f"Expected 0 (known bypass allowed), got {bypass_code}"
     )
@@ -152,6 +158,48 @@ def main():
     )
 
     # Note: ticket-title.txt is a file path, not a command, so no command test needed
+
+    print()
+    print("[Test 6] flow-plan heredoc quote-blind fallback: allowed when no publishing verb\n")
+
+    # Regression test: heredoc with apostrophe triggers quote-blind fallback
+    # This should be allowed when no publishing verb is present
+    heredoc_safe_code, _ = run_guard_script(flow_bash_guard, "flow-plan", {
+        "tool_name": "Bash",
+        "tool_input": {"command": "cat <<'EOF'\nThis is a heredoc with an apostrophe's content\nEOF\n"}
+    })
+    h.test_result(
+        "flow-plan allows heredoc with apostrophe when no publishing verb",
+        heredoc_safe_code == 0,
+        f"Expected 0, got {heredoc_safe_code}"
+    )
+
+    # But deny if heredoc contains a publishing verb
+    heredoc_deny_code, _ = run_guard_script(flow_bash_guard, "flow-plan", {
+        "tool_name": "Bash",
+        "tool_input": {"command": "cat <<'EOF'\ngit push origin main\nEOF\n"}
+    })
+    h.test_result(
+        "flow-plan denies heredoc containing git push (quote-blind scan)",
+        heredoc_deny_code == 2,
+        f"Expected 2, got {heredoc_deny_code}"
+    )
+
+    print()
+    print("[Test 7] flow-plan nesting limit denial\n")
+
+    # Nesting deeper than MAX_NESTING should be denied (always, all agents)
+    # Create a deeply nested command: $( ... $(
+    deep_nesting = "$( " * 70 + "git log" + " )" * 70
+    nesting_code, _ = run_guard_script(flow_bash_guard, "flow-plan", {
+        "tool_name": "Bash",
+        "tool_input": {"command": deep_nesting}
+    })
+    h.test_result(
+        "flow-plan denies nesting deeper than MAX_NESTING",
+        nesting_code == 2,
+        f"Expected 2, got {nesting_code}"
+    )
 
     print()
 
