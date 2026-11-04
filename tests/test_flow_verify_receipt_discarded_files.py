@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import REPO_ROOT, Harness
+from _inproc import run_python
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 
@@ -114,7 +115,7 @@ class ImplementFixture:
 
 def run_verifier(fx, step="implement", receipt=None, **kwargs):
     """Run verifier. Returns (exit_code, stdout, stderr)."""
-    args = [sys.executable, str(VERIFIER), "--step", step]
+    args = [str(VERIFIER), "--step", step]
     if receipt:
         args += ["--receipt", str(receipt)]
     else:
@@ -130,8 +131,8 @@ def run_verifier(fx, step="implement", receipt=None, **kwargs):
             arg_name = key.replace("_", "-")
             args.extend([f"--{arg_name}", str(val)])
 
-    env = {**os.environ, "HOME": str(fx.home)}
-    result = subprocess.run(args, capture_output=True, text=True, env=env)
+    env = {**os.environ, "HOME": str(fx.home), "FLOW_VERIFY_GIT_TIMEOUT_SECS": "60"}
+    result = run_python(args, env=env)
     return result.returncode, result.stdout, result.stderr
 
 

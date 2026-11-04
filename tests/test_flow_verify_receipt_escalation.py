@@ -8,6 +8,7 @@ Tests verify the new --escalation flag and its seven-condition bounded path,
 Run with: python3 tests/test_flow_verify_receipt_escalation.py
 """
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+from _inproc import run_python
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 
@@ -32,21 +34,22 @@ def create_git_repo(repo_path: str) -> None:
 
 def run_verifier(step: str, receipt_path: str, escalation: bool = True, **kwargs) -> tuple:
     """Run the verifier in escalation mode (or expect-model mode) and return (exit_code, stdout, stderr)."""
-    cmd = [
-        sys.executable,
+    args = [
         str(VERIFIER),
         "--step", step,
         "--receipt", receipt_path,
     ]
     if escalation:
-        cmd.append("--escalation")
+        args.append("--escalation")
 
     for key, value in kwargs.items():
         if value is not None:
             arg_name = key.replace("_", "-")
-            cmd.extend([f"--{arg_name}", str(value)])
+            args.extend([f"--{arg_name}", str(value)])
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    env = os.environ.copy()
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    result = run_python(args, env=env)
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
