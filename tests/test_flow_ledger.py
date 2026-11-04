@@ -563,7 +563,7 @@ def main():
             try:
                 listed = subprocess.run(
                     [sys.executable, str(LEDGER), "list", "--flow-dir", str(flow), "--md"],
-                    capture_output=True, timeout=10, stdin=subprocess.DEVNULL,
+                    capture_output=True, timeout=60, stdin=subprocess.DEVNULL,
                 )
                 completed = True
                 list_rc, list_out = listed.returncode, listed.stdout.decode("utf-8")

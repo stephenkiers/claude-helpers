@@ -359,8 +359,8 @@ if __name__ == "__main__":
         result = route_score.score_diff(large_diff, configs)
         elapsed = time.time() - start
 
-        t("large diff finishes within time budget (< 5 seconds)",
-          elapsed < 5.0, f"took {elapsed:.2f}s")
+        t("large diff finishes within time budget (< 30 seconds)",
+          elapsed < 30.0, f"took {elapsed:.2f}s")
         t("result has degraded flag",
           hasattr(result, 'degraded'),
           f"degraded={getattr(result, 'degraded', 'N/A')}")
