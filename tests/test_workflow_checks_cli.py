@@ -369,6 +369,11 @@ if __name__ == "__main__":
 
     from workflow.checks import TIMEOUT_ERROR_PREFIX
 
+    # A non-git cwd has no tree, so `checks run` executes every time and never reads or writes a record
+    # under the real worktree's .claude/check-records (which would turn a rerun into a cache hit).
+    import tempfile
+    _NON_REPO_CWD = tempfile.mkdtemp(prefix="checks-run-nonrepo-")
+
     def run_cli_cache(cache, cwd=None, env_extra=None):
         import os
         env = {k: v for k, v in os.environ.items() if k != "SHIPIT_CHECK_TIMEOUT_SECS"}
@@ -377,7 +382,7 @@ if __name__ == "__main__":
         return subprocess.run(
             [sys.executable, "-m", "scripts.workflow.cli", "checks", "run", "-"],
             input=json.dumps(cache), capture_output=True, text=True,
-            cwd=cwd or Path(__file__).parent.parent, env=env,
+            cwd=cwd or _NON_REPO_CWD, env=env,
         )
 
     proc = run_cli_cache({"commands": {"check": "exit 0"}, "checkTimeoutSecs": 5})
