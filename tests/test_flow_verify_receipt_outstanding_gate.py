@@ -9,13 +9,15 @@ path, and the legacy (pre-amendment) marker path. Every case runs the real scrip
 Run with: python3 tests/test_flow_verify_receipt_outstanding_gate.py
 """
 
+import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _test_harness import Harness  # noqa: E402
+from _test_harness import Harness, REPO_ROOT  # noqa: E402
 from _assess_fixtures import (  # noqa: E402
     BASE_IMPL, DECISION_OPTIONS, DROP_REASON, ISSUE_URL, S3, S4, S5, TS,
     assess_check, assess_line, disp, gate, make_flow, make_home, write_answers, write_assess, write_marker,
@@ -23,6 +25,7 @@ from _assess_fixtures import (  # noqa: E402
 
 # Assessor option labels must not equal the fixed choice labels (rule 6), so the shared fixture labels are used.
 OPTS = DECISION_OPTIONS
+SCRIPT = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
 
 
 def combined(out, err):
@@ -50,6 +53,81 @@ def legacy_flow(td, log=None):
     flow = make_flow(td, implement=BASE_IMPL, log=log)
     (flow / "steps" / "08-ship.md").write_text("Shipped\n<!-- step-end -->\n")
     return home, flow
+
+
+FIX_D1 = "fix:D1"
+FIX_EVIDENCE = "05-fix.evidence.json"
+FIX_COVERAGE = "05-fix.coverage.txt"
+
+
+def _coverage_sha(flow):
+    return hashlib.sha256((flow / "steps" / FIX_COVERAGE).read_bytes()).hexdigest()
+
+
+def good_fix_artifact(flow, *, sha=None, rows=None):
+    """A bound, available fix evidence artifact whose D1 range overlaps the hunk and whose anchor is on the row file."""
+    return {
+        "format": 1,
+        "available": True,
+        "base": "base_sha",
+        "tip": "tip_sha",
+        "changed_files": ["scripts/workflow/deps.py"],
+        "hunks": {"scripts/workflow/deps.py": [[416, 5]]},
+        "base_line_counts": {"scripts/workflow/deps.py": 536},
+        "tip_line_counts": {"scripts/workflow/deps.py": 541},
+        "commits": ["abc1234def5678"],
+        "commit_paths": {"abc1234def5678": ["scripts/workflow/deps.py"]},
+        "rows": rows if rows is not None else {
+            FIX_D1: [{"path": "scripts/workflow/deps.py", "start": 416, "end": 435}],
+        },
+        "coverage_sha256": sha if sha is not None else _coverage_sha(flow),
+    }
+
+
+def write_fix_artifact(flow, data):
+    (flow / "steps" / FIX_EVIDENCE).write_text(json.dumps(data), encoding="utf-8")
+
+
+def fix_finished_flow(td):
+    """A fix:D1 unknown row, assessor-verified finished with a good bound artifact on disk. Variants mutate it."""
+    home = make_home(td)
+    flow = make_flow(td, implement={"outstanding": [], "rows": ["Step 1 | covered | in diff"]},
+                     fix={"rows": ["D1 | unknown | shared file"]},
+                     log=[f"{TS} implement ok", f"{TS} fix ok"])
+    write_assess(flow, [assess_line(FIX_D1, status="already-done", evidence="scripts/workflow/deps.py:420")])
+    write_marker(flow, [disp(FIX_D1, "finished", by="assessor-verified", answer_ref="none")])
+    write_fix_artifact(flow, good_fix_artifact(flow))
+    return home, flow
+
+
+FIX_FINISHED_VARIANTS = [
+    ("passes with a bound overlapping artifact", True, lambda flow: None),
+    ("with no artifact fails", False, lambda flow: (flow / "steps" / FIX_EVIDENCE).unlink()),
+    ("with available false fails", False,
+     lambda flow: write_fix_artifact(flow, {"format": 1, "available": False, "reason": "git failure"})),
+    ("with a coverage sha mismatch fails", False,
+     lambda flow: write_fix_artifact(flow, good_fix_artifact(flow, sha=hashlib.sha256(b"other table").hexdigest()))),
+    ("with no range overlap fails", False,
+     lambda flow: write_fix_artifact(flow, good_fix_artifact(
+         flow, rows={FIX_D1: [{"path": "scripts/workflow/deps.py", "start": 200, "end": 210}]}))),
+]
+
+
+def run_match(receipt, item_id):
+    """Run --match-outstanding-issue with an empty issue list and limit 5; returns the CompletedProcess."""
+    args = [sys.executable, str(SCRIPT), "--step", "fix", "--receipt", str(receipt),
+            "--match-outstanding-issue", "--flow-id", "F1", "--item-id", item_id, "--limit", "5"]
+    return subprocess.run(args, input="[]", capture_output=True, text=True)
+
+
+MATCH_GRAMMAR_CASES = [
+    ("with a DEL control character", "fix:D\x7f1", 2),
+    ("with a U+200B zero-width space", "fix:D​1", 2),
+    ("with a U+0085 control character", "fix:D\u00851", 2),
+    ("with a 200-character unit", "fix:" + "D" * 200, 0),
+    ("with a 201-character unit", "fix:" + "D" * 201, 2),
+    ("with an empty unit", "fix:", 2),
+]
 
 
 def main():
@@ -562,6 +640,33 @@ def main():
         rc2, out2, err2 = assess_check(flow, home)
         h.test_result("the same bad assess receipt also fails the --step assess check", rc2 != 0,
                       f"rc={rc2} out:\n{out2}\nerr:\n{err2}")
+
+    print()
+    print("[Gate: finished fix:D1 needs a bound, overlapping evidence artifact (D14)]")
+
+    F1 = "fix:D1"
+    for label, expect_pass, mutate in FIX_FINISHED_VARIANTS:
+        with tempfile.TemporaryDirectory() as td:
+            home, flow = fix_finished_flow(td)
+            mutate(flow)
+            rc, out, err = gate(flow, home)
+            text = combined(out, err)
+            if expect_pass:
+                ok = rc == 0
+            else:
+                ok = rc != 0 and F1 in text
+            h.test_result(f"finished fix:D1 {label}", ok, f"rc={rc} out:\n{out}\nerr:\n{err}")
+
+    print()
+    print("[Matcher: outstanding item-id grammar boundaries (D13)]")
+
+    with tempfile.TemporaryDirectory() as td:
+        receipt = Path(td) / "receipt.md"
+        receipt.write_text("", encoding="utf-8")
+        for label, item_id, want in MATCH_GRAMMAR_CASES:
+            proc = run_match(receipt, item_id)
+            h.test_result(f"match item-id {label} exits {want}", proc.returncode == want,
+                          f"rc={proc.returncode} stderr={proc.stderr!r}")
 
     h.summarize_and_exit()
 

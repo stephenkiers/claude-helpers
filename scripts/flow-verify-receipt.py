@@ -74,6 +74,10 @@ def _env_secs(name: str, default: int) -> int:
 # Tests raise this under load (FLOW_VERIFY_GIT_TIMEOUT_SECS); the default is unchanged.
 GIT_TIMEOUT_SECS = _env_secs("FLOW_VERIFY_GIT_TIMEOUT_SECS", 10)
 
+# Range overlap slack for fix-mode coverage assessment (#435). Row ranges and new-side hunk ranges are
+# compared inclusively, with this many lines of slack on each side.
+RANGE_OVERLAP_SLACK = 3
+
 # Implement/fix check outcome (#338): the receipt's CHECK value for an explicit opt-out. The resolver
 # source that must back it is OPT_OUT_SOURCE, imported from scripts/workflow/checks.py in the gate.
 CHECK_OPTED_OUT = "opted-out"
@@ -181,6 +185,23 @@ class LedgerRecord(NamedTuple):
     text: str
     # Optional fields
     supersedes: Optional[int]  # For "correction" kind
+
+
+class StructuredFileToken(NamedTuple):
+    """One path token of a Doing-it File cell, after range, `./` and duplicate handling.
+
+    token: the path text as written, without its line range (diagnostics)
+    status: "resolved" (resolved_path is set), "ambiguous" (candidates lists the matches; resolved_path is
+            None), or "raw" (an unmatched `/` token kept for uncovered detection; resolved_path is None)
+    resolved_path: the canonical changed path when status is "resolved", else None
+    candidates: the sorted matching changed paths when status is "ambiguous", else ()
+    line_range: (start, end), or None when the token has no valid line suffix
+    """
+    token: str
+    status: Literal["resolved", "ambiguous", "raw"]
+    resolved_path: Optional[str]
+    candidates: Tuple[str, ...]
+    line_range: Optional[Tuple[int, int]]
 
 
 class AddressedLine:
@@ -3400,77 +3421,222 @@ def _enumerate_doing_it_items(action_plan_text: str) -> List[str]:
     return [row.unit_id for row in _parse_doing_it_rows(action_plan_text)]
 
 
-def _doing_it_path_tokens(file_cell: str, changed_files: Set[str]) -> List[str]:
-    """Path tokens of one Doing-it File cell that survive string-only extraction (D4).
+def _resolve_file_token(token: str, changed_files: Set[str]) -> Tuple[Literal["resolved", "ambiguous", "none"], Optional[str], List[str]]:
+    """Resolve a file token to a canonical changed path.
 
-    The cell is split on `;` and `,`. Each token drops backticks, a `:...` line suffix, `~` and
-    surrounding whitespace. A token containing `/` is kept as a candidate path, to be compared exactly
-    against the diff. A token without `/` is kept only when it exactly equals a changed file name (for
-    example `CLAUDE.md`). Line fragments such as `1758-1777` and unresolved basenames are dropped. There is
-    no prefix, suffix, directory or glob matching and no filesystem access. Leading `./` is stripped
-    (repeatedly, but not `../`).
+    Returns (status, resolved_path, candidates):
+    - status: "resolved" (one match), "ambiguous" (multiple matches), or "none" (no match)
+    - resolved_path: the canonical path when status is "resolved", else None
+    - candidates: all matching paths (for diagnostics)
+
+    A token containing `/` resolves by exact match first. Otherwise (and for every bare token), the
+    candidates are the changed paths p with p == token or p.endswith("/" + token) (whole components
+    only, so deps.py never matches xdeps.py). A bare token is never resolved by exact-match
+    precedence: deps.py with changed {deps.py, scripts/workflow/deps.py} is ambiguous, not the root file.
+    Tokens with `*`, `?`, `[`, containing `..`, starting with `/`, or ending with `/` never resolve.
     """
-    tokens: List[str] = []
+    # Never resolve glob or suspicious tokens
+    if "*" in token or "?" in token or "[" in token or ".." in token or token.startswith("/") or token.endswith("/"):
+        return ("none", None, [])
+
+    candidates: List[str] = []
+
+    if "/" in token:
+        # Exact match first (path-qualified tokens only)
+        if token in changed_files:
+            return ("resolved", token, [token])
+        for path in changed_files:
+            if path.endswith("/" + token):
+                candidates.append(path)
+    else:
+        # Bare token: every changed path whose final component is the token is a candidate
+        for path in changed_files:
+            if path == token or path.endswith("/" + token):
+                candidates.append(path)
+
+    if len(candidates) == 1:
+        return ("resolved", candidates[0], candidates)
+    elif len(candidates) > 1:
+        return ("ambiguous", None, candidates)
+    else:
+        return ("none", None, [])
+
+
+LINE_NUMBER_RE = re.compile(r"[0-9]{1,9}")
+
+
+def _parse_line_range(range_part: str) -> Optional[Tuple[int, int]]:
+    """Parse a `N` or `N-M` line range (ASCII digits, at most 9 per number).
+
+    Returns (start, end), or None when the text is not a range. Line 0, inverted ranges (start > end)
+    and anything that is not two ASCII digit strings count as no range; nothing here raises.
+    """
+    if "-" in range_part:
+        start_text, _, end_text = range_part.partition("-")
+    else:
+        start_text = end_text = range_part
+    if not (LINE_NUMBER_RE.fullmatch(start_text) and LINE_NUMBER_RE.fullmatch(end_text)):
+        return None
+    start, end = int(start_text), int(end_text)
+    if start < 1 or end < start:
+        return None
+    return (start, end)
+
+
+def _doing_it_path_tokens(file_cell: str, changed_files: Set[str]) -> List[StructuredFileToken]:
+    """Path tokens of one Doing-it File cell with parsed line ranges and resolution status.
+
+    The cell is split on `;` and `,`. Each token:
+    - Drops backticks and `~`
+    - Extracts the line range from `:N` or `:N-M` suffix (anything else means no range)
+    - Strips surrounding whitespace
+    - Is resolved via _resolve_file_token() (exact match, then whole-component suffix match)
+    - If the token has `/` and doesn't match: keeps it as a raw candidate for uncovered detection
+    - If it has no `/` and doesn't match: is dropped (as today)
+    - Returns a StructuredFileToken with resolved path, line range, and ambiguity flag
+
+    Leading `./` is stripped (repeatedly, but not `../`). No filesystem access. Duplicates (same token and
+    line range) are dropped.
+    """
+    seen: Set[Tuple[str, Optional[Tuple[int, int]]]] = set()
+    tokens: List[StructuredFileToken] = []
+
     for raw in re.split(r"[;,]", file_cell):
-        token = raw.replace("`", "").strip()
-        token = token.split(":", 1)[0].strip()
-        token = token.replace("~", "").strip()
+        raw_token = raw.replace("`", "").strip()
+        raw_token = raw_token.replace("~", "").strip()
+
+        # Extract line range from :N or :N-M suffix
+        line_range: Optional[Tuple[int, int]] = None
+        if ":" in raw_token:
+            token_part, range_part = raw_token.split(":", 1)
+            token_part = token_part.strip()
+            line_range = _parse_line_range(range_part.strip())
+        else:
+            token_part = raw_token
+
+        token = token_part.strip()
+
         # Strip leading ./ (repeatedly, but not ../)
         while token.startswith("./"):
             token = token[2:]
-        if not token or token in tokens:
+
+        # Skip empty tokens; a duplicate is the same (token, line range) pair, so one path can carry two ranges
+        if not token or (token, line_range) in seen:
             continue
-        if "/" in token or token in changed_files:
-            tokens.append(token)
+        seen.add((token, line_range))
+
+        status, resolved_path, candidates = _resolve_file_token(token, changed_files)
+
+        if status == "resolved":
+            tokens.append(StructuredFileToken(token, "resolved", resolved_path, (), line_range))
+        elif status == "ambiguous":
+            tokens.append(StructuredFileToken(token, "ambiguous", None, tuple(sorted(candidates)), line_range))
+        elif "/" in token:
+            # No match: keep the raw token if it has `/` (for uncovered detection)
+            tokens.append(StructuredFileToken(token, "raw", None, (), line_range))
+        # else: drop bare token with zero matches
+
     return tokens
 
 
-def _classify_doing_it_rows(rows: List[DoingItRow], changed_files: Set[str]) -> Dict[str, CoverageClassification]:
+def _classify_doing_it_rows(
+    rows: List[DoingItRow], changed_files: Set[str], tip_line_counts: Optional[Dict[str, int]] = None
+) -> Dict[str, CoverageClassification]:
     """Classify Doing-it rows for fix-mode coverage: unit id -> CoverageClassification.
 
-    Each surviving path token is mapped to the set of rows that name it. Then, per row:
+    Structured tokens are resolved via _resolve_file_token(), then keyed on their resolved path
+    (or raw candidate if it has `/` and no match). Per row:
     - no File header: unknown, "no extractable evidence (File header missing)";
     - empty cell or fragments only: unknown, "no extractable evidence (no files in table row)";
+    - ambiguous token: unknown, "ambiguous basename: multiple changed files match";
+    - range past end of file (when tip_line_counts provided, tip being the file the range cites):
+      unknown, "range ... past end of <path>";
     - no surviving path is in the diff: uncovered;
-    - at least one in-diff path is named by no other row: covered;
-    - otherwise every in-diff path is shared with another row: unknown, `file shared with D<k>, ...`.
-    A shared file never credits a row that does not own it (Q3 B).
+    - at least one sole-owner in-diff resolved path, with valid range: covered;
+    - otherwise: unknown (shared file, no range, etc.).
+
+    Owners are keyed on the resolved path, so deps.py and scripts/workflow/deps.py count as one file.
     """
-    tokens_by_unit: Dict[str, List[str]] = {}
+    tokens_by_unit: Dict[str, List[StructuredFileToken]] = {}
     no_file_header: Set[str] = set()
-    owners: Dict[str, Set[str]] = {}
+    owners: Dict[Optional[str], Set[str]] = {}  # resolved path (or None for ambiguous) -> set of unit ids
+
     for row in rows:
         if row.file_cell is None:
-            tokens = []
+            structured_tokens: List[StructuredFileToken] = []
             no_file_header.add(row.unit_id)
         else:
-            tokens = _doing_it_path_tokens(row.file_cell, changed_files)
-        tokens_by_unit[row.unit_id] = tokens
-        for token in tokens:
-            owners.setdefault(token, set()).add(row.unit_id)
+            structured_tokens = _doing_it_path_tokens(row.file_cell, changed_files)
+        tokens_by_unit[row.unit_id] = structured_tokens
+        for st in structured_tokens:
+            # Key on resolved path (or None for ambiguous)
+            # Key on resolved path (None for ambiguous and raw tokens)
+            owners.setdefault(st.resolved_path, set()).add(row.unit_id)
 
     results: Dict[str, CoverageClassification] = {}
     for row in rows:
-        tokens = tokens_by_unit[row.unit_id]
-        if not tokens:
+        structured_tokens = tokens_by_unit[row.unit_id]
+
+        if not structured_tokens:
             if row.unit_id in no_file_header:
                 evidence = "no extractable evidence (File header missing)"
             else:
                 evidence = "no extractable evidence (no files in table row)"
             results[row.unit_id] = CoverageClassification("unknown", evidence)
             continue
-        in_diff = [token for token in tokens if token in changed_files]
-        if not in_diff:
-            results[row.unit_id] = CoverageClassification("uncovered", f"not in diff: {', '.join(tokens)}")
-        elif any(len(owners[token]) == 1 for token in in_diff):
-            results[row.unit_id] = CoverageClassification("covered", f"files in diff: {', '.join(in_diff)}")
+
+        # Check for ambiguous tokens
+        if any(st.status == "ambiguous" for st in structured_tokens):
+            amb = [st for st in structured_tokens if st.status == "ambiguous"]
+            detail = "; ".join(f"{st.token} -> {', '.join(sorted(st.candidates))}" for st in amb)
+            evidence = f"ambiguous basename: multiple changed files match ({detail})"
+            results[row.unit_id] = CoverageClassification("unknown", evidence)
+            continue
+
+        # Check for ranges past end of file (only if tip_line_counts is meaningful)
+        range_past_end = False
+        if tip_line_counts and any(c > 0 for c in tip_line_counts.values()):
+            for st in structured_tokens:
+                if st.resolved_path and st.line_range:
+                    start, end = st.line_range
+                    if st.resolved_path in tip_line_counts:
+                        line_count = tip_line_counts[st.resolved_path]
+                        if line_count > 0 and end > line_count:
+                            evidence = f"range {start}-{end} past end of {st.resolved_path} ({line_count} lines at tip)"
+                            results[row.unit_id] = CoverageClassification("unknown", evidence)
+                            range_past_end = True
+                            break
+
+        if range_past_end:
+            continue
+
+        # Separate in-diff and not-in-diff tokens by their resolved path
+        in_diff_paths: Set[Optional[str]] = set()
+        for st in structured_tokens:
+            if st.resolved_path and st.resolved_path in changed_files:
+                in_diff_paths.add(st.resolved_path)
+
+        if not in_diff_paths:
+            # No in-diff paths
+            path_strs = [st.resolved_path or st.token for st in structured_tokens if st.status != "ambiguous"]
+            evidence = f"not in diff: {', '.join(path_strs)}"
+            results[row.unit_id] = CoverageClassification("uncovered", evidence)
+        elif any(len(owners[path]) == 1 for path in in_diff_paths if path is not None):
+            # At least one sole-owner in-diff path
+            sole_owner_paths = [p for p in in_diff_paths if p is not None and len(owners[p]) == 1]
+            evidence = f"files in diff: {', '.join(sole_owner_paths)}"
+            results[row.unit_id] = CoverageClassification("covered", evidence)
         else:
+            # All in-diff paths are shared
             others: Set[str] = set()
-            for token in in_diff:
-                others |= owners[token]
+            for path in in_diff_paths:
+                if path is not None:
+                    others |= owners[path]
             others.discard(row.unit_id)
             shared = ", ".join(sorted(others, key=lambda unit: int(unit[1:])))
-            results[row.unit_id] = CoverageClassification("unknown", f"file shared with {shared}")
+            evidence = f"file shared with {shared}"
+            results[row.unit_id] = CoverageClassification("unknown", evidence)
+
     return results
 
 
@@ -3540,7 +3706,7 @@ def _git_diff_names(repo: str, base: str, branch: str) -> Optional[Set[str]]:
         if result.returncode != 0:
             return None
         return set(result.stdout.strip().split("\n")) if result.stdout.strip() else set()
-    except (subprocess.TimeoutExpired, Exception):
+    except (subprocess.TimeoutExpired, OSError):
         return None
 
 
@@ -3902,7 +4068,8 @@ def check_assess(receipt_path: Path, flow_dir: Path) -> Optional[str]:
     - Rule 2: Assessment ids match the derived outstanding set
     - Rule 3: Evidence is non-empty for all items
     - Rule 4: Mechanical unfinished items have finish_plan and verification_proof
-    - Rule 5: Unknown-coverage items must be unfinished+decision
+    - Rule 5: Unknown-coverage fix: items may be already-done only when both anchors pass;
+      other unknown items must be unfinished+decision
     - Rule 6: Unfinished decision items need 1-2 options
     - Rule 7: Field invariants in both directions: a decision item has empty finish_plan and
       verification_proof; a mechanical item has empty options
@@ -3936,6 +4103,15 @@ def check_assess(receipt_path: Path, flow_dir: Path) -> Optional[str]:
             parts.append("extra " + ", ".join(extra))
         return "assessment ids: " + "; ".join(parts)
 
+    # Load artifact for Rule 5 verification
+    artifact: Dict = {}
+    evidence_path = flow_dir / "steps" / "05-fix.evidence.json"
+    if evidence_path.exists():
+        try:
+            artifact = json.loads(evidence_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            pass
+
     for r in records:
         # Step 5b special handling for ledger: ids (parked items)
         is_ledger_id = r.id.startswith("ledger:")
@@ -3949,7 +4125,7 @@ def check_assess(receipt_path: Path, flow_dir: Path) -> Optional[str]:
             if not r.verification_proof:
                 return f"assess receipt: mechanical item {r.id} missing verification_proof"
 
-        # Rule 5 with special case for ledger: ids
+        # Rule 5: Unknown-coverage items
         if coverage_by_id[r.id] == "unknown":
             if is_ledger_id:
                 # Parked items (ledger:) have special assessment rules (Step 5b)
@@ -3958,8 +4134,15 @@ def check_assess(receipt_path: Path, flow_dir: Path) -> Optional[str]:
                 pass
             else:
                 # Non-ledger unknown-coverage items
-                if r.status != "unfinished" or r.kind != "decision":
-                    return f"assess receipt: unknown-coverage item {r.id} must be unfinished+decision"
+                if r.id.startswith("fix:") and r.status == "already-done":
+                    # For fix: unknown items, verify both anchors pass
+                    passes, reason = _verify_unknown_already_done(
+                        r.id, r.evidence, artifact, _fix_coverage_file(flow_dir)
+                    )
+                    if not passes:
+                        return f"assess receipt: unknown-coverage item {r.id} fails anchor verification ({reason})"
+                elif r.status != "unfinished" or r.kind != "decision":
+                    return f"assess receipt: unknown-coverage item {r.id} must be unfinished+decision or fix:already-done with anchors"
 
         if r.status == "unfinished" and r.kind == "decision" and not (1 <= len(r.options) <= 2):  # rule 6
             return f"assess receipt: decision item {r.id} needs 1-2 options"
@@ -4314,12 +4497,27 @@ def outstanding_gate(flow_dir: Path, marker_file: Path) -> NoReturn:
         if d.disposition == "finished":
             if mode == "taken-over":
                 error(f"outstanding gate: finished not allowed under taken-over: {d.id}")
-            if cov == "unknown":
-                error(f"outstanding gate: finished not allowed for unknown coverage: {d.id}")
             if rec is None or rec.status != "already-done":
                 error(f"outstanding gate: finished needs an already-done assessment: {d.id}")
             if d.by == "assessor-verified":
-                if cov != "declared":
+                if cov == "unknown":
+                    # Re-verify unknown coverage rows with assessor-verified disposition
+                    if not d.id.startswith("fix:"):
+                        error(f"outstanding gate: unknown coverage finished not allowed for non-fix items: {d.id}")
+                    # Load artifact and re-verify
+                    artifact_data: Dict = {}
+                    evidence_path = flow_dir / "steps" / "05-fix.evidence.json"
+                    if evidence_path.exists():
+                        try:
+                            artifact_data = json.loads(evidence_path.read_text(encoding="utf-8"))
+                        except (OSError, UnicodeDecodeError, ValueError) as e:
+                            error(f"outstanding gate: cannot read evidence artifact for {d.id}: {e}")
+                    passes, failure = _verify_unknown_already_done(
+                        d.id, rec.evidence if rec else "", artifact_data, _fix_coverage_file(flow_dir)
+                    )
+                    if not passes:
+                        error(f"outstanding gate: unknown-coverage item {d.id} fails anchor re-verification ({failure})")
+                elif cov != "declared":
                     error(f"outstanding gate: finished on {cov} coverage needs a human confirmation: {d.id}")
             else:
                 if cov != "uncovered":
@@ -4379,6 +4577,350 @@ def outstanding_gate(flow_dir: Path, marker_file: Path) -> NoReturn:
     sys.exit(0)
 
 
+def _fix_coverage_file(flow_dir: Path) -> Path:
+    """The fix-step coverage table as persisted by the flow (the --coverage-out target)."""
+    return flow_dir / "steps" / "05-fix.coverage.txt"
+
+
+def _fix_evidence_file(flow_dir: Path) -> Path:
+    """The frozen fix evidence artifact as persisted by the flow (the --evidence-out target)."""
+    return flow_dir / "steps" / "05-fix.evidence.json"
+
+
+SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+PATH_ANCHOR_RE = re.compile(r"([a-zA-Z0-9._\-/]+):([0-9]{1,9})(?![0-9])(?:-([0-9]{1,9})(?![0-9]))?")
+SHA_ANCHOR_RE = re.compile(r"\b([0-9a-f]{7,40})\b")
+# A SHA anchor must be at least this long and contain a digit: letters-only hex words are prose.
+SHA_ANCHOR_MIN_LEN = 7
+
+
+def _is_plain_int(value: object) -> bool:
+    """True for an int that is not a bool (JSON true/false must not pass as line numbers)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+# Why an already-done anchor check failed. "unavailable": the artifact is missing, unreadable, unbound to the
+# persisted coverage table, or malformed. "anchor": the row is absent from the artifact, or no cited anchor
+# proves it. "range-overlap": no row range overlaps a new-side hunk.
+EvidenceFailure = Literal["unavailable", "anchor", "range-overlap"]
+
+
+class FixEvidenceRange(TypedDict):
+    """One resolved in-diff range of a Doing-it row, in tip-side (new-side) line numbers: start >= 1, end >= start."""
+    path: str
+    start: int
+    end: int
+
+
+class FixEvidence(TypedDict, total=False):
+    """The frozen fix evidence artifact (steps/05-fix.evidence.json), format 1.
+
+    An unavailable artifact carries only format, available (False) and reason. An available one carries the
+    other keys. Every line number is on the NEW (tip) side: hunks is the `+` side of `git diff -U0` as
+    [start, count] (count 0 for a pure deletion), row ranges are File-cell ranges, and tip_line_counts is the
+    tip line count. tip is the tip commit SHA (the branch resolved once), not the branch name. commit_paths
+    maps each commit in commits to the paths it touches, for SHA anchors.
+    """
+    format: int
+    available: bool
+    reason: str
+    base: str
+    tip: str
+    changed_files: List[str]
+    hunks: Dict[str, List[List[int]]]
+    base_line_counts: Dict[str, int]
+    tip_line_counts: Dict[str, int]
+    commits: List[str]
+    commit_paths: Dict[str, List[str]]
+    rows: Dict[str, List[FixEvidenceRange]]
+    coverage_sha256: str
+
+
+class RangeCheck(NamedTuple):
+    """Check (B) for one unknown row. failure is None when at least one of the row's ranges overlaps a hunk.
+
+    overlapping holds the row ranges that overlap, which are the only ones check (A) may cite.
+    """
+    failure: Optional[Literal["anchor", "range-overlap"]]
+    overlapping: Tuple[FixEvidenceRange, ...]
+
+
+def _load_fix_evidence(raw: object, coverage_file: Optional[Path]) -> Optional[FixEvidence]:
+    """Bind and shape-check a raw evidence artifact. Returns the typed artifact, or None when it is unavailable.
+
+    Unavailable means: not a JSON object, `available` is false, no recorded coverage sha256, no coverage file,
+    a coverage file whose sha256 differs from the recorded one, or any malformed field. Never raises.
+    """
+    if not isinstance(raw, dict) or raw.get("available") is False:
+        return None
+    recorded_sha = raw.get("coverage_sha256")
+    if not isinstance(recorded_sha, str) or not SHA256_HEX_RE.fullmatch(recorded_sha):
+        return None
+    if coverage_file is None:
+        return None
+    try:
+        actual_sha = hashlib.sha256(coverage_file.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    if actual_sha != recorded_sha:
+        return None
+
+    changed_list = raw.get("changed_files", [])
+    if not isinstance(changed_list, list) or not all(isinstance(p, str) for p in changed_list):
+        return None
+    hunks = raw.get("hunks", {})
+    if not isinstance(hunks, dict):
+        return None
+    for hunk_list in hunks.values():
+        if not isinstance(hunk_list, list):
+            return None
+        for hunk in hunk_list:
+            if not (isinstance(hunk, list) and len(hunk) == 2 and all(_is_plain_int(v) for v in hunk)):
+                return None
+            if hunk[0] < 0 or hunk[1] < 0:
+                return None
+    for counts_key in ("base_line_counts", "tip_line_counts"):
+        counts = raw.get(counts_key, {})
+        if not isinstance(counts, dict) or not all(
+            isinstance(k, str) and _is_plain_int(v) and v >= 0 for k, v in counts.items()
+        ):
+            return None
+    commits = raw.get("commits", [])
+    if not isinstance(commits, list) or not all(isinstance(c, str) for c in commits):
+        return None
+    commit_paths = raw.get("commit_paths", {})
+    if not isinstance(commit_paths, dict) or not all(
+        isinstance(k, str) and isinstance(v, list) and all(isinstance(p, str) for p in v)
+        for k, v in commit_paths.items()
+    ):
+        return None
+    rows = raw.get("rows", {})
+    if not isinstance(rows, dict):
+        return None
+    for row_list in rows.values():
+        if not isinstance(row_list, list):
+            return None
+        for item in row_list:
+            if not (
+                isinstance(item, dict) and isinstance(item.get("path"), str)
+                and _is_plain_int(item.get("start")) and _is_plain_int(item.get("end"))
+            ):
+                return None
+            if item["start"] < 1 or item["end"] < item["start"]:
+                return None
+    return cast(FixEvidence, raw)
+
+
+def _check_range_overlap(unit_id: str, evidence: FixEvidence) -> RangeCheck:
+    """Check (B) for one unknown row: which of its File-cell ranges overlap a new-side hunk.
+
+    A range on a file whose end is past the tip line count is out of bounds and cannot match. A hunk covers
+    [start, start + max(count, 1) - 1], so a pure deletion (count 0) covers its start line. A range overlaps a
+    hunk when the two inclusive intervals come within RANGE_OVERLAP_SLACK lines of each other.
+    """
+    rows = evidence.get("rows", {})
+    if unit_id not in rows:
+        return RangeCheck("anchor", ())
+    tip_counts = evidence.get("tip_line_counts", {})
+    hunks = evidence.get("hunks", {})
+    overlapping: List[FixEvidenceRange] = []
+    for item in rows[unit_id]:
+        path, start, end = item["path"], item["start"], item["end"]
+        if path in tip_counts and end > tip_counts[path]:
+            continue
+        for hunk_start, hunk_count in hunks.get(path, []):
+            hunk_end = hunk_start + max(hunk_count, 1) - 1
+            if not (end < hunk_start - RANGE_OVERLAP_SLACK or start > hunk_end + RANGE_OVERLAP_SLACK):
+                overlapping.append(item)
+                break
+    if not overlapping:
+        return RangeCheck("range-overlap", ())
+    return RangeCheck(None, tuple(overlapping))
+
+
+def _cited_anchor_passes(
+    evidence_text: str, evidence: FixEvidence, overlapping: Tuple[FixEvidenceRange, ...]
+) -> bool:
+    """Check (A): the assessor's evidence cites an anchor that proves the row.
+
+    A `path:N` or `path:N-M` anchor must resolve to a changed file, fit that file's tip line count, and lie
+    within an overlapping range of the same file (+/- RANGE_OVERLAP_SLACK). A SHA anchor must be at least
+    SHA_ANCHOR_MIN_LEN characters with a digit, prefix a commit of the branch, and that commit must touch the
+    row's own file (per commit_paths).
+    """
+    changed = set(evidence.get("changed_files", []))
+    tip_counts = evidence.get("tip_line_counts", {})
+    for match in PATH_ANCHOR_RE.finditer(evidence_text):
+        anchor_path = match.group(1)
+        anchor_start = int(match.group(2))
+        anchor_end = int(match.group(3)) if match.group(3) else anchor_start
+        if anchor_start < 1 or anchor_end < anchor_start:
+            continue
+        status, resolved, _ = _resolve_file_token(anchor_path, changed)
+        if status != "resolved" or resolved is None or resolved not in tip_counts:
+            continue
+        if anchor_end > tip_counts[resolved]:
+            continue
+        for row in overlapping:
+            if resolved != row["path"]:
+                continue
+            if anchor_start >= row["start"] - RANGE_OVERLAP_SLACK and anchor_end <= row["end"] + RANGE_OVERLAP_SLACK:
+                return True
+
+    # SHA anchors come after path anchors, so a partial SHA inside a path never matches here.
+    row_paths = {row["path"] for row in overlapping}
+    commit_paths = evidence.get("commit_paths", {})
+    for match in SHA_ANCHOR_RE.finditer(evidence_text):
+        sha = match.group(1)
+        if len(sha) < SHA_ANCHOR_MIN_LEN or not any(ch.isdigit() for ch in sha):
+            continue
+        for commit in evidence.get("commits", []):
+            if commit.startswith(sha) and row_paths & set(commit_paths.get(commit, [])):
+                return True
+    return False
+
+
+def _verify_unknown_already_done(
+    unit_id: str, evidence_text: str, artifact: Dict, coverage_file: Optional[Path] = None
+) -> Tuple[bool, Optional[EvidenceFailure]]:
+    """Verify both anchors for an unknown coverage row becoming already-done.
+
+    `artifact` is the raw evidence artifact. Returns (passes, failure), where failure is None on a pass:
+    - Binding and shape (_load_fix_evidence): "unavailable" unless the artifact's coverage_sha256 equals the
+      sha256 of coverage_file and every field is well-formed. Never raises.
+    - Check (B) (_check_range_overlap): "range-overlap", or "anchor" when the row is absent from the artifact.
+    - Check (A) (_cited_anchor_passes): "anchor" unless the evidence cites a proving anchor.
+    Both checks must pass.
+    """
+    evidence = _load_fix_evidence(artifact, coverage_file)
+    if evidence is None:
+        return (False, "unavailable")
+    check = _check_range_overlap(unit_id, evidence)
+    if check.failure is not None:
+        return (False, check.failure)
+    if _cited_anchor_passes(evidence_text, evidence, check.overlapping):
+        return (True, None)
+    return (False, "anchor")
+
+
+def _read_fix_evidence_raw(flow_dir: Path) -> Optional[Dict]:
+    """The raw evidence artifact as a dict, or None when it is absent, unreadable, or not a JSON object."""
+    try:
+        data = json.loads(_fix_evidence_file(flow_dir).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def assess_anchors_mode(flow_dir: Path) -> NoReturn:
+    """Print the range-overlap status for each fix: unknown item (read-only mode).
+
+    For each fix: outstanding item with coverage unknown, prints:
+      <id> | overlap|no-overlap|unavailable | <detail>
+    Only check (B) runs here: check (A) needs the assessor's evidence text, which this mode does not have, so
+    `overlap` means the row's ranges touch a changed hunk. An absent, unreadable, or unbound artifact prints
+    `unavailable` for each item. It does not stop the mode.
+    """
+    items, derive_err = derive_outstanding_set(flow_dir)
+    if derive_err:
+        error(derive_err)
+
+    evidence = _load_fix_evidence(_read_fix_evidence_raw(flow_dir), _fix_coverage_file(flow_dir))
+    for item in items:
+        if not item.id.startswith("fix:") or item.coverage != "unknown":
+            continue
+        if evidence is None:
+            status, detail = "unavailable", "artifact missing or unreadable"
+        else:
+            check = _check_range_overlap(item.id, evidence)
+            if check.failure is None:
+                status, detail = "overlap", "range overlap"
+            elif check.failure == "range-overlap":
+                status, detail = "no-overlap", "no range overlap"
+            else:
+                status, detail = "no-overlap", "no anchor"
+        print(f"{item.id} | {status} | {detail}")
+
+    sys.exit(0)
+
+
+def match_outstanding_issue_mode(flow_id: str, item_id: str, limit: int) -> NoReturn:
+    """Match an outstanding issue by FLOW_ID and exact body-line match.
+
+    Reads `gh issue list` JSON on stdin. Prints the URL of the first issue whose body
+    contains a line exactly equal to `flow-outstanding: <FLOW_ID> <item_id>`.
+    Exits 3 when nothing matched and the input count reached the limit (a truncated search, so the caller
+    must not treat an absence as final); a match found in a truncated list still prints its URL and exits 0. Exits 2 is reserved for invalid input and unparseable JSON.
+    """
+    # Validate item_id against grammar: <step>:<unit>
+    # step = [a-z]+, unit = 1-200 printable chars without control chars or ' " ` $ \ |
+    step_pattern = r'^[a-z]+:'
+    if not re.match(step_pattern, item_id):
+        error("invalid item-id: must start with step followed by colon")
+
+    unit_part = item_id.split(":", 1)[1] if ":" in item_id else ""
+    if not unit_part or len(unit_part) > 200:
+        error("invalid item-id: unit must be 1-200 characters")
+
+    # Check for forbidden characters in unit
+    forbidden = {"'", '"', '`', '$', '\\', '|', '\n'}
+    if any(c in unit_part for c in forbidden):
+        error("invalid item-id: unit contains forbidden characters")
+
+    # Printable only: str.isprintable() rejects C0 controls, DEL, and Unicode control/format characters
+    if not item_id.isprintable() or not unit_part.isprintable():
+        error("invalid item-id: contains non-printable characters")
+
+    # Read JSON from stdin
+    try:
+        json_text = sys.stdin.read()
+        issues = json.loads(json_text)
+    except json.JSONDecodeError as e:
+        error(f"Cannot parse JSON from stdin: {e}")
+
+    if not isinstance(issues, list):
+        error("Expected JSON array of issues")
+
+    # Search first: a match inside a truncated list is still a match (exit 3 only when nothing matched)
+    truncated = len(issues) >= limit
+
+    # Search for exact line match
+    search_line = f"flow-outstanding: {flow_id} {item_id}"
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        body = issue.get("body", "")
+        if not isinstance(body, str):
+            continue
+
+        # Check for exact line match (strip trailing \r)
+        for line in body.split("\n"):
+            if line.rstrip("\r") == search_line:
+                url = issue.get("url")
+                if url:
+                    print(url)
+                sys.exit(0)
+
+    # No match found: a truncated list cannot prove absence
+    sys.exit(3 if truncated else 0)
+
+
+def _resolve_commit(repo: str, ref: str) -> Optional[str]:
+    """The full SHA that `ref` peels to (`<ref>^{commit}`), or None when it does not resolve.
+
+    The ref is validated at the CLI (it never starts with `-`), so git cannot read it as an option.
+    """
+    rc, out = _git_out(repo, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
+    sha = out.strip()
+    return sha if rc == 0 and FULL_SHA_RE.fullmatch(sha) else None
+
+
+def _count_lines(blob_text: str) -> int:
+    """Line count of a `git show` blob. A trailing newline does not start a new line."""
+    return len(blob_text.rstrip("\n").split("\n")) if blob_text else 0
+
+
 def coverage_mode(
     step: str,
     plan_path: str,
@@ -4386,6 +4928,8 @@ def coverage_mode(
     repo: str,
     branch: str,
     base: str,
+    coverage_out: Optional[Path] = None,
+    evidence_out: Optional[Path] = None,
 ) -> None:
     """Run coverage mode: enumerate units and classify by coverage.
 
@@ -4401,6 +4945,7 @@ def coverage_mode(
       in-diff files are all shared with another row)
 
     Fix mode classifies the Doing-it rows from their File cells (see _classify_doing_it_rows).
+    For fix mode with --evidence-out, writes a frozen evidence artifact (--evidence-out path).
 
     Exits with 0 unless plan is unreadable (exit 2).
     """
@@ -4432,13 +4977,53 @@ def coverage_mode(
             doing_it_rows = _parse_doing_it_rows(action_plan_text)
             units = [row.unit_id for row in doing_it_rows]
 
+    # Resolve the branch to a tip SHA once. None (unresolvable) is the git-failure state.
+    tip_sha = _resolve_commit(repo, branch)
+
     # Get the changed files from git diff (None = unknown state)
-    changed_files = _git_diff_names(repo, base, branch)
+    changed_files = _git_diff_names(repo, base, tip_sha) if tip_sha is not None else None
+
+    # Build base and tip line counts, and commit -> paths, for fix mode. All use the resolved tip SHA.
+    base_line_counts: Dict[str, int] = {}
+    tip_line_counts: Dict[str, int] = {}
+    commits: List[str] = []
+    commit_paths: Dict[str, List[str]] = {}
+
+    tip_show_failed = False
+    deleted_paths: Set[str] = set()
+    if step == "fix" and tip_sha is not None and changed_files:
+        drc, dout = _git_out(repo, ["diff", "--name-only", "--diff-filter=D", f"{base}..{tip_sha}"])
+        if drc == 0:
+            deleted_paths = {ln for ln in dout.split("\n") if ln}
+        for filepath in sorted(changed_files):
+            # A file absent at base counts as 0 lines
+            rc, out = _git_out(repo, ["show", f"{base}:{filepath}"])
+            base_line_counts[filepath] = _count_lines(out) if rc == 0 else 0
+            # A failed `git show` at tip is a git failure (the artifact is unavailable), except for a path the
+            # range deleted, which legitimately has no tip blob.
+            rc, out = _git_out(repo, ["show", f"{tip_sha}:{filepath}"])
+            if rc == 0:
+                tip_line_counts[filepath] = _count_lines(out)
+            elif filepath not in deleted_paths:
+                tip_show_failed = True
+
+    if step == "fix" and tip_sha is not None:
+        # Commits in base..tip, each with the paths it touches (for the SHA anchors of the already-done check)
+        rc, out = _git_out(repo, ["log", "--format=%H", "--name-only", f"{base}..{tip_sha}"])
+        if rc == 0:
+            current: Optional[str] = None
+            for line in out.split("\n"):
+                if FULL_SHA_RE.fullmatch(line):
+                    current = line
+                    commit_paths[current] = []
+                elif line and current is not None:
+                    commit_paths[current].append(line)
+            commits = list(commit_paths)
 
     # Fix rows are classified from their File cells (#409); implement mode keeps the plan-section walk.
     fix_results: Dict[str, CoverageClassification] = {}
     if step == "fix" and changed_files is not None:
-        fix_results = _classify_doing_it_rows(doing_it_rows, changed_files)
+        fix_results = _classify_doing_it_rows(doing_it_rows, changed_files, tip_line_counts)
 
     # Parse outstanding items from receipt (validate format first)
     outstanding_dict: Dict[str, OutstandingItem] = {}
@@ -4491,6 +5076,103 @@ def coverage_mode(
     for declared_item in outstanding_dict.values():
         if declared_item.unit_id not in units:
             unknown_declared.append(declared_item.unit_id)
+
+    # Write coverage table if --coverage-out is specified
+    if coverage_out and step == "fix":
+        coverage_lines: List[str] = [f"UNITS: {len(units)}"]
+        for unit_id, status, evidence in results:
+            coverage_lines.append(f"{unit_id} | {status} | {evidence}")
+        for unknown_id in unknown_declared:
+            coverage_lines.append(f"unknown-declared: {unknown_id}")
+
+        coverage_text = "\n".join(coverage_lines)
+
+        # Write to temp file and rename
+        try:
+            temp_path = coverage_out.parent / f".{coverage_out.name}.tmp"
+            temp_path.write_text(coverage_text, encoding="utf-8")
+            temp_path.replace(coverage_out)
+        except OSError as e:
+            error(f"Cannot write coverage table: {e}")
+
+        # Record SHA256 of coverage text for artifact
+        coverage_sha256 = hashlib.sha256(coverage_text.encode("utf-8")).hexdigest()
+    else:
+        coverage_sha256 = ""
+
+    # Write evidence artifact if --evidence-out is specified
+    if evidence_out and step == "fix":
+        artifact: FixEvidence
+
+        # Check if base..tip is valid
+        is_ancestor = tip_sha is not None and _git_out(repo, ["merge-base", "--is-ancestor", base, tip_sha])[0] == 0
+
+        if not is_ancestor or changed_files is None or tip_sha is None or tip_show_failed:
+            artifact = {
+                "format": 1,
+                "available": False,
+                "reason": "git failure" if (changed_files is None or tip_show_failed) else "base not ancestor of tip",
+            }
+        else:
+            # Build rows data: each outstanding-set id (fix:<unit>) -> list of {path, start, end}. Covered rows
+            # and unknown rows both carry their resolved in-diff ranges: an unknown row can only pass the
+            # already-done check (_verify_unknown_already_done) if its ranges are recorded here.
+            rows_data: Dict[str, List[FixEvidenceRange]] = {}
+            for row in doing_it_rows:
+                if row.unit_id in fix_results and fix_results[row.unit_id].status in ("covered", "unknown"):
+                    # Extract resolved paths and line ranges
+                    structured_tokens = (
+                        _doing_it_path_tokens(row.file_cell, changed_files) if row.file_cell else []
+                    )
+                    ranges: List[FixEvidenceRange] = []
+                    for st in structured_tokens:
+                        if st.status == "resolved" and st.resolved_path is not None and st.line_range is not None:
+                            ranges.append({
+                                "path": st.resolved_path,
+                                "start": st.line_range[0],
+                                "end": st.line_range[1],
+                            })
+                    if ranges:
+                        rows_data[f"fix:{row.unit_id}"] = ranges
+
+            # Hunks: the new (tip) side of -U0 diffs, as [start, count]. A missing count means 1; a pure
+            # deletion has count 0 and covers its start line.
+            hunks_data: Dict[str, List[List[int]]] = {}
+            hunk_header_re = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+            for filepath in sorted(changed_files):
+                rc, out = _git_out(repo, ["diff", "-U0", f"{base}..{tip_sha}", "--", filepath])
+                if rc != 0:
+                    continue
+                hunks: List[List[int]] = []
+                for line in out.split("\n"):
+                    m = hunk_header_re.match(line)
+                    if m:
+                        count = int(m.group(2)) if m.group(2) is not None else 1
+                        hunks.append([int(m.group(1)), count])
+                if hunks:
+                    hunks_data[filepath] = hunks
+
+            artifact = {
+                "format": 1,
+                "base": base,
+                "tip": tip_sha,
+                "changed_files": sorted(changed_files),
+                "hunks": hunks_data,
+                "base_line_counts": base_line_counts,
+                "tip_line_counts": tip_line_counts,
+                "commits": commits,
+                "commit_paths": commit_paths,
+                "rows": rows_data,
+                "coverage_sha256": coverage_sha256,
+            }
+
+        # Write to temp file and rename
+        try:
+            temp_path = evidence_out.parent / f".{evidence_out.name}.tmp"
+            temp_path.write_text(json.dumps(artifact, indent=2), encoding="utf-8")
+            temp_path.replace(evidence_out)
+        except OSError as e:
+            error(f"Cannot write evidence artifact: {e}")
 
     # Print output
     print(f"UNITS: {len(units)}" + (" (no step headings)" if len(units) == 0 else ""))
@@ -4913,6 +5595,37 @@ def main() -> None:
         help="Plan file path (for coverage mode)",
     )
     parser.add_argument(
+        "--coverage-out",
+        help="Write coverage table to this path (fix mode only; requires --flow-dir; must be under its steps/)",
+    )
+    parser.add_argument(
+        "--evidence-out",
+        help="Write evidence artifact to this path (fix mode only; requires --flow-dir; must be under its steps/)",
+    )
+    parser.add_argument(
+        "--assess-anchors",
+        action="store_true",
+        help="Print anchor verification status for fix: unknown items (read-only mode)",
+    )
+    parser.add_argument(
+        "--match-outstanding-issue",
+        action="store_true",
+        help="Match an outstanding issue by FLOW_ID and item-id (read-only mode)",
+    )
+    parser.add_argument(
+        "--flow-id",
+        help="Flow ID for issue matching (with --match-outstanding-issue)",
+    )
+    parser.add_argument(
+        "--item-id",
+        help="Item ID for issue matching (with --match-outstanding-issue)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Limit for issue search (with --match-outstanding-issue)",
+    )
+    parser.add_argument(
         "--outstanding-set",
         action="store_true",
         help="Derive and print the outstanding set from flow_dir",
@@ -4945,6 +5658,13 @@ def main() -> None:
         # --ledger-close mode: needs --flow-dir only
         if not args.flow_dir:
             error("--ledger-close requires --flow-dir")
+    elif args.assess_anchors:
+        # --assess-anchors mode: needs --flow-dir only (no --step, no --receipt)
+        if not args.flow_dir:
+            error("--assess-anchors requires --flow-dir")
+    elif args.match_outstanding_issue:
+        # --match-outstanding-issue mode: reads stdin; needs only --flow-id, --item-id and --limit
+        pass
     else:
         # Standard modes: need both --step and --receipt
         if not args.step:
@@ -5086,6 +5806,22 @@ def main() -> None:
         print(f"CLOSE_COUNT: {len(pending_items)}")
         sys.exit(0)
 
+    # Handle --assess-anchors mode (read-only, fix only; needs only --flow-dir)
+    if args.assess_anchors:
+        if args.step is not None and args.step != "fix":
+            error("--assess-anchors only supported for fix step")
+        assess_anchors_mode(Path(args.flow_dir))
+
+    # Handle --match-outstanding-issue mode (read-only; no receipt)
+    if args.match_outstanding_issue:
+        if not args.flow_id:
+            error("--match-outstanding-issue requires --flow-id")
+        if not args.item_id:
+            error("--match-outstanding-issue requires --item-id")
+        if not args.limit:
+            error("--match-outstanding-issue requires --limit")
+        match_outstanding_issue_mode(args.flow_id, args.item_id, args.limit)
+
     # Read receipt file for standard modes
     receipt_file = Path(args.receipt)
     if not receipt_file.exists():
@@ -5101,7 +5837,25 @@ def main() -> None:
             error("--coverage only supported for implement/fix steps")
         if not all([args.repo, args.branch, args.base]):
             error("--coverage requires --repo, --branch, --base")
-        coverage_mode(args.step, args.plan, args.receipt, args.repo, args.branch, args.base)
+        # Refs are validated once here: a ref starting with '-' would be read by git as an option
+        for ref in (args.branch, args.base):
+            if ref.startswith("-"):
+                error(f"invalid ref (must not start with '-'): {ref}")
+        if (args.coverage_out or args.evidence_out) and not args.flow_dir:
+            error("--coverage-out and --evidence-out require --flow-dir (the artifacts live under its steps/)")
+        coverage_out = Path(args.coverage_out) if args.coverage_out else None
+        evidence_out = Path(args.evidence_out) if args.evidence_out else None
+        # The fix artifacts are read back by assess and the outstanding gate from <flow_dir>/steps/ only
+        flow_steps_dir = (Path(args.flow_dir) / "steps").resolve() if args.flow_dir else None
+        for flag, out_path in (("--coverage-out", coverage_out), ("--evidence-out", evidence_out)):
+            if out_path is None or flow_steps_dir is None:
+                continue
+            try:
+                out_path.resolve().relative_to(flow_steps_dir)
+            except ValueError:
+                error(f"{flag} must be under {flow_steps_dir} when --flow-dir is given: {out_path}")
+        coverage_mode(args.step, args.plan, args.receipt, args.repo, args.branch, args.base,
+                      coverage_out=coverage_out, evidence_out=evidence_out)
 
     # Handle --escalation mode (check before any --since requirement)
     if args.escalation:

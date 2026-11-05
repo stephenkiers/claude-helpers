@@ -18,8 +18,11 @@ id: <id>
 provenance: <self-report|both|verifier>
 coverage: <declared|uncovered|unknown>
 coverage_reason: <reason text from the outstanding set>
+range_overlap: <overlap|no-overlap|unavailable>
 <<<
 ```
+
+The `range_overlap` field is present only for `fix:` items with coverage `unknown`. It records whether the item's File-cell range overlaps a changed hunk (within `RANGE_OVERLAP_SLACK = 3` lines).
 
 Your prompt also inlines:
 - `bases[implement]` — the `git` base SHA for the implement step (the commit where `steps/03-implement.md` records its attempt started)
@@ -81,21 +84,31 @@ For example:
 
 Labels must not equal any of these fixed choices: `Open an issue`, `Leave as-is`, `Pause to finish by hand`, `Drop`, `Confirm already done`.
 
-### Unknown Coverage: Always Decision
+### Unknown Coverage: Decision Unless Both Anchors Hold
 
-If the item carries coverage `unknown`, assess it as:
+An unknown item may be `already-done` only when it is a `fix:` item whose new optional `range_overlap:` input reads `overlap`, and when its `evidence` cites at least one anchor in the verifier's exact grammar:
+- `path:line` or `path:start-end`, where the path is a file the fix changed: the full path as `git diff --name-only <bases[fix]>..HEAD` prints it, or a unique whole-path-component suffix of it (an ambiguous, re-rooted, `..`, absolute or glob-style path is not an anchor), the file is one the fix changed, and the range has start >= 1 and end >= start; or
+- a fix-step commit SHA (7-40 hex, containing at least one digit) that touched the row's path.
+
+A `path:line` anchor must also lie inside the row's own File-cell range, widened by `RANGE_OVERLAP_SLACK` (3) lines on each side, and inside the file's line count at the frozen tip. Read the row's File cell in the action plan for that range. An anchor outside it fails verification, so return `unfinished`+`decision` instead of `already-done`.
+
+An anchor you cannot write in exactly this form is not downgraded into a looser one: the item is treated as having no anchor, so it is decided by the rule below.
+
+In every other case — including `no-overlap`, `unavailable`, implement items, `coverage-unavailable`, and an item whose anchor fails the form above — the item is:
 - `status: unfinished`
 - `kind: decision`
 
 The question will ask the human to clarify whether it is really unfinished or what to do about it.
 
+The check proves only that the location was touched, not that the finding is fixed. Evidence must be citable and verifiable.
+
 ## Evidence Is Required
 
 Every item, whether `already-done` or `unfinished`, must cite its evidence:
-- For `already-done` items: cite the path and line number (`src/foo.py:123`) or the commit SHA where the fix landed.
+- For `already-done` items: cite an anchor in the checkable grammar — a `path:line` or `path:start-end` in a file the fix changed (`src/foo.py:123` or `src/foo.py:123-145`), or a fix-step commit SHA (7-40 hex characters). Prose alone does not pass verification.
 - For `unfinished` items: state what you checked (which files, which symbols, which diffs) and what you did not find.
 
-An empty `evidence` field will fail the gate.
+An empty `evidence` field will fail the gate. For `already-done` fix items, evidence that does not parse as an anchor will be rejected by the script.
 
 ## Output Contract
 

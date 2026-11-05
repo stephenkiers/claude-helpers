@@ -46,7 +46,10 @@ _spec.loader.exec_module(fvr)
 def run_fix_coverage(plan_path: Path, diff: Set[str]) -> str:
     """Run coverage_mode(step='fix') in-process with the diff list stubbed; return its stdout."""
     original = fvr._git_diff_names
+    original_resolve = fvr._resolve_commit
     fvr._git_diff_names = lambda repo, base, branch: set(diff)
+    # The branch is resolved to a tip SHA before the diff; the fixture repo does not exist, so stub that step too
+    fvr._resolve_commit = lambda repo, ref: "0" * 40
     buf = io.StringIO()
     try:
         with redirect_stdout(buf):
@@ -57,6 +60,7 @@ def run_fix_coverage(plan_path: Path, diff: Set[str]) -> str:
                     raise
     finally:
         fvr._git_diff_names = original
+        fvr._resolve_commit = original_resolve
     return buf.getvalue()
 
 
@@ -240,7 +244,8 @@ def case_f_token_classification() -> Tuple[bool, str]:
         ("commands/expert-flow.md:~971, ~1350, ~1648", set(), ["commands/expert-flow.md"]),
         ("scripts/flow-bash-guard.py:~70-80", set(), ["scripts/flow-bash-guard.py"]),
         ("`scripts/flow-agent-guard.py:~625-660`", set(), ["scripts/flow-agent-guard.py"]),
-        ("flow-review.md", {"agents/flow-review.md"}, []),
+        # Bare basename: a unique whole-component suffix match in the changed set resolves to the changed path
+        ("flow-review.md", {"agents/flow-review.md"}, ["agents/flow-review.md"]),
         ("", set(), []),
         # Leading ./ normalization: ./scripts/x.py matches scripts/x.py in diff
         ("./scripts/flow-bash-guard.py", {"scripts/flow-bash-guard.py"}, ["scripts/flow-bash-guard.py"]),
@@ -250,7 +255,8 @@ def case_f_token_classification() -> Tuple[bool, str]:
         ("../scripts/x.py", set(), ["../scripts/x.py"]),
     ]
     for cell, diff, want in cases:
-        got = fvr._doing_it_path_tokens(cell, diff)
+        # A raw token (no match, kept for uncovered detection) carries its text in .token, not resolved_path
+        got = [t.resolved_path if t.status == "resolved" else t.token for t in fvr._doing_it_path_tokens(cell, diff)]
         if got != want:
             return (False, f"cell {cell!r} with diff {sorted(diff)}: want {want}, got {got}")
     plan_rows = fvr._parse_doing_it_rows(PLAN.read_text(encoding="utf-8"))
