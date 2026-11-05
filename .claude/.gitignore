@@ -1,5 +1,7 @@
 settings.local.json
 repo-cache.json
+check-attestation.json
+check-receipt.json
 # Local, per-checkout reviewer state (ADR-0005 amendment). Lives here rather than in the root
 # .gitignore so the rules sit next to the files they govern; the root file keeps only
 # .claude/github-cache.json* for historical reasons — don't split a file class across the two.
