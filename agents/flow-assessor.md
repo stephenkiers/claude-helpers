@@ -87,8 +87,10 @@ Labels must not equal any of these fixed choices: `Open an issue`, `Leave as-is`
 ### Unknown Coverage: Decision Unless Both Anchors Hold
 
 An unknown item may be `already-done` only when it is a `fix:` item whose new optional `range_overlap:` input reads `overlap`, and when its `evidence` cites at least one anchor in the verifier's exact grammar:
-- `path:line` or `path:start-end`, where the path is written exactly as `git diff --name-only <bases[fix]>..HEAD` prints it (a shortened, re-rooted or glob-style path is not an anchor), the file is one the fix changed, and the range has start >= 1 and end >= start; or
-- a fix-step commit SHA (7-40 hex) that touched the row's path.
+- `path:line` or `path:start-end`, where the path is a file the fix changed: the full path as `git diff --name-only <bases[fix]>..HEAD` prints it, or a unique whole-path-component suffix of it (an ambiguous, re-rooted, `..`, absolute or glob-style path is not an anchor), the file is one the fix changed, and the range has start >= 1 and end >= start; or
+- a fix-step commit SHA (7-40 hex, containing at least one digit) that touched the row's path.
+
+A `path:line` anchor must also lie inside the row's own File-cell range, widened by `RANGE_OVERLAP_SLACK` (3) lines on each side, and inside the file's line count at the frozen tip. Read the row's File cell in the action plan for that range. An anchor outside it fails verification, so return `unfinished`+`decision` instead of `already-done`.
 
 An anchor you cannot write in exactly this form is not downgraded into a looser one: the item is treated as having no anchor, so it is decided by the rule below.
 

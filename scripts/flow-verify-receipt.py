@@ -3587,7 +3587,9 @@ def _classify_doing_it_rows(
 
         # Check for ambiguous tokens
         if any(st.status == "ambiguous" for st in structured_tokens):
-            evidence = "ambiguous basename: multiple changed files match"
+            amb = [st for st in structured_tokens if st.status == "ambiguous"]
+            detail = "; ".join(f"{st.token} -> {', '.join(sorted(st.candidates))}" for st in amb)
+            evidence = f"ambiguous basename: multiple changed files match ({detail})"
             results[row.unit_id] = CoverageClassification("unknown", evidence)
             continue
 
@@ -4848,8 +4850,8 @@ def match_outstanding_issue_mode(flow_id: str, item_id: str, limit: int) -> NoRe
 
     Reads `gh issue list` JSON on stdin. Prints the URL of the first issue whose body
     contains a line exactly equal to `flow-outstanding: <FLOW_ID> <item_id>`.
-    Exits 3 when the input count reaches the limit (a truncated search, so the caller must not
-    treat an absence as final). Exits 2 is reserved for invalid input and unparseable JSON.
+    Exits 3 when nothing matched and the input count reached the limit (a truncated search, so the caller
+    must not treat an absence as final); a match found in a truncated list still prints its URL and exits 0. Exits 2 is reserved for invalid input and unparseable JSON.
     """
     # Validate item_id against grammar: <step>:<unit>
     # step = [a-z]+, unit = 1-200 printable chars without control chars or ' " ` $ \ |
@@ -4880,8 +4882,8 @@ def match_outstanding_issue_mode(flow_id: str, item_id: str, limit: int) -> NoRe
     if not isinstance(issues, list):
         error("Expected JSON array of issues")
 
-    if len(issues) >= limit:
-        sys.exit(3)
+    # Search first: a match inside a truncated list is still a match (exit 3 only when nothing matched)
+    truncated = len(issues) >= limit
 
     # Search for exact line match
     search_line = f"flow-outstanding: {flow_id} {item_id}"
@@ -4900,8 +4902,8 @@ def match_outstanding_issue_mode(flow_id: str, item_id: str, limit: int) -> NoRe
                     print(url)
                 sys.exit(0)
 
-    # No match found
-    sys.exit(0)
+    # No match found: a truncated list cannot prove absence
+    sys.exit(3 if truncated else 0)
 
 
 def _resolve_commit(repo: str, ref: str) -> Optional[str]:
@@ -4987,15 +4989,23 @@ def coverage_mode(
     commits: List[str] = []
     commit_paths: Dict[str, List[str]] = {}
 
+    tip_show_failed = False
+    deleted_paths: Set[str] = set()
     if step == "fix" and tip_sha is not None and changed_files:
+        drc, dout = _git_out(repo, ["diff", "--name-only", "--diff-filter=D", f"{base}..{tip_sha}"])
+        if drc == 0:
+            deleted_paths = {ln for ln in dout.split("\n") if ln}
         for filepath in sorted(changed_files):
             # A file absent at base counts as 0 lines
             rc, out = _git_out(repo, ["show", f"{base}:{filepath}"])
             base_line_counts[filepath] = _count_lines(out) if rc == 0 else 0
-            # A failed `git show` at tip leaves the path out of tip_line_counts: no anchor can verify there
+            # A failed `git show` at tip is a git failure (the artifact is unavailable), except for a path the
+            # range deleted, which legitimately has no tip blob.
             rc, out = _git_out(repo, ["show", f"{tip_sha}:{filepath}"])
             if rc == 0:
                 tip_line_counts[filepath] = _count_lines(out)
+            elif filepath not in deleted_paths:
+                tip_show_failed = True
 
     if step == "fix" and tip_sha is not None:
         # Commits in base..tip, each with the paths it touches (for the SHA anchors of the already-done check)
@@ -5097,11 +5107,11 @@ def coverage_mode(
         # Check if base..tip is valid
         is_ancestor = tip_sha is not None and _git_out(repo, ["merge-base", "--is-ancestor", base, tip_sha])[0] == 0
 
-        if not is_ancestor or changed_files is None or tip_sha is None:
+        if not is_ancestor or changed_files is None or tip_sha is None or tip_show_failed:
             artifact = {
                 "format": 1,
                 "available": False,
-                "reason": "git failure" if changed_files is None else "base not ancestor of tip",
+                "reason": "git failure" if (changed_files is None or tip_show_failed) else "base not ancestor of tip",
             }
         else:
             # Build rows data: each outstanding-set id (fix:<unit>) -> list of {path, start, end}. Covered rows
@@ -5111,18 +5121,19 @@ def coverage_mode(
             for row in doing_it_rows:
                 if row.unit_id in fix_results and fix_results[row.unit_id].status in ("covered", "unknown"):
                     # Extract resolved paths and line ranges
-                    if row.file_cell:
-                        structured_tokens = _doing_it_path_tokens(row.file_cell, changed_files)
-                ranges: List[FixEvidenceRange] = []
-                for st in structured_tokens:
-                    if st.status == "resolved" and st.resolved_path is not None and st.line_range is not None:
-                        ranges.append({
-                            "path": st.resolved_path,
-                            "start": st.line_range[0],
-                            "end": st.line_range[1],
-                        })
-                if ranges:
-                    rows_data[f"fix:{row.unit_id}"] = ranges
+                    structured_tokens = (
+                        _doing_it_path_tokens(row.file_cell, changed_files) if row.file_cell else []
+                    )
+                    ranges: List[FixEvidenceRange] = []
+                    for st in structured_tokens:
+                        if st.status == "resolved" and st.resolved_path is not None and st.line_range is not None:
+                            ranges.append({
+                                "path": st.resolved_path,
+                                "start": st.line_range[0],
+                                "end": st.line_range[1],
+                            })
+                    if ranges:
+                        rows_data[f"fix:{row.unit_id}"] = ranges
 
             # Hunks: the new (tip) side of -U0 diffs, as [start, count]. A missing count means 1; a pure
             # deletion has count 0 and covers its start line.
@@ -5651,6 +5662,9 @@ def main() -> None:
         # --assess-anchors mode: needs --flow-dir only (no --step, no --receipt)
         if not args.flow_dir:
             error("--assess-anchors requires --flow-dir")
+    elif args.match_outstanding_issue:
+        # --match-outstanding-issue mode: reads stdin; needs only --flow-id, --item-id and --limit
+        pass
     else:
         # Standard modes: need both --step and --receipt
         if not args.step:
@@ -5798,14 +5812,7 @@ def main() -> None:
             error("--assess-anchors only supported for fix step")
         assess_anchors_mode(Path(args.flow_dir))
 
-    # Read receipt file for standard modes
-    receipt_file = Path(args.receipt)
-    if not receipt_file.exists():
-        error(f"Receipt file not found: {args.receipt}")
-
-    receipt = read_file(receipt_file)
-
-    # Handle --match-outstanding-issue mode (read-only)
+    # Handle --match-outstanding-issue mode (read-only; no receipt)
     if args.match_outstanding_issue:
         if not args.flow_id:
             error("--match-outstanding-issue requires --flow-id")
@@ -5814,6 +5821,13 @@ def main() -> None:
         if not args.limit:
             error("--match-outstanding-issue requires --limit")
         match_outstanding_issue_mode(args.flow_id, args.item_id, args.limit)
+
+    # Read receipt file for standard modes
+    receipt_file = Path(args.receipt)
+    if not receipt_file.exists():
+        error(f"Receipt file not found: {args.receipt}")
+
+    receipt = read_file(receipt_file)
 
     # Handle --coverage mode (read-only, no --since required)
     if args.coverage:

@@ -116,7 +116,7 @@ def main():
     h.test_result("assess item 4a parses the '<id> | overlap|no-overlap|unavailable | <detail>' lines",
                   "<id> | overlap|no-overlap|unavailable | <detail>" in assess_sec)
     h.test_result("--match-outstanding-issue truncation is exit 3 (not exit 2)",
-                  "exits 3 (search truncated)" in assess_sec and "exits 2 (search truncated)" not in ef)
+                  "exits 3 (no match in a search that hit the limit)" in assess_sec and "exits 2 (search truncated)" not in ef)
     h.test_result("--match-outstanding-issue invalid input (exit 2) stops and asks",
                   "On exit 2 (invalid input), create nothing" in assess_sec)
     h.test_result("assess item 10.d names the Fix now sequence with FIXNOW_IDS (no circular reference)",
@@ -227,8 +227,8 @@ def main():
                   "range_overlap:" in assessor and "overlap|no-overlap|unavailable" in assessor)
     h.test_result("flow-assessor.md describes anchor grammar for already-done fix items",
                   "path:line" in assessor and "path:start-end" in assessor and "7-40 hex" in assessor)
-    h.test_result("flow-assessor.md requires the anchor path exactly as git diff --name-only prints it",
-                  "exactly as `git diff --name-only" in assessor)
+    h.test_result("flow-assessor.md requires the anchor path to be a changed file (full path or unique suffix)",
+                  "as `git diff --name-only" in assessor and "unique whole-path-component suffix" in assessor)
     h.test_result("flow-assessor.md requires the SHA anchor to touch the row's path",
                   "touched the row's path" in assessor)
     h.test_result("flow-assessor.md downgrades a non-conforming anchor to unfinished and decision",

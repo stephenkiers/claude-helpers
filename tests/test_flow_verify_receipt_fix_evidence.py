@@ -595,6 +595,46 @@ def case_unknown_row_range_reaches_artifact_and_verifies() -> Tuple[bool, str]:
     return (True, "")
 
 
+def case_uncovered_first_row_does_not_leak_ranges() -> Tuple[bool, str]:
+    """A not-in-diff first row writes both files, and its ranges are not attributed to the later rows."""
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        repo, base, plan, flow_dir = _make_fix_fixture(tmp)
+        plan.write_text(
+            "# Action plan\n\n## Doing it: 2\n\n| Item | File |\n|------|------|\n"
+            "| one | other/missing.py:2-3 |\n| two | deps.py:10-12 |\n\n## Deferred: 0\n",
+            encoding="utf-8")
+        receipt = flow_dir / "steps" / "05-fix.md"
+        receipt.write_text("", encoding="utf-8")
+        coverage_out = flow_dir / "steps" / "05-fix.coverage.txt"
+        evidence_out = flow_dir / "steps" / "05-fix.evidence.json"
+        _run_coverage(repo, base, plan, receipt, coverage_out, evidence_out)
+        if not evidence_out.exists():
+            return (False, "evidence artifact was not written")
+        rows = json.loads(evidence_out.read_text(encoding="utf-8")).get("rows", {})
+        if "fix:D1" in rows:
+            return (False, f"uncovered first row must not carry ranges: {rows}")
+        want = [{"path": "scripts/workflow/deps.py", "start": 10, "end": 12}]
+        if rows.get("fix:D2") != want:
+            return (False, f"fix:D2 should carry only its own range {want}, rows were {rows}")
+    return (True, "")
+
+
+def case_match_outstanding_issue_runs_without_step_or_receipt() -> Tuple[bool, str]:
+    """The documented invocation (no --step/--receipt) works, and a match inside a truncated page is still found."""
+    args = ["--match-outstanding-issue", "--flow-id", "F1", "--item-id", "fix:D1", "--limit", "1"]
+    hit = json.dumps([{"url": "https://example.invalid/issues/1", "body": "flow-outstanding: F1 fix:D1"}])
+    proc = _run_script_stdin(args, hit)
+    if proc.returncode != 0 or proc.stdout.strip() != "https://example.invalid/issues/1":
+        return (False, f"match in a full page should print the URL and exit 0: rc={proc.returncode} "
+                       f"out={proc.stdout!r} err={proc.stderr!r}")
+    miss = json.dumps([{"url": "u1", "body": "x"}])
+    proc = _run_script_stdin(args, miss)
+    if proc.returncode != 3:
+        return (False, f"no match in a full page should exit 3, got rc={proc.returncode} err={proc.stderr!r}")
+    return (True, "")
+
+
 def _run_script(args: List[str]) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True)
 
@@ -897,6 +937,8 @@ CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("F23 start 0 and inverted row ranges are unavailable", case_zero_start_and_inverted_row_ranges_are_unavailable),
     ("F19 coverage/evidence out require flow-dir", case_evidence_and_coverage_out_require_flow_dir),
     ("F7 failing tip git show is unavailable", case_failed_tip_show_marks_artifact_unavailable),
+    ("uncovered first row does not leak ranges", case_uncovered_first_row_does_not_leak_ranges),
+    ("match-outstanding-issue runs without step or receipt", case_match_outstanding_issue_runs_without_step_or_receipt),
 ]
 
 
