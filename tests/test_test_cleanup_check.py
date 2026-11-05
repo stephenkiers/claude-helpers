@@ -747,6 +747,74 @@ def main():
         h.test_result("names rejects a --head value outside WORKTREE/HEAD (argparse usage error)",
                       rc == 2, f"rc={rc} err={err!r}")
 
+    print("[Section 12] special characters and edge cases")
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"tests/test_x.py": BASE_PY})
+        # File path with spaces; should not cause parsing failures
+        head_text = edited(BASE_PY, "parse(1, 2, 3)", "parse(1, 2)")
+        commit(repo, {"tests/test with spaces.py": head_text}, "add")
+        # Test against the spaced filename
+        rc, out, err = run(repo, ["fence", "--base", base, "--head", "HEAD",
+                                  "--test", "tests/test with spaces.py::test_parse_basic"])
+        h.test_result("a fence check handles a test file with spaces in the name",
+                      rc == 1 and "violation" in out, f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Decorator/attribute on separate lines (multi-line decorators)
+        base_multi_decorator = """import math
+
+@pytest.mark.parametrize(
+    "param",
+    [1, 2, 3]
+)
+def test_parse_basic():
+    expected = 3
+    result = parse(1, 2, 3)
+    assert result == expected
+"""
+        head_multi_decorator = base_multi_decorator.replace("parse(1, 2, 3)", "parse(1, 2)")
+        repo, base = make_repo(tmp, {"tests/test_x.py": base_multi_decorator})
+        rc, out, err = fence_head(repo, base, {"tests/test_x.py": head_multi_decorator})
+        h.test_result("a multi-line decorator is part of the test range and violations are caught",
+                      rc == 1 and "violation" in out, f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Change decorator argument (should fail)
+        base_with_decorator = edited(BASE_PY, "def test_parse_basic():",
+                                    "@pytest.mark.xfail\ndef test_parse_basic():")
+        head_with_decorator_change = edited(base_with_decorator, "@pytest.mark.xfail", "@pytest.mark.skip")
+        repo, base = make_repo(tmp, {"tests/test_x.py": base_with_decorator})
+        rc, out, err = fence_head(repo, base, {"tests/test_x.py": head_with_decorator_change})
+        h.test_result("a decorator change (xfail to skip) is a violation",
+                      rc == 1 and "violation" in out, f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Proof cell in survivors table (should pass)
+        root = Path(tmp)
+        deletions = root / "round4-deletions.md"
+        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n"
+                             "| tests/t.py::test_gone | junk | removed | proof: no calls |\n")
+        collected = root / "collected.txt"
+        collected.write_text("tests/t.py::test_b\n")
+        rc, out, err = run(root, ["survivors", "--deletions", str(deletions),
+                                  "--collected", str(collected)])
+        h.test_result("a 'proof:' cell in the survivor column is allowed",
+                      rc == 0 and out == "", f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # SHA cell in survivors table (should pass)
+        root = Path(tmp)
+        deletions = root / "round4-deletions.md"
+        sha40 = "a" * 40
+        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n"
+                             f"| tests/t.py::test_gone | junk | removed | {sha40} |\n")
+        collected = root / "collected.txt"
+        collected.write_text("tests/t.py::test_b\n")
+        rc, out, err = run(root, ["survivors", "--deletions", str(deletions),
+                                  "--collected", str(collected)])
+        h.test_result("a 40-character SHA cell in the survivor column is allowed",
+                      rc == 0 and out == "", f"rc={rc} out={out!r} err={err!r}")
+
     h.summarize_and_exit()
 
 

@@ -201,6 +201,39 @@ def main():
         "Test cleanup" in amalgamator,
     )
 
+    print("[Section 8] Vacuous doc-text test guards")
+    # Test for the vacuous test issue: section_between should return "" when markers are missing
+    h.test_result(
+        "section_between returns empty string when start marker is missing",
+        section_between(doc, "NONEXISTENT_START_MARKER", "TEST_DELETIONS>>>") == "",
+    )
+    h.test_result(
+        "section_between returns empty string when end marker is missing",
+        section_between(doc, "<<<TEST_DELETIONS", "NONEXISTENT_END_MARKER") == "",
+    )
+    # The real guard: a vacuous test (checking a property of an empty string) should fail
+    # For example, bool("") is False, so any test that expects a non-empty result should catch this
+    h.test_result(
+        "a check against a missing section returns empty and fails the bool() guard",
+        not bool(section_between(doc, "MISSING_START", "MISSING_END")),
+    )
+    # The protective test: ensure that a search result has the expected marker
+    # This is what should be added to prevent vacuous passes
+    test_marker = "TEST_DELETIONS_BLOCK"
+    found_section = section_between(doc, "**Test deletions (every run):**", "Key extractions:")
+    search_result = found_section.find(test_marker)
+    h.test_result(
+        "a section search validates that find() returns >= 0 (found, not -1)",
+        search_result >= 0,
+    )
+    # Test that a missing marker in the right section properly fails
+    missing_section = section_between(doc, "**Test deletions (every run):**", "Key extractions:")
+    missing_search = missing_section.find("MARKER_THAT_DOES_NOT_EXIST")
+    h.test_result(
+        "a search for a marker that does not exist returns -1 and fails the >= 0 guard",
+        missing_search < 0,
+    )
+
     h.summarize_and_exit()
 
 
