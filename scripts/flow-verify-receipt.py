@@ -3616,7 +3616,7 @@ def _classify_doing_it_rows(
 
         if not in_diff_paths:
             # No in-diff paths
-            path_strs = [st.resolved_path or "<ambiguous>" for st in structured_tokens if st.resolved_path]
+            path_strs = [st.resolved_path or st.token for st in structured_tokens if st.status != "ambiguous"]
             evidence = f"not in diff: {', '.join(path_strs)}"
             results[row.unit_id] = CoverageClassification("uncovered", evidence)
         elif any(len(owners[path]) == 1 for path in in_diff_paths if path is not None):
