@@ -370,8 +370,19 @@ wrote and never re-derive it from a fresh run.
   fresh run. Terminal entries are kept as they are. Round 4's 4.0a resumes from the first non-terminal entry.
 - **Take over.** Each `human-takeover` entry re-runs against the current tree. Green → `impl-fixed` (ruler
   `human`, reason "resolved by take over"). Still red → `awaiting-human`, and the human is asked again, once.
-- **Answers already saved.** An answer already recorded in the register or in an answer file is not asked
-  again. An `awaiting-human` entry with no saved answer is asked again.
+- **Answers already saved.** An approved human answer saved for an entry is never asked again. The saved copy
+  lives in the flow's answer file (`FLOW_DIR/answers/*.json`, written by the Ask block) when `FLOW_DIR` is set,
+  and otherwise in `<SCRATCH_PATH>/round4-rulings.md`, which 4.0a step 4 appends to before it applies any approved
+  edit. An answer is approved only when it carries its reason (and, for an amendment, the plan citation); an answer
+  without them is not saved as approved. An `awaiting-human` entry with a saved approved answer is applied from that
+  answer by 4.0a step 4. An `awaiting-human` entry with no saved approved answer is asked again.
+- **Ruling-commit reconciliation.** Before any restore below, for each `awaiting-human` entry whose saved approved
+  answer is a spec-was-wrong ruling, look for its ruling commit: the commit in `"$ROUND2_START_SHA"..HEAD` whose
+  subject is exactly `test: apply human ruling on spec-blind test <id>` (match the whole subject, because one id can
+  be a prefix of another). If it exists, the ruling landed, so finish the register write: set the entry to
+  `human-spec-wrong` with `ruler: human`, the reason from the commit body, and the commit's full SHA, then rewrite
+  `disagreements.json`. If the entry is a deletion and its `round4-deletions.md` row is missing, add it (4.4). If it
+  does not exist, the ruling did not land, and 4.0a step 4 re-applies it from the saved answer.
 - **Round 4 restore.** If no `round4` row exists and the tree has uncommitted changes, compute the union of
   the working-set paths (`git diff --name-only "$ROUND2_START_SHA"..HEAD`, plus the untracked files they
   name), the target paths in `<SCRATCH_PATH>/round4-merged.txt` (if it exists), and the source paths of any
@@ -381,12 +392,12 @@ wrote and never re-derive it from a fresh run.
   - If every uncommitted change lies inside the union, first unstage it with `git reset -q HEAD -- <union paths>`
     (a staged move survives `git checkout` otherwise), then restore the tracked paths to HEAD
     (`git checkout HEAD -- <paths>`), delete any untracked files inside the union with the file tool, and
-    re-run Round 4 from 4.1.
+    re-run Round 4 from 4.0a (which resumes from the first non-terminal entry, and is a no-op when none remain).
   - If any uncommitted change lies outside the union (including any implementation file), **stop** and report
     those paths. Do not discard unknown work.
   - An approved human amendment that was not yet committed is inside the union and is dropped by this restore.
-    That is safe: its register entry is written only after its ruling commit lands (4.0a step 4), so the
-    question is asked again on resume.
+    That is safe: the saved answer is still on disk, so 4.0a step 4 re-applies it rather than asking again, and
+    its register entry is written only after its ruling commit lands.
 - **Cleanup commit already landed.** If a commit whose subject matches
   `git log --format=%s --grep '^test: clean up spec-blind tests (' "$ROUND2_START_SHA"..HEAD` exists, write the
   `round4` row from it instead of re-running Round 4. Parse `<D>` and `<M>` from the subject's
@@ -2150,7 +2161,9 @@ cleanup.
 ### 4.0a Disagreement closure (before any cleanup)
 
 Runs when the register has a non-terminal entry (`open`, `awaiting-human`, `human-takeover`, or
-`human-impl-wrong`), or a red test in the working set. Record the base first, for the judges' fence checks:
+`human-impl-wrong`), or a red test in the working set. Record the fence base before each entry's judges run, for
+their fence checks. It is re-recorded after every green fix-loop commit (step 3), so a later entry's fence does not
+flag an implementation change that an earlier entry's fix committed:
 ```bash
 git rev-parse HEAD > "<SCRATCH_PATH>/pre-4a-sha.txt"   # <PRE_4A_SHA>
 ```
@@ -2167,18 +2180,23 @@ Then, for each such entry, in order:
    line for the patch is handled as Round 3 handles one: the patch is not applied, the path is recorded in
    the entry's reason, and the entry goes to step 4 (`awaiting-human`).
 2. **Opus judge**, only on `escalate`. Same packet, plus the Sonnet reasoning, and the same verdict set and
-   binding-patch rule, including the `support-edit` rule (with the same `<PRE_4A_SHA>` base). There is no
+   binding-patch rule, including the `support-edit` rule (with the `<PRE_4A_SHA>` in force for this entry). There is no
    further cap: the ladder is at most two judge calls per disagreement (Sonnet, then at most one Opus), and the
    fix loop after a `test-correct` verdict is already bounded at K=3 (ADR-0019 2026-11-04 amendment; model
    routing per ADR-0004, flow call handling per ADR-0023).
 3. **On `test-correct`** (from either judge): send the test to the existing Haiku fix-loop machinery (the
    Integration Gate step 4 shape: K=3, "Do not touch test files", the anti-tamper scan) with the judge's
    diagnosis.
-   - Green → `impl-fixed` (ruler: the judge that said `test-correct`; reason: its citation).
+   - Green → `impl-fixed` (ruler: the judge that said `test-correct`; reason: its citation). Then re-record the fence
+     base as the new `<PRE_4A_SHA>` for the next entry, after the green fix-loop commit:
+     ```bash
+     git rev-parse HEAD > "<SCRATCH_PATH>/pre-4a-sha.txt"   # <PRE_4A_SHA>, per entry
+     ```
    - Not converged after K=3 → `test-correct-blocking`. The test stays committed red (ruling 1a).
 4. **Human ruling** → `awaiting-human`. This applies on an Opus `escalate`, on any Round 3 **Spec questions**
    entry (map each to its register id), on any fence violation not already recorded, and on any Round 3
-   support-edit flip. **The ladder never rules "spec wrong".** Only the human does. Ask through the Ask block
+   support-edit flip. **The ladder never rules "spec wrong".** Only the human does. A saved approved answer for the entry (see
+   "Spec-blind state on resume") is applied without asking: save it, apply it, and commit as below. Otherwise ask through the Ask block
    (`~/.claude/prompts/flow-reference.md`); outside a flow, a plain `AskUserQuestion`; in `/expert-fleet`
    the Ask block parks the question. Batch up to four tests per question set. Each question carries:
    - the plan excerpt, the test body, and expected versus actual;
@@ -2194,12 +2212,15 @@ Then, for each such entry, in order:
      or `test-correct-blocking`);
    - **Take over** (`human-takeover`).
 
-   For `human-spec-wrong`, apply the amendment or deletion the human approved, re-run the test, and commit
-   `test: apply human ruling on spec-blind test <id>`. The commit body lists the id, the change (amended or
+   For `human-spec-wrong`, first save the approved answer (id, the change, the ruler, the reason and the plan
+   citation): in a flow the Ask block already saved it under `FLOW_DIR/answers/`; outside a flow, append it to
+   `<SCRATCH_PATH>/round4-rulings.md`. Then apply the amendment or deletion the human approved, re-run the test, and
+   commit `test: apply human ruling on spec-blind test <id>`. The commit body lists the id, the change (amended or
    deleted), the ruler and the reason, so Step 9 can feed it to review. A deletion is also written to
    `round4-deletions.md` (4.4). Only after that ruling commit lands, record the terminal status, `ruler: human`
-   and the `reason`, in the register. Until then the entry stays `awaiting-human`, so an uncommitted ruling
-   that a resume restores is asked again rather than silently dropped.
+   and the `reason`, in the register. Until then the entry stays `awaiting-human`. A resume that finds the saved
+   answer but no ruling commit re-applies it from the saved answer (see "Spec-blind state on resume"), and does
+   not ask again.
 
    **Take over.** Record `human-takeover` and stop at once. In a flow, write a FAILED receipt with Reason
    `spec-blind-takeover: <n> test(s)` and the ids, and `FAILURE_CLASS: other` (a human stop, so no
