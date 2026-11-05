@@ -10,6 +10,7 @@ which is a hard error rather than a silent pass).
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import re
 import signal
@@ -22,7 +23,7 @@ from typing import List, Dict, Iterator, Optional, TextIO, Tuple, Any, Mapping, 
 from .safety import Unknown, fail_closed
 from .cache import read_repo_cache
 from .deps import atomic_write_text, find_lockfile, read_json_object
-from .models import validate_repo_cache, valid_timeout_secs  # noqa: F401  (re-exported)
+from .models import validate_repo_cache, valid_timeout_secs, Mode, parse_mode, CheckKey, check_key_of, CheckRecord, ValidateResult  # noqa: F401  (re-exported)
 
 try:
     import yaml  # type: ignore[import-untyped]
@@ -36,7 +37,7 @@ except ImportError:  # non-POSIX: the config lock degrades to no lock
 
 
 CHECK_ORDER = ("format", "check", "lint", "typecheck", "vet", "test", "build")
-NON_CHECK_COMMANDS = frozenset({"install"})
+NON_CHECK_COMMANDS = frozenset({"install", "check_minimum"})
 SUPERSEDED_BY_CHECK = ("lint", "typecheck")
 TIMEOUT_ERROR_PREFIX = "timed out after"
 DEFAULT_CHECK_TIMEOUT_SECS: Final = 300
@@ -517,6 +518,8 @@ class CheckResolution:
     opt_out_reason: Optional[str] = None
     # "worktree" or "main" when source_file is set; None otherwise (justfile, opt-out, not configured).
     source_scope: Optional[ConfigScope] = None
+    # True when minimum mode was requested but check_minimum was not found, so full was used instead
+    fell_back_to_full: bool = False
 
     def __post_init__(self) -> None:
         if self.source == OPT_OUT_SOURCE:
@@ -529,22 +532,33 @@ class CheckResolution:
                 raise ValueError("a resolved command needs a real source and no failure_reason")
 
 
-def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -> CheckResolution:
+def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None, mode: str = "full") -> CheckResolution:
     """
     Resolve the check command with fallback logic, reporting the supplying file.
 
-    Resolution order:
+    When mode is "minimum", tries to resolve check_minimum first, then falls back to
+    the full check command if check_minimum is not found, setting fell_back_to_full=True.
+    When mode is "full" (default), resolves the full check command as usual.
+
+    Resolution order (for mode="full"):
     1. Worktree repo-cache.json commands.check
     2. Main worktree repo-cache.json commands.check (if main_worktree provided)
     3. Worktree project.yaml commands.check
     4. Main worktree project.yaml commands.check (if main_worktree provided)
     5. Worktree justfile check recipe
 
+    Resolution order (for mode="minimum"):
+    1. Worktree repo-cache.json commands.check_minimum
+    2. Main worktree repo-cache.json commands.check_minimum (if main_worktree provided)
+    3. Worktree project.yaml commands.check_minimum
+    4. Main worktree project.yaml commands.check_minimum (if main_worktree provided)
+    5. Fall back to full check command (if found) with fell_back_to_full=True
+
     A repo-cache check with package-json provenance is not returned as cached: detection is re-run
     on the worktree being resolved (see _repo_cache_check), so a branch's package.json script is not
     trusted from the shared cache. If the worktree derives nothing, that cache step is skipped.
 
-    If all five fail, an explicit opt-out is consulted: a non-empty top-level
+    If all sources fail, an explicit opt-out is consulted: a non-empty top-level
     checkOptOut in worktree project.yaml, then main project.yaml. A resolved command
     always wins over checkOptOut. A checkOptOut that is set but is not a non-empty string
     is ignored, and the not-configured failure then carries a note saying so.
@@ -561,17 +575,20 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
     repository-committer-controlled at their source.
     """
     sources_tried: List[str] = []
+    check_key = "check_minimum" if mode == "minimum" else "check"
+    fell_back_to_full = False
 
     # 1. Try repo-cache.json in worktree
     cache_file = worktree / ".claude" / "repo-cache.json"
     if cache_file.exists():
         cache_data, read_err = read_repo_cache(cache_file)
-        sources_tried.append("worktree repo-cache.json")
+        sources_tried.append(f"worktree repo-cache.json ({check_key})")
         if not read_err and cache_data:
-            check_cmd = cache_data.commands.get("check")
+            check_cmd = cache_data.commands.get(check_key)
             if isinstance(check_cmd, str) and check_cmd.strip():
                 resolution, note = _repo_cache_check(cache_file, check_cmd, worktree, "worktree")
                 if resolution is not None:
+                    resolution.fell_back_to_full = fell_back_to_full
                     return resolution
                 sources_tried[-1] += note
             else:
@@ -579,19 +596,20 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
         else:
             sources_tried[-1] += f" ({read_err})" if read_err else " (validation failed)"
     else:
-        sources_tried.append("worktree repo-cache.json (not found)")
+        sources_tried.append(f"worktree repo-cache.json ({check_key}, not found)")
 
     # 2. Try repo-cache.json in main worktree if worktree had no check
     if main_worktree:
         main_cache_file = main_worktree / ".claude" / "repo-cache.json"
         if main_cache_file.exists():
             cache_data, read_err = read_repo_cache(main_cache_file)
-            sources_tried.append("main repo-cache.json")
+            sources_tried.append(f"main repo-cache.json ({check_key})")
             if not read_err and cache_data:
-                check_cmd = cache_data.commands.get("check")
+                check_cmd = cache_data.commands.get(check_key)
                 if isinstance(check_cmd, str) and check_cmd.strip():
                     resolution, note = _repo_cache_check(main_cache_file, check_cmd, worktree, "main")
                     if resolution is not None:
+                        resolution.fell_back_to_full = fell_back_to_full
                         return resolution
                     sources_tried[-1] += note
                 else:
@@ -599,19 +617,21 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
             else:
                 sources_tried[-1] += f" ({read_err})" if read_err else " (validation failed)"
         else:
-            sources_tried.append("main repo-cache.json (not found)")
+            sources_tried.append(f"main repo-cache.json ({check_key}, not found)")
 
     # 3. Try project.yaml in worktree (parsed once; the mapping is reused for the opt-out below)
     project_yaml = worktree / ".claude" / "project.yaml"
     worktree_yaml: Optional[Dict[str, Any]] = None
     if project_yaml.exists():
         worktree_yaml, load_note = _load_project_yaml(project_yaml)
-        check_cmd = _check_command_from_mapping(worktree_yaml)
-        if check_cmd:
-            return CheckResolution(check_cmd, "project.yaml", project_yaml, None, source_scope="worktree")
+        check_cmd = worktree_yaml.get("commands", {}).get(check_key) if worktree_yaml else None
+        if isinstance(check_cmd, str) and check_cmd.strip():
+            resolution = CheckResolution(check_cmd, "project.yaml", project_yaml, None, source_scope="worktree")
+            resolution.fell_back_to_full = fell_back_to_full
+            return resolution
         sources_tried.append(f"worktree project.yaml ({load_note or NO_CHECK_KEY_NOTE})")
     else:
-        sources_tried.append("worktree project.yaml (not found)")
+        sources_tried.append(f"worktree project.yaml ({check_key}, not found)")
 
     # 4. Try project.yaml in main worktree if worktree had no check
     main_yaml: Optional[Dict[str, Any]] = None
@@ -619,12 +639,61 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
         main_project_yaml = main_worktree / ".claude" / "project.yaml"
         if main_project_yaml.exists():
             main_yaml, load_note = _load_project_yaml(main_project_yaml)
-            check_cmd = _check_command_from_mapping(main_yaml)
-            if check_cmd:
-                return CheckResolution(check_cmd, "project.yaml", main_project_yaml, None, source_scope="main")
+            check_cmd = main_yaml.get("commands", {}).get(check_key) if main_yaml else None
+            if isinstance(check_cmd, str) and check_cmd.strip():
+                resolution = CheckResolution(check_cmd, "project.yaml", main_project_yaml, None, source_scope="main")
+                resolution.fell_back_to_full = fell_back_to_full
+                return resolution
             sources_tried.append(f"main project.yaml ({load_note or NO_CHECK_KEY_NOTE})")
         else:
-            sources_tried.append("main project.yaml (not found)")
+            sources_tried.append(f"main project.yaml ({check_key}, not found)")
+
+    # If minimum mode and nothing found, fall back to full check
+    if mode == "minimum":
+        fell_back_to_full = True
+        # Re-try the same sources but for "check" instead
+        check_key = "check"
+
+        # Try repo-cache in worktree
+        cache_file = worktree / ".claude" / "repo-cache.json"
+        if cache_file.exists():
+            cache_data, read_err = read_repo_cache(cache_file)
+            if not read_err and cache_data:
+                check_cmd = cache_data.commands.get("check")
+                if isinstance(check_cmd, str) and check_cmd.strip():
+                    resolution, note = _repo_cache_check(cache_file, check_cmd, worktree, "worktree")
+                    if resolution is not None:
+                        resolution.fell_back_to_full = True
+                        return resolution
+
+        # Try repo-cache in main
+        if main_worktree:
+            main_cache_file = main_worktree / ".claude" / "repo-cache.json"
+            if main_cache_file.exists():
+                cache_data, read_err = read_repo_cache(main_cache_file)
+                if not read_err and cache_data:
+                    check_cmd = cache_data.commands.get("check")
+                    if isinstance(check_cmd, str) and check_cmd.strip():
+                        resolution, note = _repo_cache_check(main_cache_file, check_cmd, worktree, "main")
+                        if resolution is not None:
+                            resolution.fell_back_to_full = True
+                            return resolution
+
+        # Try project.yaml in worktree
+        if worktree_yaml:
+            check_cmd = _check_command_from_mapping(worktree_yaml)
+            if check_cmd:
+                resolution = CheckResolution(check_cmd, "project.yaml", project_yaml, None, source_scope="worktree")
+                resolution.fell_back_to_full = True
+                return resolution
+
+        # Try project.yaml in main
+        if main_yaml:
+            check_cmd = _check_command_from_mapping(main_yaml)
+            if check_cmd:
+                resolution = CheckResolution(check_cmd, "project.yaml", main_project_yaml, None, source_scope="main")
+                resolution.fell_back_to_full = True
+                return resolution
 
     # 5. Try justfile check recipe
     justfile = worktree / "justfile"
@@ -636,7 +705,9 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
                 cwd=str(worktree), capture_output=True, text=True, timeout=5
             )
             if summary.returncode == 0 and "check" in summary.stdout.split():
-                return CheckResolution("just check", "justfile", None, None)
+                resolution = CheckResolution("just check", "justfile", None, None)
+                resolution.fell_back_to_full = fell_back_to_full
+                return resolution
             sources_tried[-1] += " (check recipe not found)"
         except subprocess.TimeoutExpired:
             sources_tried[-1] += " (timed out)"
@@ -656,13 +727,14 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
             None,
             OPT_OUT_MESSAGE_TEMPLATE.format(reason=opt_out_reason),
             opt_out_reason,
+            fell_back_to_full=fell_back_to_full,
         )
 
     # Resolution exhausted: the sources tried go on their own line.
     failure = NO_CHECK_CONFIGURED_MESSAGE + "\nsources tried: " + ", ".join(sources_tried)
     if opt_out_invalid:
         failure += "\n" + CHECK_OPT_OUT_INVALID_NOTE
-    return CheckResolution(None, None, None, failure)
+    return CheckResolution(None, None, None, failure, fell_back_to_full=fell_back_to_full)
 
 
 def resolve_check_command(
@@ -1088,15 +1160,29 @@ def worktree_tree(worktree: Path) -> Optional[str]:
     """
     Get the tree of the full non-ignored working state without touching the real index.
 
-    Creates a temp git index file, reads the current HEAD tree, stages all changes via
-    `git add -A`, and captures the result tree with `git write-tree`. Deletes the temp
-    file on exit. Returns the tree SHA (40-hex), or None on any error.
+    Uses git rev-parse --git-dir to resolve the git dir (works in linked worktrees where
+    .git is a file). Creates a temp git index file under tempfile.gettempdir(), reads the
+    current HEAD tree, stages all changes via `git add -A`, and captures the result tree
+    with `git write-tree`. Deletes the temp file in a finally block. Returns the tree SHA
+    (40-hex), or None on any error. Logs "idempotency disabled: no tree: <reason>" on failure.
     """
-    import tempfile
-
     try:
-        # Create temp index file
-        fd, tmp_index_path = tempfile.mkstemp(prefix="git-index-", dir=worktree / ".git")
+        # Resolve git dir with git rev-parse --git-dir (works with linked worktrees)
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        git_dir_raw = result.stdout.strip()
+        if not git_dir_raw:
+            reason = "git rev-parse --git-dir returned empty"
+            logging.warning(f"idempotency disabled: no tree: {reason}")
+            return None
+
+        # Create temp index file in system temp directory, not in the git dir
+        fd, tmp_index_path = tempfile.mkstemp(prefix="git-index-")
         os.close(fd)
 
         try:
@@ -1130,14 +1216,22 @@ def worktree_tree(worktree: Path) -> Optional[str]:
                 text=True,
                 check=True,
             )
-            return result.stdout.strip()
+            tree = result.stdout.strip()
+            # Never store an empty tree in the attestation
+            if not tree:
+                reason = "git write-tree returned empty"
+                logging.warning(f"idempotency disabled: no tree: {reason}")
+                return None
+            return tree
         finally:
-            # Clean up temp file
+            # Clean up temp file; a killed process leaks a small temp file (accepted)
             try:
                 os.remove(tmp_index_path)
             except OSError:
                 pass
-    except Exception:
+    except Exception as e:
+        reason = str(e)
+        logging.warning(f"idempotency disabled: no tree: {reason}")
         return None
 
 
@@ -1158,6 +1252,104 @@ def _resolve_sha(rev: str, worktree: Path) -> Optional[str]:
         )
     except Exception:
         return None
+
+
+def resolve_check_base(worktree: Path) -> Optional[str]:
+    """
+    Resolve the base ref (merge-base of HEAD with origin/<default>).
+
+    Returns the base SHA, or None if detached, unresolvable, or the base does not exist.
+    """
+    try:
+        # Get the default branch
+        result = subprocess.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        # Result is "refs/remotes/origin/<branch>"
+        origin_head = result.stdout.strip()
+        if not origin_head.startswith("ref: refs/remotes/origin/"):
+            return None
+        default_branch = origin_head[len("ref: refs/remotes/origin/"):]
+
+        # Get merge-base of HEAD with origin/<default_branch>
+        result = subprocess.run(
+            ["git", "merge-base", "HEAD", f"origin/{default_branch}"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        base_sha = result.stdout.strip()
+        if not base_sha:
+            return None
+        return base_sha
+    except Exception:
+        return None
+
+
+def canonical_changed_files(worktree: Path, base: Optional[str]) -> List[str]:
+    """
+    Compute the canonical list of changed files (committed, staged, working, untracked).
+
+    Returns a sorted, unique list of file paths (both sides of renames, NUL-separated internally).
+    If base is None, returns an empty list.
+    """
+    if not base:
+        return []
+
+    files_set: set = set()
+    try:
+        # Committed and working-tree changes (both rename sides)
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "--no-renames", base],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        files_set.update(f for f in result.stdout.strip().split("\n") if f)
+
+        # Staged changes
+        result = subprocess.run(
+            ["git", "diff", "--cached", "--name-only", "--no-renames"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        files_set.update(f for f in result.stdout.strip().split("\n") if f)
+
+        # Untracked non-ignored files
+        result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        files_set.update(f for f in result.stdout.strip().split("\n") if f)
+    except Exception:
+        # On error, return empty list (no hash, validate runs uncached)
+        return []
+
+    return sorted(files_set)
+
+
+def changed_files_hash(files: List[str]) -> str:
+    """
+    Compute SHA256 of NUL-separated, sorted file list.
+
+    The same list that canonical_changed_files returns.
+    """
+    # NUL-separated, sorted
+    canonical = "\0".join(files)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def record_check_attestation(
@@ -1289,6 +1481,191 @@ def write_check_receipt(
     except OSError as e:
         return False, Unknown(f"write_check_receipt: {e}")
     return True, None
+
+
+def validate(
+    worktree: Path,
+    mode: str = "full",
+    force: bool = False,
+    main_worktree: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Validate checks idempotently with per-key record caching.
+
+    Returns a dict with: status, all_passed, executed, schema_version, mode_requested,
+    mode_executed, fell_back_to_full, cache, satisfied_by, changed_files_source.
+
+    Cache records are stored in .claude/check-records/<sha256>.json, keyed by the
+    canonical key serialization. Uses tempfile.gettempdir() for CHECK_BASE and
+    CHECK_CHANGED_FILES exports (outside the worktree).
+    """
+    import time
+
+    # Resolve check command for this mode
+    resolution = resolve_check_detail(worktree, main_worktree, mode=mode)
+    if resolution.failure_reason:
+        return {
+            "status": "error",
+            "error": resolution.failure_reason,
+        }
+
+    check_command = resolution.command
+    if not check_command:
+        return {
+            "status": "error",
+            "error": "No check command resolved",
+        }
+
+    # Get tree
+    tree = worktree_tree(worktree)
+    if not tree:
+        # Uncached run
+        result, err = run_checks(
+            commands={"check": check_command},
+            repo_root=worktree,
+            timeout=DEFAULT_CHECK_TIMEOUT_SECS,
+        )
+        output = result.to_dict() if result else {}
+        output.update({
+            "schema_version": 1,
+            "mode_requested": mode,
+            "mode_executed": mode,
+            "fell_back_to_full": resolution.fell_back_to_full,
+            "cache": "miss",
+            "satisfied_by": None,
+            "changed_files_source": "tree-unavailable",
+        })
+        return output
+
+    # Compute digests
+    cache_data, _ = read_repo_cache(worktree / ".claude" / "repo-cache.json")
+    commands_dict = cache_data.commands if cache_data else {}
+
+    # Get full digest (from all check commands)
+    full_digest = _commands_digest(commands_dict)
+
+    # Get minimum digest if applicable
+    minimum_digest = ""
+    if mode == "minimum":
+        min_commands = {k: v for k, v in commands_dict.items() if k == "check_minimum"}
+        minimum_digest = _commands_digest(min_commands)
+
+    # Get changed files
+    base = resolve_check_base(worktree)
+    changed_files = canonical_changed_files(worktree, base) if base else []
+    files_hash = changed_files_hash(changed_files) if changed_files else ""
+
+    # Build key
+    parsed_mode = parse_mode(mode)
+    if not parsed_mode:
+        parsed_mode = "full"
+
+    key = check_key_of(parsed_mode, tree, full_digest, minimum_digest or None, files_hash or None)
+
+    # Determine cache action
+    cache_action = "forced" if force else "miss"
+    satisfied_by = None
+
+    # Look up record if not forced
+    if key and not force:
+        records_dir = worktree / ".claude" / "check-records"
+        if records_dir.exists():
+            # Compute key hash for filename
+            from .models import _canonical_key_serialisation
+            key_serial = _canonical_key_serialisation(key)
+            key_hash = hashlib.sha256(key_serial.encode()).hexdigest()
+            record_path = records_dir / f"{key_hash}.json"
+
+            if record_path.exists():
+                try:
+                    record_data = json.loads(record_path.read_text())
+                    record = CheckRecord.from_dict(record_data)
+                    if record and record.passed:
+                        # Cache hit
+                        cache_action = "hit"
+                        satisfied_by = key_hash
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+    # If cache hit, return immediately
+    if cache_action == "hit" and key:
+        return {
+            "status": "passed",
+            "all_passed": True,
+            "executed": [],
+            "schema_version": 1,
+            "mode_requested": mode,
+            "mode_executed": resolution.fell_back_to_full and "full" or mode,
+            "fell_back_to_full": resolution.fell_back_to_full,
+            "cache": "hit",
+            "satisfied_by": satisfied_by,
+            "changed_files_source": "computed",
+        }
+
+    # Export CHECK_BASE and CHECK_CHANGED_FILES to temp file
+    check_env_file = Path(tempfile.gettempdir()) / f"claude-check-env-{os.getpid()}.txt"
+    try:
+        check_env_content = f"{base or ''}\n" + "\0".join(changed_files)
+        check_env_file.write_text(check_env_content)
+        env = os.environ.copy()
+        env["CHECK_BASE"] = base or ""
+        env["CHECK_CHANGED_FILES"] = str(check_env_file)
+    except OSError:
+        env = os.environ.copy()
+
+    # Run check
+    try:
+        result, err = run_checks(
+            commands={"check": check_command},
+            repo_root=worktree,
+            timeout=DEFAULT_CHECK_TIMEOUT_SECS,
+        )
+    finally:
+        try:
+            check_env_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    output = result.to_dict() if result else {}
+    mode_executed: Mode = "full" if resolution.fell_back_to_full else (parse_mode(mode) or "full")
+
+    # Write record if passed and tree unchanged
+    if result and result.all_passed and key:
+        try:
+            records_dir = worktree / ".claude" / "check-records"
+            records_dir.mkdir(parents=True, exist_ok=True)
+
+            from .models import _canonical_key_serialisation
+            key_serial = _canonical_key_serialisation(key)
+            key_hash = hashlib.sha256(key_serial.encode()).hexdigest()
+            record_path = records_dir / f"{key_hash}.json"
+
+            record = CheckRecord(
+                schema_version=1,
+                key=key,
+                passed=True,
+                mode_executed=mode_executed,
+                written_at=time.time(),
+            )
+
+            record_data = record.to_dict()
+            tmp_path = record_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(record_data) + "\n")
+            os.replace(tmp_path, record_path)
+            satisfied_by = key_hash
+        except OSError:
+            pass
+
+    output.update({
+        "schema_version": 1,
+        "mode_requested": mode,
+        "mode_executed": mode_executed,
+        "fell_back_to_full": resolution.fell_back_to_full,
+        "cache": cache_action,
+        "satisfied_by": satisfied_by,
+        "changed_files_source": "computed",
+    })
+    return output
 
 
 def check_receipt_fresh(

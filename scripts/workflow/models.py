@@ -5,8 +5,9 @@ Schema versioning allows safe migration of cache formats; each cache validates
 its own schema_version and content structure.
 """
 
+import re
 from dataclasses import dataclass, field, asdict
-from typing import Optional, Dict, Any, List, Literal, TypedDict
+from typing import Optional, Dict, Any, List, Literal, TypedDict, Union, NoReturn, Tuple, Mapping, get_args
 
 
 GITHUB_CACHE_SCHEMA_VERSION = "1.0"
@@ -563,3 +564,311 @@ class ScoutVerdict:
         ):
             raise ValueError(f"Invalid scout verdict reason: {reason!r}")
         return cls(comment_id=comment_id, verdict=verdict, reason=reason)
+
+
+# Check modes and records (ADR-0013 Amendment 11, Step 4 of plan)
+
+Mode = Literal["minimum", "full"]
+MODES: Tuple[Mode, ...] = get_args(Mode)  # ("minimum", "full")
+
+
+def parse_mode(s: str) -> Optional[Mode]:
+    """Parse a string to Mode. Returns None if not a valid mode."""
+    if s in MODES:
+        return s  # type: ignore[return-value]
+    return None
+
+
+@dataclass(frozen=True)
+class FullKey:
+    """Check record key for full-mode checks. tree and full_digest must not be empty."""
+    tree: str  # 40-hex SHA
+    full_digest: str  # 64-hex SHA256
+
+    def __post_init__(self) -> None:
+        """Validate hex fields."""
+        if not re.fullmatch(r"[0-9a-f]{40}", self.tree):
+            raise ValueError(f"Invalid tree (not 40-hex): {self.tree}")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.full_digest):
+            raise ValueError(f"Invalid full_digest (not 64-hex): {self.full_digest}")
+
+
+@dataclass(frozen=True)
+class MinimumKey:
+    """Check record key for minimum-mode checks. All fields must not be empty."""
+    tree: str  # 40-hex SHA
+    full_digest: str  # 64-hex SHA256
+    minimum_digest: str  # 64-hex SHA256
+    changed_files_hash: str  # 64-hex SHA256
+
+    def __post_init__(self) -> None:
+        """Validate hex fields."""
+        if not re.fullmatch(r"[0-9a-f]{40}", self.tree):
+            raise ValueError(f"Invalid tree (not 40-hex): {self.tree}")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.full_digest):
+            raise ValueError(f"Invalid full_digest (not 64-hex): {self.full_digest}")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.minimum_digest):
+            raise ValueError(f"Invalid minimum_digest (not 64-hex): {self.minimum_digest}")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.changed_files_hash):
+            raise ValueError(f"Invalid changed_files_hash (not 64-hex): {self.changed_files_hash}")
+
+
+CheckKey = Union[FullKey, MinimumKey]
+
+
+def check_key_of(
+    mode: Mode,
+    tree: Optional[str],
+    full_digest: str,
+    minimum_digest: Optional[str] = None,
+    changed_files_hash: Optional[str] = None
+) -> Optional[CheckKey]:
+    """
+    Build a CheckKey for the given mode. Returns None if the tree is empty/missing
+    or if minimum mode but changed_files_hash is missing.
+
+    Pure builder; returns None when cache is impossible (no tree or no base).
+    """
+    if not tree:  # empty or None
+        return None
+    if mode == "full":
+        try:
+            return FullKey(tree=tree, full_digest=full_digest)
+        except ValueError:
+            return None
+    elif mode == "minimum":
+        if not changed_files_hash:
+            return None
+        try:
+            return MinimumKey(
+                tree=tree,
+                full_digest=full_digest,
+                minimum_digest=minimum_digest or "",  # Must be provided; validate will catch empty
+                changed_files_hash=changed_files_hash
+            )
+        except ValueError:
+            return None
+    return None
+
+
+def _canonical_key_serialisation(key: CheckKey) -> str:
+    """
+    Canonical serialisation of a CheckKey for hashing and integrity checks.
+
+    Order is: mode:tree:digest1:digest2 (with mode-specific digest count).
+    """
+    if isinstance(key, FullKey):
+        return f"full:{key.tree}:{key.full_digest}"
+    elif isinstance(key, MinimumKey):
+        return f"minimum:{key.tree}:{key.full_digest}:{key.minimum_digest}:{key.changed_files_hash}"
+    else:
+        _never(key)
+
+
+def _never(x: NoReturn) -> NoReturn:
+    """Helper for exhaustive type checks (Python 3.8 has no assert_never)."""
+    raise AssertionError(f"Unhandled case: {x}")
+
+
+def satisfies(record: "CheckRecord", requested: CheckKey) -> bool:
+    """
+    Check if a record satisfies a requested key.
+
+    A full record satisfies a full or minimum request when tree and full_digest match.
+    A minimum record satisfies only a minimum request when tree, full_digest, minimum_digest,
+    and changed_files_hash all match. A minimum record never satisfies a full request.
+    """
+    if not isinstance(record, CheckRecord):
+        return False
+
+    record_key = record.key
+    if isinstance(record_key, FullKey):
+        if isinstance(requested, FullKey):
+            return record_key.tree == requested.tree and record_key.full_digest == requested.full_digest
+        elif isinstance(requested, MinimumKey):
+            return record_key.tree == requested.tree and record_key.full_digest == requested.full_digest
+        else:
+            _never(requested)
+    elif isinstance(record_key, MinimumKey):
+        if isinstance(requested, FullKey):
+            return False  # minimum never satisfies full
+        elif isinstance(requested, MinimumKey):
+            return (
+                record_key.tree == requested.tree
+                and record_key.full_digest == requested.full_digest
+                and record_key.minimum_digest == requested.minimum_digest
+                and record_key.changed_files_hash == requested.changed_files_hash
+            )
+        else:
+            _never(requested)
+    else:
+        _never(record_key)
+
+
+@dataclass
+class CheckRecord:
+    """One cache record for a check result, keyed by (tree, digests, changed_files_hash)."""
+    schema_version: int  # Currently 1
+    key: CheckKey  # Embedded for re-verification
+    passed: bool  # True iff the check passed
+    mode_executed: Mode  # Mode that was actually run ("full" or "minimum")
+    written_at: float  # Unix timestamp when record was written
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        if isinstance(self.key, FullKey):
+            key_dict = {
+                "tree": self.key.tree,
+                "full_digest": self.key.full_digest,
+            }
+        else:  # MinimumKey
+            key_dict = {
+                "tree": self.key.tree,
+                "full_digest": self.key.full_digest,
+                "minimum_digest": self.key.minimum_digest,
+                "changed_files_hash": self.key.changed_files_hash,
+            }
+        return {
+            "schema_version": self.schema_version,
+            "key": key_dict,
+            "passed": self.passed,
+            "mode_executed": self.mode_executed,
+            "written_at": self.written_at,
+        }
+
+    @staticmethod
+    def from_dict(data: Mapping[str, object]) -> Optional["CheckRecord"]:
+        """
+        Parse a CheckRecord from a dict, fail-closed. Returns None on any validation failure.
+        Never raises. Checks the exact key set and re-verifies the embedded key.
+        """
+        def _reject(reason: str) -> None:
+            # For tests to inspect; we return None silently in production
+            pass
+
+        try:
+            # Check exact key set
+            required_keys = {"schema_version", "key", "passed", "mode_executed", "written_at"}
+            data_keys = set(data.keys())
+            if data_keys != required_keys:
+                _reject(f"key set mismatch: {data_keys} != {required_keys}")
+                return None
+
+            # Validate schema_version
+            schema_version = data.get("schema_version")
+            if not isinstance(schema_version, int) or isinstance(schema_version, bool):
+                _reject(f"schema_version not int: {type(schema_version)}")
+                return None
+            if schema_version != 1:
+                _reject(f"schema_version != 1: {schema_version}")
+                return None
+
+            # Validate passed (must be exactly bool True)
+            passed = data.get("passed")
+            if type(passed) is not bool:
+                _reject(f"passed not bool: {type(passed)}")
+                return None
+
+            # Validate mode_executed
+            mode_executed = data.get("mode_executed")
+            if not isinstance(mode_executed, str):
+                _reject(f"mode_executed not str: {type(mode_executed)}")
+                return None
+            mode_parsed = parse_mode(mode_executed)
+            if mode_parsed is None:
+                _reject(f"mode_executed not valid: {mode_executed}")
+                return None
+
+            # Validate written_at
+            written_at = data.get("written_at")
+            if not isinstance(written_at, (int, float)) or isinstance(written_at, bool):
+                _reject(f"written_at not float: {type(written_at)}")
+                return None
+
+            # Parse key
+            key_data = data.get("key")
+            if not isinstance(key_data, dict):
+                _reject(f"key not dict: {type(key_data)}")
+                return None
+
+            key_keys = set(key_data.keys())
+            if key_keys == {"tree", "full_digest"}:
+                # FullKey
+                tree = key_data.get("tree")
+                full_digest = key_data.get("full_digest")
+                if not isinstance(tree, str) or not isinstance(full_digest, str):
+                    _reject("FullKey fields not str")
+                    return None
+                try:
+                    key: CheckKey = FullKey(tree=tree, full_digest=full_digest)
+                except ValueError:
+                    _reject("FullKey validation failed")
+                    return None
+            elif key_keys == {"tree", "full_digest", "minimum_digest", "changed_files_hash"}:
+                # MinimumKey
+                tree = key_data.get("tree")
+                full_digest = key_data.get("full_digest")
+                minimum_digest = key_data.get("minimum_digest")
+                changed_files_hash = key_data.get("changed_files_hash")
+                if not all(isinstance(v, str) for v in [tree, full_digest, minimum_digest, changed_files_hash]):
+                    _reject("MinimumKey fields not all str")
+                    return None
+                try:
+                    key = MinimumKey(
+                        tree=tree,  # type: ignore[arg-type]
+                        full_digest=full_digest,  # type: ignore[arg-type]
+                        minimum_digest=minimum_digest,  # type: ignore[arg-type]
+                        changed_files_hash=changed_files_hash  # type: ignore[arg-type]
+                    )
+                except ValueError:
+                    _reject("MinimumKey validation failed")
+                    return None
+            else:
+                _reject(f"key has unknown shape: {key_keys}")
+                return None
+
+            return CheckRecord(
+                schema_version=schema_version,
+                key=key,
+                passed=passed,
+                mode_executed=mode_parsed,
+                written_at=written_at
+            )
+        except Exception as e:
+            _reject(f"exception: {e}")
+            return None
+
+
+class CheckStepResultDict(TypedDict, total=True):
+    """One step result."""
+    step: str
+    passed: bool
+    message: str
+
+
+class SkippedCheckReasonDict(TypedDict, total=True):
+    """One skipped check reason."""
+    reason: str
+    explanation: str
+
+
+class CheckResultsDict(TypedDict, total=True):
+    """Base TypedDict for CheckResults.to_dict()."""
+    results: List[CheckStepResultDict]
+    all_passed: bool
+    failed_at: Optional[str]
+    planned: List[str]
+    executed: List[str]
+    skipped: List[SkippedCheckReasonDict]
+    status: str
+
+
+class ValidateResult(CheckResultsDict, total=True):
+    """Result of checks validate, extending CheckResultsDict with mode info."""
+    schema_version: int
+    mode_requested: Mode
+    mode_executed: Mode
+    fell_back_to_full: bool
+    cache: Literal["hit", "miss", "forced"]
+    satisfied_by: Optional[str]  # filename hash or None
+    changed_files_source: str  # "computed" or reason for why it's not available

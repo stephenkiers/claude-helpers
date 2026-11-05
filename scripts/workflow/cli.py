@@ -346,6 +346,12 @@ def main() -> None:
             "(opt-out or not configured); read `source` from the JSON to tell them apart."
         )
     )
+    checks_resolve_check_parser.add_argument(
+        "--mode",
+        choices=["minimum", "full"],
+        default="full",
+        help="Check mode: 'minimum' or 'full' (default: full)"
+    )
 
     checks_ensure_check_parser = checks_subparsers.add_parser(
         "ensure-check",
@@ -369,6 +375,27 @@ def main() -> None:
         "--command", dest="check_command", default=None, help="Check command to record as commands.check"
     )
     record_answer_group.add_argument("--opt-out", default=None, help="Reason to record as checkOptOut")
+
+    checks_validate_parser = checks_subparsers.add_parser(
+        "validate",
+        help="Validate checks idempotently with caching"
+    )
+    checks_validate_parser.add_argument(
+        "--mode",
+        choices=["minimum", "full"],
+        default="full",
+        help="Check mode: 'minimum' or 'full' (default: full)"
+    )
+    checks_validate_parser.add_argument(
+        "--worktree",
+        default=".",
+        help="Worktree directory (default: cwd)"
+    )
+    checks_validate_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force re-run, ignoring cache"
+    )
 
     deps_parser = subparsers.add_parser("deps", help="Dependency install precondition")
     deps_subparsers = deps_parser.add_subparsers(dest="deps_action")
@@ -794,7 +821,8 @@ def main() -> None:
             try:
                 worktree_path = Path(args.worktree)
                 main_worktree_path = Path(args.main_worktree) if args.main_worktree else None
-                resolution = checks.resolve_check_detail(worktree_path, main_worktree_path)
+                mode = args.mode if args.mode else "full"
+                resolution = checks.resolve_check_detail(worktree_path, main_worktree_path, mode=mode)
                 source_kind: checks.ConfigKind = "project.yaml" if resolution.source == "project.yaml" else "repo-cache"
                 timeout_secs, timeout_source = checks.resolve_check_timeout(
                     worktree_path, main_worktree_path, resolution.source_file, source_kind,
@@ -807,6 +835,7 @@ def main() -> None:
                     "opt_out_reason": resolution.opt_out_reason,
                     "timeout_secs": timeout_secs,
                     "timeout_source": timeout_source,
+                    "fell_back_to_full": getattr(resolution, "fell_back_to_full", False),
                 }
                 print(json.dumps(output))
                 if resolution.failure_reason:
@@ -819,6 +848,7 @@ def main() -> None:
                     "opt_out_reason": None,
                     "timeout_secs": None,
                     "timeout_source": None,
+                    "fell_back_to_full": False,
                 }
                 print(json.dumps(output))
                 sys.exit(1)
@@ -844,6 +874,25 @@ def main() -> None:
             print(message)
             if not ok:
                 sys.exit(1)
+        elif args.checks_action == "validate":
+            try:
+                worktree = Path(args.worktree).resolve()
+                validate_result: Any = checks.validate(
+                    worktree=worktree,
+                    mode=args.mode,
+                    force=args.force
+                )
+                print(json.dumps(validate_result))
+                # Exit 0 if passed, 1 if failed
+                exit_code = 0 if (validate_result.get("status") == "passed") else 1
+                sys.exit(exit_code)
+            except Exception as e:
+                output = {
+                    "status": "error",
+                    "error": str(e),
+                }
+                print(json.dumps(output))
+                sys.exit(2)
         else:
             checks_parser.print_help()
             sys.exit(1)

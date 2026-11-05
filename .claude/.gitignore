@@ -11,3 +11,5 @@ reviewers/*-local.yaml
 # override so Nick reviews changes here against these very ADRs. Not a license for consuming
 # projects to commit their own local overrides.
 !reviewers/north-star-nick-local.yaml
+# Per-key check records (ADR-0013 Amendment 11, Step 7 of plan)
+check-records/
