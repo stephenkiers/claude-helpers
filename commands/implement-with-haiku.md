@@ -2467,10 +2467,7 @@ CHECK_CMD=$(jq -r '.command // empty' <SCRATCH_PATH>/resolve-check.json)
 TIMEOUT=$(jq -r '.timeout_secs // empty' <SCRATCH_PATH>/resolve-check.json)
 CHECK_SHA=$(cd <WORKTREE> && git rev-parse HEAD)
 printf '%s\n' "$CHECK_SHA" > <SCRATCH_PATH>/check-sha.txt
-FELL_BACK=$(jq -r '.fell_back_to_full // false' <SCRATCH_PATH>/resolve-check.json)
-if [ "$FELL_BACK" = "true" ]; then CACHE_KEY=check; else CACHE_KEY=check_minimum; fi
-CACHE_JSON=$(jq -n --arg cmd "$CHECK_CMD" --arg key "$CACHE_KEY" --argjson t "$TIMEOUT" '{commands: {($key): $cmd}, checkTimeoutSecs: $t}')
-cd <WORKTREE> && printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks validate --mode minimum - > <SCRATCH_PATH>/full-check.json
+cd <WORKTREE> && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks validate --mode minimum --worktree <WORKTREE> > <SCRATCH_PATH>/full-check.json
 ```
 Never wrap this in `timeout` or `gtimeout` (see Gate step 1). The block's first check, before anything is
 written or launched, requires a clean tree: the porcelain status of `<WORKTREE>` must print nothing. Any

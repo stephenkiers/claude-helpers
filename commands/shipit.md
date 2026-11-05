@@ -286,14 +286,10 @@ invoked from):
 ```bash
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
-# Resolve the default branch for the attestation
-DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
-DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
-
-# Run checks via deterministic CLI. Exit codes: 0 = passed, 1 = a check failed,
-# 2 = nothing ran (empty/all-null cache) or a coverage-assertion violation.
-CACHE_JSON=$(cat .claude/repo-cache.json 2>/dev/null || echo '{}')
-CHECK_RESULT=$(printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks validate --mode minimum - --base "origin/${DEFAULT_BRANCH}")
+# Run checks via deterministic CLI from the worktree. `validate` resolves the check command, the merge-base
+# and the changed files itself; it takes no stdin and no --base. Exit codes: 0 = passed, 1 = a check failed,
+# 2 = nothing ran (empty/all-null cache), a config or usage error, or a coverage-assertion violation.
+CHECK_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks validate --mode minimum --worktree "$(pwd)")
 CHECK_EXIT=$?
 CHECK_STATUS=$(printf '%s' "$CHECK_RESULT" | jq -r '.status // "unknown"')
 CHECK_EXECUTED=$(printf '%s' "$CHECK_RESULT" | jq -r '.executed // [] | join(", ")')

@@ -6,6 +6,7 @@ its own schema_version and content structure.
 """
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, Any, List, Literal, TypedDict, Union, NoReturn, Tuple, Mapping, get_args
@@ -790,6 +791,8 @@ def parse_check_record(
     written_at = data["written_at"]
     if type(written_at) not in (int, float):
         return None, f"written_at is not a number: {written_at!r}"
+    if type(written_at) is float and not math.isfinite(written_at):
+        return None, f"written_at is not finite: {written_at!r}"
 
     key_data = data["key"]
     if not isinstance(key_data, dict):
@@ -819,7 +822,9 @@ def parse_check_record(
     if isinstance(key, MinimumKey) and mode != "minimum":
         return None, "minimum-shaped key with mode_executed full"
 
-    if filename_hash is not None and record_filename_hash(key) != filename_hash:
+    # The embedded key is always re-hashed; with no filename given it is checked against its own hash.
+    expected_hash = filename_hash if filename_hash is not None else record_filename_hash(key)
+    if record_filename_hash(key) != expected_hash:
         return None, "embedded key does not hash to the record filename"
 
     return CheckRecord(
@@ -856,7 +861,7 @@ class CheckResultsDict(TypedDict, total=True):
 
 
 class ValidateResult(CheckResultsDict, total=True):
-    """Result of checks validate, extending CheckResultsDict with mode info."""
+    """Result of checks validate. An error result carries these same keys plus an `error` string."""
     schema_version: int
     mode_requested: Mode
     mode_executed: Mode
@@ -864,3 +869,4 @@ class ValidateResult(CheckResultsDict, total=True):
     cache: Literal["hit", "miss", "forced"]
     satisfied_by: Optional[str]  # filename hash or None
     changed_files_source: str  # "computed" or reason for why it's not available
+

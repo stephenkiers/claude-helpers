@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Dict, Iterator, Optional, TextIO, Tuple, Any, Mapping, Final, Literal
+from typing import List, Dict, Iterator, Optional, TextIO, Tuple, Any, Mapping, Final, Literal, cast
 
 from .safety import Unknown, fail_closed
 from .cache import read_repo_cache
@@ -26,6 +26,7 @@ from .deps import atomic_write_text, find_lockfile, read_json_object
 from .models import (
     validate_repo_cache, valid_timeout_secs, Mode, parse_mode, CheckKey, check_key_of, CheckRecord,
     FullKey, MinimumKey, satisfies, parse_check_record, record_filename_hash, CHECK_RECORD_SCHEMA_VERSION,
+    ValidateResult,
 )
 
 try:
@@ -1265,6 +1266,17 @@ def resolve_check_base(worktree: Path) -> Optional[str]:
     Returns the base SHA, or None if detached, unresolvable, or the base does not exist.
     """
     try:
+        # A detached HEAD has no branch to compare against the default branch
+        detached = subprocess.run(
+            ["git", "symbolic-ref", "-q", "HEAD"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if detached.returncode != 0:
+            return None
+
         # Get the default branch
         result = subprocess.run(
             ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
@@ -1298,12 +1310,13 @@ def resolve_check_base(worktree: Path) -> Optional[str]:
         return None
 
 
-def canonical_changed_files(worktree: Path, base: Optional[str]) -> List[str]:
+def canonical_changed_files(worktree: Path, base: Optional[str]) -> Optional[List[str]]:
     """
     Compute the canonical list of changed files (committed, staged, working, untracked).
 
     Returns a sorted, unique list of file paths (both sides of renames, NUL-separated internally).
-    If base is None, returns an empty list.
+    If base is None or empty, returns an empty list (no base, no hash). Returns None when a
+    subprocess fails, so callers treat the changed set as unknown rather than as an empty set.
     """
     if not base:
         return []
@@ -1332,7 +1345,7 @@ def canonical_changed_files(worktree: Path, base: Optional[str]) -> List[str]:
 
         # Untracked non-ignored files
         result = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
+            ["git", "ls-files", "--others", "--exclude-standard", "--full-name"],
             cwd=worktree,
             capture_output=True,
             text=True,
@@ -1340,8 +1353,8 @@ def canonical_changed_files(worktree: Path, base: Optional[str]) -> List[str]:
         )
         files_set.update(f for f in result.stdout.strip().split("\n") if f)
     except Exception:
-        # On error, return empty list (no hash, validate runs uncached)
-        return []
+        # On error the changed set is unknown (no hash, validate runs uncached)
+        return None
 
     return sorted(files_set)
 
@@ -1568,13 +1581,31 @@ def _export_check_env(base: Optional[str], changed: List[str]) -> Tuple[Dict[str
     return env, scratch
 
 
+def _validate_error(message: str, requested: Mode) -> ValidateResult:
+    """A validate error result carrying the same key set as a run result (plus `error`)."""
+    out: Dict[str, Any] = dict(CheckResults().to_dict())
+    out.update({
+        "status": "error",
+        "all_passed": False,
+        "error": message,
+        "schema_version": 1,
+        "mode_requested": requested,
+        "mode_executed": requested,
+        "fell_back_to_full": False,
+        "cache": "miss",
+        "satisfied_by": None,
+        "changed_files_source": "not-computed",
+    })
+    return cast(ValidateResult, out)
+
+
 def validate(
     worktree: Path,
     mode: str = "full",
     force: bool = False,
     main_worktree: Optional[Path] = None,
     timeout: Optional[int] = None,
-) -> Dict[str, Any]:
+) -> ValidateResult:
     """
     Validate checks idempotently with per-key record caching (ADR-0013 Amendment 11).
 
@@ -1591,15 +1622,15 @@ def validate(
 
     requested = parse_mode(mode)
     if requested is None:
-        return {"status": "error", "error": f"invalid mode: {mode!r}"}
+        return _validate_error(f"invalid mode: {mode!r}", "full")
 
     resolution = resolve_check_detail(worktree, main_worktree, mode=requested)
     if resolution.failure_reason:
-        return {"status": "error", "error": resolution.failure_reason}
+        return _validate_error(resolution.failure_reason, requested)
 
     check_command = resolution.command
     if not check_command:
-        return {"status": "error", "error": "No check command resolved"}
+        return _validate_error("No check command resolved", requested)
 
     if timeout is None:
         source_kind: ConfigKind = "project.yaml" if resolution.source == "project.yaml" else "repo-cache"
@@ -1611,11 +1642,23 @@ def validate(
     if resolution.fell_back_to_full:
         logging.warning("checks validate: check_minimum is not declared; running the full check instead")
 
-    # Digests: the full digest covers the full-gate commands; the minimum digest covers check_minimum.
+    # Digests: the full digest covers the full-gate commands plus the resolved full command and its
+    # source; the minimum digest covers check_minimum plus the resolved minimum command and its
+    # source. A command that changes from any source (project.yaml, main worktree, justfile) with an
+    # unchanged tree therefore misses instead of reusing a pass earned by a different command.
     cache_data, _ = read_repo_cache(worktree / ".claude" / "repo-cache.json")
     commands_dict = cache_data.commands if cache_data else {}
-    full_digest = _commands_digest({k: v for k, v in commands_dict.items() if k != "check_minimum"})
-    minimum_digest = _commands_digest({k: v for k, v in commands_dict.items() if k == "check_minimum"})
+    full_resolution = (
+        resolution if requested == "full" else resolve_check_detail(worktree, main_worktree, mode="full")
+    )
+    full_inputs: Dict[str, Optional[str]] = {k: v for k, v in commands_dict.items() if k != "check_minimum"}
+    full_inputs["resolved check"] = full_resolution.command
+    full_inputs["resolved check source"] = full_resolution.source
+    full_digest = _commands_digest(full_inputs)
+    minimum_inputs: Dict[str, Optional[str]] = {k: v for k, v in commands_dict.items() if k == "check_minimum"}
+    minimum_inputs["resolved check_minimum"] = None if resolution.fell_back_to_full else resolution.command
+    minimum_inputs["resolved check_minimum source"] = None if resolution.fell_back_to_full else resolution.source
+    minimum_digest = _commands_digest(minimum_inputs)
 
     # Changed files: one canonical computation, hashed exactly as exported. An unresolved base means no hash.
     tree = worktree_tree(worktree)
@@ -1627,8 +1670,14 @@ def validate(
         changed_source = "base-unresolved"
         logging.warning("idempotency disabled: no base: merge-base with origin default is unresolved")
     else:
-        changed = canonical_changed_files(worktree, base)
-        files_hash = changed_files_hash(changed)
+        computed = canonical_changed_files(worktree, base)
+        if computed is None:
+            base = None
+            changed_source = "base-unresolved"
+            logging.warning("idempotency disabled: no changed files: the list could not be computed")
+        else:
+            changed = computed
+            files_hash = changed_files_hash(changed)
     if tree is None:
         changed_source = "tree-unavailable"
 
@@ -1660,10 +1709,10 @@ def validate(
         }
 
     if cache_action == "hit":
-        hit_output: Dict[str, Any] = CheckResults().to_dict()
+        hit_output: Dict[str, Any] = dict(CheckResults().to_dict())
         hit_output.update({"status": "passed", "all_passed": True})
         hit_output.update(_extras("hit"))
-        return hit_output
+        return cast(ValidateResult, hit_output)
 
     run_started = time.time()
     env, scratch = _export_check_env(base, changed)
@@ -1692,9 +1741,9 @@ def validate(
         else:
             _evict_older_pass(records_dir, key, run_started)
 
-    output: Dict[str, Any] = result.to_dict()
+    output: Dict[str, Any] = dict(result.to_dict())
     output.update(_extras(cache_action))
-    return output
+    return cast(ValidateResult, output)
 
 
 def receipt_base_current(worktree: Path, base_ref: str, base_sha: str) -> Tuple[bool, str]:

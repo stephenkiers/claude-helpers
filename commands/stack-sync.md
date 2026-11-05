@@ -676,4 +676,4 @@ names, emit the command with `printf '%q'` instead.)
   union of both detectors, same dedupe-by-branch, same lookup-failure flag — keep the two in sync when
   editing either.
 - `--force-with-lease` (never bare `--force`) is used for every push, and every push is gated behind
-  the project's check command from `.claude/repo-cache.json` inside the canonical block.
+  the project's minimum check (`checks validate --mode minimum`, which resolves the command the same way every other gate does) inside the canonical block.

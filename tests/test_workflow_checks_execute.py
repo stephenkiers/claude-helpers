@@ -545,6 +545,25 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         count = root / "count.txt"
+        main_dir = root / "main-wt"
+        (main_dir / ".claude").mkdir(parents=True)
+        yaml_path = main_dir / ".claude" / "project.yaml"
+        work = _fixture_clone(root, {"lint": "true"})
+        yaml_path.write_text(f"commands:\n  check: \"echo A >> '{count}'\"\n")
+        y1 = validate(work, mode="full", main_worktree=main_dir)
+        yaml_path.write_text(f"commands:\n  check: \"echo B >> '{count}'\"\n")
+        y2 = validate(work, mode="full", main_worktree=main_dir)
+        y3 = validate(work, mode="full", main_worktree=main_dir)
+        test_result(
+            "validate: a check command that changes in project.yaml (tree and repo-cache unchanged) is a miss, then the new command hits",
+            y1.get("status") == "passed" and y2.get("cache") == "miss" and y3.get("cache") == "hit"
+            and count.read_text().count("A") == 1 and count.read_text().count("B") == 1,
+            f"y1={y1!r} y2={y2!r} y3={y3!r} count={count.read_text() if count.exists() else ''!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
         work = _fixture_clone(root, {"check": _counter_cmd(count, ok=False)})
         r1 = validate(work, mode="full")
         r2 = validate(work, mode="full")

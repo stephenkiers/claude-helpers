@@ -200,6 +200,17 @@ def main():
     bad_data = {**valid_data, "written_at": True}
     h.test_result("from_dict rejects written_at as bool", CheckRecord.from_dict(bad_data) is None)
 
+    # written_at non-finite (NaN / infinity are accepted by json.loads but are not timestamps)
+    for bad_value in (float("nan"), float("inf"), float("-inf")):
+        bad_data = {**valid_data, "written_at": bad_value}
+        from workflow.models import parse_check_record as _parse_record
+        parsed, reason = _parse_record(bad_data)
+        h.test_result(
+            f"parse_check_record rejects non-finite written_at {bad_value!r} with a reason",
+            parsed is None and reason is not None and "finite" in reason,
+            f"parsed={parsed!r} reason={reason!r}",
+        )
+
     # ========== Test CheckRecord.from_dict (success cases) ==========
     h.test_result("from_dict parses valid FullKey record", CheckRecord.from_dict(full_dict) is not None)
     h.test_result("from_dict parses valid MinimumKey record", CheckRecord.from_dict(min_dict) is not None)

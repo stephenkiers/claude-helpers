@@ -17,6 +17,7 @@ Usage:
   python3 -m scripts.workflow.cli worktree detect-parent [--cwd <dir>]
   python3 -m scripts.workflow.cli checks resolve-check --worktree <dir> [--main-worktree <dir>]
   python3 -m scripts.workflow.cli checks ensure-check --worktree <dir> --main-worktree <dir>
+  python3 -m scripts.workflow.cli checks validate [--mode minimum|full] [--worktree <dir>] [--force]
   python3 -m scripts.workflow.cli checks record-check-answer --main-worktree <dir> (--command <cmd> | --opt-out <reason>)
   python3 -m scripts.workflow.cli deps ensure --worktree <dir> --main-worktree <dir> [--base <ref>] [--approve-manifest] [--ignore-approvals]
   python3 -m scripts.workflow.cli heal probe --worktree <dir> --main-worktree <dir> [--base <ref>] --flow-dir <dir> --issue <num>

@@ -2135,10 +2135,10 @@ Artifact check: ≥1 new commit since `bases.fix`, unless the review's `claude-a
 ```bash
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
-PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks resolve-check --worktree "<WORKTREE>" --main-worktree "<MAIN_WORKTREE>"
+PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks resolve-check --worktree "<WORKTREE>" --main-worktree "<MAIN_WORKTREE>" --mode minimum
 ```
 
-This prints a JSON object with keys `command`, `source`, and `failure_reason`. Resolution order (commands.check only per ADR-0023 Decision 4):
+This prints a JSON object with keys `command`, `source`, `failure_reason`, and `fell_back_to_full` (true when `check_minimum` is not declared and the full check was resolved instead). Resolution order (commands.check only per ADR-0023 Decision 4):
 1. worktree repo-cache.json
 2. main worktree repo-cache.json (via `<MAIN_WORKTREE>` placeholder)
 3. worktree project.yaml

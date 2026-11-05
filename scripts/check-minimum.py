@@ -15,19 +15,21 @@ the user's config, or any other environment variable beyond CHECK_BASE and CHECK
 
 import argparse
 import json
+import re
 import sys
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
-# Add parent to path so we can import workflow
-sys.path.insert(0, str(Path(__file__).parent))
-
-from workflow.checks import resolve_check_base, canonical_changed_files  # type: ignore[import-not-found]
+from typing import Any, Dict, List, Optional, Set
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TESTS_DIR = REPO_ROOT / "tests"
+
+# Import by the repo-rooted name (scripts.workflow.checks), the same module name every other caller uses,
+# so there is one module object for checks.py rather than a second one named workflow.checks.
+sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.workflow.checks import resolve_check_base, canonical_changed_files  # noqa: E402
 
 
 def get_check_base_and_files() -> tuple:
@@ -53,40 +55,72 @@ def get_check_base_and_files() -> tuple:
 
     # Compute from scratch; an exported CHECK_BASE takes precedence over the computed merge-base
     base = check_base or resolve_check_base(worktree)
-    files = canonical_changed_files(worktree, base)
-    return base, files
+    computed = canonical_changed_files(worktree, base)
+    if computed is None:
+        # The changed set is unknown: an empty base makes build_plan fall back to the full suite.
+        return "", []
+    return base, computed
+
+
+def _reference_patterns(file_path: str) -> List["re.Pattern[str]"]:
+    """Patterns that mean a test references the module at `file_path` (path or module-name mentions)."""
+    path = Path(file_path)
+    stem = path.stem
+    patterns = [re.escape(file_path)]
+    if file_path.startswith("scripts/workflow/"):
+        name = re.escape(stem)
+        patterns.append(rf"\bworkflow\.{name}\b")
+        patterns.append(rf"\bfrom\s+(?:scripts\.)?workflow\s+import\s+[^\n]*\b{name}\b")
+    else:
+        patterns.append(rf"(?<![\w./-]){re.escape(path.name)}")
+        if stem.isidentifier():
+            patterns.append(rf"^\s*(?:from|import)\s+{re.escape(stem)}\b")
+    return [re.compile(p, re.MULTILINE) for p in patterns]
 
 
 def map_files_to_tests(files: list) -> tuple:
-    """Map changed file paths to test files. Return (test_modules, unmapped_files)."""
+    """
+    Map changed file paths to test files. Return (test_modules, unmapped_files).
+
+    A changed scripts/*.py file selects every tests/test_*.py that names it (by path, file name or
+    import) plus the test files named after it. A changed tests/test_*.py file selects itself. Anything
+    else, including a non-test file under tests/, is unmapped, which sends the caller to the full suite.
+    """
     tests_dir = TESTS_DIR
-    test_files = set()
-    unmapped = []
+    test_files: Set[str] = set()
+    unmapped: List[str] = []
+    test_texts: Dict[str, str] = {}
+    for tf in sorted(tests_dir.glob("test_*.py")):
+        try:
+            test_texts[tf.name] = tf.read_text(errors="replace")
+        except OSError:
+            continue
 
     for file_path in files:
-        # For Python files in scripts/workflow, map to tests/test_workflow_*.py
-        if file_path.startswith("scripts/workflow/") and file_path.endswith(".py"):
+        if file_path.startswith("scripts/") and file_path.endswith(".py"):
             base_name = Path(file_path).stem
-            # Try to find matching test file
-            matching = list(tests_dir.glob(f"test_workflow_{base_name}*.py"))
-            if matching:
-                for m in matching:
-                    test_files.add(m.name)
+            if file_path.startswith("scripts/workflow/"):
+                matching = {m.name for m in tests_dir.glob(f"test_workflow_{base_name}*.py")}
             else:
-                unmapped.append(file_path)
-        elif file_path.startswith("scripts/") and file_path.endswith(".py"):
-            base_name = Path(file_path).stem
-            matching = list(tests_dir.glob(f"test_{base_name}*.py"))
+                matching = {m.name for m in tests_dir.glob(f"test_{base_name}*.py")}
+            # Only a file that exists can be referenced; a deleted or fake path is not grepped (the
+            # grep would otherwise match its own mention in a test's data) and stays unmapped.
+            if (REPO_ROOT / file_path).is_file():
+                patterns = _reference_patterns(file_path)
+                for name, text in test_texts.items():
+                    if any(p.search(text) for p in patterns):
+                        matching.add(name)
             if matching:
-                for m in matching:
-                    test_files.add(m.name)
+                test_files.update(matching)
             else:
                 unmapped.append(file_path)
         elif file_path.startswith("tests/"):
-            # Test file changed, run it
             test_name = Path(file_path).name
-            if test_name.endswith(".py") and test_name.startswith("test_"):
+            if "/" not in file_path[len("tests/"):] and test_name.endswith(".py") and test_name.startswith("test_"):
                 test_files.add(test_name)
+            else:
+                # A helper, runner or fixture under tests/ can affect any suite
+                unmapped.append(file_path)
         else:
             unmapped.append(file_path)
 

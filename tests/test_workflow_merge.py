@@ -255,7 +255,7 @@ if __name__ == "__main__":
                         )
                         test_result(
                             "apply_merge calls _run_gh_pr_merge exactly once on repo-cache-check path",
-                            result.success and mock_merge.call_count == 1 and result.merge_gate_used == "repo-cache check",
+                            result.success and mock_merge.call_count == 1 and result.merge_gate_used == "resolved check",
                             f"Expected _run_gh_pr_merge called once after gate passes, got {mock_merge.call_count} calls"
                         )
 

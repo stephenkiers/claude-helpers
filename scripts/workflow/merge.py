@@ -585,7 +585,10 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
                 return result, result.error
 
         if not merge_succeeded:
-            merge_gate_used = "repo-cache check" if gate_applied else "gh pr merge (no gate)"
+            if gate_applied:
+                merge_gate_used = _resolved_check_label(Path(plan.target_worktree))
+            else:
+                merge_gate_used = "gh pr merge (no gate)"
             success, detail = _run_gh_pr_merge(plan.pr_number, effective_cwd)
             if success:
                 merge_succeeded = True
@@ -831,6 +834,17 @@ def _base_ancestor_fresh(target_worktree: Path) -> bool:
         return git.is_ancestor(f"origin/{base}", "HEAD", cwd=target_worktree)
     except Exception:
         return False
+
+
+def _resolved_check_label(target_worktree: Path) -> str:
+    """Neutral gate label naming where the resolved check command came from, when that is known."""
+    from .checks import resolve_check_detail
+
+    try:
+        source = resolve_check_detail(target_worktree, None, mode="full").source
+    except Exception:
+        source = None
+    return f"resolved check ({source})" if source else "resolved check"
 
 
 def _run_merge_gate_checks(target_worktree: Path) -> Tuple[bool, bool, Optional[str]]:

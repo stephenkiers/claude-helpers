@@ -108,6 +108,20 @@ def main():
             "test_workflow_checks.py" in modules and unmapped == ["scripts/no-such-module-462.py"],
             f"modules={modules} unmapped={unmapped}",
         )
+
+        modules, unmapped = selector.map_files_to_tests(["scripts/workflow/checks.py"])
+        test_result(
+            "a changed module also selects tests that reference it under another name (grep mapping)",
+            "test_check_receipt.py" in modules and "test_workflow_merge.py" in modules,
+            f"modules={modules}",
+        )
+
+        modules, unmapped = selector.map_files_to_tests(["tests/_test_harness.py"])
+        test_result(
+            "a non-test helper under tests/ is unmapped (falls back to the full suite)",
+            modules == [] and unmapped == ["tests/_test_harness.py"],
+            f"modules={modules} unmapped={unmapped}",
+        )
     finally:
         os.chdir(prev_cwd)
 
