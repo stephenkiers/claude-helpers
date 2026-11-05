@@ -131,7 +131,7 @@ import os
 import re
 import subprocess
 import sys
-from typing import Dict, List, Literal, NoReturn, Optional, Pattern, Sequence, Tuple
+from typing import Dict, List, Literal, NoReturn, Optional, Pattern, Sequence, Set, Tuple
 
 Lang = Literal["python", "js", "rust", "swift", "go"]
 Verdict = Literal["binding-edit", "violation"]
