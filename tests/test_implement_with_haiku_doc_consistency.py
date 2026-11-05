@@ -27,6 +27,7 @@ import telemetry_schema
 COMMANDS = REPO_ROOT / "commands"
 AGENTS = REPO_ROOT / "agents"
 ADRS = REPO_ROOT / "docs" / "adr"
+PROMPTS = REPO_ROOT / "prompts"
 
 
 def read(path):
@@ -85,6 +86,7 @@ def replace_angle_bracket_placeholders(text):
 IMPLEMENT_WITH_HAIKU = read(COMMANDS / "implement-with-haiku.md")
 PLAN_IMPLEMENTER = read(AGENTS / "plan-implementer.md")
 ADR_0008 = read(ADRS / "0008-machine-enforced-agent-guardrails.md")
+TEST_CLEANUP_REFERENCE = read(PROMPTS / "test-cleanup-reference.md")
 
 h = Harness("IMPLEMENT-WITH-HAIKU DOCUMENT CONSISTENCY TEST SUITE")
 t = h.test_result
@@ -858,13 +860,13 @@ t("(#387) the final check runs `checks validate`, never `checks run`",
 t("(#387) the final check is one minimum check, not one full check",
   "one minimum-check run" in DOC and "one full-check run" not in DOC)
 
-# Heading order: 4.6 Verify green, then commit -> ## Final check -> ## Final summary
-pos_46 = DOC.find("### 4.6 Verify green, then commit")
+# Heading order: 4.6a Record Round 4 evidence -> ## Final check -> ## Final summary
+pos_46a = DOC.find("### 4.6a Record Round 4 evidence")
 pos_final = DOC.find("## Final check")
 pos_summary = DOC.find("## Final summary")
-t("(#338) the Final check section sits after 4.6 Verify green, then commit",
-  pos_46 != -1 and pos_final != -1 and pos_46 < pos_final,
-  f"4.6={pos_46} final={pos_final}")
+t("(#338) the Final check section sits after 4.6a Record Round 4 evidence",
+  pos_46a != -1 and pos_final != -1 and pos_46a < pos_final,
+  f"4.6a={pos_46a} final={pos_final}")
 t("(#338) the Final check section sits before ## Final summary",
   pos_final != -1 and pos_summary != -1 and pos_final < pos_summary,
   f"final={pos_final} summary={pos_summary}")
@@ -1312,11 +1314,33 @@ HELPER_FORM = 'python3 "$HOME/.claude/scripts/test-cleanup-check.py"'
 HELPER_GRANT = 'Bash(python3 "$HOME/.claude/scripts/test-cleanup-check.py":*)'
 R4_4A = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.0a", "### 4.1 Enumerate")
 R4_1 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.1 Enumerate", "### 4.2 Learn")
-R4_3 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.3 Classify", "### 4.4 Delete")
-R4_4 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.4 Delete", "### 4.5 Relocate")
-R4_5 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.5 Relocate", "### 4.6 Verify")
-R4_6 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.6 Verify", "## Final check")
+# R4_3-R4_6 are now in the reference doc; assert they exist there and not in the command doc
+R4_3 = doc_section(TEST_CLEANUP_REFERENCE, "### 4.3 Classify", "### 4.4 Delete")
+R4_4 = doc_section(TEST_CLEANUP_REFERENCE, "### 4.4 Delete", "### 4.5 Relocate")
+R4_5 = doc_section(TEST_CLEANUP_REFERENCE, "### 4.5 Relocate", "### 4.6 Verify")
+R4_6_start = TEST_CLEANUP_REFERENCE.find("### 4.6 Verify")
+R4_6 = TEST_CLEANUP_REFERENCE[R4_6_start:] if R4_6_start != -1 else ""
 RESUME = doc_section(IMPLEMENT_WITH_HAIKU, "### Spec-blind state on resume", "## Step 1:")
+
+# Assert that 4.3-4.6 headings exist in the reference doc and are absent from the command doc
+t("prompts/test-cleanup-reference.md exists and contains 4.3-4.6",
+  TEST_CLEANUP_REFERENCE != "",
+  "reference doc not found or empty")
+
+t("4.3 Classify heading exists in reference doc",
+  "### 4.3 Classify" in TEST_CLEANUP_REFERENCE,
+  "missing ### 4.3 Classify in reference doc")
+
+t("4.3-4.6 sections are absent from command doc",
+  "### 4.3 Classify" not in IMPLEMENT_WITH_HAIKU
+  and "### 4.4 Delete" not in IMPLEMENT_WITH_HAIKU
+  and "### 4.5 Relocate" not in IMPLEMENT_WITH_HAIKU,
+  "4.3-4.6 still present in command doc instead of pointer")
+
+t("command doc references the reference doc under Round 4",
+  "~/.claude/prompts/test-cleanup-reference.md" in IMPLEMENT_WITH_HAIKU
+  and "Read `~/.claude/prompts/test-cleanup-reference.md`" in IMPLEMENT_WITH_HAIKU,
+  "command doc doesn't reference the reference doc")
 
 t("frontmatter grants the test-cleanup-check helper",
   HELPER_GRANT in IMPLEMENT_WITH_HAIKU.split("\n---", 1)[0],
@@ -1409,10 +1433,10 @@ t("4.6 commit body lists deletions and merged ids",
   "merged" in R4_6 and "reason" in R4_6.lower(),
   "4.6 commit body does not list deletions and merged ids")
 
-t("4.6 precedes the Final check",
-  IMPLEMENT_WITH_HAIKU.find("### 4.6 Verify green, then commit")
+t("4.6a precedes the Final check",
+  IMPLEMENT_WITH_HAIKU.find("### 4.6a Record Round 4 evidence")
   < IMPLEMENT_WITH_HAIKU.find("## Final check") > 0,
-  "4.6 is not before the Final check")
+  "4.6a is not before the Final check")
 
 t("Final summary has the new spec-blind sections",
   all(s in IMPLEMENT_WITH_HAIKU for s in (

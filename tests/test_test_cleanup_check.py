@@ -393,9 +393,21 @@ def main():
     print("[Section 5] survivors")
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        doc = (Path(__file__).resolve().parent.parent / "commands" / "implement-with-haiku.md").read_text()
-        header = next(ln.strip().strip("`") for ln in doc.splitlines()
-                      if ln.strip().strip("`").startswith("| id |") and "survivor or proof" in ln)
+        doc = (Path(__file__).resolve().parent.parent / "prompts" / "test-cleanup-reference.md").read_text()
+        header = next((ln.strip().strip("`") for ln in doc.splitlines()
+                      if ln.strip().strip("`").startswith("| id |") and "survivor or proof" in ln),
+                     None)
+        if header is None:
+            # Try command doc as fallback (for debugging / transitional support)
+            doc_cmd = (Path(__file__).resolve().parent.parent / "commands" / "implement-with-haiku.md").read_text()
+            header = next((ln.strip().strip("`") for ln in doc_cmd.splitlines()
+                          if ln.strip().strip("`").startswith("| id |") and "survivor or proof" in ln),
+                         None)
+        if header is None:
+            raise AssertionError("Could not find '| id |' header with 'survivor or proof' in reference doc or command doc")
+        h.test_result("test-cleanup-reference.md contains 4.4 header",
+                      header is not None and "survivor or proof" in header,
+                      "Header with 'survivor or proof' not found in reference doc")
         ncols = header.count("|") - 1
         deletions = root / "round4-deletions.md"
         deletions.write_text(

@@ -273,3 +273,21 @@ step (4.1–4.5), now preceded by 4.0a and bounded by the post-conditions above.
 **Operator note:** `scripts/test-cleanup-check.py` is new. Run `/setup-local` after pulling so the
 `~/.claude/scripts/` symlink exists. The command calls the helper by its `$HOME/.claude/scripts/` path,
 so a machine without the symlink has no helper to call for the Round 3 fence and the Round 4 post-conditions.
+
+## Amendment (2026-11-05): early test-hygiene detection, overlap hints, layout evidence, shared cleanup doctrine
+
+Round 2 and Round 3 authors report every added test's `<new id> | overlaps: <existing id or none>` line, so Round 4.1 can hint at candidates without requiring a rename-before-register gate. A detect-only hygiene scan runs after the Round 2 apply and writes evidence to `round2-hygiene.md`, making no rename, no commit and no ledger row. The 2026-11-04 sentence "No ledger stage changed ... not in new step ids" still holds and is not superseded. Round 4.3–4.6 now live in `prompts/test-cleanup-reference.md`, read by path, so `/expert-test-cleanup` (#463) can read the same file.
+
+1. **Detect-only hygiene gate after the Round 2 apply.** The orchestrator runs `test-cleanup-check.py names --hygiene --base "$ROUND2_START_SHA" --head HEAD` and records the result in `round2-hygiene.md`. No rename, no `git mv`, no staging, no commit, no ledger row. Hits are fixed only at Round 4.5. The scan re-runs whenever Round 2 has been applied; on the "Cleanup commit already landed" resume path, no scan re-produces the evidence, and Step 9 records the fields as `null` (not zero) to distinguish resumed from clean runs.
+
+2. **Overlap hints at Round 4.1, never a pre-classification and never a deletion.** Round 2 and Round 3 authors report each added test: `<new id> | overlaps: <existing id or none>`. The overlaps are parsed at Round 4.1 and written to `round4-candidates.md`. Candidates are hints for the 4.3 class 1 (Duplicate) review only. Every deletion still needs its named survivor (4.4) and the 4.6 post-conditions. This stays clear of #367's dedup-at-generation and budgets.
+
+3. **Round 4 does not shrink.** The 4.0a, then cleanup, then post-conditions order is unchanged. Overlap candidates are hints only; the structure and decision points of 4.1–4.6 remain unchanged.
+
+4. **Spec-blind layout evidence from the pre-implementation SHA.** The author prompt may carry file paths and test-definition names (never bodies), extracted by `test-cleanup-check.py layout`, from tests present at the pre-implementation SHA pinned in the unit record. That SHA is the commit before any of this flow's implementation: the `implement` record pins it once in `layout_base_sha`, and the `fix` record and every scoped (Fix now) record inherit it rather than pinning their own. A file absent at that SHA yields zero names, not an error. This ensures spec-blind independence: a fix run never sees names of tests the implement step added.
+
+5. **Round 4.3–4.6 now live in `prompts/test-cleanup-reference.md`.** Read by path from the command doc (no inline copy). The reference doc carries a short **Caller contract** at the top: the inputs the caller supplies and the outputs it produces. `commands/implement-with-haiku.md` replaces 4.3–4.6 with a pointer section and keeps the implement-specific tail (the `round4.md` evidence lines and the `DONE round4` ledger row) under `### 4.6a Record Round 4 evidence`, placed before `## Final check`.
+
+6. **Measurement: per-run hygiene counts.** Every run records `test-hygiene.json` with `round2_hygiene_hits`, `round4_hygiene_hits`, `overlap_candidates`, `overlap_none`, `overlap_unreported`, `round4_deleted`, `round4_relocated`, `layout_names_given` (bool), and `step` (`implement`/`fix`). On the "Cleanup commit already landed" resume path, fields not re-produced are written as `null` (never zero) to distinguish resumed from clean runs. In a flow, the file is also copied to `FLOW_DIR/test-hygiene-<STEP>.json` (if no allowlist forbids it). Per-run files will answer a future question on whether a Round 2 rename gate (Q1 A) or a shortened Round 4 (D2 A) earns its cost.
+
+7. **Operator note:** run `/setup-local` after pulling so the new `~/.claude/prompts/test-cleanup-reference.md` symlink exists.
