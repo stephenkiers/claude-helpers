@@ -885,7 +885,7 @@ def next_test():
         rc, out, err = fence_head(repo, base, {"tests/test_x.py": head_text})
         # The span should be correctly sized (3-6) despite the column-0 line below
         h.test_result("span is correctly sized by AST end_lineno despite column-0 line below",
-                      rc == 1 and f"restore tests/test_x.py::test_parse_basic 3-6" in out,
+                      rc == 1 and "restore tests/test_x.py::test_parse_basic 3-6" in out,
                       f"rc={rc} out={out!r} err={err!r}")
 
     print("[Section 16] names: quoted paths (item 4)")
