@@ -635,6 +635,20 @@ def case_match_outstanding_issue_runs_without_step_or_receipt() -> Tuple[bool, s
     return (True, "")
 
 
+def case_range_end_at_tip_line_count_is_in_bounds() -> Tuple[bool, str]:
+    """A range ending exactly on the last line of the file is in bounds; one line past it is not."""
+    base = {"hunks": {"a.py": [[8, 2]]}, "tip_line_counts": {"a.py": 10}}
+    at_end = {**base, "rows": {"fix:D1": [{"path": "a.py", "start": 8, "end": 10}]}}
+    past_end = {**base, "rows": {"fix:D1": [{"path": "a.py", "start": 8, "end": 11}]}}
+    got = fvr._check_range_overlap("fix:D1", at_end)
+    if got.failure is not None:
+        return (False, f"range ending at the tip line count should overlap, got failure {got.failure!r}")
+    got = fvr._check_range_overlap("fix:D1", past_end)
+    if got.failure != "range-overlap":
+        return (False, f"range one past the tip line count should fail range-overlap, got {got.failure!r}")
+    return (True, "")
+
+
 def _run_script(args: List[str]) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True)
 
@@ -937,6 +951,7 @@ CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("F23 start 0 and inverted row ranges are unavailable", case_zero_start_and_inverted_row_ranges_are_unavailable),
     ("F19 coverage/evidence out require flow-dir", case_evidence_and_coverage_out_require_flow_dir),
     ("F7 failing tip git show is unavailable", case_failed_tip_show_marks_artifact_unavailable),
+    ("range end at the tip line count is in bounds", case_range_end_at_tip_line_count_is_in_bounds),
     ("uncovered first row does not leak ranges", case_uncovered_first_row_does_not_leak_ranges),
     ("match-outstanding-issue runs without step or receipt", case_match_outstanding_issue_runs_without_step_or_receipt),
 ]
