@@ -11,20 +11,20 @@ from . import git
 from .paths import is_within
 
 
-def parse_worktree_list(porcelain_output: str) -> List[Tuple[str, str]]:
+def parse_worktree_records(porcelain_output: str) -> List[Tuple[str, Optional[str]]]:
     """
-    Parse git worktree list --porcelain output.
-    Returns list of (worktree_path, worktree_branch) tuples.
-    Only includes worktrees with a branch (skips detached HEAD entries).
+    Parse git worktree list --porcelain output into every entry, in listing order.
+    Returns (worktree_path, branch) tuples; branch is None for a detached HEAD entry,
+    and has any refs/heads/ prefix stripped. The first entry is the main worktree.
     """
-    worktrees = []
-    current_wt = None
-    current_branch = None
+    records: List[Tuple[str, Optional[str]]] = []
+    current_wt: Optional[str] = None
+    current_branch: Optional[str] = None
 
     for line in porcelain_output.split("\n"):
         if line.startswith("worktree "):
-            if current_wt is not None and current_branch is not None:
-                worktrees.append((current_wt, current_branch))
+            if current_wt is not None:
+                records.append((current_wt, current_branch))
             current_wt = line[9:].strip()
             current_branch = None
         elif line.startswith("branch "):
@@ -34,10 +34,19 @@ def parse_worktree_list(porcelain_output: str) -> List[Tuple[str, str]]:
             else:
                 current_branch = branch_ref
 
-    if current_wt is not None and current_branch is not None:
-        worktrees.append((current_wt, current_branch))
+    if current_wt is not None:
+        records.append((current_wt, current_branch))
 
-    return worktrees
+    return records
+
+
+def parse_worktree_list(porcelain_output: str) -> List[Tuple[str, str]]:
+    """
+    Parse git worktree list --porcelain output.
+    Returns list of (worktree_path, worktree_branch) tuples.
+    Only includes worktrees with a branch (skips detached HEAD entries).
+    """
+    return [(path, branch) for path, branch in parse_worktree_records(porcelain_output) if branch is not None]
 
 
 def list_worktrees(cwd: Optional[Path] = None) -> Optional[List[str]]:

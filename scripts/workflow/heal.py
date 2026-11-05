@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, TypedDict, cast, get_args
 
-from . import deps
+from . import deps, git, worktrees
+from .fsutil import open_private_exclusive, read_json_object
 
 # Type aliases
 Permission = Literal["runs-repo-code", "writes-gitignored", "no-write"]
@@ -372,14 +373,7 @@ def after_heal(result: HealResult, evidence: StopEvidence) -> Recommendation:
 
 def _git_wt(args: List[str], cwd: Path) -> "subprocess.CompletedProcess[str]":
     """git with the fsmonitor hook disabled, since a ticket worktree's config is ticket-controlled."""
-    return subprocess.run(
-        ["git", "-c", "core.fsmonitor=false"] + args,
-        cwd=str(cwd),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    return git.run_git_no_fsmonitor(args, cwd, timeout=10)
 
 
 def _validate_worktree(
@@ -408,37 +402,19 @@ def _validate_worktree(
         if state_worktree is not None and os.path.realpath(state_worktree) != worktree_real:
             return "Worktree does not match the flow state."
 
-        records: List[Dict[str, str]] = []
-        current: Dict[str, str] = {}
-        for line in result.stdout.splitlines():
-            if not line.strip():
-                if current:
-                    records.append(current)
-                current = {}
-                continue
-            key, _, value = line.partition(" ")
-            if key in ("worktree", "branch"):
-                current[key] = value
-        if current:
-            records.append(current)
-
-        match: Optional[Dict[str, str]] = None
-        for index, rec in enumerate(records):
-            path = rec.get("worktree")
-            if path is None:
-                continue
+        match: Optional[Tuple[str, Optional[str]]] = None
+        for index, (path, branch) in enumerate(worktrees.parse_worktree_records(result.stdout)):
             real = os.path.realpath(path)
             if real == worktree_real:
                 if index == 0 or real == main_real:
                     return "Cannot heal the main worktree."
-                match = rec
+                match = (path, branch)
                 break
         if match is None:
             return "Worktree not in git worktree list."
 
         if issue is not None:
-            branch = match.get("branch", "")
-            name = branch[len("refs/heads/"):] if branch.startswith("refs/heads/") else branch
+            name = match[1] or ""
             if not name or re.search(r"(?<!\d)%d(?!\d)" % issue, name) is None:
                 return "Worktree branch does not name the issue."
 
@@ -475,15 +451,6 @@ def _check_unchanged_inputs(
 
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _load_object(path: Path) -> Optional[Dict[str, Any]]:
-    """A JSON object file; None when missing, unreadable or not an object."""
-    try:
-        value = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    return value if isinstance(value, dict) else None
 
 
 def _str_map(value: Any, allowed: Optional[Tuple[str, ...]]) -> Optional[Dict[str, str]]:
@@ -531,7 +498,7 @@ def _read_stop_evidence(flow_dir: Path, issue: int) -> Optional[StopEvidence]:
     whether an install is actually due.
     """
     try:
-        state = _load_object(flow_dir / "state.json")
+        state = read_json_object(flow_dir / "state.json")
         if state is None or str(state.get("issue")) != str(issue):
             return None
 
@@ -880,11 +847,7 @@ def cli_run(
             return _run_result(tool.name, "refused", "precondition-refused", False, "take-over", key)
 
         if tail_file is not None:
-            fd = os.open(
-                str(tail_file),
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-            )
+            fd = open_private_exclusive(tail_file)
 
         raw = tool.run(worktree, main_worktree, base, _effective_timeout(tool, override))
         status, reason, changed = _checked_outcome(raw)

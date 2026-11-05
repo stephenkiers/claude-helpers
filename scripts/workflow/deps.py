@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Dict, List, Literal, Optional, Tuple
 
-from . import worktrees
+from . import git, worktrees
 from .fsutil import atomic_write_text, read_json_object
 
 try:
@@ -291,17 +291,8 @@ def redact_output(text: str) -> List[str]:
 
 
 def _git(args: List[str], cwd: Path) -> "subprocess.CompletedProcess[str]":
-    """
-    git with the fsmonitor hook disabled, matching heal.py's _git_wt: a ticket worktree's config is
-    ticket-controlled, so a core.fsmonitor it sets must never run on the heal path.
-    """
-    return subprocess.run(
-        ["git", "-c", "core.fsmonitor=false"] + args,
-        cwd=str(cwd),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-    )
+    """git with the fsmonitor hook disabled (see git.run_git_no_fsmonitor), no timeout."""
+    return git.run_git_no_fsmonitor(args, cwd)
 
 
 def _is_within(path: Path, root: Path) -> bool:
