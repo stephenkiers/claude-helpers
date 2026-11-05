@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.worktrees import parse_worktree_list, _TYPE_PREFIXES
+from workflow.worktrees import parse_worktree_list, parse_worktree_records, _TYPE_PREFIXES
 from _test_harness import Harness
 
 
@@ -68,6 +68,29 @@ branch refs/heads/feature
     test_result(
         "parse_worktree_list() detached worktree not in result",
         "/path/to/detached" not in [wt[0] for wt in worktrees_detached]
+    )
+
+    test_result(
+        "parse_worktree_list() returns [] when every worktree is detached",
+        parse_worktree_list("worktree /a\nHEAD abc\ndetached\n\nworktree /b\nHEAD def\ndetached\n") == []
+    )
+    test_result(
+        "parse_worktree_list() keeps paths with spaces intact",
+        parse_worktree_list("worktree /path/with space/wt\nbranch refs/heads/f\n") == [("/path/with space/wt", "f")]
+    )
+
+    records = parse_worktree_records(porcelain_detached)
+    test_result(
+        "parse_worktree_records() keeps detached entries in order, branch None",
+        records == [("/path/to/main", "main"), ("/path/to/detached", None), ("/path/to/feature", "feature")]
+    )
+    test_result(
+        "parse_worktree_records() on empty input returns []",
+        parse_worktree_records("") == []
+    )
+    test_result(
+        "parse_worktree_list() equals parse_worktree_records() minus detached entries",
+        parse_worktree_list(porcelain_detached) == [(w, b) for w, b in records if b is not None]
     )
 
     print()
