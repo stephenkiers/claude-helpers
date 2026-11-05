@@ -750,6 +750,110 @@ def case_assess_anchors_reports_unavailable_without_artifact() -> Tuple[bool, st
     return (True, "")
 
 
+def _anchors_flow(tmp: Path) -> Path:
+    """A flow dir whose fix step carries a real evidence artifact bound to its coverage table (D1 overlaps)."""
+    from _assess_fixtures import TS, make_flow
+    repo, base, plan, fixture_dir = _make_fix_fixture(tmp)
+    receipt = fixture_dir / "steps" / "05-fix.md"
+    receipt.write_text("", encoding="utf-8")
+    cov = fixture_dir / "steps" / "05-fix.coverage.txt"
+    ev = fixture_dir / "steps" / "05-fix.evidence.json"
+    _run_coverage(repo, base, plan, receipt, cov, ev)
+    flow = make_flow(tmp / "flow-home", implement={"rows": ["Step 1 | covered | in diff"]},
+                     fix={"rows_raw": cov.read_text(encoding="utf-8")},
+                     log=[f"{TS} implement ok", f"{TS} fix ok"])
+    (flow / "steps" / "05-fix.evidence.json").write_bytes(ev.read_bytes())
+    return flow
+
+
+def case_assess_anchors_prints_overlap_status() -> Tuple[bool, str]:
+    """F1: --assess-anchors prints the `overlap` status for a row whose range overlaps a hunk with no anchor."""
+    with tempfile.TemporaryDirectory() as tmp_s:
+        flow = _anchors_flow(Path(tmp_s))
+        proc = _run_script(["--assess-anchors", "--flow-dir", str(flow)])
+        if proc.returncode != 0:
+            return (False, f"--assess-anchors should exit 0, got rc={proc.returncode}: {proc.stderr}")
+        if not any(ln.startswith("fix:D1 | overlap | ") for ln in proc.stdout.splitlines()):
+            return (False, f"fix:D1 overlaps its hunk and should print an overlap status, got {proc.stdout!r}")
+    return (True, "")
+
+
+def case_assess_anchors_corrupt_artifact_is_unavailable() -> Tuple[bool, str]:
+    """F18: an unparseable evidence artifact is reported as unavailable; --assess-anchors still exits 0."""
+    with tempfile.TemporaryDirectory() as tmp_s:
+        flow = _anchors_flow(Path(tmp_s))
+        (flow / "steps" / "05-fix.evidence.json").write_text("{not json", encoding="utf-8")
+        proc = _run_script(["--assess-anchors", "--flow-dir", str(flow)])
+        if proc.returncode != 0:
+            return (False, f"corrupt artifact should not hard-stop --assess-anchors: rc={proc.returncode}: {proc.stderr}")
+        if not any(ln.startswith("fix:D1 | unavailable | ") for ln in proc.stdout.splitlines()):
+            return (False, f"expected fix:D1 to be unavailable, got {proc.stdout!r}")
+    return (True, "")
+
+
+def case_zero_start_and_inverted_row_ranges_are_unavailable() -> Tuple[bool, str]:
+    """F23: a row with start < 1 or end < start is a malformed artifact: (False, unavailable), never a raise."""
+    bad_rows = [
+        ("start 0", [{"path": "scripts/workflow/deps.py", "start": 0, "end": 420}]),
+        ("end before start", [{"path": "scripts/workflow/deps.py", "start": 420, "end": 416}]),
+    ]
+    for label, rows in bad_rows:
+        artifact = _passing_artifact()
+        artifact["rows"] = {"fix:D1": rows}
+        try:
+            passes, reason = _verify("fix:D1", "scripts/workflow/deps.py:418", artifact)
+        except Exception as e:
+            return (False, f"{label}: raised {type(e).__name__}: {e}")
+        if passes or reason != "unavailable":
+            return (False, f"{label}: expected (False, unavailable), got ({passes}, {reason})")
+    return (True, "")
+
+
+def case_evidence_and_coverage_out_require_flow_dir() -> Tuple[bool, str]:
+    """F19: --coverage-out and --evidence-out without --flow-dir exit 2 and write nothing."""
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        repo, base, plan, flow_dir = _make_fix_fixture(tmp)
+        receipt = flow_dir / "steps" / "05-fix.md"
+        receipt.write_text("", encoding="utf-8")
+        for flag, name in (("--coverage-out", "cov.txt"), ("--evidence-out", "ev.json")):
+            out = tmp / name
+            args = ["--step", "fix", "--coverage", "--plan", str(plan), "--receipt", str(receipt),
+                    "--repo", str(repo), "--branch", "HEAD", "--base", base, flag, str(out)]
+            proc = _run_script(args)
+            if proc.returncode != 2 or out.exists():
+                return (False, f"{flag} without --flow-dir should exit 2 and write nothing: "
+                               f"rc={proc.returncode} exists={out.exists()}")
+    return (True, "")
+
+
+def case_failed_tip_show_marks_artifact_unavailable() -> Tuple[bool, str]:
+    """F7: a non-zero `git show` while reading the tip's line counts leaves the artifact unavailable."""
+    real_git_out = fvr._git_out
+
+    def failing_show(repo: str, args: List[str]) -> Tuple[int, str]:
+        if "show" in args:
+            return (128, "")
+        return real_git_out(repo, args)
+
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        repo, base, plan, flow_dir = _make_fix_fixture(tmp)
+        receipt = flow_dir / "steps" / "05-fix.md"
+        receipt.write_text("", encoding="utf-8")
+        coverage_out = flow_dir / "steps" / "05-fix.coverage.txt"
+        evidence_out = flow_dir / "steps" / "05-fix.evidence.json"
+        fvr._git_out = failing_show
+        try:
+            _run_coverage(repo, base, plan, receipt, coverage_out, evidence_out)
+        finally:
+            fvr._git_out = real_git_out
+        artifact = json.loads(evidence_out.read_text(encoding="utf-8"))
+        if artifact.get("available") is not False:
+            return (False, f"a failing git show should leave the artifact unavailable, got {artifact}")
+    return (True, "")
+
+
 CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("passes with both anchors", case_verify_unknown_already_done_passes_with_both_anchors),
     ("fails on no range overlap", case_verify_unknown_already_done_fails_no_range_overlap),
@@ -788,6 +892,11 @@ CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("failing hunk diff gives range-overlap", case_failing_hunk_diff_gives_range_overlap),
     ("D13 match-outstanding-issue exit codes", case_match_outstanding_issue_exit_codes),
     ("D13 assess-anchors unavailable without artifact", case_assess_anchors_reports_unavailable_without_artifact),
+    ("F1 assess-anchors prints overlap status", case_assess_anchors_prints_overlap_status),
+    ("F18 corrupt artifact is unavailable in assess-anchors", case_assess_anchors_corrupt_artifact_is_unavailable),
+    ("F23 start 0 and inverted row ranges are unavailable", case_zero_start_and_inverted_row_ranges_are_unavailable),
+    ("F19 coverage/evidence out require flow-dir", case_evidence_and_coverage_out_require_flow_dir),
+    ("F7 failing tip git show is unavailable", case_failed_tip_show_marks_artifact_unavailable),
 ]
 
 

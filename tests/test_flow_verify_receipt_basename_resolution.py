@@ -529,6 +529,17 @@ def case_path_anchor_huge_or_superscript_numbers_do_not_raise() -> Tuple[bool, s
     return (True, "")
 
 
+def case_ambiguous_evidence_names_token_and_candidates() -> Tuple[bool, str]:
+    """F16: an ambiguous basename row's evidence carries the cited token and every candidate path."""
+    rows = [fvr.DoingItRow(unit_id="D1", file_cell="deps.py:1-5")]
+    changed_files = {"a/deps.py", "b/c/deps.py", "d/e/f/deps.py"}
+    evidence = fvr._classify_doing_it_rows(rows, changed_files)["D1"].evidence
+    for want in ("deps.py", "a/deps.py", "b/c/deps.py", "d/e/f/deps.py"):
+        if want not in evidence:
+            return (False, f"Expected {want!r} in ambiguous evidence, got {evidence!r}")
+    return (True, "")
+
+
 CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("basename partial component no match", case_basename_partial_component_does_not_match),
     ("basename partial component cell unknown", case_basename_partial_component_cell_is_unknown),
@@ -536,6 +547,7 @@ CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("nested same basename ambiguous", case_basename_nested_same_name_is_ambiguous),
     ("three-way ambiguous token flagged", case_basename_three_way_ambiguous_token_flags_ambiguity),
     ("three-way ambiguous row unknown", case_basename_three_way_ambiguous_row_is_unknown),
+    ("F16 ambiguous evidence names token and candidates", case_ambiguous_evidence_names_token_and_candidates),
     ("single nested basename resolves", case_basename_single_nested_match_resolves),
     ("root plus nested basename ambiguous", case_basename_root_and_nested_is_ambiguous),
     ("zero-match basename cell unknown", case_basename_zero_matches_cell_is_unknown),
