@@ -23,7 +23,10 @@ from typing import List, Dict, Iterator, Optional, TextIO, Tuple, Any, Mapping, 
 from .safety import Unknown, fail_closed
 from .cache import read_repo_cache
 from .deps import atomic_write_text, find_lockfile, read_json_object
-from .models import validate_repo_cache, valid_timeout_secs, Mode, parse_mode, CheckKey, check_key_of, CheckRecord, ValidateResult  # noqa: F401  (re-exported)
+from .models import (
+    validate_repo_cache, valid_timeout_secs, Mode, parse_mode, CheckKey, check_key_of, CheckRecord,
+    FullKey, MinimumKey, satisfies, parse_check_record, record_filename_hash, CHECK_RECORD_SCHEMA_VERSION,
+)
 
 try:
     import yaml  # type: ignore[import-untyped]
@@ -1183,7 +1186,7 @@ def worktree_tree(worktree: Path) -> Optional[str]:
             return None
 
         # Create temp index file in system temp directory, not in the git dir
-        fd, tmp_index_path = tempfile.mkstemp(prefix="git-index-")
+        fd, tmp_index_path = tempfile.mkstemp(prefix="git-index-", dir=tempfile.gettempdir())
         os.close(fd)
 
         try:
@@ -1485,19 +1488,84 @@ def write_check_receipt(
     return True, None
 
 
-def _passing_record_hash(records_dir: Path, key: CheckKey) -> Optional[str]:
-    """Key hash of a passing record for `key` under records_dir, or None (missing, malformed, failed)."""
-    from .models import _canonical_key_serialisation
-
-    key_hash = hashlib.sha256(_canonical_key_serialisation(key).encode()).hexdigest()
-    record_path = records_dir / f"{key_hash}.json"
-    if not record_path.exists():
-        return None
+def _read_record(path: Path, filename_hash: str) -> Optional[CheckRecord]:
+    """Parse one record file through the single fail-closed boundary; None on any doubt."""
     try:
-        record = CheckRecord.from_dict(json.loads(record_path.read_text()))
-    except (json.JSONDecodeError, OSError):
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
         return None
-    return key_hash if record and record.passed else None
+    record, _reason = parse_check_record(data, filename_hash)
+    return record
+
+
+def _lookup_satisfying_record(records_dir: Path, requested: CheckKey) -> Optional[Tuple[str, CheckRecord]]:
+    """
+    Find a passing record that satisfies `requested` (models.satisfies). A minimum request is also
+    satisfied by the full record for the same tree and full digest, since a passing full run covers it.
+    """
+    candidates: List[CheckKey] = [requested]
+    if isinstance(requested, MinimumKey):
+        candidates.append(FullKey(tree=requested.tree, full_digest=requested.full_digest))
+    for candidate in candidates:
+        name = record_filename_hash(candidate)
+        record = _read_record(records_dir / f"{name}.json", name)
+        if record is not None and satisfies(record, requested):
+            return name, record
+    return None
+
+
+def _write_record(records_dir: Path, key: CheckKey, mode_executed: Mode) -> str:
+    """Write a passing record atomically (same-directory unique temp, then os.replace). Returns the stem."""
+    import time
+
+    name = record_filename_hash(key)
+    records_dir.mkdir(parents=True, exist_ok=True)
+    record = CheckRecord(
+        schema_version=CHECK_RECORD_SCHEMA_VERSION,
+        key=key,
+        passed=True,
+        mode_executed=mode_executed,
+        written_at=time.time(),
+    )
+    fd, tmp_name = tempfile.mkstemp(dir=str(records_dir), prefix=f".{name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(record.to_dict()) + "\n")
+        os.replace(tmp_name, records_dir / f"{name}.json")
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp_name)
+        raise
+    return name
+
+
+def _evict_older_pass(records_dir: Path, key: CheckKey, run_started: float) -> None:
+    """A failed run evicts only a passing record for this exact key written before the run started."""
+    name = record_filename_hash(key)
+    path = records_dir / f"{name}.json"
+    record = _read_record(path, name)
+    if record is not None and record.passed and record.written_at < run_started:
+        with contextlib.suppress(OSError):
+            path.unlink()
+
+
+def _export_check_env(base: Optional[str], changed: List[str]) -> Tuple[Dict[str, str], Optional[str]]:
+    """
+    Environment for a check run. CHECK_BASE is the merge-base (empty when unresolved). CHECK_CHANGED_FILES
+    is a scratch file outside the worktree holding the same list validate hashed. Returns (env, scratch).
+    """
+    env = os.environ.copy()
+    env["CHECK_BASE"] = base or ""
+    try:
+        fd, scratch = tempfile.mkstemp(prefix="claude-check-files-", suffix=".txt")
+        with os.fdopen(fd, "w") as fh:
+            fh.write(f"{base or ''}\n" + "\0".join(changed))
+    except OSError as e:
+        logging.warning(f"CHECK_CHANGED_FILES not exported: {e}")
+        env.pop("CHECK_CHANGED_FILES", None)
+        return env, None
+    env["CHECK_CHANGED_FILES"] = scratch
+    return env, scratch
 
 
 def validate(
@@ -1508,31 +1576,30 @@ def validate(
     timeout: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Validate checks idempotently with per-key record caching.
+    Validate checks idempotently with per-key record caching (ADR-0013 Amendment 11).
 
-    Returns a dict with: status, all_passed, executed, schema_version, mode_requested,
-    mode_executed, fell_back_to_full, cache, satisfied_by, changed_files_source.
+    Returns the CheckResults dict plus: schema_version, mode_requested, mode_executed,
+    fell_back_to_full, cache ("hit" | "miss" | "forced"), satisfied_by (record stem or None), and
+    changed_files_source ("computed" | "base-unresolved" | "tree-unavailable").
 
-    Cache records are stored in .claude/check-records/<sha256>.json, keyed by the
-    canonical key serialization. Uses tempfile.gettempdir() for CHECK_BASE and
-    CHECK_CHANGED_FILES exports (outside the worktree).
+    A hit runs nothing. A miss runs the resolved command with CHECK_BASE and CHECK_CHANGED_FILES
+    exported, and writes a record only after a pass with the tree unchanged across the run. A failed
+    run evicts only an older passing record for the same key. Minimum with no check_minimum runs, and
+    is keyed as, the full check.
     """
     import time
 
-    # Resolve check command for this mode
-    resolution = resolve_check_detail(worktree, main_worktree, mode=mode)
+    requested = parse_mode(mode)
+    if requested is None:
+        return {"status": "error", "error": f"invalid mode: {mode!r}"}
+
+    resolution = resolve_check_detail(worktree, main_worktree, mode=requested)
     if resolution.failure_reason:
-        return {
-            "status": "error",
-            "error": resolution.failure_reason,
-        }
+        return {"status": "error", "error": resolution.failure_reason}
 
     check_command = resolution.command
     if not check_command:
-        return {
-            "status": "error",
-            "error": "No check command resolved",
-        }
+        return {"status": "error", "error": "No check command resolved"}
 
     if timeout is None:
         source_kind: ConfigKind = "project.yaml" if resolution.source == "project.yaml" else "repo-cache"
@@ -1540,152 +1607,107 @@ def validate(
             worktree, main_worktree, resolution.source_file, source_kind, resolution.source_scope,
         )
 
-    # Get tree
-    tree = worktree_tree(worktree)
-    if not tree:
-        # Uncached run
-        result, err = run_checks(
-            commands={"check": check_command},
-            repo_root=worktree,
-            timeout=timeout,
-        )
-        output = result.to_dict() if result else {}
-        output.update({
-            "schema_version": 1,
-            "mode_requested": mode,
-            "mode_executed": mode,
-            "fell_back_to_full": resolution.fell_back_to_full,
-            "cache": "miss",
-            "satisfied_by": None,
-            "changed_files_source": "tree-unavailable",
-        })
-        return output
+    mode_executed: Mode = "full" if resolution.fell_back_to_full else requested
+    if resolution.fell_back_to_full:
+        logging.warning("checks validate: check_minimum is not declared; running the full check instead")
 
-    # Compute digests
+    # Digests: the full digest covers the full-gate commands; the minimum digest covers check_minimum.
     cache_data, _ = read_repo_cache(worktree / ".claude" / "repo-cache.json")
     commands_dict = cache_data.commands if cache_data else {}
+    full_digest = _commands_digest({k: v for k, v in commands_dict.items() if k != "check_minimum"})
+    minimum_digest = _commands_digest({k: v for k, v in commands_dict.items() if k == "check_minimum"})
 
-    # Get full digest (from all check commands)
-    full_digest = _commands_digest(commands_dict)
-
-    # Get minimum digest if applicable
-    minimum_digest = ""
-    if mode == "minimum":
-        min_commands = {k: v for k, v in commands_dict.items() if k == "check_minimum"}
-        minimum_digest = _commands_digest(min_commands)
-
-    # Get changed files
+    # Changed files: one canonical computation, hashed exactly as exported. An unresolved base means no hash.
+    tree = worktree_tree(worktree)
     base = resolve_check_base(worktree)
-    changed_files = canonical_changed_files(worktree, base) if base else []
-    files_hash = changed_files_hash(changed_files) if changed_files else ""
+    changed: List[str] = []
+    files_hash: Optional[str] = None
+    changed_source = "computed"
+    if base is None:
+        changed_source = "base-unresolved"
+        logging.warning("idempotency disabled: no base: merge-base with origin default is unresolved")
+    else:
+        changed = canonical_changed_files(worktree, base)
+        files_hash = changed_files_hash(changed)
+    if tree is None:
+        changed_source = "tree-unavailable"
 
-    # Build key
-    parsed_mode = parse_mode(mode)
-    if not parsed_mode:
-        parsed_mode = "full"
+    key: Optional[CheckKey] = None
+    if tree is not None:
+        key = check_key_of(mode_executed, tree, full_digest, minimum_digest, files_hash)
+        if key is None:
+            logging.warning("idempotency disabled: no key: this check run is not cached")
 
-    key = check_key_of(parsed_mode, tree, full_digest, minimum_digest or None, files_hash or None)
-
-    # Determine cache action
+    records_dir = worktree / ".claude" / "check-records"
     cache_action = "forced" if force else "miss"
-    satisfied_by = None
-
-    # Look up record if not forced. A passing full record also satisfies a minimum request.
-    if key and not force:
-        records_dir = worktree / ".claude" / "check-records"
-        hit_hash = _passing_record_hash(records_dir, key) if records_dir.exists() else None
-        if hit_hash is None and parsed_mode == "minimum":
-            full_key = check_key_of("full", tree, full_digest)
-            if full_key is not None and records_dir.exists():
-                hit_hash = _passing_record_hash(records_dir, full_key)
-        if hit_hash is not None:
+    satisfied_by: Optional[str] = None
+    if key is not None and not force:
+        hit = _lookup_satisfying_record(records_dir, key)
+        if hit is not None:
+            satisfied_by, record = hit
             cache_action = "hit"
-            satisfied_by = hit_hash
+            mode_executed = record.mode_executed
 
-    # If cache hit, return immediately (same key set as a run; no results because nothing ran)
-    if cache_action == "hit" and key:
+    def _extras(cache: str) -> Dict[str, Any]:
         return {
-            "status": "passed",
-            "all_passed": True,
-            "results": [],
-            "planned": [],
-            "failed_at": None,
-            "skipped": [],
-            "executed": [],
             "schema_version": 1,
-            "mode_requested": mode,
-            "mode_executed": resolution.fell_back_to_full and "full" or mode,
+            "mode_requested": requested,
+            "mode_executed": mode_executed,
             "fell_back_to_full": resolution.fell_back_to_full,
-            "cache": "hit",
+            "cache": cache,
             "satisfied_by": satisfied_by,
-            "changed_files_source": "computed",
+            "changed_files_source": changed_source,
         }
 
-    # Export CHECK_BASE and CHECK_CHANGED_FILES to temp file
-    check_env_file = Path(tempfile.gettempdir()) / f"claude-check-env-{os.getpid()}.txt"
-    try:
-        check_env_content = f"{base or ''}\n" + "\0".join(changed_files)
-        check_env_file.write_text(check_env_content)
-        env = os.environ.copy()
-        env["CHECK_BASE"] = base or ""
-        env["CHECK_CHANGED_FILES"] = str(check_env_file)
-    except OSError:
-        env = os.environ.copy()
+    if cache_action == "hit":
+        hit_output: Dict[str, Any] = CheckResults().to_dict()
+        hit_output.update({"status": "passed", "all_passed": True})
+        hit_output.update(_extras("hit"))
+        return hit_output
 
-    # Run check
+    run_started = time.time()
+    env, scratch = _export_check_env(base, changed)
     try:
-        result, err = run_checks(
+        result, _err = run_checks(
             commands={"check": check_command},
             repo_root=worktree,
             timeout=timeout,
             env=env,
         )
     finally:
-        try:
-            check_env_file.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if scratch is not None:
+            with contextlib.suppress(OSError):
+                os.remove(scratch)
 
-    output = result.to_dict() if result else {}
-    mode_executed: Mode = "full" if resolution.fell_back_to_full else (parse_mode(mode) or "full")
+    passed = bool(result.all_passed and result.status == "passed")
+    if key is not None:
+        if passed:
+            if worktree_tree(worktree) == tree:
+                try:
+                    satisfied_by = _write_record(records_dir, key, mode_executed)
+                except OSError as e:
+                    logging.warning(f"idempotency disabled: record not written: {e}")
+            else:
+                logging.warning("idempotency disabled: tree changed during the run; no record written")
+        else:
+            _evict_older_pass(records_dir, key, run_started)
 
-    # Write record if passed and tree unchanged
-    if result and result.all_passed and key:
-        try:
-            records_dir = worktree / ".claude" / "check-records"
-            records_dir.mkdir(parents=True, exist_ok=True)
-
-            from .models import _canonical_key_serialisation
-            key_serial = _canonical_key_serialisation(key)
-            key_hash = hashlib.sha256(key_serial.encode()).hexdigest()
-            record_path = records_dir / f"{key_hash}.json"
-
-            record = CheckRecord(
-                schema_version=1,
-                key=key,
-                passed=True,
-                mode_executed=mode_executed,
-                written_at=time.time(),
-            )
-
-            record_data = record.to_dict()
-            tmp_path = record_path.with_suffix(".tmp")
-            tmp_path.write_text(json.dumps(record_data) + "\n")
-            os.replace(tmp_path, record_path)
-            satisfied_by = key_hash
-        except OSError:
-            pass
-
-    output.update({
-        "schema_version": 1,
-        "mode_requested": mode,
-        "mode_executed": mode_executed,
-        "fell_back_to_full": resolution.fell_back_to_full,
-        "cache": cache_action,
-        "satisfied_by": satisfied_by,
-        "changed_files_source": "computed",
-    })
+    output: Dict[str, Any] = result.to_dict()
+    output.update(_extras(cache_action))
     return output
+
+
+def receipt_base_current(worktree: Path, base_ref: str, base_sha: str) -> Tuple[bool, str]:
+    """
+    Base-currency rule for a receipt: base_ref must still resolve to base_sha. Only consumers that
+    gate a merge apply it (CP-W5); it is not part of any record key. Returns (True, "") or (False, reason).
+    """
+    resolved_base_sha = _resolve_sha(base_ref, worktree)
+    if resolved_base_sha is None:
+        return False, f"could not resolve {base_ref}"
+    if resolved_base_sha != base_sha:
+        return False, f"{base_ref} moved since the checks ran (rebase may be needed)"
+    return True, ""
 
 
 def check_receipt_fresh(
@@ -1741,10 +1763,4 @@ def check_receipt_fresh(
     if head_tree != tree:
         return False, "HEAD tree differs from the checked tree"
 
-    resolved_base_sha = _resolve_sha(base_ref, worktree)
-    if resolved_base_sha is None:
-        return False, f"could not resolve {base_ref}"
-    if resolved_base_sha != base_sha:
-        return False, f"{base_ref} moved since the checks ran (rebase may be needed)"
-
-    return True, ""
+    return receipt_base_current(worktree, base_ref, base_sha)

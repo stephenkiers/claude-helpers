@@ -672,5 +672,108 @@ if __name__ == "__main__":
             f"extra={sorted(set(hit_out.keys()) ^ (TO_DICT_KEYS | EXTRA_KEYS))}",
         )
 
+    print("[Section 12d] validate: base movement, untracked files, eviction, tree mutation, fallback caching (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        first = validate(work, mode="full")
+        other = root / "other"
+        _git(root, "clone", "-q", str(root / "origin.git"), str(other))
+        (other / "later.txt").write_text("later\n")
+        _git(other, "add", "-A")
+        _git(other, "commit", "-q", "-m", "later")
+        _git(other, "push", "-q", "origin", "main")
+        _git(work, "fetch", "-q", "origin")
+        second = validate(work, mode="full")
+        test_result(
+            "validate: an advanced origin/main with the same merge-base is still a hit (no re-execution)",
+            second.get("cache") == "hit" and first.get("satisfied_by") == second.get("satisfied_by")
+            and _runs(count) == 1,
+            f"second={second!r} runs={_runs(count)}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count), "check_minimum": _counter_cmd(count)})
+        m1 = validate(work, mode="minimum")
+        # M1 adds the same feature.txt content on main, so HEAD's tree is unchanged but its merge-base moves.
+        other = root / "other"
+        _git(root, "clone", "-q", str(root / "origin.git"), str(other))
+        (other / "feature.txt").write_text("one\n")
+        _git(other, "add", "-A")
+        _git(other, "commit", "-q", "-m", "same content on main")
+        _git(other, "push", "-q", "origin", "main")
+        m1_sha = _git(other, "rev-parse", "HEAD")
+        _git(work, "fetch", "-q", "origin")
+        tree = _git(work, "rev-parse", "HEAD^{tree}")
+        new_head = _git(work, "commit-tree", tree, "-p", m1_sha, "-m", "rebased onto same content")
+        _git(work, "update-ref", "refs/heads/feature", new_head)
+        m2 = validate(work, mode="minimum")
+        test_result(
+            "validate minimum: same tree with a different merge-base is a miss (changed-files hash differs)",
+            m1.get("cache") == "miss" and m2.get("cache") == "miss" and _runs(count) == 2,
+            f"m1={m1!r} m2={m2!r} runs={_runs(count)}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        validate(work, mode="full")
+        (work / "untracked-notes.txt").write_text("not committed\n")
+        after = validate(work, mode="full")
+        test_result(
+            "validate: an untracked (non-ignored) file changes the tree and is a miss",
+            after.get("cache") == "miss" and _runs(count) == 2,
+            f"after={after!r} runs={_runs(count)}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        flag = root / "fail-flag.txt"
+        work = _fixture_clone(root, {"check": f"echo run >> '{count}' && test ! -f '{flag}'"})
+        passed = validate(work, mode="full")
+        records_dir = work / ".claude" / "check-records"
+        recorded = list(records_dir.glob("*.json")) if records_dir.exists() else []
+        flag.write_text("fail now\n")
+        forced_fail = validate(work, mode="full", force=True)
+        remaining = list(records_dir.glob("*.json")) if records_dir.exists() else []
+        test_result(
+            "validate: a forced failing run evicts the older pass record for the same key",
+            passed.get("status") == "passed" and len(recorded) == 1
+            and forced_fail.get("status") != "passed" and remaining == [],
+            f"passed={passed!r} recorded={recorded} forced_fail={forced_fail!r} remaining={remaining}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        mutated = root / "work" / "mutated.txt"  # _fixture_clone places the work tree at root/work
+        work = _fixture_clone(root, {"check": f"echo run >> '{count}' && echo x > '{mutated}'"})
+        out = validate(work, mode="full")
+        records_dir = work / ".claude" / "check-records"
+        recorded = list(records_dir.glob("*.json")) if records_dir.exists() else []
+        test_result(
+            "validate: a tree that changes during the run writes no record (next run is a miss)",
+            out.get("status") == "passed" and recorded == [],
+            f"out={out!r} records={recorded}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        first = validate(work, mode="minimum")
+        second = validate(work, mode="minimum")
+        test_result(
+            "validate minimum fallback is keyed as full and caches: second run is a hit with no re-execution",
+            first.get("fell_back_to_full") is True and first.get("cache") == "miss"
+            and second.get("cache") == "hit" and _runs(count) == 1,
+            f"first={first!r} second={second!r} runs={_runs(count)}",
+        )
+
     print()
     h.summarize_and_exit()

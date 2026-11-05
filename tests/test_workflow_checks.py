@@ -1111,5 +1111,24 @@ if __name__ == "__main__":
             f"no_base={no_base!r}",
         )
 
+    print("[Section 16c] cache and record paths are git-ignored in this repo (#462 Part A)")
+    repo_root = Path(__file__).resolve().parent.parent
+    for ignored_path in [
+        ".claude/check-records/x.json",
+        ".mypy_cache/x",
+        "__pycache__/x.pyc",
+    ]:
+        # .ruff_cache is not listed: ruff writes its own .gitignore inside that directory, so it
+        # is self-ignored once it exists; this repo's root .gitignore does not name it.
+        proc = subprocess.run(
+            ["git", "check-ignore", "-q", ignored_path], cwd=str(repo_root),
+            capture_output=True, text=True,
+        )
+        test_result(
+            f"{ignored_path} is git-ignored (so validate records and caches never dirty the tree)",
+            proc.returncode == 0,
+            f"rc={proc.returncode} stderr={proc.stderr.strip()!r}",
+        )
+
     print()
     h.summarize_and_exit()

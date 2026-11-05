@@ -212,9 +212,63 @@ def main():
     else:
         h.test_result("Round-trip FullKey preserves data", False)
 
-    # ========== Test CLI --mode choices ==========
-    # This is conceptual; the real check is that argparse uses get_args(Mode)
-    h.test_result("CLI mode choices would equal MODES", True)
+    # ========== Test parse_check_record reasons (fail-closed boundary) ==========
+    from workflow.models import parse_check_record, record_filename_hash
+
+    rec, reason = parse_check_record({**valid_data, "passed": 1})
+    h.test_result("parse_check_record rejects bool-as-int passed with a reason", rec is None and bool(reason))
+
+    rec, reason = parse_check_record({**valid_data, "extra": "field"})
+    h.test_result("parse_check_record rejects an extra top-level key with a reason", rec is None and bool(reason))
+
+    rec, reason = parse_check_record({k: v for k, v in valid_data.items() if k != "passed"})
+    h.test_result("parse_check_record rejects a missing top-level key with a reason", rec is None and bool(reason))
+
+    rec, reason = parse_check_record({**valid_data, "key": {**valid_data["key"], "tree": ""}})
+    h.test_result("parse_check_record rejects tree '' with a reason", rec is None and bool(reason))
+
+    rec, reason = parse_check_record({**valid_data, "mode_executed": "minimum"})
+    h.test_result("parse_check_record rejects a minimum mode carrying a full-shaped key",
+                  rec is None and bool(reason))
+
+    rec, reason = parse_check_record({**min_dict, "mode_executed": "full"})
+    h.test_result("parse_check_record rejects a full mode carrying a minimum-shaped key",
+                  rec is None and bool(reason))
+
+    filename_of_full = record_filename_hash(full_record.key)
+    rec, reason = parse_check_record(valid_data, filename_hash="0" * 64)
+    h.test_result("parse_check_record rejects a key that does not match its filename hash",
+                  rec is None and bool(reason))
+    rec, reason = parse_check_record(valid_data, filename_hash=filename_of_full)
+    h.test_result("parse_check_record accepts a record whose key matches its filename hash",
+                  rec is not None and reason is None)
+
+    # ========== Test CLI --mode choices (argparse, real subprocess) ==========
+    import subprocess
+
+    scripts_dir = Path(__file__).parent.parent / "scripts"
+    help_proc = subprocess.run(
+        [sys.executable, "-m", "workflow.cli", "checks", "validate", "--help"],
+        cwd=str(scripts_dir), capture_output=True, text=True,
+    )
+    h.test_result("checks validate --help lists exactly the MODES choices",
+                  help_proc.returncode == 0 and "{minimum,full}" in help_proc.stdout,
+                  f"rc={help_proc.returncode} out={help_proc.stdout[:200]!r}")
+
+    resolve_help = subprocess.run(
+        [sys.executable, "-m", "workflow.cli", "checks", "resolve-check", "--help"],
+        cwd=str(scripts_dir), capture_output=True, text=True,
+    )
+    h.test_result("checks resolve-check --help lists exactly the MODES choices",
+                  resolve_help.returncode == 0 and "{minimum,full}" in resolve_help.stdout,
+                  f"rc={resolve_help.returncode}")
+
+    bad_mode = subprocess.run(
+        [sys.executable, "-m", "workflow.cli", "checks", "validate", "--mode", "bogus"],
+        cwd=str(scripts_dir), capture_output=True, text=True,
+    )
+    h.test_result("checks validate --mode bogus is a usage error (exit 2)", bad_mode.returncode == 2,
+                  f"rc={bad_mode.returncode}")
 
     # ========== Test ValidateResult key-set pin ==========
     result = CheckResults(all_passed=True, status="passed", executed=[])

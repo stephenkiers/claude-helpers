@@ -42,7 +42,7 @@ from typing import Callable, Any, Tuple
 
 from . import cleanup, merge, shipit, checks, deps, track, verify_queue, issue_comments, heal
 from .cache import read_repo_cache
-from .models import RepoCacheData
+from .models import MODES, RepoCacheData
 from .providers import GithubProvider, LocalProvider
 from .providers.base import Provider, ProviderError
 from . import worktrees
@@ -348,7 +348,7 @@ def main() -> None:
     )
     checks_resolve_check_parser.add_argument(
         "--mode",
-        choices=["minimum", "full"],
+        choices=list(MODES),
         default="full",
         help="Check mode: 'minimum' or 'full' (default: full)"
     )
@@ -382,7 +382,7 @@ def main() -> None:
     )
     checks_validate_parser.add_argument(
         "--mode",
-        choices=["minimum", "full"],
+        choices=list(MODES),
         default="full",
         help="Check mode: 'minimum' or 'full' (default: full)"
     )
@@ -883,8 +883,11 @@ def main() -> None:
                     force=args.force
                 )
                 print(json.dumps(validate_result))
-                # Exit 0 if passed, 1 if failed
-                exit_code = 0 if (validate_result.get("status") == "passed") else 1
+                # Exit 0 if passed, 1 if failed, 2 for a config or usage error (status "error")
+                if validate_result.get("status") == "error":
+                    exit_code = 2
+                else:
+                    exit_code = 0 if (validate_result.get("status") == "passed") else 1
                 sys.exit(exit_code)
             except Exception as e:
                 output = {

@@ -3,14 +3,17 @@
 Check minimum selector (scripts/check-minimum.py): file-to-test mapping, base/file precedence,
 and main() routing (#462 Part A).
 
-Subprocess calls and the changed-file source are mocked, so nothing here runs lint, typecheck or
-the test suite. Real git-backed canonical_changed_files behaviour is tested in
-test_workflow_checks.py.
+Gate subprocess calls (just lint, just typecheck, test runs) and the changed-file source are mocked,
+so nothing here runs lint, typecheck or the test suite. The --dry-run seam is exercised for real
+(it runs no gate), including one sandboxed invocation in a throwaway git repo. Real git-backed
+canonical_changed_files behaviour is tested in test_workflow_checks.py.
 
 Run with: python3 tests/test_check_minimum_selector.py
 """
 import importlib.util
+import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -187,10 +190,122 @@ def main():
 
     rc, calls = _run_main(["tests/test_workflow_checks_cli.py"])
     test_result(
-        "mapped changes run only the mapped test modules under pytest",
-        rc == 0 and calls[-1] == ["python3", "-m", "pytest", "-xvs", "tests/test_workflow_checks_cli.py"],
+        "mapped changes run only the mapped test modules, each as a standalone script",
+        rc == 0 and calls[-1] == ["python3", "tests/test_workflow_checks_cli.py"],
         f"rc={rc} calls={calls}",
     )
+
+    print("[Section 3b] build_plan, base-unresolved full suite, and the --dry-run seam")
+    plan = selector.build_plan("some-base", ["tests/test_workflow_checks_cli.py"])
+    test_result(
+        "build_plan with a resolved base and mapped files selects only those modules",
+        plan["tests"] == ["test_workflow_checks_cli.py"] and plan["full_suite"] is False
+        and plan["fallback_reason"] is None,
+        f"plan={plan}",
+    )
+
+    plan = selector.build_plan("some-base", ["scripts/no-such-module-462.py"])
+    test_result(
+        "build_plan with an unmappable path selects the full suite and says why",
+        plan["full_suite"] is True and plan["tests"] == [] and "unmappable" in (plan["fallback_reason"] or ""),
+        f"plan={plan}",
+    )
+
+    plan = selector.build_plan(None, ["tests/test_workflow_checks_cli.py"])
+    test_result(
+        "build_plan with an unresolved base selects the full suite (changed set unknown)",
+        plan["full_suite"] is True and plan["fallback_reason"] == "base unresolved",
+        f"plan={plan}",
+    )
+
+    calls_unresolved = []
+
+    def _fake_unresolved(argv, **kwargs):
+        calls_unresolved.append(list(argv))
+        return _Done(0)
+
+    prev = os.getcwd()
+    os.chdir(REPO)
+    try:
+        with mock.patch.object(selector, "get_check_base_and_files", return_value=(None, [])), \
+                mock.patch.object(selector.subprocess, "run", side_effect=_fake_unresolved):
+            rc_unresolved = selector.main([])
+    finally:
+        os.chdir(prev)
+    test_result(
+        "an unresolved base runs lint, typecheck and the full suite (not the no-tests skip)",
+        rc_unresolved == 0 and calls_unresolved[-1] == ["python3", "tests/run_all.py"],
+        f"rc={rc_unresolved} calls={calls_unresolved}",
+    )
+
+    import contextlib
+    import io
+
+    dry_calls = []
+
+    def _fail_if_run(argv, **kwargs):
+        dry_calls.append(list(argv))
+        raise AssertionError(f"--dry-run must not run gates: {argv}")
+
+    buf = io.StringIO()
+    with mock.patch.object(selector, "get_check_base_and_files",
+                           return_value=("b", ["tests/test_workflow_checks_cli.py"])), \
+            mock.patch.object(selector.subprocess, "run", side_effect=_fail_if_run), \
+            contextlib.redirect_stdout(buf):
+        rc_dry = selector.main(["--dry-run"])
+    try:
+        dry_plan = json.loads(buf.getvalue())
+    except ValueError:
+        dry_plan = {}
+    test_result(
+        "--dry-run prints the plan as JSON, exits 0, and runs no gate",
+        rc_dry == 0 and dry_calls == [] and dry_plan.get("tests") == ["test_workflow_checks_cli.py"],
+        f"rc={rc_dry} calls={dry_calls} plan={dry_plan}",
+    )
+
+    print("[Section 3c] sandboxed selection: the outer environment does not change the plan")
+    with tempfile.TemporaryDirectory() as tmp:
+        origin = Path(tmp) / "origin.git"
+        work = Path(tmp) / "work"
+        git_id = ["-c", "user.email=t@example.invalid", "-c", "user.name=t"]
+
+        def _g(cwd, *args):
+            return subprocess.run(["git", *git_id, *args], cwd=str(cwd), capture_output=True, text=True, check=True)
+
+        subprocess.run(["git", "init", "--bare", "-q", str(origin)], check=True, capture_output=True)
+        subprocess.run(["git", "init", "-q", str(work)], check=True, capture_output=True)
+        _g(work, "checkout", "-q", "-b", "main")
+        (work / "README.md").write_text("base\n")
+        _g(work, "add", "README.md")
+        _g(work, "commit", "-q", "-m", "base")
+        _g(work, "remote", "add", "origin", str(origin))
+        _g(work, "push", "-q", "origin", "main")
+        _g(work, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        _g(work, "checkout", "-q", "-b", "feature")
+        (work / "tests").mkdir()
+        (work / "tests" / "test_workflow_checks_cli.py").write_text("# feature\n")
+        _g(work, "add", "tests/test_workflow_checks_cli.py")
+        _g(work, "commit", "-q", "-m", "feature")
+
+        def _dry_run(env):
+            proc = subprocess.run(
+                [sys.executable, str(REPO / "scripts" / "check-minimum.py"), "--dry-run"],
+                cwd=str(work), env=env, capture_output=True, text=True,
+            )
+            return proc.returncode, proc.stdout
+
+        clean_env = {"PATH": os.environ.get("PATH", ""), "HOME": tmp}
+        noisy_env = {k: v for k, v in os.environ.items() if k not in ("CHECK_BASE", "CHECK_CHANGED_FILES")}
+        noisy_env["HOME"] = tmp
+
+        rc_a, out_a = _dry_run(clean_env)
+        rc_b, out_b = _dry_run(noisy_env)
+        plan_a = json.loads(out_a) if rc_a == 0 and out_a.strip() else {}
+        test_result(
+            "the selection is identical under a clean sandbox and a noisy environment (no HOME or config leakage)",
+            rc_a == 0 and rc_b == 0 and out_a == out_b and plan_a.get("tests") == ["test_workflow_checks_cli.py"],
+            f"rc_a={rc_a} rc_b={rc_b} out_a={out_a!r} out_b={out_b!r}",
+        )
 
     rc, calls = _run_main([])
     test_result(
