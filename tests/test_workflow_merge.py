@@ -467,6 +467,29 @@ if __name__ == "__main__":
         finally:
             shutil.rmtree(wt, ignore_errors=True)
 
+        # 11b-6: a repo with a just merge recipe and no full pass is refused before just merge runs.
+        wt = _gate_repo(
+            "gate-just-merge-nopass-",
+            justfile_text="merge:\n\techo merged\n\ncheck:\n\tfalse\n",
+        )
+        try:
+            plan = MergePlan(pr_number=53, head_ref="feature", target_worktree=str(wt), blocking_failures=[])
+            with mock.patch("workflow.merge._base_ancestor_fresh", return_value=False):
+                with mock.patch("workflow.checks.validate",
+                                return_value={"status": "failed", "all_passed": False, "failed_at": "just check"}):
+                    with mock.patch("workflow.merge._check_just_merge", return_value=True):
+                        with mock.patch("workflow.merge._run_just_merge") as mock_run_just:
+                            with mock.patch("workflow.merge._run_gh_pr_merge") as mock_merge:
+                                result, err = apply_merge(json.dumps(plan.to_dict()))
+            test_result(
+                "apply_merge: just merge recipe with no full pass is refused before just merge runs",
+                result.success is False and err is not None
+                and not mock_run_just.called and not mock_merge.called,
+                f"success={result.success} err={err!r} just_called={mock_run_just.called}"
+            )
+        finally:
+            shutil.rmtree(wt, ignore_errors=True)
+
         print()
         print("[Section 12] Auto-detect PR from worktree when no argument given")
 
