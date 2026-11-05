@@ -773,10 +773,11 @@ def main() -> None:
                         worktree, repo_cache.commands, args.base
                     )
 
-                result, err = checks.run_checks(
-                    commands=repo_cache.commands,
-                    repo_root=Path.cwd(),
-                    timeout=timeout
+                # Full mode through the per-key record cache: a hit on the unchanged tree runs nothing.
+                result, err = checks.run_checks_recorded(
+                    worktree,
+                    repo_cache.commands,
+                    timeout,
                 )
 
                 # Update attestation with results

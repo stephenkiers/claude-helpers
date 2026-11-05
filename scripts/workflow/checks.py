@@ -1599,6 +1599,100 @@ def _validate_error(message: str, requested: Mode) -> ValidateResult:
     return cast(ValidateResult, out)
 
 
+@dataclass
+class _RecordedRun:
+    """One keyed check run: the cache decision, the record it satisfied (if any), and the run result."""
+    cache_action: str  # "hit" | "miss" | "forced"
+    satisfied_by: Optional[str]
+    mode_executed: Mode
+    result: CheckResults
+    err: Optional[Unknown]
+
+
+def _run_recorded(
+    worktree: Path,
+    commands: Mapping[str, Optional[str]],
+    key: Optional[CheckKey],
+    mode_executed: Mode,
+    timeout: int,
+    force: bool,
+    exports: Optional[Tuple[Optional[str], List[str]]],
+) -> _RecordedRun:
+    """
+    Look up a passing record for `key`; on a miss, execute `commands` in `worktree` and record a pass.
+
+    A hit runs nothing and returns an empty passed result. A miss writes a record only after a pass with
+    the tree unchanged across the run; a failed run evicts only an older passing record for the same key.
+    `exports` is (base, changed files) and sets CHECK_BASE / CHECK_CHANGED_FILES for the run; None leaves
+    the caller's environment untouched. `key=None` disables caching.
+    """
+    import time
+
+    records_dir = worktree / ".claude" / "check-records"
+    cache_action = "forced" if force else "miss"
+    satisfied_by: Optional[str] = None
+    if key is not None and not force:
+        hit = _lookup_satisfying_record(records_dir, key)
+        if hit is not None:
+            satisfied_by, record = hit
+            return _RecordedRun("hit", satisfied_by, record.mode_executed, CheckResults(), None)
+
+    run_started = time.time()
+    env: Optional[Dict[str, str]] = None
+    scratch: Optional[str] = None
+    if exports is not None:
+        env, scratch = _export_check_env(exports[0], exports[1])
+    try:
+        result, err = run_checks(
+            commands=dict(commands),
+            repo_root=worktree,
+            timeout=timeout,
+            env=env,
+        )
+    finally:
+        if scratch is not None:
+            with contextlib.suppress(OSError):
+                os.remove(scratch)
+
+    passed = bool(result.all_passed and result.status == "passed")
+    if key is not None:
+        if passed:
+            if worktree_tree(worktree) == key.tree:
+                try:
+                    satisfied_by = _write_record(records_dir, key, mode_executed)
+                except OSError as e:
+                    logging.warning(f"idempotency disabled: record not written: {e}")
+            else:
+                logging.warning("idempotency disabled: tree changed during the run; no record written")
+        else:
+            _evict_older_pass(records_dir, key, run_started)
+    return _RecordedRun(cache_action, satisfied_by, mode_executed, result, err)
+
+
+def run_checks_recorded(
+    worktree: Path,
+    commands: Mapping[str, Optional[str]],
+    timeout: int,
+) -> Tuple[CheckResults, Optional[Unknown]]:
+    """
+    Full-mode `checks run`: execute `commands` in `worktree` through the per-key record cache.
+
+    No base and no changed-file exports, so the key is the tree plus the digest of the commands given
+    (check_minimum is excluded, as in validate's full digest) and the effective timeout: a pass under a
+    looser limit does not prove a pass under a stricter one, so a different timeout misses. An
+    unresolvable tree runs without a record.
+    """
+    full_inputs: Dict[str, Optional[str]] = {k: v for k, v in commands.items() if k != "check_minimum"}
+    has_commands = any(full_inputs.values())
+    full_inputs["run timeout secs"] = str(timeout)
+    tree = worktree_tree(worktree)
+    key: Optional[CheckKey] = None
+    if tree is not None and has_commands:
+        key = check_key_of("full", tree, _commands_digest(full_inputs))
+    run = _run_recorded(worktree, commands, key, "full", timeout, force=False, exports=None)
+    return run.result, run.err
+
+
 def validate(
     worktree: Path,
     mode: str = "full",
@@ -1618,8 +1712,6 @@ def validate(
     run evicts only an older passing record for the same key. Minimum with no check_minimum runs, and
     is keyed as, the full check.
     """
-    import time
-
     requested = parse_mode(mode)
     if requested is None:
         return _validate_error(f"invalid mode: {mode!r}", "full")
@@ -1687,62 +1779,30 @@ def validate(
         if key is None:
             logging.warning("idempotency disabled: no key: this check run is not cached")
 
-    records_dir = worktree / ".claude" / "check-records"
-    cache_action = "forced" if force else "miss"
-    satisfied_by: Optional[str] = None
-    if key is not None and not force:
-        hit = _lookup_satisfying_record(records_dir, key)
-        if hit is not None:
-            satisfied_by, record = hit
-            cache_action = "hit"
-            mode_executed = record.mode_executed
+    run = _run_recorded(
+        worktree,
+        {"check": check_command},
+        key,
+        mode_executed,
+        timeout,
+        force,
+        exports=(base, changed),
+    )
+    mode_executed = run.mode_executed
+    satisfied_by = run.satisfied_by
 
-    def _extras(cache: str) -> Dict[str, Any]:
-        return {
-            "schema_version": 1,
-            "mode_requested": requested,
-            "mode_executed": mode_executed,
-            "fell_back_to_full": resolution.fell_back_to_full,
-            "cache": cache,
-            "satisfied_by": satisfied_by,
-            "changed_files_source": changed_source,
-        }
-
-    if cache_action == "hit":
-        hit_output: Dict[str, Any] = dict(CheckResults().to_dict())
-        hit_output.update({"status": "passed", "all_passed": True})
-        hit_output.update(_extras("hit"))
-        return cast(ValidateResult, hit_output)
-
-    run_started = time.time()
-    env, scratch = _export_check_env(base, changed)
-    try:
-        result, _err = run_checks(
-            commands={"check": check_command},
-            repo_root=worktree,
-            timeout=timeout,
-            env=env,
-        )
-    finally:
-        if scratch is not None:
-            with contextlib.suppress(OSError):
-                os.remove(scratch)
-
-    passed = bool(result.all_passed and result.status == "passed")
-    if key is not None:
-        if passed:
-            if worktree_tree(worktree) == tree:
-                try:
-                    satisfied_by = _write_record(records_dir, key, mode_executed)
-                except OSError as e:
-                    logging.warning(f"idempotency disabled: record not written: {e}")
-            else:
-                logging.warning("idempotency disabled: tree changed during the run; no record written")
-        else:
-            _evict_older_pass(records_dir, key, run_started)
-
-    output: Dict[str, Any] = dict(result.to_dict())
-    output.update(_extras(cache_action))
+    output: Dict[str, Any] = dict(run.result.to_dict())
+    if run.cache_action == "hit":
+        output.update({"status": "passed", "all_passed": True})
+    output.update({
+        "schema_version": 1,
+        "mode_requested": requested,
+        "mode_executed": mode_executed,
+        "fell_back_to_full": resolution.fell_back_to_full,
+        "cache": run.cache_action,
+        "satisfied_by": satisfied_by,
+        "changed_files_source": changed_source,
+    })
     return cast(ValidateResult, output)
 
 
