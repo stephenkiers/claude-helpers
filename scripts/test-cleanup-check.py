@@ -83,6 +83,11 @@ Patterns, per framework (chosen from the file extension):
   go      (.go)      func TestNAME( (brace block); import: import ...; assert: t.Error*, t.Fatal*,
                      require.*
   Any other extension has no test bodies: every changed non-blank line counts for support-edit.
+
+Known limitation: multi-line decorators (e.g. @pytest.mark.parametrize spanning multiple lines) are
+only recognized up to their opening line (the line starting with "@"). Continuation lines that do not
+start with the decorator prefix (@, #[) are excluded from the span. A change to such a continuation
+line (e.g. in a parametrize argument list) will not be flagged as a violation.
 """
 
 import argparse

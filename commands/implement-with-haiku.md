@@ -2338,7 +2338,8 @@ under 4.2's convention. A new file is created only when the module has none. Mov
 Run these post-conditions in this order, before the commit. Each is a hard gate. Use a **fresh full
 collection under the new layout** for (a) and (c), never a path-scoped re-run of the pre-move set (the old
 paths no longer exist, and a stale include target would silently run the wrong set while still reporting
-a plausible count).
+a plausible count). Each helper call must exit 0; a non-zero exit (exit 1 with a named reason) is a hard
+failure that stops the gate immediately.
 
 - **(a) Named survivors.** Collect the test ids of the final tree (one per line, into
   `<SCRATCH_PATH>/collected.txt`), then run:
