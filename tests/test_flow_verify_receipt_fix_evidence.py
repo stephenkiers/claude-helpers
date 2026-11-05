@@ -627,6 +627,129 @@ def case_coverage_out_outside_steps_is_refused() -> Tuple[bool, str]:
     return (True, "")
 
 
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def case_tip_is_full_sha_of_resolved_branch() -> Tuple[bool, str]:
+    """D7: the artifact's tip is the 40-hex SHA the branch resolves to, not the branch name."""
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        repo, base, plan, flow_dir = _make_fix_fixture(tmp)
+        receipt = flow_dir / "steps" / "05-fix.md"
+        receipt.write_text("", encoding="utf-8")
+        coverage_out = flow_dir / "steps" / "05-fix.coverage.txt"
+        evidence_out = flow_dir / "steps" / "05-fix.evidence.json"
+        _run_coverage(repo, base, plan, receipt, coverage_out, evidence_out)
+        artifact = json.loads(evidence_out.read_text(encoding="utf-8"))
+        head = _git(repo, "rev-parse", "HEAD")
+        tip = artifact.get("tip")
+        if tip != head:
+            return (False, f"tip should be the resolved SHA {head}, got {tip!r}")
+        if not (isinstance(tip, str) and len(tip) == 40 and all(c in "0123456789abcdef" for c in tip)):
+            return (False, f"tip should be a 40-hex SHA, got {tip!r}")
+    return (True, "")
+
+
+def case_non_ancestor_base_is_unavailable() -> Tuple[bool, str]:
+    """D15: a base that is not an ancestor of the tip (an orphan commit) yields an unavailable artifact."""
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        repo, _base, plan, flow_dir = _make_fix_fixture(tmp)
+        orphan = _git(repo, "commit-tree", EMPTY_TREE, "-m", "orphan base")
+        receipt = flow_dir / "steps" / "05-fix.md"
+        receipt.write_text("", encoding="utf-8")
+        coverage_out = flow_dir / "steps" / "05-fix.coverage.txt"
+        evidence_out = flow_dir / "steps" / "05-fix.evidence.json"
+        _run_coverage(repo, orphan, plan, receipt, coverage_out, evidence_out)
+        artifact = json.loads(evidence_out.read_text(encoding="utf-8"))
+        if artifact.get("available") is not False:
+            return (False, f"non-ancestor base should be unavailable, got {artifact}")
+        if artifact.get("reason") != "base not ancestor of tip":
+            return (False, f"expected reason 'base not ancestor of tip', got {artifact.get('reason')!r}")
+    return (True, "")
+
+
+def case_failing_hunk_diff_gives_range_overlap() -> Tuple[bool, str]:
+    """A per-file `git diff -U0` that fails leaves no hunks for that file, so a row there is range-overlap."""
+    real_git_out = fvr._git_out
+
+    def failing_hunk_diff(repo: str, args: List[str]) -> Tuple[int, str]:
+        if args[:1] == ["diff"] and "-U0" in args:
+            return (1, "")
+        return real_git_out(repo, args)
+
+    with tempfile.TemporaryDirectory() as tmp_s:
+        tmp = Path(tmp_s)
+        repo, base, plan, flow_dir = _make_fix_fixture(tmp)
+        receipt = flow_dir / "steps" / "05-fix.md"
+        receipt.write_text("", encoding="utf-8")
+        coverage_out = flow_dir / "steps" / "05-fix.coverage.txt"
+        evidence_out = flow_dir / "steps" / "05-fix.evidence.json"
+        fvr._git_out = failing_hunk_diff
+        try:
+            _run_coverage(repo, base, plan, receipt, coverage_out, evidence_out)
+        finally:
+            fvr._git_out = real_git_out
+        artifact = json.loads(evidence_out.read_text(encoding="utf-8"))
+        if artifact.get("hunks") != {}:
+            return (False, f"failed hunk diff should leave no hunks, got {artifact.get('hunks')}")
+        passes, reason = fvr._verify_unknown_already_done(
+            "fix:D1", "scripts/workflow/deps.py:11", artifact, coverage_out)
+        if passes or reason != "range-overlap":
+            return (False, f"expected (False, range-overlap), got ({passes}, {reason})")
+    return (True, "")
+
+
+def _run_script_stdin(args: List[str], stdin_text: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(SCRIPT), *args], input=stdin_text, capture_output=True, text=True)
+
+
+def _match_args(receipt: Path, item_id: str, limit: str) -> List[str]:
+    return ["--step", "fix", "--receipt", str(receipt), "--match-outstanding-issue",
+            "--flow-id", "F1", "--item-id", item_id, "--limit", limit]
+
+
+def case_match_outstanding_issue_exit_codes() -> Tuple[bool, str]:
+    """D13: match prints the URL and exits 0; a full page (count reaching the limit) exits 3; bad input exits 2."""
+    with tempfile.TemporaryDirectory() as tmp_s:
+        receipt = Path(tmp_s) / "receipt.md"
+        receipt.write_text("", encoding="utf-8")
+        hit = json.dumps([{"url": "https://example.invalid/issues/1", "body": "flow-outstanding: F1 fix:D1"}])
+        proc = _run_script_stdin(_match_args(receipt, "fix:D1", "5"), hit)
+        if proc.returncode != 0 or proc.stdout.strip() != "https://example.invalid/issues/1":
+            return (False, f"match should print the URL and exit 0: rc={proc.returncode} out={proc.stdout!r}")
+        proc = _run_script_stdin(_match_args(receipt, "fix:D2", "5"), hit)
+        if proc.returncode != 0 or proc.stdout.strip():
+            return (False, f"no match should exit 0 with no output: rc={proc.returncode} out={proc.stdout!r}")
+        two = json.dumps([{"url": "u1", "body": "x"}, {"url": "u2", "body": "y"}])
+        proc = _run_script_stdin(_match_args(receipt, "fix:D1", "2"), two)
+        if proc.returncode != 3:
+            return (False, f"a page that reaches the limit should exit 3, got rc={proc.returncode}")
+        proc = _run_script_stdin(_match_args(receipt, "fix:D1", "5"), "not json")
+        if proc.returncode != 2:
+            return (False, f"unparseable JSON should exit 2, got rc={proc.returncode}")
+        proc = _run_script_stdin(_match_args(receipt, "fix:D1|x", "5"), "[]")
+        if proc.returncode != 2:
+            return (False, f"forbidden '|' in the unit should exit 2, got rc={proc.returncode}")
+    return (True, "")
+
+
+def case_assess_anchors_reports_unavailable_without_artifact() -> Tuple[bool, str]:
+    """D13: --assess-anchors with an unknown fix row and no evidence artifact prints unavailable and exits 0."""
+    from _assess_fixtures import TS, make_flow
+    with tempfile.TemporaryDirectory() as tmp_s:
+        flow = make_flow(tmp_s, implement={"rows": ["Step 1 | covered | in diff"]},
+                         fix={"rows": ["D1 | unknown | shared file"]},
+                         log=[f"{TS} implement ok", f"{TS} fix ok"])
+        proc = _run_script(["--assess-anchors", "--flow-dir", str(flow)])
+        if proc.returncode != 0:
+            return (False, f"--assess-anchors should exit 0, got rc={proc.returncode}: {proc.stderr}")
+        want = "fix:D1 | unavailable | artifact missing or unreadable"
+        if want not in proc.stdout:
+            return (False, f"expected {want!r} in output, got {proc.stdout!r}")
+    return (True, "")
+
+
 CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("passes with both anchors", case_verify_unknown_already_done_passes_with_both_anchors),
     ("fails on no range overlap", case_verify_unknown_already_done_fails_no_range_overlap),
@@ -660,6 +783,11 @@ CASES: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("valid range forms still parse", case_line_range_valid_forms_still_parse),
     ("unknown row range reaches artifact and verifies", case_unknown_row_range_reaches_artifact_and_verifies),
     ("coverage/evidence out outside steps refused", case_coverage_out_outside_steps_is_refused),
+    ("D7 tip is the resolved 40-hex SHA", case_tip_is_full_sha_of_resolved_branch),
+    ("D15 non-ancestor base is unavailable", case_non_ancestor_base_is_unavailable),
+    ("failing hunk diff gives range-overlap", case_failing_hunk_diff_gives_range_overlap),
+    ("D13 match-outstanding-issue exit codes", case_match_outstanding_issue_exit_codes),
+    ("D13 assess-anchors unavailable without artifact", case_assess_anchors_reports_unavailable_without_artifact),
 ]
 
 
