@@ -142,6 +142,16 @@ def main():
         code == 0,
         f"Expected 0, got {code}"
     )
+    push_code, _ = run_guard_script(flow_bash_guard, "auto", {
+        "agent_type": "flow-assessor",
+        "tool_name": "Bash",
+        "tool_input": {"command": "git push origin HEAD"}
+    })
+    h.test_result(
+        "Bash guard auto mode allows flow-assessor git push (pass-through, publish-deny is flow-plan only)",
+        push_code == 0,
+        f"Expected 0, got {push_code}"
+    )
 
     print()
     print("[Test 5] flow-plan with slugify.sh and ticket-title.txt commands\n")
@@ -199,6 +209,23 @@ def main():
         "flow-plan denies nesting deeper than MAX_NESTING",
         nesting_code == 2,
         f"Expected 2, got {nesting_code}"
+    )
+
+    # Pin the exact boundary: depth MAX_NESTING (64) is allowed, 65 is denied
+    at_limit = "$( " * 64 + "git log" + " )" * 64
+    over_limit = "$( " * 65 + "git log" + " )" * 65
+    at_code, _ = run_guard_script(flow_bash_guard, "flow-plan", {
+        "tool_name": "Bash",
+        "tool_input": {"command": at_limit}
+    })
+    over_code, _ = run_guard_script(flow_bash_guard, "flow-plan", {
+        "tool_name": "Bash",
+        "tool_input": {"command": over_limit}
+    })
+    h.test_result(
+        "flow-plan nesting boundary: 65 levels denied, 64 levels not denied for nesting",
+        over_code == 2 and at_code != 2,
+        f"Expected over=2 and at!=2, got over={over_code}, at={at_code}"
     )
 
     print()
