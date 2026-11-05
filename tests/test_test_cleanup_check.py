@@ -394,8 +394,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         doc = (Path(__file__).resolve().parent.parent / "commands" / "implement-with-haiku.md").read_text()
-        header = next(l.strip().strip("`") for l in doc.splitlines()
-                      if l.strip().strip("`").startswith("| id |") and "survivor or proof" in l)
+        header = next(ln.strip().strip("`") for ln in doc.splitlines()
+                      if ln.strip().strip("`").startswith("| id |") and "survivor or proof" in ln)
         ncols = header.count("|") - 1
         deletions = root / "round4-deletions.md"
         deletions.write_text(
