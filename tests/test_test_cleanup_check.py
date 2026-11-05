@@ -15,6 +15,7 @@ Driven only through the CLI (subprocess) against tiny throwaway git repos. Cover
 Run with: python3 tests/test_test_cleanup_check.py
 """
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -79,6 +80,41 @@ func TestParse(t *testing.T) {
 	}
 }
 """
+
+
+BASE_PY_MULTI = """import math
+
+
+def test_multi(
+    a,
+    b,
+):
+    expected = 3
+    assert a + b == expected
+"""
+
+BASE_PY_CLASSES = """class TestA:
+    def test_same(self):
+        assert 1 == 1
+
+
+class TestB:
+    def test_same(self):
+        assert 2 == 2
+"""
+
+BASE_SWIFT = """import XCTest
+
+final class ParseTests: XCTestCase {
+    func testParseBasic() {
+        let expected = 3
+        let result = parse(1, 2, 3)
+        XCTAssertEqual(result, expected)
+    }
+}
+"""
+
+BASE_TS = BASE_JS.replace("const expected = 3;", "const expected: number = 3;")
 
 
 def git(repo, *args):
@@ -439,6 +475,277 @@ def main():
         h.test_result("survivors without --collected exits 2", rc == 2, f"rc={rc}")
         rc, _, _ = run(repo, [])
         h.test_result("no subcommand exits 2", rc == 2, f"rc={rc}")
+
+    print("[Section 8] fence: sizing, classes, decorators, continuation lines (fail closed)")
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"tests/test_x.py": BASE_PY_MULTI})
+        head_sha = commit(repo, {"tests/test_x.py": edited(BASE_PY_MULTI, "assert a + b == expected",
+                                                           "assert a + b == 4")}, "head")
+        multi_id = "tests/test_x.py::test_multi"
+        rc, out, err = run(repo, ["fence", "--base", base, "--head", head_sha, "--test", multi_id])
+        h.test_result("multi-line signature: a body edit after the signature is a violation",
+                      rc == 1 and f"violation {multi_id} " in out and f"restore {multi_id} 4-9" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"tests/test_x.py": BASE_PY_MULTI})
+        head_sha = commit(repo, {"tests/test_x.py": "import math\n\n\ndef test_multi(\n    a,\n    b\n"},
+                          "head")
+        rc, out, err = run(repo, ["fence", "--base", base, "--head", head_sha,
+                                  "--test", "tests/test_x.py::test_multi"])
+        h.test_result("a signature that never closes is unlocated and fails closed",
+                      rc == 1 and "unlocated tests/test_x.py::test_multi head" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"tests/test_c.py": BASE_PY_CLASSES})
+        head_sha = commit(repo, {"tests/test_c.py": edited(BASE_PY_CLASSES, "assert 2 == 2",
+                                                           "assert 2 == 3")}, "head")
+        rc_b, out_b, err_b = run(repo, ["fence", "--base", base, "--head", head_sha,
+                                        "--test", "tests/test_c.py::TestB::test_same"])
+        rc_a, out_a, _ = run(repo, ["fence", "--base", base, "--head", head_sha,
+                                    "--test", "tests/test_c.py::TestA::test_same"])
+        rc_amb, out_amb, _ = run(repo, ["fence", "--base", base, "--head", head_sha,
+                                        "--test", "tests/test_c.py::test_same"])
+        h.test_result("class segment selects the TestB definition (edit is a violation)",
+                      rc_b == 1 and "violation tests/test_c.py::TestB::test_same " in out_b,
+                      f"rc={rc_b} out={out_b!r} err={err_b!r}")
+        h.test_result("class segment selects TestA, which is unchanged (passes)",
+                      rc_a == 0 and out_a == "", f"rc={rc_a} out={out_a!r}")
+        h.test_result("a same-named test without a class segment is ambiguous and fails",
+                      rc_amb == 1 and "unlocated tests/test_c.py::test_same base/head" in out_amb,
+                      f"rc={rc_amb} out={out_amb!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"tests/test_x.py": BASE_PY})
+        head_sha = commit(repo, {"tests/test_x.py": edited(
+            BASE_PY, "def test_parse_basic():", "@pytest.mark.skip\ndef test_parse_basic():")}, "head")
+        rc, out, err = run(repo, ["fence", "--base", base, "--head", head_sha, "--test", TID])
+        h.test_result("a decorator added above a test is a violation",
+                      rc == 1 and f"violation {TID} " in out, f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base_text = edited(BASE_PY, "def test_parse_basic():",
+                           '@pytest.mark.skip(reason="old")\ndef test_parse_basic():')
+        repo, base = make_repo(tmp, {"tests/test_x.py": base_text})
+        rc, out, err = fence_head(repo, base, {"tests/test_x.py": edited(
+            base_text, "@pytest.mark.skip", "@pytest.mark.xfail")})
+        h.test_result("a decorator callee swap with the same arguments is a violation, restore covers it",
+                      rc == 1 and f"violation {TID} " in out and f"restore {TID} 9-13" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base_text = edited(BASE_PY, "    result = parse(1, 2, 3)\n", '    label = "parse(1)"\n')
+        repo, base = make_repo(tmp, {"tests/test_x.py": base_text})
+        rc, out, err = fence_head(repo, base, {"tests/test_x.py": edited(
+            base_text, 'label = "parse(1)"', 'label = "parse_cfg(1)"')})
+        h.test_result("a callee name inside a string literal is a violation, not a binding edit",
+                      rc == 1 and f"violation {TID} " in out, f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base_text = edited(BASE_JS, "expect(result).toBe(expected);",
+                           "expect(result)\n    .toBe(expected);")
+        repo, base = make_repo(tmp, {"tests/w.test.js": base_text})
+        rc, out, err = fence_head(repo, base, {"tests/w.test.js": edited(
+            base_text, ".toBe(expected);", ".toEqual(expected);")},
+            test_id="tests/w.test.js::parses basic")
+        h.test_result("a matcher swap on a method-chain continuation line is a violation",
+                      rc == 1 and "violation tests/w.test.js::parses basic " in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base_text = edited(BASE_RUST, "assert_eq!(result, expected);",
+                           "assert_eq!(\n        parse(1, 2, 3),\n        expected\n    );")
+        repo, base = make_repo(tmp, {"tests/lib.rs": base_text})
+        rc, out, err = fence_head(repo, base, {"tests/lib.rs": edited(
+            base_text, "parse(1, 2, 3),", "parse_cfg(1, 2, 3),")},
+            test_id="tests/lib.rs::parses_basic")
+        h.test_result("a callee swap inside an open assert_eq! continuation is a violation",
+                      rc == 1 and "violation tests/lib.rs::parses_basic " in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base_text = edited(BASE_PY, "result = parse(1, 2, 3)", "result = parse(\n        1, 2, 3)")
+        repo, base = make_repo(tmp, {"tests/test_x.py": base_text})
+        rc, out, err = fence_head(repo, base, {"tests/test_x.py": edited(
+            base_text, "result = parse(", "result = parse_cfg(")})
+        h.test_result("a callee change in a multi-line call fails closed",
+                      rc == 1 and f"violation {TID} " in out, f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"x_test.go": BASE_GO})
+        head_text = BASE_GO.rstrip()[: BASE_GO.rstrip().rfind("}")]
+        rc, out, err = fence_head(repo, base, {"x_test.go": head_text}, test_id="x_test.go::TestParse")
+        h.test_result("a brace block that never closes is unlocated and fails closed",
+                      rc == 1 and "unlocated x_test.go::TestParse head" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    print("[Section 9] fence: Swift, TS, fallback extension, path confinement")
+    with tempfile.TemporaryDirectory() as tmp:
+        swift_id = "Tests/ParseTests.swift::testParseBasic"
+        repo, base = make_repo(tmp, {"Tests/ParseTests.swift": BASE_SWIFT})
+        rc, out, err = fence_head(repo, base, {"Tests/ParseTests.swift": edited(
+            BASE_SWIFT, "parse(1, 2, 3)", "parseCfg(1, 2, 3)")}, test_id=swift_id)
+        h.test_result("Swift: callee rename passes",
+                      rc == 0 and "violation" not in out, f"rc={rc} out={out!r} err={err!r}")
+    with tempfile.TemporaryDirectory() as tmp:
+        swift_id = "Tests/ParseTests.swift::testParseBasic"
+        repo, base = make_repo(tmp, {"Tests/ParseTests.swift": BASE_SWIFT})
+        rc, out, err = fence_head(repo, base, {"Tests/ParseTests.swift": edited(
+            BASE_SWIFT, "XCTAssertEqual(result, expected)", "XCTAssertEqual(result, 4)")},
+            test_id=swift_id)
+        h.test_result("Swift: an XCTAssertEqual change fails",
+                      rc == 1 and "violation Tests/ParseTests.swift::testParseBasic " in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ts_id = "tests/w.test.ts::parses basic"
+        repo, base = make_repo(tmp, {"tests/w.test.ts": BASE_TS})
+        rc, out, err = fence_head(repo, base, {"tests/w.test.ts": edited(
+            BASE_TS, "parse(1, 2, 3)", "parseCfg(1, 2, 3)")}, test_id=ts_id)
+        h.test_result("TS: typed binding and callee rename pass",
+                      rc == 0 and "violation" not in out, f"rc={rc} out={out!r} err={err!r}")
+    with tempfile.TemporaryDirectory() as tmp:
+        ts_id = "tests/w.test.ts::parses basic"
+        repo, base = make_repo(tmp, {"tests/w.test.ts": BASE_TS})
+        rc, out, err = fence_head(repo, base, {"tests/w.test.ts": edited(
+            BASE_TS, "toBe(expected)", "toBe(4)")}, test_id=ts_id)
+        h.test_result("TS: an expect(...).toBe(...) change fails",
+                      rc == 1 and "violation tests/w.test.ts::parses basic" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"tests/test_x.py": BASE_PY, "data/notes.txt": "one\n"})
+        rc, out, err = fence_head(repo, base, {"data/notes.txt": "two\n"},
+                                  extra=["--impl-files", "src/app.py"])
+        h.test_result("fallback extension: a changed .txt file is a support edit",
+                      rc == 0 and "support-edit data/notes.txt" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"tests/test_x.py": BASE_PY})
+        rc, out, err = run(repo, ["fence", "--base", base, "--head", "HEAD", "--test", "../x.py::test_a"])
+        h.test_result("a --test path with a '..' component is rejected",
+                      rc == 1 and "escapes the repo root" in err, f"rc={rc} out={out!r} err={err!r}")
+        rc, out, err = run(repo, ["fence", "--base", base, "--head", "HEAD",
+                                  "--test", "/etc/hosts::test_a"])
+        h.test_result("an absolute --test path is rejected",
+                      rc == 1 and "escapes the repo root" in err, f"rc={rc} out={out!r} err={err!r}")
+
+    print("[Section 10] survivors: table contract and renamed survivors")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        deletions = root / "round4-deletions.md"
+        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n")
+        collected = root / "collected.txt"
+        collected.write_text("tests/test_b.py::test_b\n")
+        rc, out, err = run(root, ["survivors", "--deletions", str(deletions),
+                                  "--collected", str(collected)])
+        h.test_result("a header-only table is a valid empty table and passes",
+                      rc == 0 and out == "", f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        deletions = root / "round4-deletions.md"
+        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n"
+                             "| tests/t.py::test_a | duplicate | same as b |\n")
+        collected = root / "collected.txt"
+        collected.write_text("tests/t.py::test_b\n")
+        rc, out, err = run(root, ["survivors", "--deletions", str(deletions),
+                                  "--collected", str(collected)])
+        h.test_result("a data row with the wrong column count fails closed",
+                      rc == 1 and "cannot be parsed" in err, f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        deletions = root / "round4-deletions.md"
+        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n"
+                             "| tests/t.py::test_a | duplicate | same as b | nonsense |\n")
+        collected = root / "collected.txt"
+        collected.write_text("tests/t.py::test_b\n")
+        rc, out, err = run(root, ["survivors", "--deletions", str(deletions),
+                                  "--collected", str(collected)])
+        h.test_result("a survivor cell that is neither a test id, proof, nor SHA fails closed",
+                      rc == 1 and "not a test id" in err, f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        deletions = root / "round4-deletions.md"
+        deletions.write_text("Round 4 deletions were recorded in prose only.\n")
+        collected = root / "collected.txt"
+        collected.write_text("tests/t.py::test_b\n")
+        rc, out, err = run(root, ["survivors", "--deletions", str(deletions),
+                                  "--collected", str(collected)])
+        h.test_result("a non-empty file with no table fails closed",
+                      rc == 1 and "no markdown table" in err, f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        deletions = root / "round4-deletions.md"
+        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n"
+                             "| tests/t.py::test_gone | duplicate | same as new | `tests/t.py::test_old` |\n")
+        collected = root / "collected.txt"
+        collected.write_text("tests/t.py::test_new\n")
+        merged = root / "merged.txt"
+        merged.write_text("# renamed in round 3\n\ntests/t.py::test_old -> tests/t.py::test_new\n")
+        rc_m, out_m, err_m = run(root, ["survivors", "--deletions", str(deletions),
+                                        "--collected", str(collected), "--merged", str(merged)])
+        rc_n, out_n, _ = run(root, ["survivors", "--deletions", str(deletions),
+                                    "--collected", str(collected)])
+        h.test_result("a renamed survivor is found under its new id via --merged",
+                      rc_m == 0 and out_m == "", f"rc={rc_m} out={out_m!r} err={err_m!r}")
+        h.test_result("without --merged the pre-merge survivor id is looked up and missing",
+                      rc_n == 1 and "missing-survivor tests/t.py::test_old named-by tests/t.py::test_gone" in out_n,
+                      f"rc={rc_n} out={out_n!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        deletions = root / "round4-deletions.md"
+        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n"
+                             "| tests/t.py::test_gone | duplicate | same | tests/t.py::test_old |\n")
+        collected = root / "collected.txt"
+        collected.write_text("tests/t.py::test_new\n")
+        merged = root / "merged.txt"
+        merged.write_text("tests/t.py::test_old tests/t.py::test_new\n")
+        rc, out, err = run(root, ["survivors", "--deletions", str(deletions),
+                                  "--collected", str(collected), "--merged", str(merged)])
+        h.test_result("a malformed --merged line fails closed",
+                      rc == 1 and "expected '<old test id> -> <new test id>'" in err,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    print("[Section 11] names: working tree, untracked files, --head")
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n", "tests/test_old.py": "def test_x():\n    pass\n"})
+        os.rename(repo / "tests" / "test_old.py", repo / "tests" / "test_spec_blind_new.py")
+        rc, out, err = run(repo, ["names", "--base", base])
+        h.test_result("an uncommitted rename to a spec-blind path fails in the working tree",
+                      rc == 1 and "spec-blind path tests/test_spec_blind_new.py" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+        rc_head, out_head, _ = run(repo, ["names", "--base", base, "--head", "HEAD"])
+        h.test_result("--head HEAD does not see the uncommitted rename",
+                      rc_head == 0 and out_head == "", f"rc={rc_head} out={out_head!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        write_files(repo, {"tests/test_scratch.py": "# spec-blind note\n"})
+        rc, out, err = run(repo, ["names", "--base", base])
+        h.test_result("an untracked file's spec-blind line is a hit in the working tree",
+                      rc == 1 and "spec-blind line tests/test_scratch.py:1" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+        rc_head, out_head, _ = run(repo, ["names", "--base", base, "--head", "HEAD"])
+        h.test_result("--head HEAD ignores untracked files",
+                      rc_head == 0 and out_head == "", f"rc={rc_head} out={out_head!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        commit(repo, {"tests/test_spec_blind_c.py": "def test_x():\n    pass\n"}, "add")
+        rc, out, err = run(repo, ["names", "--base", base, "--head", "HEAD"])
+        h.test_result("--head HEAD still flags a committed spec-blind path",
+                      rc == 1 and "spec-blind path tests/test_spec_blind_c.py" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+        rc, out, err = run(repo, ["names", "--base", base, "--head", "nope"])
+        h.test_result("names rejects a --head value outside WORKTREE/HEAD (argparse usage error)",
+                      rc == 2, f"rc={rc} err={err!r}")
 
     h.summarize_and_exit()
 
