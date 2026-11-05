@@ -33,11 +33,14 @@ SELECTOR = "^[0-9a-f]+ test: (clean up spec-blind tests|apply human ruling on sp
 
 
 def section_between(text: str, start_marker: str, end_marker: str) -> str:
+    # A missing start or end marker yields "" so no assertion can pass against a slice of the wrong text.
     start = text.find(start_marker)
-    if start == -1:
+    if start < 0:
         return ""
     end = text.find(end_marker, start + len(start_marker))
-    return text[start:end] if end != -1 else text[start:]
+    if end < 0:
+        return ""
+    return text[start:end]
 
 
 def main():
@@ -72,19 +75,19 @@ def main():
         RULING_SUBJECT in para,
     )
     h.test_result(
-        "block reads the reviewed branch's own history (git log <base>..HEAD)",
-        'git log --reverse --format=\'%H %s\' "${BASE}..HEAD"' in doc,
+        "block reads the reviewed branch's own history in the reviewed tree (git -C <worktree> log <base>..HEAD)",
+        'git -C "${WORKTREE_PATH:-.}" log --reverse --format=\'%H %s\' "${BASE}..HEAD"' in para,
     )
     h.test_result(
-        "block takes each matching commit's full message (git show -s --format=%B)",
-        "git show -s --format=%B <sha>" in para,
+        "block takes each matching commit's full message (git -C <worktree> show -s --format=%B)",
+        'git -C "${WORKTREE_PATH:-.}" show -s --format=%B <sha>' in para,
     )
 
     print("[Section 2] Selector matches the two subjects only")
     selector_line = f'     | grep -E \'{SELECTOR}\''
     h.test_result(
-        "doc contains the exact selector grep",
-        selector_line in doc,
+        "block contains the exact selector grep",
+        selector_line in para,
         "selector grep line not found in the doc",
     )
     pattern = re.compile(SELECTOR)
@@ -153,11 +156,11 @@ def main():
     )
     h.test_result(
         "panel Pass 1 section does not mention TEST_DELETIONS_BLOCK",
-        "TEST_DELETIONS" not in pass1,
+        bool(pass1) and "TEST_DELETIONS" not in pass1,
     )
     h.test_result(
         "panel Pass 1 section does not mention the deletions commit subjects",
-        CLEANUP_SUBJECT not in pass1 and RULING_SUBJECT not in pass1,
+        bool(pass1) and CLEANUP_SUBJECT not in pass1 and RULING_SUBJECT not in pass1,
     )
 
     print("[Section 6] Listed with the Step 4-10 inputs")
@@ -167,10 +170,12 @@ def main():
         "Steps 4-10 handoff lists TEST_DELETIONS_BLOCK",
         "TEST_DELETIONS_BLOCK" in steps_para,
     )
+    ledger_at = doc.find("HUMAN_LEDGER_BLOCK` is passed to Pass 2")
+    block_at = doc.find("**Test deletions (every run):**")
+    key_at = doc.find("   Key extractions:")
     h.test_result(
         "block is defined after the HUMAN_LEDGER_BLOCK paragraph and before Key extractions",
-        0 <= doc.find("**Test deletions (every run):**") - doc.find("HUMAN_LEDGER_BLOCK` is passed to Pass 2")
-        and doc.find("**Test deletions (every run):**") < doc.find("   Key extractions:"),
+        ledger_at >= 0 and block_at >= 0 and key_at >= 0 and ledger_at < block_at < key_at,
     )
 
     print("[Section 7] Inlining in Pass 2 and Amalgamator panels")

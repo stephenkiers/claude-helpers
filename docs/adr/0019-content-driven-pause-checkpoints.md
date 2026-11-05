@@ -230,7 +230,10 @@ files (`disagreements.json`, `round4-deletions.md`, `round4-merged.txt`), not in
 1. **Disagreement closure first (Round 4.0a).** Each red or open spec-blind test is judged against the
    original plan by a Sonnet judge, then by an Opus judge only if Sonnet escalates. A judge may conclude
    "the test is correct, the implementation is wrong", which sends the test to the Haiku fix loop. A
-   judge may never rule "spec was wrong". The ladder only prepares the case.
+   judge may never rule "spec was wrong". The ladder only prepares the case. Model routing follows
+   ADR-0004 (judgment on Sonnet, Opus only on escalation), and how a flow records these calls follows
+   ADR-0023. There is no further cap: the ladder is at most two judge calls per disagreement, and the
+   fix loop after a `test-correct` verdict is already bounded at K=3.
 2. **The human is the only owner of a "spec was wrong" ruling.** Any amendment to, or deletion of, a
    test's oracle needs a human answer through the Ask block (`~/.claude/prompts/flow-reference.md`; a
    plain question outside a flow; fleet parks it), and the answer must carry a reason. Any other edit to a

@@ -45,9 +45,10 @@ own PR bot — not a lint/test gate). The `justfile` at the repo root is the act
   `E4`/`E7`/`E9`/`F` set — real errors like unused imports and undefined names, not style opinions)
   plus `shellcheck` on every tracked `*.sh` file.
 - `just typecheck` — `mypy` over the `files =` list in `mypy.ini`: `scripts/workflow/`,
-  `scripts/spike-effort.py`, `scripts/precedent-log.py`, `scripts/precedent-digest.py`,
-  `scripts/flow-ledger.py`, `scripts/flow-verify-receipt.py`, `scripts/review-ruling.py` and
-  `scripts/test-cleanup-check.py`. Requires
+  `scripts/flow-accept.py`, `scripts/spike-effort.py`, `scripts/precedent-log.py`,
+  `scripts/precedent-digest.py`, `scripts/flow-ledger.py`, `scripts/primary-checkout-drift.py`,
+  `scripts/flow-verify-receipt.py`, `scripts/review-ruling.py`, `scripts/unit-sizing.py`,
+  `scripts/unit-progress.py`, `scripts/flow-render-questions.py`, and `scripts/test-cleanup-check.py`. Requires
   `pip install -r requirements-dev.txt` to get `mypy==1.16.1`. Type-checks the workflow CLI layer
   and all its dependencies at signature level, targeting Python 3.8+. `flow-verify-receipt.py` also
   opts into `strict-equality` with an inline `# mypy: strict-equality`.
