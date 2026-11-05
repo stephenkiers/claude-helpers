@@ -360,7 +360,8 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 - **Changed-files export (canonical list computation):**
   - `scripts/workflow/checks.py` defines `canonical_changed_files(worktree, base) -> List[str]` (committed, staged, uncommitted, untracked non-ignored, both sides of renames, deletions; sorted, unique). The list is serialized NUL-separated and hashed with `sha256` to produce `changed_files_hash`.
   - `resolve_check_base(worktree) -> Optional[str]` computes the merge-base of HEAD with `origin/<default-branch>`. When the base is `None`, there is no hash, and minimum mode returns uncached.
-  - `checks validate --mode minimum|full [--worktree path]` computes `CHECK_BASE` and `CHECK_CHANGED_FILES` (the NUL-separated list) and exports them as environment variables to the resolved `check_minimum` or `commands.check` command.
+  - `checks validate --mode minimum|full [--worktree path]` computes `CHECK_BASE` and `CHECK_CHANGED_FILES` (the NUL-separated list) and exports them as environment variables to the resolved `check_minimum` or `commands.check` command. It hashes the same list it exports.
+  - `checks resolve-check --mode minimum|full` (default `full`, so existing callers are unchanged) returns the command for that mode and its provenance. For `minimum` with `check_minimum` undeclared it returns the full command with `fell_back_to_full: true`; it never skips silently.
   - The exports are written to a scratch file under `tempfile.gettempdir()` (outside the worktree) for the selector's reference, created and deleted by the CLI.
   - **Selector non-cooperation:** A selector that ignores the exported variables but selects from the tree, base and changed files (e.g., by re-computing them) is still keyed correctly by `validate`'s own list. One that selects from anything outside that set (env vars not exported, `HEAD~1`, network, files outside the tree) is unsafe to cache; the caching contract (below) documents this risk and requires selector authors to document their inputs. This repo's `scripts/check-minimum.py` selector reads only the tree, base and exported list, with an invariant comment.
 
@@ -368,7 +369,7 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
   - One file per key, named `<sha256(canonical-key-serialization)>.json`.
   - Record contains the key (embedded, for integrity re-check on read), `passed: true`, and a timestamp.
   - Atomic: tmp file plus `os.replace`; no read-modify-write.
-  - `CheckRecord.from_dict` (ADR-0013 Amendment 10 via models) parses and validates the exact key set, `passed: true`, `schema_version` constant match, all hex fields, and the mode (FullKey vs MinimumKey).
+  - `CheckRecord.from_dict` (`scripts/workflow/models.py`) parses and validates the exact key set, `passed: true`, `schema_version` constant match, all hex fields, and the mode (FullKey vs MinimumKey).
   - A hit is reported as `cache: hit`, `executed: []`. A miss is `cache: miss` or `cache: forced` (when `--force` is passed).
 
 - **Caching contract (key hashing invariant):**

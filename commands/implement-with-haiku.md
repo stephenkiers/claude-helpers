@@ -2441,7 +2441,7 @@ survive between Bash calls, so each block below re-reads what it needs from the 
 **1. Resolve the check.** Write the resolver's JSON to a scratch file:
 ```bash
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
-PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks resolve-check --worktree <WORKTREE> --main-worktree <MAIN_WORKTREE> > <SCRATCH_PATH>/resolve-check.json
+PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks resolve-check --worktree <WORKTREE> --main-worktree <MAIN_WORKTREE> --mode minimum > <SCRATCH_PATH>/resolve-check.json
 ```
 Ignore `resolve-check`'s exit code. It exits `1` for both an opt-out and a missing check, so do not branch
 on the exit status (no `|| stop`); do not branch on the exit status at all. Branch only on the JSON `source` and `command` fields. If
@@ -2457,7 +2457,7 @@ jq -r '.failure_reason // empty' <SCRATCH_PATH>/resolve-check.json
 
 **2. Run the check (only when `command` is set).** Everything in this block runs in one Bash call,
 launched with `run_in_background`. The run's timeout is the JSON's `timeout_secs`, never a value you pick
-or hardcode. The check runs from `<WORKTREE>`: `checks run` takes its repo root from the current
+or hardcode. The check runs from `<WORKTREE>`: `checks validate` takes its repo root from the current
 directory, so a run started anywhere else checks the wrong tree. Only the resolved command runs, not the
 cache's full lint/test/build set; that is deliberate.
 ```bash
@@ -2467,7 +2467,9 @@ CHECK_CMD=$(jq -r '.command // empty' <SCRATCH_PATH>/resolve-check.json)
 TIMEOUT=$(jq -r '.timeout_secs // empty' <SCRATCH_PATH>/resolve-check.json)
 CHECK_SHA=$(cd <WORKTREE> && git rev-parse HEAD)
 printf '%s\n' "$CHECK_SHA" > <SCRATCH_PATH>/check-sha.txt
-CACHE_JSON=$(jq -n --arg cmd "$CHECK_CMD" --argjson t "$TIMEOUT" '{commands: {check: $cmd}, checkTimeoutSecs: $t}')
+FELL_BACK=$(jq -r '.fell_back_to_full // false' <SCRATCH_PATH>/resolve-check.json)
+if [ "$FELL_BACK" = "true" ]; then CACHE_KEY=check; else CACHE_KEY=check_minimum; fi
+CACHE_JSON=$(jq -n --arg cmd "$CHECK_CMD" --arg key "$CACHE_KEY" --argjson t "$TIMEOUT" '{commands: {($key): $cmd}, checkTimeoutSecs: $t}')
 cd <WORKTREE> && printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks validate --mode minimum - > <SCRATCH_PATH>/full-check.json
 ```
 Never wrap this in `timeout` or `gtimeout` (see Gate step 1). The block's first check, before anything is
@@ -2523,7 +2525,7 @@ K=3 iterations, because the integration gate's budget closed before the fan-out.
    output with `grep` or `tail`, not the whole log.
 2. Commit the fix as Gate step 4 does, then re-run Gate step 1 on the new HEAD.
 3. Re-run this Final check from "1. Resolve the check" on the new HEAD: a fresh resolve, a fresh
-   `CHECK_SHA`, and one full-check run for that HEAD. Each iteration's run is the single full check for
+   `CHECK_SHA`, and one minimum-check run for that HEAD. Each iteration's run is the single minimum check for
    that HEAD, so the once-per-tree bound holds.
 
 If the check still fails after K iterations, stop with `gate-not-converged`:

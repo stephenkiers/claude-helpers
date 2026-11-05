@@ -383,12 +383,10 @@ Write commit message:
 
 (The wrapper's modeling step handles this; the CLI just commits the message already written.)
 
-**Record the check receipt.** Once the commit exists, write the receipt that lets
-`/merge-and-cleanup` skip re-running the gate you just passed. The receipt is written only from the
-attestation that the checks run recorded; it fails silently if the attestation was not recorded (e.g.,
-when checks failed or did not run), or if HEAD's tree differs from what the checks ran on. The receipt
-records the tree, configured commands, and base tip; merge reuses it only while all three still match
-(a moved base means a rebase may change the tree, so merge re-runs the checks then).
+**No separate receipt step.** `checks validate` writes its own per-key record when the check passes
+with the tree unchanged, so there is nothing to write after the commit. The record is keyed on the tree
+and the minimum (or full) digests. A minimum record never satisfies the merge gate: `/merge-and-cleanup`
+runs the full check gate on its own route (ADR-0021), so a `/shipit` pass is a PR-level pass only.
 
 ## 5. Push & PR
 
