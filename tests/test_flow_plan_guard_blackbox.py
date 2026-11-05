@@ -325,7 +325,7 @@ def main():
     h.test_result(
         "Guard script completes within timeout for simple command",
         code is not None,
-        f"Expected code to be set, got None (timeout)" if code is None else ""
+        "Expected code to be set, got None (timeout)" if code is None else ""
     )
 
     h.summarize_and_exit()
