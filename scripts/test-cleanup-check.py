@@ -52,10 +52,13 @@ significant.
 
 survivors: every survivor named in a deletions table must appear in the collected test-id list.
   Deletions file: a markdown table with one header row, one separator row, then one data row per
-  deletion: "| <deleted id> | <class> | <reason> | <survivor> |" (exactly four cells). Any data row
-  that does not parse into four cells, or whose survivor cell is neither a test id (contains "::",
-  backticks stripped), a "proof: <kind>" marker, nor a commit SHA, fails closed. A header-only table
-  is valid and names no survivors; a file with no such table fails closed.
+  deletion. The columns are located by header name (case-insensitive, any order, extra columns
+  allowed): "id" (the deleted test) and "survivor or proof". The header must name both exactly once;
+  a missing header row or a missing required column fails closed. Every data row must have as many
+  cells as the header; a row that does not, or whose id cell is empty, or whose survivor cell is
+  neither a test id (contains "::", backticks stripped), a "proof: <kind>" marker, nor a commit SHA,
+  fails closed. A header-only table is valid and names no survivors; a file with no such table fails
+  closed.
   --merged FILE maps pre-merge ids to post-merge ids, one "<old id> -> <new id>" per line (blank
   lines and "#" comments ignored; any other line fails closed). A survivor with a mapping is looked
   up under its new id. The collected file holds one test id per line. Each missing survivor prints
@@ -70,9 +73,11 @@ names: no spec-blind name survives in the run's own working set (D2). "spec[-_ ]
   repo-relative paths.
 
 Patterns, per framework (chosen from the file extension):
-  python  (.py)      def NAME(  (test body = the indented block after the signature's ":"); tests
-                     are def test*; import: "from x import" / "import x"; assert: assert*,
-                     pytest.raises; decorators: "@" lines directly above
+  python  (.py)      def NAME(  (test body sized by the AST: the def's lines through its end_lineno,
+                     plus any deeper-indented comment lines directly after it; a file that does not
+                     parse, or a def the AST does not contain, cannot be sized); tests are def test*;
+                     import: "from x import" / "import x"; assert: assert*, pytest.raises;
+                     decorators: "@" lines directly above
   js/ts   (.js .jsx .ts .tsx .mjs .cjs)
                      it("NAME", ...) / test("NAME", ...) (brace block); import: "import ..."
                      assert: expect(, assert*; decorators: "@" lines directly above
@@ -91,6 +96,7 @@ line (e.g. in a parametrize argument list) will not be flagged as a violation.
 """
 
 import argparse
+import ast
 import difflib
 import os
 import re
@@ -149,6 +155,10 @@ SPEC_RE = re.compile(r"spec[-_ ]?blind", re.IGNORECASE)
 CLASS_RE = re.compile(r"^\s*class\s+(\w+)")
 TABLE_SEP_RE = re.compile(r"^:?-{3,}:?$")
 SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+# Deletions-table columns the survivors check needs, located by header name (see round4-deletions.md, 4.4).
+DELETION_ID_COL = "id"
+DELETION_SURVIVOR_COL = "survivor or proof"
+C_ESCAPES = {"\\": "\\", '"': '"', "a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
 
 
 def _fail(message: str) -> NoReturn:
@@ -165,7 +175,8 @@ def _git_ok(args: List[str]) -> str:
     """Output of a git call that must succeed; a failed call fails closed."""
     rc, out = _git(args)
     if rc != 0:
-        _fail(f"git {args[0]} failed (exit {rc})")
+        subcommand = args[2] if args[:1] == ["-C"] and len(args) > 2 else (args[0] if args else "")
+        _fail(f"git {subcommand} failed (exit {rc})")
     return out
 
 
@@ -223,7 +234,9 @@ def _diff_paths(base: str, head: str) -> List[str]:
 
 
 def _untracked_paths() -> List[str]:
-    return _nul_split(_git_ok(["ls-files", "--others", "--exclude-standard", "--full-name", "-z"]))
+    """Untracked files of the whole repo (listed from the toplevel, not the current directory)."""
+    top = _toplevel()
+    return _nul_split(_git_ok(["-C", top, "ls-files", "--others", "--exclude-standard", "--full-name", "-z"]))
 
 
 def _changed_paths(base: str, head: str) -> List[str]:
@@ -310,34 +323,38 @@ def _enclosing_class(lang: Lang, lines: List[str], index: int) -> Optional[str]:
     return None
 
 
-def _signature_end(lines: List[str], start: int) -> Optional[int]:
-    """Line index of the ':' that ends a Python signature (bracket depth 0), or None."""
-    depth = 0
-    for k in range(start, len(lines)):
-        for ch in lines[k]:
-            if ch in "([{":
-                depth += 1
-            elif ch in ")]}":
-                depth -= 1
-            elif ch == ":" and depth == 0:
-                return k
-    return None
+def _python_block_ends(lines: List[str]) -> Optional[Dict[int, int]]:
+    """0-based index of each def statement's first line -> 0-based index of its last line (from the
+    AST, so column-0 lines inside a string or body do not end a block). None when the file does not
+    parse, in which case no Python span in it can be sized (fail closed)."""
+    try:
+        tree = ast.parse("\n".join(lines))
+    except (SyntaxError, ValueError):
+        return None
+    ends: Dict[int, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.end_lineno is not None:
+            ends[node.lineno - 1] = node.end_lineno - 1
+    return ends
 
 
 def _block_end(lang: Lang, lines: List[str], start: int) -> Optional[int]:
     """Inclusive index of the last line of the block that starts at `start`, or None if unsizable."""
     if lang == "python":
-        sig = _signature_end(lines, start)
-        if sig is None:
+        ends = _python_block_ends(lines)
+        if ends is None or start not in ends:
             return None
+        end = ends[start]
         indent = _indent(lines[start])
-        end = sig
-        for k in range(sig + 1, len(lines)):
-            if not lines[k].strip():
+        # The AST stops at the last statement; comments indented into the body still belong to it.
+        for k in range(end + 1, len(lines)):
+            text = lines[k]
+            if not text.strip():
                 continue
-            if _indent(lines[k]) <= indent:
-                break
-            end = k
+            if text.lstrip().startswith("#") and _indent(text) > indent:
+                end = k
+                continue
+            break
         return end
     depth = 0
     seen = False
@@ -522,6 +539,11 @@ def _entries(lang: Optional[Lang], lines: List[str], span: Span) -> List[Tuple[i
             for i in range(dec_start, end + 1) if _significant(lang, lines[i])]
 
 
+def _is_def(lang: Optional[Lang], line: str) -> bool:
+    """Whether the line is a definition header (a signature line, never a call site)."""
+    return lang is not None and DEF_RES[lang].match(line) is not None
+
+
 def _body_changes(lang: Optional[Lang], base_lines: List[str], head_lines: List[str],
                   bspan: Span, hspan: Span) -> List[Tuple[Verdict, int]]:
     """(verdict, line number) for each changed significant line inside one test span."""
@@ -540,7 +562,8 @@ def _body_changes(lang: Optional[Lang], base_lines: List[str], head_lines: List[
             for k in range(i2 - i1):
                 _, bt, bdeco = b[i1 + k]
                 hn, ht, hdeco = h[j1 + k]
-                guarded = bdeco or hdeco or bflags[i1 + k] or hflags[j1 + k]
+                guarded = (bdeco or hdeco or bflags[i1 + k] or hflags[j1 + k]
+                           or _is_def(lang, bt) or _is_def(lang, ht))
                 verdict: Verdict = "violation" if guarded else _classify_pair(bt, ht)
                 out.append((verdict, hn))
         else:
@@ -692,7 +715,10 @@ def _cells(line: str) -> List[str]:
 
 
 def _survivor_rows(label: str, text: str) -> List[Tuple[int, str, str]]:
-    """(line number, deleted cell, survivor cell) for each data row of the deletions table."""
+    """(line number, deleted cell, survivor cell) for each data row of the deletions table.
+
+    The id and survivor-or-proof columns are located by header name, so extra columns and any
+    column order are tolerated; a data row must have as many cells as the header."""
     if not text.strip():
         _fail(f"{label} is empty; expected a deletions table")
     table = [(n, line) for n, line in enumerate(text.splitlines(), 1) if "|" in line]
@@ -701,14 +727,18 @@ def _survivor_rows(label: str, text: str) -> List[Tuple[int, str, str]]:
     header_n, header = table[0]
     if len(table) < 2 or not all(TABLE_SEP_RE.match(c) for c in _cells(table[1][1])):
         _fail(f"{label} line {header_n}: table header is not followed by a separator row")
-    if len(_cells(header)) != 4:
-        _fail(f"{label} line {header_n}: table header must have 4 columns")
+    names = [c.strip().lower() for c in _cells(header)]
+    for required in (DELETION_ID_COL, DELETION_SURVIVOR_COL):
+        if names.count(required) != 1:
+            _fail(f"{label} line {header_n}: table header must name exactly one column {required!r}")
+    id_col = names.index(DELETION_ID_COL)
+    survivor_col = names.index(DELETION_SURVIVOR_COL)
     rows: List[Tuple[int, str, str]] = []
     for n, line in table[2:]:
         cells = _cells(line)
-        if len(cells) != 4 or not cells[0]:
-            _fail(f"{label} line {n}: row cannot be parsed into 4 columns: {line.strip()!r}")
-        rows.append((n, cells[0], cells[3]))
+        if len(cells) != len(names) or not cells[id_col]:
+            _fail(f"{label} line {n}: row cannot be parsed into {len(names)} columns: {line.strip()!r}")
+        rows.append((n, cells[id_col], cells[survivor_col]))
     return rows
 
 
@@ -758,6 +788,52 @@ def cmd_survivors(args: argparse.Namespace) -> int:
     return 1 if missing else 0
 
 
+def _unquote_git_path(raw: str) -> Optional[str]:
+    """Path from a git C-quoted name ("..." with \\ and octal escapes), or None if it is malformed."""
+    body = raw[1:-1]
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch != "\\":
+            out.extend(ch.encode("utf-8"))
+            i += 1
+            continue
+        nxt = body[i + 1:i + 2]
+        octal = body[i + 1:i + 4]
+        if nxt in C_ESCAPES:
+            out.extend(C_ESCAPES[nxt].encode("utf-8"))
+            i += 2
+        elif len(octal) == 3 and all(c in "01234567" for c in octal):
+            out.append(int(octal, 8) & 0xFF)
+            i += 4
+        else:
+            return None
+    try:
+        return out.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _diff_target(line: str) -> Optional[str]:
+    """Repo-relative path named by a '+++ ' header line, or None for /dev/null (a deletion).
+    Fails closed on any target that is not a b/ path, quoted or plain."""
+    target = line[4:]
+    if target.endswith("\t"):
+        # git appends a tab after names that contain a space.
+        target = target[:-1]
+    if target == "/dev/null":
+        return None
+    if target.startswith('"'):
+        unquoted = _unquote_git_path(target) if len(target) >= 2 and target.endswith('"') else None
+        if unquoted is None:
+            _fail(f"unparsable diff target: {line!r}")
+        target = unquoted
+    if not target.startswith("b/") or len(target) <= 2:
+        _fail(f"unparsable diff target: {line!r}")
+    return target[2:]
+
+
 def _added_lines(diff: str) -> List[Tuple[str, int, str]]:
     """(path, new line number, text) for each added line of a unified diff."""
     out: List[Tuple[str, int, str]] = []
@@ -770,8 +846,7 @@ def _added_lines(diff: str) -> List[Tuple[str, int, str]]:
             current = None
             continue
         if in_header and line.startswith("+++ "):
-            target = line[4:]
-            current = target[2:] if target.startswith("b/") else None
+            current = _diff_target(line)
             continue
         if line.startswith("@@"):
             in_header = False
@@ -794,7 +869,8 @@ def cmd_names(args: argparse.Namespace) -> int:
         if _norm(path) not in allow and SPEC_RE.search(path):
             print(f"spec-blind path {path}")
             hits += 1
-    diff_args = ["diff", "--unified=0", "--no-renames", args.base]
+    # Explicit prefixes so the '+++ b/' header parse holds whatever diff.noprefix config says.
+    diff_args = ["diff", "--unified=0", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", args.base]
     if args.head == "HEAD":
         diff_args.append("HEAD")
     for path, n, text in _added_lines(_git_ok(diff_args)):
