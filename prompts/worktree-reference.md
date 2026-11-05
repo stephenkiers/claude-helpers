@@ -437,7 +437,7 @@ if ! git -C <CHILD_WT> merge-base --is-ancestor '@{u}' HEAD 2>/dev/null \
       exit 1
     fi
     git -C <CHILD_WT> branch --set-upstream-to=origin/<CHILD_BRANCH>   # re-link tracking (symmetric with the reset path above)
-    # Gate — force-push ONLY after the project's checks pass. A runnable gate, not a comment:
+    # Gate — force-push ONLY after the project's minimum checks pass. A runnable gate, not a comment:
     # a bare comment here would be silently skipped when the whole block is pasted and run.
     CHECK_CMD=$(jq -r '.commands.check // .commands.test // empty' <CHILD_WT>/.claude/repo-cache.json 2>/dev/null)
     [ -n "$CHECK_CMD" ] || { echo "no check command in <CHILD_WT>/.claude/repo-cache.json — run your checks manually, then re-run this push"; exit 1; }
@@ -449,7 +449,7 @@ else
   git -C <CHILD_WT> branch -f backup/<CHILD_BRANCH> HEAD   # snapshot before rewriting history
   git -C <CHILD_WT> rebase --onto <NEW_BASE> <OLD_BASE>
   git -C <CHILD_WT> branch --set-upstream-to=origin/<CHILD_BRANCH>   # re-link tracking (symmetric with the reset path above)
-  # Gate — force-push ONLY after the project's checks pass. A runnable gate, not a comment:
+  # Gate — force-push ONLY after the project's minimum checks pass. A runnable gate, not a comment:
   # a bare comment here would be silently skipped when the whole block is pasted and run.
   CHECK_CMD=$(jq -r '.commands.check // .commands.test // empty' <CHILD_WT>/.claude/repo-cache.json 2>/dev/null)
   [ -n "$CHECK_CMD" ] || { echo "no check command in <CHILD_WT>/.claude/repo-cache.json — run your checks manually, then re-run this push"; exit 1; }

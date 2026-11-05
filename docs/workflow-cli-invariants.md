@@ -150,7 +150,9 @@ internal `check_timeout_secs` field to the JSON key `checkTimeoutSecs` (camelCas
 `executed ∪ skipped` (by command type) must always equal the full set of keys present in the input
 `commands` map — null-valued keys included, since `build_check_order` records a `null_command` skip
 entry for every key present, not just non-null ones — a gate that silently drops a configured
-command is a defect, not a valid outcome.
+command is a defect, not a valid outcome. **A cached pass reports `cache: hit`, `executed: []`, never
+silent success.** Project configuration (`.claude/project.yaml`, the local tier per ADR-0005) owns the
+declared checks.
 
 **Rationale:** `/shipit`'s gate once returned `{"results": [], "all_passed": true}` for a cache with
 `commands.test` set but an empty `parallelizable` array — a check gate that passes having run

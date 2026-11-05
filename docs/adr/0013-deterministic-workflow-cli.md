@@ -345,3 +345,35 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 - **Environment (accepted residual):** installs run with the full environment (`dict(os.environ)`), so lifecycle scripts can see credentials such as `GH_TOKEN` and `NPM_TOKEN`. This exposure is accepted, not mitigated. Installs already execute branch-controlled lifecycle scripts by design, so scrubbing the environment would not close the exposure to those scripts, and it would break private-registry authentication, which installs need.
 
 **Consequences:** The CLI's writes outside the flow-directory prefix are CLI-owned, not step-agent `Write`, and their paths are limited to the files listed above. The orchestrator and step agents still hold no package-manager grant; install execution happens only inside the CLI. This rule does not extend to any other CLI write or subprocess. A new one needs its own amendment.
+
+### Amendment 11: `commands.check_minimum` selector, changed-files export, per-key records, and caching contract (2026-11-05, #387)
+
+**Problem:** Minimum checks per PR (ADR-0023 amendment 2026-11-05) require a project-declared `check_minimum` selector, its inputs must be exported for non-cooperating selectors, and records must be per-key (FullKey vs MinimumKey) with distinct cache semantics and no read-modify-write.
+
+**Decision:**
+
+- **`commands.check_minimum` (new key):**
+  - Optional top-level key in `project.yaml` (local tier, ADR-0005). If absent, steps fall back to `commands.check`.
+  - Defines a shell command that selects and runs a subset of the full check suite. One declared command; no composition within it.
+  - `check_minimum` is not run as an extra check by `build_check_order`; it is a standalone selector resolved once per flow step or `/shipit` run.
+  
+- **Changed-files export (canonical list computation):**
+  - `scripts/workflow/checks.py` defines `canonical_changed_files(worktree, base) -> List[str]` (committed, staged, uncommitted, untracked non-ignored, both sides of renames, deletions; sorted, unique). The list is serialized NUL-separated and hashed with `sha256` to produce `changed_files_hash`.
+  - `resolve_check_base(worktree) -> Optional[str]` computes the merge-base of HEAD with `origin/<default-branch>`. When the base is `None`, there is no hash, and minimum mode returns uncached.
+  - `checks validate --mode minimum|full [--worktree path]` computes `CHECK_BASE` and `CHECK_CHANGED_FILES` (the NUL-separated list) and exports them as environment variables to the resolved `check_minimum` or `commands.check` command.
+  - The exports are written to a scratch file under `tempfile.gettempdir()` (outside the worktree) for the selector's reference, created and deleted by the CLI.
+  - **Selector non-cooperation:** A selector that ignores the exported variables but selects from the tree, base and changed files (e.g., by re-computing them) is still keyed correctly by `validate`'s own list. One that selects from anything outside that set (env vars not exported, `HEAD~1`, network, files outside the tree) is unsafe to cache; the caching contract (below) documents this risk and requires selector authors to document their inputs. This repo's `scripts/check-minimum.py` selector reads only the tree, base and exported list, with an invariant comment.
+
+- **Per-key records under `.claude/check-records/`:**
+  - One file per key, named `<sha256(canonical-key-serialization)>.json`.
+  - Record contains the key (embedded, for integrity re-check on read), `passed: true`, and a timestamp.
+  - Atomic: tmp file plus `os.replace`; no read-modify-write.
+  - `CheckRecord.from_dict` (ADR-0013 Amendment 10 via models) parses and validates the exact key set, `passed: true`, `schema_version` constant match, all hex fields, and the mode (FullKey vs MinimumKey).
+  - A hit is reported as `cache: hit`, `executed: []`. A miss is `cache: miss` or `cache: forced` (when `--force` is passed).
+
+- **Caching contract (key hashing invariant):**
+  - The minimum key hashes the list `validate` computes itself: `MinimumKey = (tree, minimum_digest, full_digest, changed_files_hash)`.
+  - A `check_minimum` command that selects from anything other than the tree, `CHECK_BASE` and `CHECK_CHANGED_FILES` is unsafe to cache. A selector that reads network state, other env vars, or files outside the tree may see different inputs on a second run with the same tree and base, causing a miss when a hit should have occurred, or worse, a hit when the cache is stale.
+  - Project authors declaring `check_minimum` must document their selector's inputs. This repo's selector and its test enforce this invariant for this codebase.
+
+**Consequences:** Verify, implement and fix steps get cache hits across unchanged code at different bases. The minimum and full digests are separate, so a single repo can use both modes without evicting each other's caches. Off-queue and queue merges both run the full check (ADR-0021), so the full key (missing the base) correctly ignores base movement. The caching contract is a residual risk: a selector that ignores the exports and reads outside the tree will silently produce stale results on a hit. This is why `resolve-check` is the only entry point for the resolver, and why selector authors must document their invariants.

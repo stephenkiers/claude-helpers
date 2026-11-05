@@ -2421,9 +2421,10 @@ on resume").
 
 ## Final check (orchestrator-run, once per step, after the last commit)
 
-The integration gate proves the build and type-check only. It does not prove the configured check
-(`commands.check`) passed. This section runs that resolved check exactly once per step, through the
-existing Python runner, on the tree the step hands on.
+The integration gate proves the build and type-check only. It does not prove the configured minimum check
+(`commands.check_minimum`, or `commands.check` if minimum is undeclared) passed. This section runs that
+resolved minimum check exactly once per step, through the existing Python runner, on the tree the step hands on.
+A receipt naming the resolved full check command is also accepted (a full pass satisfies a minimum request).
 
 **When it runs.** Exactly once per step, after the step's last commit. It is never skippable.
 - When Round 4 runs: after 4.6's `git commit` and the `round4` ledger row.
@@ -2467,7 +2468,7 @@ TIMEOUT=$(jq -r '.timeout_secs // empty' <SCRATCH_PATH>/resolve-check.json)
 CHECK_SHA=$(cd <WORKTREE> && git rev-parse HEAD)
 printf '%s\n' "$CHECK_SHA" > <SCRATCH_PATH>/check-sha.txt
 CACHE_JSON=$(jq -n --arg cmd "$CHECK_CMD" --argjson t "$TIMEOUT" '{commands: {check: $cmd}, checkTimeoutSecs: $t}')
-cd <WORKTREE> && printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks run - > <SCRATCH_PATH>/full-check.json
+cd <WORKTREE> && printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks validate --mode minimum - > <SCRATCH_PATH>/full-check.json
 ```
 Never wrap this in `timeout` or `gtimeout` (see Gate step 1). The block's first check, before anything is
 written or launched, requires a clean tree: the porcelain status of `<WORKTREE>` must print nothing. Any

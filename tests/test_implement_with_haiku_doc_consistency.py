@@ -829,7 +829,7 @@ def table_row(marker):
     return ""
 
 
-for tok in ("checks resolve-check", "checks run -", "run_in_background", "cd <WORKTREE>", "rev-parse HEAD",
+for tok in ("checks resolve-check", "checks validate --mode minimum -", "run_in_background", "cd <WORKTREE>", "rev-parse HEAD",
             "timeout_secs"):
     t(f"(#338) doc names {tok!r}", tok in DOC)
 
