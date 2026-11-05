@@ -49,3 +49,13 @@ def atomic_write_text(path: Path, text: str) -> None:
         except OSError:
             pass
         raise
+
+
+def open_private_exclusive(path: Path) -> int:
+    """
+    Create path as a new mode-0600 file and return its write-only fd; the caller closes it.
+
+    Fails with FileExistsError if anything (including a symlink) is already there, and never follows a
+    symlink at the final component. Raises OSError.
+    """
+    return os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

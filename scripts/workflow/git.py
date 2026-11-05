@@ -870,3 +870,23 @@ def add_worktree(path: Path, branch: str, base: Optional[str] = None, cwd: Optio
         return False, Unknown(f"Failed to create worktree at {path}: {e}")
     except RuntimeError as e:
         return False, Unknown(f"Failed to create worktree at {path}: {e}")
+
+
+def run_git_no_fsmonitor(
+    args: List[str], cwd: Path, timeout: Optional[float] = None
+) -> "subprocess.CompletedProcess[str]":
+    """
+    git with the fsmonitor hook disabled, for running inside a ticket worktree.
+
+    A ticket worktree's config is ticket-controlled, so a core.fsmonitor it sets must never run on the
+    heal or install path. stdin is closed; output is captured as text. Raises subprocess.TimeoutExpired
+    when timeout is given and exceeded.
+    """
+    return subprocess.run(
+        ["git", "-c", "core.fsmonitor=false"] + args,
+        cwd=str(cwd),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
