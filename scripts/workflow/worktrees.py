@@ -25,7 +25,7 @@ def parse_worktree_records(porcelain_output: str) -> List[Tuple[str, Optional[st
         if line.startswith("worktree "):
             if current_wt is not None:
                 records.append((current_wt, current_branch))
-            current_wt = line[9:].strip()
+            current_wt = line[len("worktree "):]
             current_branch = None
         elif line.startswith("branch "):
             branch_ref = line[7:].strip()

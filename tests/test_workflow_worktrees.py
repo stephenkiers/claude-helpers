@@ -89,6 +89,10 @@ branch refs/heads/feature
         parse_worktree_records("") == []
     )
     test_result(
+        "parse_worktree_records() keeps trailing whitespace in the worktree path verbatim",
+        parse_worktree_records("worktree /path/wt \nbranch refs/heads/f\n") == [("/path/wt ", "f")]
+    )
+    test_result(
         "parse_worktree_list() equals parse_worktree_records() minus detached entries",
         parse_worktree_list(porcelain_detached) == [(w, b) for w, b in records if b is not None]
     )
