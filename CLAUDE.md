@@ -45,8 +45,10 @@ own PR bot — not a lint/test gate). The `justfile` at the repo root is the act
   `E4`/`E7`/`E9`/`F` set — real errors like unused imports and undefined names, not style opinions)
   plus `shellcheck` on every tracked `*.sh` file.
 - `just typecheck` — `mypy` over the `files =` list in `mypy.ini`: `scripts/workflow/`,
-  `scripts/spike-effort.py`, `scripts/precedent-log.py`, `scripts/precedent-digest.py`,
-  `scripts/flow-ledger.py`, `scripts/flow-verify-receipt.py` and `scripts/review-ruling.py`. Requires
+  `scripts/flow-accept.py`, `scripts/spike-effort.py`, `scripts/precedent-log.py`,
+  `scripts/precedent-digest.py`, `scripts/flow-ledger.py`, `scripts/primary-checkout-drift.py`,
+  `scripts/flow-verify-receipt.py`, `scripts/review-ruling.py`, `scripts/unit-sizing.py`,
+  `scripts/unit-progress.py`, `scripts/flow-render-questions.py`, and `scripts/test-cleanup-check.py`. Requires
   `pip install -r requirements-dev.txt` to get `mypy==1.16.1`. Type-checks the workflow CLI layer
   and all its dependencies at signature level, targeting Python 3.8+. `flow-verify-receipt.py` also
   opts into `strict-equality` with an inline `# mypy: strict-equality`.
@@ -215,7 +217,7 @@ separate from the reviewer-context cascade.
 - `/track`, `/track-and-start` — create a GitHub issue (or local plan) and optionally branch + worktree
 - `/implement-with-haiku` — parallel Haiku implementers (diff handoff; orchestrator applies + commits); sizes units with `MIN_UNITS` as a lower bound only (per-unit ceilings of 8 steps / 12 files / 16 findings are provisional; enforcement is deferred pending calibration per #325), sequential mode for coupled work, and persisted unit record under `FLOW_DIR/units/<STEP>/` with ceilings recorded via `UNIT_CEILINGS:`; runs in one pass by default, `--pause` opts in to the round 1 checkpoint
   → orchestrator-owned integration gate (anti-cheat + bounded fix loop) → round-sized, concurrent
-  spec-blind test author + adversary + duplication/doc-drift sweeps
+  spec-blind test author + adversary + duplication/doc-drift sweeps → Round 4 opens with disagreement closure (a red spec-blind test is judged by Sonnet, then Opus; only a human rules "spec was wrong"), then test-level cleanup with named survivors, checked by `scripts/test-cleanup-check.py` (run `/setup-local` after pulling)
 - `/shipit` — run CI checks locally, commit, open a PR (`prompts/shipit-reference.md` for details)
 - `/stack-sync` — sync a stack's descendant branches onto the current parent state: single-driver layout delegates to `gh stack sync`, per-branch walks children bottom-up with the generalized Restack-a-child block; unknown layout fails closed (ADR-0012)
 - `/expert-flow` — lifecycle orchestrator (worktree-first: creates the ticket worktree, hands off, then runs from inside it): worktree → plan → track → implement → review → fix → verify → ship → merge for one

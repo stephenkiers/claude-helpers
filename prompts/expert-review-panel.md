@@ -606,8 +606,9 @@ Pass paths, not contents — each prompt names the files to Read:
 
 Supply inline only the **Business Context** section from `technical-summary.md` — revealed now for the first
 time, and the whole point of Pass 2. Also supply the plan/issue context if available. When `HUMAN_LEDGER_BLOCK`
-is set (flow runs only), supply it inline under a `Human ledger (from /expert-flow)` heading. Never add it to any
-other Pass 2 spawn input, and never to Pass 1.
+is set (flow runs only), supply it inline under a `Human ledger (from /expert-flow)` heading. When `TEST_DELETIONS_BLOCK`
+is set (when the branch has cleanup or human-ruling commits), supply it inline under a `Test cleanup (from this branch)` heading.
+Never add these blocks to any other Pass 2 spawn input, and never to Pass 1.
 
 **Reframed as skeptic-verifier (anti-anchoring).** The prompt's framing changes from "continue your
 review" to "another engineer submitted this review; given the context, which findings hold up to
@@ -645,6 +646,7 @@ is the step where `--model fable` earns its cost). Its job: synthesis, not revie
 - The `{REVIEW_DIR}/tagged-sections.md` (router's Panel Decision)
 - The plan/issue context (if any)
 - `HUMAN_LEDGER_BLOCK`, when set (flow runs only), inline under a `Human ledger (from /expert-flow)` heading
+- `TEST_DELETIONS_BLOCK`, when set (when the branch has cleanup or human-ruling commits), inline under a `Test cleanup (from this branch)` heading
 
 Its mandate and the `final-report.md` template live in **`~/.claude/prompts/amalgamator.md`**. Pass
 the path; do not read it yourself and do not paste it into the prompt (context discipline rule 1).

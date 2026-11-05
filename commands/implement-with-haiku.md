@@ -1,6 +1,6 @@
 ---
 description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
-allowed-tools: Read, Write, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/primary-checkout-drift.py":*), Bash(python3 "$HOME/.claude/scripts/unit-sizing.py":*), Bash(python3 "$HOME/.claude/scripts/unit-progress.py":*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks:*), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*), Bash(cd:*), Bash(jq:*), Agent
+allowed-tools: Read, Write, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/test-cleanup-check.py":*), Bash(python3 "$HOME/.claude/scripts/primary-checkout-drift.py":*), Bash(python3 "$HOME/.claude/scripts/unit-sizing.py":*), Bash(python3 "$HOME/.claude/scripts/unit-progress.py":*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks:*), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*), Bash(cd:*), Bash(jq:*), Agent
 ---
 
 # Implement with Haiku
@@ -18,7 +18,9 @@ The flow:
 4. **Round 2 — Spec-blind test author** (own worktree) and **Round 3 pass 1 — Adversary** (read-only)
    run **concurrently**, alongside two read-only sweeps (duplication, doc-drift)
 5. **Round 3 follow-up** — short pass applying earlier findings and reviewing round 2's tests
-6. **Round 4 — Test cleanup** (orchestrator-run) — delete clearly-junk tests, relocate + rename the
+6. **Round 4 — Disagreement closure, then test cleanup** (orchestrator-run). **4.0a:** each red spec-blind
+   test is judged by Sonnet, then by Opus only on escalation; only a human rules "spec was wrong". **4.1–4.6:**
+   delete clearly-junk tests (each with a named survivor or a mechanical proof), then relocate + rename the
    survivors to the repo's own test layout/naming convention
 
 ### Telemetry vocabulary
@@ -236,7 +238,8 @@ hold:
 Write `FAILURE_CLASS: cwd-drift` when cwd drift is detected (any Reason with the `primary-checkout-drift:` prefix). This is an exception to "Multi-unit failures are always `other`" — even
 a multi-unit run that encounters cwd drift writes `cwd-drift`. Otherwise write `FAILURE_CLASS: other`.
 Multi-unit failures without drift are always `other` and go to the human. A sequential run is always multi-unit; a single-unit sequential failure is therefore `other` on failure, unless cwd-drift is also detected.
-The Final check's failures are never `other` and never `implementer-shortfall`: they write
+The Final check's failures are never `implementer-shortfall`, and never `other` except the spec-blind stops
+(Final check step 6, a human stop, which write `FAILURE_CLASS: other`). The rest write
 `FAILURE_CLASS: check_not_run`, `check_not_configured`, or `gate_not_converged` (the Final check fix loop
 exhausted), as the Final check section sets out. Final-check failures must NOT trigger the Sonnet
 escalation, so none of them is classified `implementer-shortfall`, even on a single-unit run.
@@ -356,6 +359,49 @@ fi
 ```
 
 When `RESUME_MODE=yes`, the run **skips Steps 3, 4a, 4b, 4c, and 4d entirely** and proceeds directly to the Integration Gate section.
+
+### Spec-blind state on resume
+
+These rules run only when the ledger already holds the relevant rows. They read the state the earlier run
+wrote and never re-derive it from a fresh run.
+
+- **Register.** When a `DONE round2-apply` row exists, re-read `<SCRATCH_PATH>/disagreements.json`, through
+  the path on the second line of `<SCRATCH_PATH>/round2-apply.txt`. Never re-derive the register from a
+  fresh run. Terminal entries are kept as they are. Round 4's 4.0a resumes from the first non-terminal entry.
+- **Take over.** Each `human-takeover` entry re-runs against the current tree. Green → `impl-fixed` (ruler
+  `human`, reason "resolved by take over"). Still red → `awaiting-human`, and the human is asked again, once.
+- **Answers already saved.** An approved human answer saved for an entry is never asked again. The saved copy
+  lives in the flow's answer file (`FLOW_DIR/answers/*.json`, written by the Ask block) when `FLOW_DIR` is set,
+  and otherwise in `<SCRATCH_PATH>/round4-rulings.md`, which 4.0a step 4 appends to before it applies any approved
+  edit. An answer is approved only when it carries its reason (and, for an amendment, the plan citation); an answer
+  without them is not saved as approved. An `awaiting-human` entry with a saved approved answer is applied from that
+  answer by 4.0a step 4. An `awaiting-human` entry with no saved approved answer is asked again.
+- **Ruling-commit reconciliation.** Before any restore below, for each `awaiting-human` entry whose saved approved
+  answer is a spec-was-wrong ruling, look for its ruling commit: the commit in `"$ROUND2_START_SHA"..HEAD` whose
+  subject is exactly `test: apply human ruling on spec-blind test <id>` (match the whole subject, because one id can
+  be a prefix of another). If it exists, the ruling landed, so finish the register write: set the entry to
+  `human-spec-wrong` with `ruler: human`, the reason from the commit body, and the commit's full SHA, then rewrite
+  `disagreements.json`. If the entry is a deletion and its `round4-deletions.md` row is missing, add it (4.4). If it
+  does not exist, the ruling did not land, and 4.0a step 4 re-applies it from the saved answer.
+- **Round 4 restore.** If no `round4` row exists and the tree has uncommitted changes, compute the union of
+  the working-set paths (`git diff --name-only "$ROUND2_START_SHA"..HEAD`, plus the untracked files they
+  name), the target paths in `<SCRATCH_PATH>/round4-merged.txt` (if it exists), and the source paths of any
+  staged `git mv` (a rename shows its source as deleted, so the restore unwinds the move). Remove every
+  `IMPL_FILES` path from that union: an uncommitted change to an implementation file is never restored.
+  `ROUND2_START_SHA` is the value in `<SCRATCH_PATH>/round2-start-sha.txt`.
+  - If every uncommitted change lies inside the union, first unstage it with `git reset -q HEAD -- <union paths>`
+    (a staged move survives `git checkout` otherwise), then restore the tracked paths to HEAD
+    (`git checkout HEAD -- <paths>`), delete any untracked files inside the union with the file tool, and
+    re-run Round 4 from 4.0a (which resumes from the first non-terminal entry, and is a no-op when none remain).
+  - If any uncommitted change lies outside the union (including any implementation file), **stop** and report
+    those paths. Do not discard unknown work.
+  - An approved human amendment that was not yet committed is inside the union and is dropped by this restore.
+    That is safe: the saved answer is still on disk, so 4.0a step 4 re-applies it rather than asking again, and
+    its register entry is written only after its ruling commit lands.
+- **Cleanup commit already landed.** If a commit whose subject matches
+  `git log --format=%s --grep '^test: clean up spec-blind tests (' "$ROUND2_START_SHA"..HEAD` exists, write the
+  `round4` row from it instead of re-running Round 4. Parse `<D>` and `<M>` from the subject's
+  `(<D> deleted, <M> merged)` and write `<M>` as `<R>`.
 
 ## Step 1: Find the plan
 
@@ -1537,6 +1583,7 @@ run after this entire fan-out has joined and all its agents have provided transc
 Record the current HEAD before launching:
 ```bash
 git rev-parse HEAD  # store as ROUND2_START_SHA
+git rev-parse HEAD > "<SCRATCH_PATH>/round2-start-sha.txt"  # resume reads the same value back
 IMPL_FILES=$(git diff --name-only "$START_SHA"..HEAD)  # round-1 implementation files
 ```
 
@@ -1719,11 +1766,7 @@ git worktree remove "$R2_WT_PATH" && git worktree prune && git branch -D "$R2_BR
 
 Replace `<feature areas>` with the actual modules or features covered, e.g. `test: add spec-blind tests for auth, user profile, and session management`.
 
-Record the apply in the ledger, citing the one-line result (with the file count you verified above):
-```bash
-printf '%s\n' "round2-apply: committed <N> test file(s)" > "<SCRATCH_PATH>/round2-apply.txt"
-printf '%s DONE round2-apply %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round2-apply.txt" >> "<LEDGER_PATH>"
-```
+The apply's ledger row is recorded after the disagreement register is written (see "Write the disagreement register" below), because the register's count goes on the evidence file's second line.
 
 **Compare (Round 2 apply):** after the Round 2 apply has committed the tests, check for drift before proceeding:
 
@@ -1766,6 +1809,47 @@ use the Incomplete-report menu (Re-run / Inspect / Skip / Abort) below.
 Then re-run the new tests yourself and record actual pass/fail counts — **never echo the agent's
 claimed counts into the summary uncorrected.**
 
+### Write the disagreement register
+
+A red spec-blind test is a suspected bug, not a fixture to adjust. Make each one a durable, named
+state from the moment it is observed, so Rounds 3 and 4 and any resume work from the same record.
+
+1. **One entry per failing spec-blind test** (from the re-run above; skip snapshot-pinned tests, step 2).
+   Each entry has these fields:
+   - `id` (`<file>::<test name>`), `file`;
+   - `failure`: the assertion and the expected-versus-actual text from the runner, verbatim;
+   - `plan_ref`: the plan line the test claims to encode, when it can be found, otherwise `null`;
+   - `status`: `open` at this point;
+   - `ruler`, `reason`: `null` until a ruling;
+   - `ladder`: the judge verdicts and their citations, `[]` until a judge runs;
+   - `final_id`: `null` until Round 4's 4.5 merge fills it in.
+
+   **Statuses.** `open`, then one of `binding-fixed`, `impl-fixed`, `test-correct-blocking`,
+   `awaiting-human`, `human-spec-wrong`, `human-impl-wrong` or `human-takeover`. The terminal statuses are
+   `binding-fixed`, `impl-fixed`, `test-correct-blocking` and `human-spec-wrong`. `human-impl-wrong` is transient: it
+   enters the fix loop and ends `impl-fixed` or `test-correct-blocking`. `human-takeover` stops the step and is
+   resolved on resume (Step 0).
+
+2. **Snapshot and golden files (Q5b).** Detect the snapshot and golden files the Round 2 diff *created*:
+   ```bash
+   git diff --name-only --diff-filter=A "$ROUND2_START_SHA"..HEAD
+   ```
+   Match `__snapshots__/`, `*.snap`, `*.ambr`, `*.golden` and `testdata/**/golden*`. Tests that read them go
+   in the `snapshot_pinned` list of the register, not in `entries`. They never become disagreements. A red
+   snapshot-pinned test goes to Round 4.0a's fix loop as an ordinary red test, and it is a No-op candidate in 4.3.
+
+3. **Write `<SCRATCH_PATH>/disagreements.json`** with the `Write` tool, as one JSON object:
+   `{"entries": [ ... ], "snapshot_pinned": [ "<id>", ... ]}`. Round 3, Round 4 and resume all read this file.
+
+4. **Record the apply in the ledger.** Keep the first line exactly as it was, and add the register pointer
+   on a second line:
+   ```bash
+   printf '%s\n' "round2-apply: committed <N> test file(s)" > "<SCRATCH_PATH>/round2-apply.txt"
+   printf '%s\n' "disagreements: <SCRATCH_PATH>/disagreements.json (<M> open)" >> "<SCRATCH_PATH>/round2-apply.txt"
+   printf '%s DONE round2-apply %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round2-apply.txt" >> "<LEDGER_PATH>"
+   ```
+   `<N>` is the file count you verified above, and `<M>` is the number of entries with status `open`.
+
 ### Machine-check spec-blindness (Part C)
 
 ```bash
@@ -1806,7 +1890,15 @@ printf '%s SKIPPED partc-mutation-b %s\n' "<RUN_KEY>" "no-new-tests" >> "<LEDGER
    printf '%s DONE partc-reference-check %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/partc-reference-check.txt" >> "<LEDGER_PATH>"
    ```
 3. **Bounded mutation smoke (two mutations)** — pick the file in `IMPL_FILES` referenced by the most
-   new tests. Run two mutations:
+   new tests. Run two mutations.
+
+   **What `N` means (Q5a).** `N` is a delta, not a raw failure count. Before each mutation, take the
+   new tests that are green at HEAD (from the register's re-run above). After the mutation, `N` counts
+   only those green-at-HEAD tests that now fail. Tests in the register's red set are excluded, because a
+   test that is already red would mask a vacuous suite. The evidence line (the one-line `<check>: <N> ...`
+   summary written to `partc-*.txt`, here `mutation-a: <N> new-test failures`) keeps its shape, and `N` now
+   means this delta. The "suite-level, never expand to
+   `git rm`" rule still applies.
    
    **Precondition:** Before each mutation, run `git status --porcelain -- <file>`. If the file is
    dirty, stop Part C's mutation checks entirely for this run, surface the dirty state in the summary,
@@ -1824,7 +1916,7 @@ printf '%s SKIPPED partc-mutation-b %s\n' "<RUN_KEY>" "no-new-tests" >> "<LEDGER
    git checkout HEAD -- <that file>   # restore, always, even on failure
    git status --porcelain -- <file>   # postcondition: must be empty
    ```
-   Expect at least one new-test failure among the added tests. Zero failures among added tests → flag as `vacuous`.
+   Expect at least one delta failure (see above). Zero delta failures → flag as `vacuous`.
    Record `mutation-a: <N> new-test failures` in `partc-mutation-a.txt` (with the flag if `N` is zero)
    and append the row:
    ```bash
@@ -1850,7 +1942,7 @@ printf '%s SKIPPED partc-mutation-b %s\n' "<RUN_KEY>" "no-new-tests" >> "<LEDGER
    git checkout HEAD -- <that file>   # restore, always, even on failure
    git status --porcelain -- <file>   # postcondition: must be empty
    ```
-   Expect at least one new-test failure. Zero failures → flag as `weak-assertion`.
+   Expect at least one delta failure (see above). Zero delta failures → flag as `weak-assertion`.
    Record `mutation-b: <N> new-test failures` in `partc-mutation-b.txt` and append the row:
    ```bash
    printf '%s\n' "mutation-b: <N> new-test failures" > "<SCRATCH_PATH>/partc-mutation-b.txt"
@@ -1875,6 +1967,10 @@ round 3's fixes.
 ### Round 3 follow-up (short)
 
 Collect: `TEST_FILES` (above), the Part C flags (`dedup` / `vacuous` / `weak-assertion`), and Round 3 pass 1's proposed fixes.
+Also record the pre-Round-3 SHA for the fence, before the agent launches:
+```bash
+git rev-parse HEAD > "<SCRATCH_PATH>/pre-round3-sha.txt"
+```
 
 Launch a background `plan-implementer` (main worktree) with:
 
@@ -1888,15 +1984,26 @@ Launch a background `plan-implementer` (main worktree) with:
 > `<SCRATCH_PATH>/round3-pass1-report.md`
 > **New test files:** [TEST_FILES]
 > **Automated flags on the new tests:** [Part C flags, if any — `dedup` / `vacuous` / `weak-assertion`]
+> **Disagreement register (input):** `<SCRATCH_PATH>/disagreements.json`. Its entries with status `open`
+> are the red spec-blind tests. Those are the only tests the fence below governs.
 >
-> 1. Read the new test files. Note which fail against the current implementation and why.
-> 2. Apply your earlier proposed fixes now, if you still believe them correct given the tests.
+> 1. Read the new test files and the register. Note which fail against the current implementation and
+>    why. The register, not your own reading, says which spec-blind tests are red.
+> 2. Apply your earlier proposed fixes now, if you still believe them correct given the tests, **subject
+>    to the fence**.
+>    **The fence (D1, Q2).** For a test in the register you may change only: the implementation (the
+>    production files, as your earlier fixes do); that test's **import lines**; and its **call-site lines**
+>    where only the callee name or the argument count changes and every literal argument keeps its value
+>    and position. Nothing else. Assertion lines, expected values (including any variable, fixture or test
+>    data that holds one) and literal inputs must stay byte-identical. If you believe an assertion,
+>    expected value or input is wrong, **do not edit it**: report the test under **Spec questions** (step 7).
 > 3. **Actively hunt for weak assertions** — independent of whatever Part C flagged. For each new
 >    test, ask: "what plausible broken implementation would this assertion still let through?" Flag
 >    tests that only check type, truthiness, non-null, or "no exception raised" instead of the
 >    actual expected value, and tests on boundary/comparison logic whose assertion doesn't pin the
 >    exact expected outcome (this is not an exhaustive list — use judgment for other weak-assertion
->    shapes). Label each `[WEAK_ASSERTION]`.
+>    shapes). Label each `[WEAK_ASSERTION]`. Strengthening is allowed for **green** tests only; a
+>    register test is never strengthened here (step 2's fence applies to it).
 > 4. Review the automated flags on the new tests (`dedup`, `vacuous`, `weak-assertion`) — are they real
 >    problems? If a flagged test is genuinely `vacuous`, duplicate, or `weak-assertion` as you judged
 >    above, note it (do not delete another pass's tests unless clearly wrong).
@@ -1921,11 +2028,17 @@ Launch a background `plan-implementer` (main worktree) with:
 >    
 >    Emit this section's heading even when there are no findings, with body text "None found."
 >
+>    **Spec questions** (numbered): each register test you believe encodes a wrong assertion, expected
+>    value or input. For each, give the test id, the plan line it should follow from, and the edit you
+>    would have made, which you did **not** make. These feed the human path; you never rule on them.
+>    Emit this heading even when there are no findings, with body text "None found."
+>
 >    Report final test status.
 >
-> 8. **Report file:** write your full report (both sections and the test status) to
+> 8. **Report file:** write your full report (all three sections and the test status) to
 >    `<SCRATCH_PATH>/round3-followup-report.md` using the `Write` tool, and set `REPORT_FILE:` in your
->    trailer to that exact path. Keep your reply to the trailer plus at most two sentences.
+>    trailer to that exact path. Put the register path `<SCRATCH_PATH>/disagreements.json` in the report
+>    body (not on its first line). Keep your reply to the trailer plus at most two sentences.
 >
 > [Full report trailer per plan-implementer instructions, ending in `REPORT_FILE: <path> | none`]
 >
@@ -1941,9 +2054,35 @@ committing, validate scope — `git -C <its worktree or the diff> diff --staged 
 touch only files the findings name. Then re-run gate step 1 (build/type-check) and the affected
 tests yourself before committing; a fix that breaks the build is not a fix.
 
+**Register fence, before the commit (D1, Q2).** Run the mechanical fence on the staged index, with one
+`--test` per register entry still `open`. `<PRE_R3_SHA>` is the value in `<SCRATCH_PATH>/pre-round3-sha.txt`:
+```bash
+python3 "$HOME/.claude/scripts/test-cleanup-check.py" fence --base "<PRE_R3_SHA>" --head INDEX --test "<id>" [--test "<id>" ...] --impl-files "<IMPL_FILES list>"
+```
+Read its output and act on each line:
+- `binding-edit <id> <line>`: allowed (an import line, or a call-site line with only the callee or argument
+  count changed). Keep it, and list it for the Final summary's "Binding edits".
+- `violation <id> <line>`: not allowed. Restore **only that test's body** to its base text, using the
+  printed base line range, and leave other tests' edits and the file's binding edits in place. Re-stage
+  and re-run the fence until it reports no violation. Set that entry to `awaiting-human`, and record the
+  rejected edit in its `reason` (`rejected Round 3 edit: <what was attempted>`). The entry is not committed.
+- `support-edit <path>`: keep the path for the post-commit check below. A support edit alone does not
+  fail the fence, and it is never committed silently.
+
 ```bash
 git commit -m "test: fix weak assertions and coverage gaps from adversary review"
 ```
+
+**Post-commit register update.** Re-run the register's tests, then update each entry from the result:
+- If the fence printed any `support-edit` path, every register test that went red→green in this commit
+  becomes `awaiting-human`, with reason `flipped with a test-support change: <paths>`. The support change
+  stays committed; the human decides whether the flip is legitimate.
+- Otherwise, a test that went red→green with a matching implementation change in the diff becomes `impl-fixed`.
+- Otherwise, a test that went red→green with only binding edits becomes `binding-fixed`, and its
+  binding-edit lines are recorded in `reason`.
+- A test still red stays `open`, and an `awaiting-human` entry stays `awaiting-human`.
+
+Write the updated `<SCRATCH_PATH>/disagreements.json` with the `Write` tool.
 
 If the fixes are narrow, name the specific area, e.g. `test: tighten boundary assertions in auth tests`.
 
@@ -1988,14 +2127,21 @@ that file may be named after this pass (`*_spec_blind`, `*_spec`, `*_hardening`,
 convention. The spec also allows Round 3 to add test files. That's an artifact of *this* orchestration process,
 not the repo's real convention, and nothing downstream has relocated or deleted them: Part C and
 Round 3 only **flag** `vacuous` / `weak-assertion` / `dedup` and are told never to delete another
-pass's tests unless clearly wrong. Round 4 closes that gap: the orchestrator (you, Sonnet) deletes
-clearly-junk tests and relocates + renames the survivors to the repo's own layout, so the committed
-suite looks like it was written by someone who knows the repo.
+pass's tests unless clearly wrong. Round 4 closes that gap: the orchestrator (you, Sonnet) first closes
+every red spec-blind disagreement (4.0a), then deletes the tests that add no regression value (each with a
+named survivor or a mechanical proof), and merges the survivors into the repo's own test files under its
+own layout, so the committed suite looks like it was written by someone who knows the repo.
 
 You run this **directly in the main worktree** — no sub-agent, no worktree/diff handoff. Path/import
 rewrites are judgment-heavy and this matches how the Integration Gate and Part C already run. The
 same discipline still applies: **never trust a self-report; verify every claim via git and by
 re-running the tests yourself.**
+
+Round 4 runs in a fixed order. **4.0a** closes every spec-blind disagreement first. Cleanup (4.1–4.6)
+runs only once everything is green, except the red tests ruled `test-correct-blocking` (ruling 1a: a test a
+judge called correct that the fix loop could not turn green). A ruling-1a test stays committed red, is never
+deleted, and blocks the run at the Final check's spec-blind gate. Any other red test goes back to the Haiku
+fix loop, never to cleanup.
 
 ### 4.0 Applicability
 
@@ -2012,6 +2158,81 @@ cleanup.
 - **Test-only** run → Round 4 **applies** (relocating/cleaning the delivered tests is the point).
 - **Full** run → Round 4 **applies**.
 
+### 4.0a Disagreement closure (before any cleanup)
+
+Runs when the register has a non-terminal entry (`open`, `awaiting-human`, `human-takeover`, or
+`human-impl-wrong`), or a red test in the working set. Record the fence base before each entry's judges run, for
+their fence checks. It is re-recorded after every green fix-loop commit (step 3), so a later entry's fence does not
+flag an implementation change that an earlier entry's fix committed:
+```bash
+git rev-parse HEAD > "<SCRATCH_PATH>/pre-4a-sha.txt"   # <PRE_4A_SHA>
+```
+Then, for each such entry, in order:
+
+1. **Sonnet judge** (fresh subagent, read-only). Inputs: the original plan, the test, its failure, and the
+   implementation. Verdict: `test-correct` or `escalate`. `test-correct` must cite the plan line the expected
+   value follows from. **A verdict without a citation counts as `escalate`.** The judge may also return a
+   **binding-only patch** (import lines, callee names or argument counts). The orchestrator applies that
+   patch only if
+   `python3 "$HOME/.claude/scripts/test-cleanup-check.py" fence --base <PRE_4A_SHA> --head WORKTREE --test <id> --impl-files <IMPL_FILES list>`
+   reports no violation for that id. Then the entry is `binding-fixed` (ruler `sonnet-judge`, reason its
+   citation). A patch with a violation is discarded, and the entry goes to step 4. A `support-edit <path>`
+   line for the patch is handled as Round 3 handles one: the patch is not applied, the path is recorded in
+   the entry's reason, and the entry goes to step 4 (`awaiting-human`).
+2. **Opus judge**, only on `escalate`. Same packet, plus the Sonnet reasoning, and the same verdict set and
+   binding-patch rule, including the `support-edit` rule (with the `<PRE_4A_SHA>` in force for this entry). There is no
+   further cap: the ladder is at most two judge calls per disagreement (Sonnet, then at most one Opus), and the
+   fix loop after a `test-correct` verdict is already bounded at K=3 (ADR-0019 2026-11-04 amendment; model
+   routing per ADR-0004, flow call handling per ADR-0023).
+3. **On `test-correct`** (from either judge): send the test to the existing Haiku fix-loop machinery (the
+   Integration Gate step 4 shape: K=3, "Do not touch test files", the anti-tamper scan) with the judge's
+   diagnosis.
+   - Green → `impl-fixed` (ruler: the judge that said `test-correct`; reason: its citation). Then re-record the fence
+     base as the new `<PRE_4A_SHA>` for the next entry, after the green fix-loop commit:
+     ```bash
+     git rev-parse HEAD > "<SCRATCH_PATH>/pre-4a-sha.txt"   # <PRE_4A_SHA>, per entry
+     ```
+   - Not converged after K=3 → `test-correct-blocking`. The test stays committed red (ruling 1a).
+4. **Human ruling** → `awaiting-human`. This applies on an Opus `escalate`, on any Round 3 **Spec questions**
+   entry (map each to its register id), on any fence violation not already recorded, and on any Round 3
+   support-edit flip. **The ladder never rules "spec wrong".** Only the human does. A saved approved answer for the entry (see
+   "Spec-blind state on resume") is applied without asking: save it, apply it, and commit as below. Otherwise ask through the Ask block
+   (`~/.claude/prompts/flow-reference.md`); outside a flow, a plain `AskUserQuestion`; in `/expert-fleet`
+   the Ask block parks the question. Batch up to four tests per question set. Each question carries:
+   - the plan excerpt, the test body, and expected versus actual;
+   - both judges' reasoning, and any rejected Round 3 edit or support-edit paths;
+   - the exact proposed diff: for an amendment, the old and new lines of the test; for a deletion, the whole
+     test body to be removed.
+
+   The options are:
+   - **Spec was wrong — amend or delete this test** (a reason is required, and an amendment must cite the plan
+     line its new expected value follows from; an answer without a reason or without that citation is **not**
+     an approval, so the entry stays `awaiting-human` and the step stops with the question);
+   - **Test is correct — fix the implementation** (`human-impl-wrong`; goes to step 3, ending `impl-fixed`
+     or `test-correct-blocking`);
+   - **Take over** (`human-takeover`).
+
+   For `human-spec-wrong`, first save the approved answer (id, the change, the ruler, the reason and the plan
+   citation): in a flow the Ask block already saved it under `FLOW_DIR/answers/`; outside a flow, append it to
+   `<SCRATCH_PATH>/round4-rulings.md`. Then apply the amendment or deletion the human approved, re-run the test, and
+   commit `test: apply human ruling on spec-blind test <id>`. The commit body lists the id, the change (amended or
+   deleted), the ruler and the reason, so Step 9 can feed it to review. A deletion is also written to
+   `round4-deletions.md` (4.4). Only after that ruling commit lands, record the terminal status, `ruler: human`
+   and the `reason`, in the register. Until then the entry stays `awaiting-human`. A resume that finds the saved
+   answer but no ruling commit re-applies it from the saved answer (see "Spec-blind state on resume"), and does
+   not ask again.
+
+   **Take over.** Record `human-takeover` and stop at once. In a flow, write a FAILED receipt with Reason
+   `spec-blind-takeover: <n> test(s)` and the ids, and `FAILURE_CLASS: other` (a human stop, so no
+   implementer-shortfall escalation applies). In a fleet this stops the ticket like any FAILED receipt. Outside
+   a flow, stop with the same listing and no success summary. Step 8's receipt check covers this Reason. On
+   resume, Step 0 re-runs each `human-takeover` test against the current tree (see "Spec-blind state on
+   resume"). Any test edit the human made is human-approved by definition and is listed in the summary's
+   "Spec-blind disagreements" section.
+5. **Exit condition.** Every register entry is terminal. Every red test in the working set is either
+   `test-correct-blocking` or absent. Any other red test goes back to step 3. The orchestrator checks this with
+   its own run of the working set, not with `CHECK_EXIT`.
+
 ### 4.1 Enumerate the new tests (the working set)
 
 **Recompute** the working set at Round-4 time rather than reusing the `TEST_FILES` value from Part C:
@@ -2020,7 +2241,16 @@ TEST_FILES=$(git diff --name-only "$ROUND2_START_SHA"..HEAD)
 ```
 HEAD has advanced since Part C computed `TEST_FILES` (right after Round 2's apply), so recomputing now
 naturally folds in **both** Round 2's tests **and** any test files Round 3's follow-up added — the
-stale cached value would miss the latter. This is the **working set** — Round 4 only ever touches tests added since `ROUND2_START_SHA`: whole new files, or the functions added to an existing file. Never the tests that file already had.
+stale cached value would miss the latter. This is the **working set**: the only cleanup candidates are
+the tests added since `ROUND2_START_SHA`. Round 4 only ever touches files in the working set **plus the
+4.5 merge targets recorded in `<SCRATCH_PATH>/round4-merged.txt`**. It never deletes or edits pre-existing
+tests in those targets, only appends to them.
+
+Enumerate at **test** granularity (the collected test ids, `file::name`), not only files. Truncate
+`<SCRATCH_PATH>/round4-merged.txt` now, after any resume restore (see "Spec-blind state on resume"):
+```bash
+: > "<SCRATCH_PATH>/round4-merged.txt"
+```
 
 ### 4.2 Learn the repo's convention (evidence, not assumption)
 
@@ -2044,30 +2274,56 @@ git ls-tree -r --name-only "$START_SHA" | rg '(test|spec)' | rg '\.(py|ts|tsx|js
 If there are **zero** pre-existing tests to learn from, do not guess a bespoke layout — fall back to
 the framework's documented default and note in the final summary that no in-repo precedent existed.
 
-### 4.3 Classify each file in the working set
+### 4.3 Classify each test in the working set
 
-- **Junk (delete) — only these three, each attributable to a specific file:**
-  - files carrying Part C's **reference-check** `vacuous` flag — the *per-file* check (each file in
-    `TEST_FILES` must reference ≥1 symbol from `IMPL_FILES`; zero references → `vacuous`). A test that
-    never touches production code tests nothing; delete it.
-  - tests that assert against a hand-built copy of the logic (the "would still pass if the
-    implementation were deleted" defect the Round 2 prompt already forbids),
-  - exact/near duplicates of coverage that existed at `START_SHA` (from the Part C dedup `comm` result).
-- **Not auto-deleted — surface, don't delete (fixable signal, not junk):**
-  - Part C's **mutation-smoke** `vacuous` flag is **suite-level, not per-file**: it reverts one impl
-    file and re-runs the *whole* `TEST_FILES` set, so a zero-failure result only proves the tests
-    covering *that one reverted file* were too weak to notice it vanish — it never names which file is
-    junk and says nothing about tests targeting other files. Treat it exactly like `weak-assertion`:
-    surface it (Round 3 already reports it), and at most hand the tests that *reference the reverted
-    file* to Round 3 to strengthen. **Never** expand a suite-level mutation-smoke flag into a `git rm`
-    — doing so deletes good tests for other modules on the strength of one weak test elsewhere.
-  - a `weak-assertion` flag — a weak assertion is fixable, not worthless.
-- **Useful (relocate/rename):** everything else.
+Classify in this order. The first class that applies wins.
 
-### 4.4 Delete the junk
+- **(0) Exempt.** `test-correct-blocking` entries, and tests a human ruled to keep. **Never deleted.** They
+  still go through 4.5 as Unique (merged and renamed), with the test body byte-identical: only the location,
+  enclosing names and import lines change, so the oracle is untouched and no spec-blind name survives.
+- **(1) Duplicate.** Part C's `comm` dedup against `START_SHA`, or a Sonnet-judged duplicate of a sibling
+  test. It **must name the surviving test id**.
+- **(2) No-op, mechanical.** Any of: reference-check `vacuous` (the file references no `IMPL_FILES` symbol),
+  a hand-built copy of the logic (the "would still pass if the implementation were deleted" defect the Round 2
+  prompt already forbids), or `snapshot-pinned` (Q5b). **Record the proof kind.** The No-op bucket is the
+  slot a future at-base proof (#367) joins.
+- **(3) Judgment delete.** Sonnet may delete any other test that adds no regression value. It **must name the
+  surviving test that covers the behaviour**. This class is the interim trim until the test budget in #367
+  lands; it is not itself a budget, and it decides no per-file or per-suite count.
+- **(4) Unique.** Everything else. Merged in 4.5.
 
-`git rm` each junk file (or delete the specific test fn if only part of a file is junk), one at a
-time, recording path + reason for the final summary.
+Two evidence rules still hold:
+- Part C's **mutation-smoke** `vacuous` flag is **suite-level, not per-file**: it reverts one impl file and
+  re-runs the whole `TEST_FILES` set, so it never names which test is junk. Treat it like `weak-assertion`:
+  surface it, and at most hand the tests that *reference the reverted file* to Round 3 to strengthen. **Never**
+  expand a suite-level mutation-smoke flag into a deletion. It may only support a judgment delete that also
+  names a survivor.
+- A `weak-assertion` flag is fixable, not worthless. It is never a deletion reason on its own.
+
+### 4.4 Delete
+
+Write `<SCRATCH_PATH>/round4-deletions.md` **before** the first deletion, so resume knows what was decided.
+It is one markdown table with this header row:
+
+`| id | class | change | reason | survivor or proof | commit |`
+
+- `id` is the deleted test's id as collected (`file::name`).
+- `class` is `human-spec-wrong`, `duplicate`, `no-op` or `judgment`.
+- `change` is `deleted` for a cleanup row; a `human-spec-wrong` row is `amended` or `deleted`.
+- `reason` is the reason. For a `human-spec-wrong` row it is the human's reason, and the ruler is always `human`.
+- `survivor or proof` is the surviving test's id, or `proof:<kind>` when the proof is mechanical (for example
+  `proof:comm-dedup`, `proof:reference-check`, `proof:snapshot-pinned`). A `human-spec-wrong` row uses
+  `proof:human-ruling`.
+- `commit` is empty for a cleanup row, and holds the full SHA of the ruling commit for a `human-spec-wrong` row.
+
+The table starts with one row per register entry ruled `human-spec-wrong`, then one row per cleanup deletion.
+Test ids are parsed from the `id` and `survivor or proof` cells. The `proof:` markers and the SHA cells are the
+only cells exempt from being parsed as test ids. A malformed row (wrong cell count, an empty `id`, an
+unparseable test id) makes the cleanup helper exit 1; it is never skipped. A header-only table is a
+valid empty table.
+
+Then delete each (1)–(3) test, one at a time, with `git rm` or by deleting the test function. Record path
+and reason for the final summary.
 
 **Record what evidence was available.** Part C's mutation smoke can be skipped whole-cloth (dirty-file
 precondition, or no comparison operator found — see Part C). When it was skipped, the reference-check
@@ -2075,38 +2331,91 @@ is Round 4's *only* machine-checked junk evidence, so a `Deleted (junk): 0` resu
 by the smoke," not "vetted and clean." Note in the summary whether the mutation smoke ran or was
 skipped (with reason) so a human can tell those two cases apart.
 
-### 4.5 Relocate + rename the survivors
+### 4.5 Relocate, rename and merge the survivors
 
-Move each survivor to the 4.2 convention:
+The **default for each Unique test (Exempt included) is to merge it into the module's normal test file**,
+under 4.2's convention. A new file is created only when the module has none. Move each survivor to the
+4.2 convention:
 
-- Move with `git mv` so history is preserved.
-- Rewrite the moved file's own imports for its new location, and update any references to it elsewhere
-  (test config include globs, `conftest.py`, barrel files) — grep for the old path/name first.
-- **Fold, don't add files:** if a test file for the same module already existed at `START_SHA`, fold the survivor's tests into that file (register them in its runner, rename on any name collision) and `git rm` the new file. This applies whether or not the paths collide; a pass-named file (`*_spec_blind`, `*_spec`, `*_hardening`, `*_blackbox`, `*_review_fixes`, `*_followups`, `*_phase_N`) is never a valid end state.
+- **Record the target before writing it.** Before the first write to any target file, append the target
+  path to `<SCRATCH_PATH>/round4-merged.txt`, so resume knows every path Round 4 may have touched. Then
+  record each merged or renamed survivor as `<old id> -> <new id>` in the same file, where `<old id>` is the
+  id the survivor carries in `round4-deletions.md` and `<new id>` is its id in the final tree. This file is the
+  `--merged` input to `survivors` in 4.6(a), so a survivor named by its pre-merge id is looked up under its new id.
+- Write each Exempt test's new id into its register entry's `final_id`.
+- **Drop every spec-blind name** (file, function, describe and class names). The body of an Exempt test
+  stays byte-identical.
+- Move with `git mv` where a whole file moves, so history is preserved.
+- Rewrite the moved tests' own imports for their new location, and update any references to them
+  elsewhere (test config include globs, `conftest.py`, barrel files) — grep for the old path/name first.
+- **Merge rather than clobber:** if a survivor's target path collides with an existing test file, fold
+  the new tests into the existing file under the repo's conventions instead of overwriting. A pass-named file (`*_spec_blind`, `*_spec`, `*_hardening`, `*_blackbox`, `*_review_fixes`, `*_followups`, `*_phase_N`) is never a valid end state.
+- **Snapshot-pinned tests (Q5b).** Before deleting one, check it against 4.6(b)'s behaviour floor. If its
+  deletion would leave a changed public symbol with no test, keep it and flag it in the summary as
+  "snapshot-pinned, not spec-derived".
 
 ### 4.6 Verify green, then commit
 
-Re-run the tests **yourself** — a **fresh full collection under the new layout**, not a path-scoped
-re-run of the pre-move set (the old paths no longer exist, and a stale include target would silently
-run the wrong set while still reporting a plausible count). Confirm the total matches pre-cleanup
-minus the deletions. **For any file merged in 4.5,** additionally confirm the target file's collected
-test count rose by exactly the folded-in count — a same-name collision (e.g. two `test_boundary()` in
-one module) silently shadows one test with no error, and only a per-file count check catches it.
-Re-run gate step 1 (build/type-check), since moves can break import paths. Only then:
+Run these post-conditions in this order, before the commit. Each is a hard gate. Use a **fresh full
+collection under the new layout** for (a) and (c), never a path-scoped re-run of the pre-move set (the old
+paths no longer exist, and a stale include target would silently run the wrong set while still reporting
+a plausible count). Each helper call must exit 0; a non-zero exit (exit 1 with a named reason) is a hard
+failure that stops the gate immediately.
 
+- **(a) Named survivors.** Collect the test ids of the final tree (one per line, into
+  `<SCRATCH_PATH>/collected.txt`), then run:
+  ```bash
+  python3 "$HOME/.claude/scripts/test-cleanup-check.py" survivors --deletions "<SCRATCH_PATH>/round4-deletions.md" --collected "<SCRATCH_PATH>/collected.txt" --merged "<SCRATCH_PATH>/round4-merged.txt"
+  ```
+  Each missing survivor is printed with the deleted test that named it. That deleted test is restored from
+  the pre-Round-4 SHA, removed from `round4-deletions.md`, and sent back through 4.5 as Unique (merged and
+  renamed). This is how two duplicates are kept from deleting each other.
+- **(b) Behaviour floor.** Each public symbol added or changed in `IMPL_FILES` across `START_SHA..HEAD` is
+  referenced by at least one test in the final tree. A miss restores the last deleted test that referenced
+  the symbol, removes it from the deletions list, and sends it through 4.5 as Unique.
+- Repeat (a) and (b) until neither restores anything. This is bounded: each pass only restores, never deletes.
+- **(c) Count.** Only then, a fresh full collection. The total must match pre-cleanup minus the final
+  deletions. **For any file merged in 4.5,** the target file's collected test count must rise by exactly the
+  folded-in count. A same-name collision (e.g. two `test_boundary()` in one module) silently shadows one test
+  with no error, and only a per-file count check catches it.
+- **(d) Red set.** The set of red tests must equal **exactly** the `final_id`s of the register's
+  `test-correct-blocking` entries. Every other test must be green, and every blocking test must still be red.
+  Any other red test is a mistake to fix (an import or path, as today) before committing. It is not cleanup.
+- **(e) No spec-blind name survives.**
+  ```bash
+  python3 "$HOME/.claude/scripts/test-cleanup-check.py" names --base "$ROUND2_START_SHA" --head WORKTREE
+  ```
+  `--head WORKTREE` checks the working tree, including untracked files, which is the tree the commit is about to
+  record. Checking only committed HEAD would miss a name that is still uncommitted. A hit is a hard failure: fix the name, then re-run. Exempt tests were renamed in 4.5, so a blocking test
+  cannot cause a names hit.
+- **(f) Round 2 branch and worktree gone.** `git worktree list` no longer shows `<R2_WT_PATH>`, and
+  `git rev-parse --verify --quiet "refs/heads/<R2_BRANCH>"` prints nothing.
+- **(g) Gate step 1.** Re-run gate step 1 (build/type-check), since moves can break import paths.
+
+Then commit, as one commit. The deletions and merges travel in its body, so review and audit can see them:
 ```bash
-git commit -m "test: fold spec-blind tests into existing test files and drop vacuous tests"
+git commit -m "test: clean up spec-blind tests (<D> deleted, <M> merged)"
 ```
+The body lists every deletion with its reason and its survivor or proof, and every merged id as
+`<old id> -> <new id>`. That is the provenance for #367 and later audits.
 
-Once the commit has landed and the re-run above is green, record the Round 4 row. The line written to
-`round4.md` is the one-line result, with the counts you actually committed:
+Once the commit has landed and check (d) holds, write the Round 4 evidence. The first line keeps its
+current shape, because the Final summary's verbatim render and the `coverage-fix-358` fixture read it.
+`<R>` counts tests merged or relocated in 4.5, Exempt included. The later lines point at the blocking set
+and the working files:
 ```bash
 printf '%s\n' "round4: <D> deleted, <R> relocated" > "<SCRATCH_PATH>/round4.md"
+printf '%s\n' "blocking: <B> (final ids: <comma-separated final_id list, or none>)" >> "<SCRATCH_PATH>/round4.md"
+printf '%s\n' "deletions: <SCRATCH_PATH>/round4-deletions.md  merged: <SCRATCH_PATH>/round4-merged.txt  register: <SCRATCH_PATH>/disagreements.json" >> "<SCRATCH_PATH>/round4.md"
 printf '%s DONE round4 %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round4.md" >> "<LEDGER_PATH>"
 ```
+With blocking entries present the row is still `DONE`. The Final check is where the run fails loudly (see
+"Spec-blind gate" in the Final check).
 
-If tests go red after a move, fix the import/path (that's the expected failure mode) — a relocation
-that changes pass/fail counts beyond the intended deletions is a mistake, not cleanup.
+If tests go red after a move, fix the import or path (the expected failure mode). A relocation that changes
+pass/fail counts beyond the intended deletions is a mistake, not cleanup. A second run over a cleaned tree
+must be a no-op: Step 0 writes the row from the cleanup commit instead of re-running (see "Spec-blind state
+on resume").
 
 ---
 
@@ -2240,7 +2549,40 @@ last run.
   `CHECK_EXIT: 0`, `CHECK_SOURCE:` is the resolver's `source`, and `CHECK_SHA:` is the SHA the run used.
   On an opt-out, `CHECK: opted-out`, `CHECK_EXIT: none`, `CHECK_SOURCE: opt-out`, and `CHECK_SHA:` is the
   current HEAD. The Final summary's OK receipt carries these lines (see the receipt section below).
-- Then continue to the Final summary, which carries the `Full check:` line.
+- Then continue to step 6 below, and then to the Final summary, which carries the `Full check:` line.
+
+**6. Spec-blind gate (W1, ruling 1a).** Read `<SCRATCH_PATH>/disagreements.json` and count its
+`test-correct-blocking` entries as `<n>`. A missing file means `<n>` is 0. This runs whatever the check outcome was, before the Final summary.
+- `<n>` is `0`: no blocking entry. Continue to the Final summary.
+- `<n>` is above `0`: the step **fails loudly**, even when the check passed (the check did not collect the
+  blocking test, or the red-set check already held). Write the FAILED receipt below, and stop. Outside a
+  flow, stop with the same listing and no success summary.
+- A `human-takeover` entry still in the register is a stop too, with Reason `spec-blind-takeover: <n> test(s)`.
+  Round 4's 4.0a writes that receipt. This gate only checks that it is not missing.
+
+**The FAILED receipt for an open disagreement.** When `FLOW_DIR` is set, write `RECEIPT_PATH` with the
+`Write` tool as one header block, then a blank line, then the body. The body lists **each** blocking entry:
+`final_id` (and the original id), expected versus actual, the judge citations, and the fix-loop outcome.
+```
+ATTEMPT: <k>
+Decision: FAILED
+Reason: spec-blind-disagreement-open: <n> test(s)
+FAILURE_CLASS: other
+CHECK: <resolved command verbatim | opted-out>
+CHECK_EXIT: <n | none>
+CHECK_SOURCE: <repo-cache | project.yaml | justfile | opt-out>
+CHECK_SHA: <full 40-hex SHA the check ran on>
+RUN_KEY: <RUN_KEY>
+RECEIPT_CONTRACT: 1
+<!-- step-end -->
+```
+`FAILURE_CLASS: other` is used because this is a human stop, not an implementer shortfall. The
+`spec-blind-takeover` and `spec-blind-disagreement-open` Reasons are ordinary FAILED receipts: Retry, Take over and Abort, and in
+a fleet the ticket parks.
+
+A failing check whose only red tests are `test-correct-blocking` entries is not a fix-loop case. Skip the
+Final check fix loop for that case, and go straight to the gate above. The Haiku fix loop may never touch
+a blocking test.
 
 ---
 
@@ -2433,15 +2775,29 @@ ROUND 3 — Adversary (pass 1 + follow-up)
     [PLAN_GAP]:     <count>  ← signal that the plan needs sharpening
   Fixed: <count>   Flagged: <count>
   Weak assertion findings: <count>  ← test-quality signal
+  Spec questions: <count>  ← red spec-blind tests the adversary believes encode a wrong oracle (human path)
   Round-3 test status: <P passed, F failed>
   Report-file handoffs: <ok | retried: n | FAILED: stage>
 ROUND 4 — Test cleanup (orchestrator-run)
   Convention detected: <co-located | mirrored-tree | tests-dir> / <naming pattern>
   Round 4 (render): <round4 render line, verbatim>
   Junk-detection evidence: mutation-smoke <ran | skipped: reason | NOT RUN>, reference-check <ran | NOT RUN>
-  Deleted (junk): <count, paths + reason>
+  Deleted (junk; cleanup classes duplicate, no-op, judgment only — human-spec-wrong rows are listed under DELETED TESTS): <count, paths + reason>
   Relocated/renamed: <count>  (e.g. tests/test_wave_a_spec.py → <repo-convention path>)
   Post-cleanup test status (orchestrator re-run — AUTHORITATIVE final status): <P passed, F failed>
+SPEC-BLIND DISAGREEMENTS (register: <SCRATCH_PATH>/disagreements.json)
+  Entries: <count>   Terminal: <count>   Blocking (test-correct-blocking, by final_id): <count, ids or none>
+  <id> → <terminal status>   ruler: <ruler>   reason: <reason>   (take-over resolutions included)
+  Round 3 spec questions: <count>   Fence violations restored: <count>   Support-edit flips: <count>
+BINDING EDITS (from fence output, one per line)
+  <id>: <line> — <import | callee name | argument count>
+DELETED TESTS (round4-deletions.md, human-ruled rows included)
+  <id> — class <duplicate | no-op | judgment | human-spec-wrong> — reason — survivor or proof kind
+MERGED TESTS (spec-derived)
+  <old id> -> <new id>
+KEPT, FLAGGED
+  snapshot-pinned, not spec-derived: <ids or none>
+  restored survivor cases (kept as Unique after a survivor went missing): <ids or none>
 SWEEPS
   Duplication findings: <count>
   Doc-drift findings: <count>

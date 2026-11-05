@@ -1284,4 +1284,146 @@ t("Unit-Id trailer documented as log-only in comments",
 
 print()
 
+# ============================================================================
+# Spec-blind disagreement closure (Round 2 register, Round 3 fence, Round 4)
+# ============================================================================
+print("[Spec-blind] Disagreement register, fence, Round 4 closure and cleanup")
+
+
+def doc_section(doc, start_marker, end_marker):
+    """Return the text from start_marker up to (not including) end_marker."""
+    i = doc.find(start_marker)
+    if i < 0:
+        return ""
+    j = doc.find(end_marker, i + len(start_marker))
+    return doc[i:j] if j > i else doc[i:]
+
+
+HELPER_FORM = 'python3 "$HOME/.claude/scripts/test-cleanup-check.py"'
+HELPER_GRANT = 'Bash(python3 "$HOME/.claude/scripts/test-cleanup-check.py":*)'
+R4_4A = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.0a", "### 4.1 Enumerate")
+R4_1 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.1 Enumerate", "### 4.2 Learn")
+R4_3 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.3 Classify", "### 4.4 Delete")
+R4_4 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.4 Delete", "### 4.5 Relocate")
+R4_5 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.5 Relocate", "### 4.6 Verify")
+R4_6 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.6 Verify", "## Final check")
+RESUME = doc_section(IMPLEMENT_WITH_HAIKU, "### Spec-blind state on resume", "## Step 1:")
+
+t("frontmatter grants the test-cleanup-check helper",
+  HELPER_GRANT in IMPLEMENT_WITH_HAIKU.split("\n---", 1)[0],
+  "allowed-tools lacks the test-cleanup-check.py grant")
+
+call_lines = [
+    line for line in IMPLEMENT_WITH_HAIKU.splitlines()
+    if "test-cleanup-check" in line and "Bash(" not in line
+]
+bad_calls = [line for line in call_lines if HELPER_FORM not in line]
+t("every test-cleanup-check call uses the $HOME path form",
+  bool(call_lines) and not bad_calls,
+  f"{len(bad_calls)} call line(s) without the $HOME form")
+
+t("Round 2 apply writes disagreements.json and keeps the round2-apply first line",
+  "disagreements.json" in IMPLEMENT_WITH_HAIKU
+  and "round2-apply: committed <N> test file(s)" in IMPLEMENT_WITH_HAIKU
+  and "disagreements: <SCRATCH_PATH>/disagreements.json" in IMPLEMENT_WITH_HAIKU,
+  "register write or round2-apply first line missing")
+
+t("register status list includes human-takeover",
+  all(s in IMPLEMENT_WITH_HAIKU for s in (
+      "open", "binding-fixed", "impl-fixed", "test-correct-blocking",
+      "awaiting-human", "human-spec-wrong", "human-impl-wrong", "human-takeover")),
+  "register status vocabulary incomplete")
+
+t("4.0a defines Take over's receipt Reason and its resume handling",
+  "spec-blind-takeover: <n> test(s)" in R4_4A and "human-takeover" in R4_4A
+  and "human-takeover" in RESUME,
+  "Take over Reason or resume handling missing from 4.0a / Step 0")
+
+t("Part C defines the mutation count as tests green at HEAD",
+  "green at HEAD" in IMPLEMENT_WITH_HAIKU,
+  "mutation count is not defined as a delta over tests green at HEAD")
+
+t("Round 3 follow-up forbids edits to assertions, expected values and literals",
+  "byte-identical" in IMPLEMENT_WITH_HAIKU and "Spec questions" in IMPLEMENT_WITH_HAIKU,
+  "Round 3 fence wording or Spec questions section missing")
+
+t("Round 3 apply runs fence --head INDEX with test ids and routes a support-edit flip to awaiting-human",
+  'fence --base "<PRE_R3_SHA>" --head INDEX' in IMPLEMENT_WITH_HAIKU
+  and "support-edit" in IMPLEMENT_WITH_HAIKU
+  and "flipped with a test-support change" in IMPLEMENT_WITH_HAIKU,
+  "Round 3 fence call or support-edit routing missing")
+
+t("4.0a precedes 4.1 and names Sonnet, Opus, the Ask block, and the never-rules-spec-wrong rule",
+  bool(R4_4A) and "Sonnet" in R4_4A and "Opus" in R4_4A
+  and "Ask block" in R4_4A and "never rules" in R4_4A
+  and IMPLEMENT_WITH_HAIKU.find("### 4.0a") < IMPLEMENT_WITH_HAIKU.find("### 4.1 Enumerate"),
+  "4.0a missing, misordered, or missing ladder/Ask/never-rules wording")
+
+t("4.1 invariant names the 4.5 merge targets recorded in round4-merged.txt",
+  "round4-merged.txt" in R4_1 and "merge targets" in R4_1,
+  "4.1 working-set invariant does not include merge targets")
+
+t("4.5 records a merge target in round4-merged.txt before writing to it",
+  "round4-merged.txt" in R4_5 and "Before the first write" in R4_5,
+  "4.5 does not record the target before writing")
+
+t("4.3 lists Exempt first and states Exempt tests are never deleted",
+  "(0) Exempt" in R4_3 and "(1) Duplicate" in R4_3
+  and R4_3.find("(0) Exempt") < R4_3.find("(1) Duplicate")
+  and "Never deleted" in R4_3,
+  "4.3 Exempt-first order or never-deleted rule missing")
+
+t("4.4 round4-deletions.md includes human-spec-wrong rows",
+  "round4-deletions.md" in R4_4 and "human-spec-wrong" in R4_4,
+  "4.4 deletions list does not include human-spec-wrong rows")
+
+t("4.6 runs survivors and names before the commit",
+  "survivors" in R4_6 and "names --base" in R4_6 and "git commit" in R4_6
+  and R4_6.find("survivors") < R4_6.find("git commit")
+  and R4_6.find("names --base") < R4_6.find("git commit"),
+  "survivors or names check does not run before the commit")
+
+t("4.6 red-set check names exactly the test-correct-blocking set",
+  "test-correct-blocking" in R4_6 and "exactly" in R4_6,
+  "4.6 red-set check does not name the blocking set")
+
+t("round4.md first line keeps its shape and blocking appears on a later line",
+  "round4: <D> deleted, <R> relocated" in IMPLEMENT_WITH_HAIKU
+  and "blocking: <B>" in IMPLEMENT_WITH_HAIKU,
+  "round4 first-line shape or blocking line missing")
+
+t("Step 0 resume restores the working set plus merge targets and stops on other changes",
+  "round4-merged.txt" in RESUME and "**stop**" in RESUME,
+  "Step 0 resume does not describe the union restore or the stop")
+
+t("4.6 commit body lists deletions and merged ids",
+  "merged" in R4_6 and "reason" in R4_6.lower(),
+  "4.6 commit body does not list deletions and merged ids")
+
+t("4.6 precedes the Final check",
+  IMPLEMENT_WITH_HAIKU.find("### 4.6 Verify green, then commit")
+  < IMPLEMENT_WITH_HAIKU.find("## Final check") > 0,
+  "4.6 is not before the Final check")
+
+t("Final summary has the new spec-blind sections",
+  all(s in IMPLEMENT_WITH_HAIKU for s in (
+      "SPEC-BLIND DISAGREEMENTS", "BINDING EDITS", "DELETED TESTS",
+      "MERGED TESTS", "KEPT, FLAGGED")),
+  "one or more new Final summary sections missing")
+
+t("Final check treats both new Reasons as ordinary FAILED receipts",
+  "spec-blind-disagreement-open: <n> test(s)" in IMPLEMENT_WITH_HAIKU
+  and "spec-blind-takeover: <n> test(s)" in IMPLEMENT_WITH_HAIKU,
+  "a spec-blind FAILED Reason is missing")
+
+ledger_spec_lines = [
+    line for line in IMPLEMENT_WITH_HAIKU.splitlines()
+    if "implement-ledger" in line and ("spec-blind" in line.lower() or "disagree" in line.lower())
+]
+t("no new step id or ledger row kind for spec-blind state",
+  not ledger_spec_lines,
+  f"ledger call lines naming spec-blind state: {ledger_spec_lines}")
+
+print()
+
 h.summarize_and_exit()
