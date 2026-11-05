@@ -54,6 +54,20 @@ def _attest(wt, cmds, base, result):
     return checks.record_check_attestation(wt, cmds, base, result)
 
 
+def _good_record(commands):
+    """A schema-2 receipt dict built through the real CheckRecord, for hand-mutation in tests."""
+    key = checks.check_key_of("full", "a" * 40, checks._commands_digest(commands))
+    record = checks.CheckRecord(
+        schema_version=checks.CHECK_RECORD_SCHEMA_VERSION, key=key, passed=True, mode_executed="full", written_at=1.0,
+    )
+    return {
+        "schema_version": checks.RECEIPT_SCHEMA_VERSION,
+        "record": record.to_dict(),
+        "base_ref": "origin/main",
+        "base_sha": "b" * 40,
+    }
+
+
 def main():
     h = Harness("check receipt")
     _, wt = make_repo()
@@ -141,7 +155,28 @@ def main():
     receipt = {"schema_version": 1, "base_ref": "origin/main", "base_sha": "abc123"}
     receipt_path.write_text(json.dumps(receipt))
     fresh, why = checks.check_receipt_fresh(wt_no_tree, CMDS, fetch=False)
-    h.test_result("missing tree -> not fresh", not fresh and "empty" in why)
+    h.test_result("schema-1 receipt (no record) -> not fresh", not fresh and "schema" in why, why)
+
+    # A v2 receipt whose record has an empty tree is rejected by the single parse boundary
+    good_record = _good_record(CMDS)
+    for label, mutate, needle in [
+        ("empty tree in record", lambda r: r["record"]["key"].update(tree=""), "record rejected"),
+        ("record passed=1 (bool-as-int)", lambda r: r["record"].update(passed=1), "record rejected"),
+        ("record with an extra key", lambda r: r["record"].update(extra=1), "record rejected"),
+        ("receipt with an extra top-level key", lambda r: r.update(extra=1), "schema"),
+        ("receipt without a record", lambda r: r.pop("record"), "schema"),
+        ("empty base_sha", lambda r: r.update(base_sha=""), "base_sha"),
+        ("missing base_ref", lambda r: r.update(base_ref=""), "base_ref"),
+        ("minimum-mode record", lambda r: r["record"].update(mode_executed="minimum"), "record rejected"),
+    ]:
+        _, wt_bad = make_repo()
+        bad = json.loads(json.dumps(good_record))
+        mutate(bad)
+        bad_path = wt_bad / checks.RECEIPT_RELPATH
+        bad_path.parent.mkdir(parents=True, exist_ok=True)
+        bad_path.write_text(json.dumps(bad))
+        fresh, why = checks.check_receipt_fresh(wt_bad, CMDS, fetch=False)
+        h.test_result(f"{label} -> not fresh", not fresh and needle in why, why)
 
     # Test: receipt not fresh for missing base_sha
     _, wt_no_sha = make_repo()
@@ -150,13 +185,14 @@ def main():
     receipt = {"schema_version": 1, "tree": "abc123", "base_ref": "origin/main"}
     receipt_path.write_text(json.dumps(receipt))
     fresh, why = checks.check_receipt_fresh(wt_no_sha, CMDS, fetch=False)
-    h.test_result("missing base_sha -> not fresh", not fresh and "empty" in why)
+    h.test_result("schema-1 receipt without base_sha -> not fresh", not fresh, why)
 
     # Test: receipt not fresh for fetch failure
     _, wt_fetch_fail = make_repo()
     receipt_path = wt_fetch_fail / checks.RECEIPT_RELPATH
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    receipt = {"schema_version": 1, "tree": "abc123", "base_ref": "origin/nonexistent", "base_sha": "abc123"}
+    receipt = _good_record(CMDS)
+    receipt["base_ref"] = "origin/nonexistent"
     receipt_path.write_text(json.dumps(receipt))
     fresh, why = checks.check_receipt_fresh(wt_fetch_fail, CMDS, fetch=True)
     h.test_result("fetch failure -> not fresh", not fresh and "could not fetch" in why)

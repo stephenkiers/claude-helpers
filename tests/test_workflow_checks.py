@@ -1106,8 +1106,8 @@ if __name__ == "__main__":
 
         no_base = canonical_changed_files(work, None)
         test_result(
-            "canonical_changed_files with base=None returns an empty list (documented: no base, no hash)",
-            no_base == [],
+            "canonical_changed_files with base=None returns None (unknown), never an empty set that could be hashed",
+            no_base is None,
             f"no_base={no_base!r}",
         )
 
@@ -1116,10 +1116,11 @@ if __name__ == "__main__":
     for ignored_path in [
         ".claude/check-records/x.json",
         ".mypy_cache/x",
+        ".ruff_cache/x",
         "__pycache__/x.pyc",
     ]:
-        # .ruff_cache is not listed: ruff writes its own .gitignore inside that directory, so it
-        # is self-ignored once it exists; this repo's root .gitignore does not name it.
+        # .ruff_cache is named in the root .gitignore, so it is ignored whether or not ruff has run
+        # yet (ruff's own in-directory .gitignore only exists after the first run).
         proc = subprocess.run(
             ["git", "check-ignore", "-q", ignored_path], cwd=str(repo_root),
             capture_output=True, text=True,

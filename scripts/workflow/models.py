@@ -861,7 +861,7 @@ class CheckResultsDict(TypedDict, total=True):
 
 
 class ValidateResult(CheckResultsDict, total=True):
-    """Result of checks validate. An error result carries these same keys plus an `error` string."""
+    """Result of checks validate (a run, or a cache hit)."""
     schema_version: int
     mode_requested: Mode
     mode_executed: Mode
@@ -869,4 +869,13 @@ class ValidateResult(CheckResultsDict, total=True):
     cache: Literal["hit", "miss", "forced"]
     satisfied_by: Optional[str]  # filename hash or None
     changed_files_source: str  # "computed" or reason for why it's not available
+
+
+class ValidateErrorResult(ValidateResult, total=True):
+    """
+    Result of checks validate when it could not run: every ValidateResult key (so a consumer that
+    indexes `status` or `cache` never sees a KeyError) plus the `error` message. A subtype of
+    ValidateResult, so `validate()` can return either under the one annotation.
+    """
+    error: str
 

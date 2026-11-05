@@ -854,5 +854,95 @@ if __name__ == "__main__":
             f"after={after!r} runs={_runs(count)}",
         )
 
+    print("[Section 12f] validate: timeout in the key, atomic eviction, shared default branch, typed error (#462)")
+    import time
+    from typing import get_type_hints
+    from workflow import checks as checks_mod, git as git_mod
+    from workflow.models import ValidateErrorResult, ValidateResult
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        loose = validate(work, mode="full", timeout=900)
+        same = validate(work, mode="full", timeout=900)
+        strict = validate(work, mode="full", timeout=300)
+        test_result(
+            "validate: a pass under a 900s limit is reused at 900s but is a miss under a stricter 300s limit",
+            loose.get("cache") == "miss" and same.get("cache") == "hit" and strict.get("cache") == "miss"
+            and _runs(count) == 2,
+            f"loose={loose.get('cache')} same={same.get('cache')} strict={strict.get('cache')} runs={_runs(count)}",
+        )
+        loose_min = validate(work, mode="minimum", timeout=900)
+        strict_min = validate(work, mode="minimum", timeout=300)
+        test_result(
+            "validate minimum (falls back to full): the timeout keys it the same way",
+            loose_min.get("cache") == "hit" and strict_min.get("cache") == "hit",
+            f"loose_min={loose_min.get('cache')} strict_min={strict_min.get('cache')}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        validate(work, mode="full")
+        records_dir = work / ".claude" / "check-records"
+        rec_path = next(records_dir.glob("*.json"))
+        rec = checks_mod._read_record(rec_path, rec_path.stem)
+        assert rec is not None
+        checks_mod._evict_older_pass(records_dir, rec.key, run_started=rec.written_at - 5)
+        test_result(
+            "_evict_older_pass: a pass written after the failed run started is put back, not evicted",
+            rec_path.exists() and not list(records_dir.glob(".*.tmp")),
+            f"exists={rec_path.exists()} leftovers={list(records_dir.glob('.*.tmp'))}",
+        )
+        checks_mod._evict_older_pass(records_dir, rec.key, run_started=rec.written_at + 5)
+        test_result(
+            "_evict_older_pass: a pass older than the failed run is evicted and leaves no moved-aside file",
+            not rec_path.exists() and not list(records_dir.glob(".*.tmp")),
+            f"exists={rec_path.exists()} leftovers={list(records_dir.glob('.*.tmp'))}",
+        )
+        checks_mod._evict_older_pass(records_dir, rec.key, run_started=time.time())
+        test_result(
+            "_evict_older_pass: nothing to evict is a quiet no-op",
+            not rec_path.exists(),
+            "record reappeared",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        work = _fixture_clone(root, {"check": "true"})
+        by_symref, _ = git_mod.get_default_branch(cwd=work)
+        _git(work, "remote", "set-head", "origin", "-d")
+        by_fallback, _ = git_mod.get_default_branch(cwd=work)
+        base_after = resolve_check_base(work)
+        test_result(
+            "default branch: one resolver for the selector and the merge gate (origin/HEAD, then local main)",
+            by_symref == "main" and by_fallback == "main" and base_after is not None,
+            f"symref={by_symref!r} fallback={by_fallback!r} base={base_after!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        work = _fixture_clone(root, {"check": "true"})
+        _git(work, "branch", "release/2", "origin/main")
+        _git(work, "update-ref", "refs/remotes/origin/release/2", "origin/main")
+        _git(work, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/release/2")
+        slashed, _ = git_mod.get_default_branch(cwd=work)
+        test_result(
+            "default branch: a slashed default branch name keeps its full name",
+            slashed == "release/2",
+            f"slashed={slashed!r}",
+        )
+
+    err = validate(Path(tempfile.gettempdir()), mode="bogus")
+    test_result(
+        "validate error result: carries every ValidateResult key plus error (typed ValidateErrorResult)",
+        set(err) == set(get_type_hints(ValidateErrorResult))
+        and set(get_type_hints(ValidateResult)) < set(err) and err.get("status") == "error"
+        and isinstance(err.get("error"), str),
+        f"keys={sorted(err)}",
+    )
+
     print()
     h.summarize_and_exit()
