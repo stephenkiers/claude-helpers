@@ -393,9 +393,26 @@ def main():
     print("[Section 5] survivors")
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
+        doc = (Path(__file__).resolve().parent.parent / "commands" / "implement-with-haiku.md").read_text()
+        header = next(l.strip().strip("`") for l in doc.splitlines()
+                      if l.strip().strip("`").startswith("| id |") and "survivor or proof" in l)
+        ncols = header.count("|") - 1
         deletions = root / "round4-deletions.md"
         deletions.write_text(
-            "| id | class | reason | survivor |\n"
+            header + "\n|" + "---|" * ncols + "\n"
+            "| tests/test_a.py::test_dup | duplicate | edit | same | `tests/test_b.py::test_b` | abc1234 |\n")
+        collected = root / "collected.txt"
+        collected.write_text("tests/test_b.py::test_b\n")
+        rc, out, err = run(root, ["survivors", "--deletions", str(deletions),
+                                  "--collected", str(collected)])
+        h.test_result("the doc's own 4.4 table header is accepted by survivors",
+                      ncols >= 6 and rc == 0, f"ncols={ncols} rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        deletions = root / "round4-deletions.md"
+        deletions.write_text(
+            "| id | class | reason | survivor or proof |\n"
             "|---|---|---|---|\n"
             "| tests/test_a.py::test_dup | duplicate | same as b | `tests/test_b.py::test_b` |\n"
             "| tests/test_c.py::test_noop | no-op | vacuous | proof: vacuous |\n"
@@ -411,7 +428,7 @@ def main():
         root = Path(tmp)
         deletions = root / "round4-deletions.md"
         deletions.write_text(
-            "| id | class | reason | survivor |\n"
+            "| id | class | reason | survivor or proof |\n"
             "|---|---|---|---|\n"
             "| tests/t.py::test_a | duplicate | same as b | tests/t.py::test_b |\n"
             "| tests/t.py::test_b | duplicate | same as a | tests/t.py::test_a |\n")
@@ -636,7 +653,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         deletions = root / "round4-deletions.md"
-        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n")
+        deletions.write_text("| id | class | reason | survivor or proof |\n|---|---|---|---|\n")
         collected = root / "collected.txt"
         collected.write_text("tests/test_b.py::test_b\n")
         rc, out, err = run(root, ["survivors", "--deletions", str(deletions),
@@ -647,7 +664,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         deletions = root / "round4-deletions.md"
-        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n"
+        deletions.write_text("| id | class | reason | survivor or proof |\n|---|---|---|---|\n"
                              "| tests/t.py::test_a | duplicate | same as b |\n")
         collected = root / "collected.txt"
         collected.write_text("tests/t.py::test_b\n")
@@ -659,7 +676,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         deletions = root / "round4-deletions.md"
-        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n"
+        deletions.write_text("| id | class | reason | survivor or proof |\n|---|---|---|---|\n"
                              "| tests/t.py::test_a | duplicate | same as b | nonsense |\n")
         collected = root / "collected.txt"
         collected.write_text("tests/t.py::test_b\n")
@@ -682,7 +699,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         deletions = root / "round4-deletions.md"
-        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n"
+        deletions.write_text("| id | class | reason | survivor or proof |\n|---|---|---|---|\n"
                              "| tests/t.py::test_gone | duplicate | same as new | `tests/t.py::test_old` |\n")
         collected = root / "collected.txt"
         collected.write_text("tests/t.py::test_new\n")
@@ -701,7 +718,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         deletions = root / "round4-deletions.md"
-        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n"
+        deletions.write_text("| id | class | reason | survivor or proof |\n|---|---|---|---|\n"
                              "| tests/t.py::test_gone | duplicate | same | tests/t.py::test_old |\n")
         collected = root / "collected.txt"
         collected.write_text("tests/t.py::test_new\n")
@@ -792,7 +809,7 @@ def test_parse_basic():
         # Proof cell in survivors table (should pass)
         root = Path(tmp)
         deletions = root / "round4-deletions.md"
-        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n"
+        deletions.write_text("| id | class | reason | survivor or proof |\n|---|---|---|---|\n"
                              "| tests/t.py::test_gone | junk | removed | proof: no calls |\n")
         collected = root / "collected.txt"
         collected.write_text("tests/t.py::test_b\n")
@@ -806,7 +823,7 @@ def test_parse_basic():
         root = Path(tmp)
         deletions = root / "round4-deletions.md"
         sha40 = "a" * 40
-        deletions.write_text("| id | class | reason | survivor |\n|---|---|---|---|\n"
+        deletions.write_text("| id | class | reason | survivor or proof |\n|---|---|---|---|\n"
                              f"| tests/t.py::test_gone | junk | removed | {sha40} |\n")
         collected = root / "collected.txt"
         collected.write_text("tests/t.py::test_b\n")
