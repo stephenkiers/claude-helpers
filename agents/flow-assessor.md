@@ -86,9 +86,13 @@ Labels must not equal any of these fixed choices: `Open an issue`, `Leave as-is`
 
 ### Unknown Coverage: Decision Unless Both Anchors Hold
 
-An unknown item may be `already-done` only when it is a `fix:` item whose new optional `range_overlap:` input reads `overlap`, and when its `evidence` cites at least one anchor in the checkable grammar: a `path:line` or `path:start-end` in a file the fix changed, or a fix-step commit SHA (7-40 hex).
+An unknown item may be `already-done` only when it is a `fix:` item whose new optional `range_overlap:` input reads `overlap`, and when its `evidence` cites at least one anchor in the verifier's exact grammar:
+- `path:line` or `path:start-end`, where the path is written exactly as `git diff --name-only <bases[fix]>..HEAD` prints it (a shortened, re-rooted or glob-style path is not an anchor), the file is one the fix changed, and the range has start >= 1 and end >= start; or
+- a fix-step commit SHA (7-40 hex) that touched the row's path.
 
-In every other case — including `no-overlap`, `unavailable`, implement items, and `coverage-unavailable` — the item is:
+An anchor you cannot write in exactly this form is not downgraded into a looser one: the item is treated as having no anchor, so it is decided by the rule below.
+
+In every other case — including `no-overlap`, `unavailable`, implement items, `coverage-unavailable`, and an item whose anchor fails the form above — the item is:
 - `status: unfinished`
 - `kind: decision`
 

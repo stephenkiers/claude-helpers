@@ -1300,13 +1300,13 @@ This amendment narrows the rules for unknown coverage rows in the assess stage b
 
 **Issue filing.** The search is by `FLOW_ID` with a local exact body-line match on `flow-outstanding: <FLOW_ID> <id>`. The id grammar now admits `<step>:<unit>` where `<step>` is `[a-z]+` and `<unit>` is 1-200 printable characters excluding newlines, control characters, and the shell-breaking set (`'`, `"`, `` ` ``, `$`, `\`, `|`). Real ids like `fix:D1` and `fix:round3-pass1 finding 2` are now acceptable.
 
-**Pause.** A Pause in any form is applied once, after every form of the attempt has been asked and persisted. Each form is its own `assess-<SEQ>` pair with its own ledger record. On Pause, all persisted answers are kept; they are not replayed on the next ask.
+**Pause.** A Pause in any form is applied once, after every form of the attempt has been asked and persisted. Each form is its own `assess-<SEQ>` pair with its own ledger record. Two resume rules hold together, and neither re-asks an answered form: (1) every answers file not yet reflected in the marker is replayed, meaning its dispositions are applied to the marker; (2) a `Fix now` answer is not applied on Pause. It is carried in its answers file with its ledger record left unmarked, and the Fix now sequence runs on resume with no re-ask (the Fix now carry rule, step 3a of the assess stage in `commands/expert-flow.md`). The sequence's step 6 then marks the record addressed.
 
 **Consequences.** Coverage files written before this amendment are not recomputed; they stay all-`unknown`. A resumed older flow has no artifact, so its unknown rows are still asked. Downstream readers of fix coverage (#380 Fix now, #429 verify-queue, #409) may see rows move from `unknown` to `covered`. Implement-sourced unknowns, `<step>:coverage-unavailable`, and flows with no or unavailable artifact remain always-asked; relaxing implement-sourced unknowns is an explicit follow-up.
 
 **Hand-offs closed.**
 
-- `:2107-2160` (assess relay changes): Steps 6, 7, 8 (range overlap input, --assess-anchors call, issue filing by FLOW_ID, per-form persistence).
-- `:1099-1100` (narrow the 2026-11-01 classification sentence): Step 1 (ADR amendment), Step 2 (resolver).
+- The assess stage in `commands/expert-flow.md` (relay changes): the range-overlap input (item 4a), the `--assess-anchors` call, issue filing by FLOW_ID and per-form persistence (items 10.b and 10.c).
+- The 2026-11-01 amendment's fix-mode classification sentence (the "Amendment (2026-11-01): fix-mode coverage reads the Doing-it File cell" section): narrowed by the Decisions and "Narrows" paragraph above, and by the fix-mode resolver.
 
 **Required by the Q1 round-2 confirmation:** The negative test case where A passes (anchor verified) and B fails (range does not overlap) → receipt fails with `range-overlap` reason, row stays unknown.
