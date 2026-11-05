@@ -832,6 +832,98 @@ def test_parse_basic():
         h.test_result("a 40-character SHA cell in the survivor column is allowed",
                       rc == 0 and out == "", f"rc={rc} out={out!r} err={err!r}")
 
+    print("[Section 13] survivors: column-finding by header name (item 1)")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        deletions = root / "round4-deletions.md"
+        # Reorder columns: survivor or proof comes first now, instead of being 4th
+        deletions.write_text(
+            "| survivor or proof | id | class | reason |\n"
+            "|---|---|---|---|\n"
+            "| `tests/test_b.py::test_b` | tests/test_a.py::test_dup | duplicate | same |\n")
+        collected = root / "collected.txt"
+        collected.write_text("tests/test_b.py::test_b\n")
+        rc, out, err = run(root, ["survivors", "--deletions", str(deletions),
+                                  "--collected", str(collected)])
+        h.test_result("survivors finds columns by header name when order differs",
+                      rc == 0 and out == "", f"rc={rc} out={out!r} err={err!r}")
+
+    print("[Section 14] fence: def lines (item 5)")
+    with tempfile.TemporaryDirectory() as tmp:
+        # Test that editing just the def line (function name) is a violation
+        repo, base = make_repo(tmp, {"tests/test_x.py": BASE_PY})
+        head_text = edited(BASE_PY, "def test_parse_basic():", "def test_parse_basic_v2():")
+        rc, out, err = fence_head(repo, base, {"tests/test_x.py": head_text})
+        h.test_result("renaming the test function (def line) is a violation",
+                      rc == 1 and f"violation {TID} " in out, f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Test that adding a parameter to the def line is a violation
+        repo, base = make_repo(tmp, {"tests/test_x.py": BASE_PY})
+        head_text = edited(BASE_PY, "def test_parse_basic():", "def test_parse_basic(extra):")
+        rc, out, err = fence_head(repo, base, {"tests/test_x.py": head_text})
+        h.test_result("adding a parameter to the test def line is a violation",
+                      rc == 1 and f"violation {TID} " in out, f"rc={rc} out={out!r} err={err!r}")
+
+    print("[Section 15] fence: span sizing fail-closed (item 2)")
+    with tempfile.TemporaryDirectory() as tmp:
+        # A test body that has a line starting at column 0 inside the body
+        # The span should be sized by AST end_lineno, correctly ending before column-0 line
+        base_bad_indent = """import math
+
+def test_parse_basic():
+    expected = 3
+    result = parse(1, 2, 3)
+    assert result == expected
+# This line is at column 0 and follows the test body
+def next_test():
+    pass
+"""
+        repo, base = make_repo(tmp, {"tests/test_x.py": base_bad_indent})
+        # Edit inside the test body to trigger violation detection
+        head_text = base_bad_indent.replace("result = parse(1, 2, 3)", "result = parse(1, 2, 4)")
+        rc, out, err = fence_head(repo, base, {"tests/test_x.py": head_text})
+        # The span should be correctly sized (3-6) despite the column-0 line below
+        h.test_result("span is correctly sized by AST end_lineno despite column-0 line below",
+                      rc == 1 and f"restore tests/test_x.py::test_parse_basic 3-6" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    print("[Section 16] names: quoted paths (item 4)")
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        # File with spaces in path
+        commit(repo, {"tests/test spec blind foo.py": "def test_x():\n    pass\n"}, "add")
+        rc, out, err = run(repo, ["names", "--base", base])
+        h.test_result("an added file with spaces and spec-blind in path fails",
+                      rc == 1 and "spec-blind path" in out and "test spec blind foo.py" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        # Test within a file that has spaces in its name
+        commit(repo, {"tests/w test.py": "def test_spec_blind_x():\n    pass\n"}, "add")
+        rc, out, err = run(repo, ["names", "--base", base])
+        h.test_result("a spec-blind test name in a spaced filename is detected",
+                      rc == 1 and "spec-blind line" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        # Test file with non-ASCII characters
+        commit(repo, {"tests/test_café.py": "def test_x():\n    pass\n"}, "add")
+        rc, out, err = run(repo, ["names", "--base", base])
+        h.test_result("an added file with non-ASCII characters is handled",
+                      rc == 0 and out == "", f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        # Non-ASCII in spec-blind check
+        commit(repo, {"tests/test_café.py": "def test_spec_blind_café():\n    pass\n"}, "add")
+        rc, out, err = run(repo, ["names", "--base", base])
+        h.test_result("a spec-blind name with non-ASCII characters is caught",
+                      rc == 1 and "spec-blind" in out,
+                      f"rc={rc} out={out!r} err={err!r}")
+
     h.summarize_and_exit()
 
 
