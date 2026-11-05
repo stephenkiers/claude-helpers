@@ -193,7 +193,7 @@ def main():
             # Check directory mode is preserved
             dir_mode = created_dir.stat().st_mode & 0o777
             h.test_result(
-                f"existing directory mode is preserved (0700)",
+                "existing directory mode is preserved (0700)",
                 dir_mode == 0o700,
                 f"got {oct(dir_mode)}",
             )
