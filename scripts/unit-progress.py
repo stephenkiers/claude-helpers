@@ -7,7 +7,7 @@ is the only writer of human.jsonl.
 
 Record files:
 - units.json: schema_version, plan_sha256, anchor_sha, base_sha, split_basis,
-  single_reason, partial_work, sizing result, and ordered unit list.
+  single_reason, partial_work, sizing result, layout_base_sha (optional), and ordered unit list.
 - progress.json: schema_version, plus one entry per unit with unit_id, sha, and status.
 
 Subcommands:
@@ -16,11 +16,13 @@ Subcommands:
   check: Consistency check for re-runs.
   pending: List pending or failed unit ids.
   tip: Print the chain tip SHA.
+  layout-base: Print the layout_base_sha value from the MAIN record (exit 3 if absent).
 
 Exit codes:
   0: success
   1: refusal/mismatch (one-line reason on stderr)
   2: usage error
+  3: layout-base: record or field absent (error on stderr)
 """
 
 import argparse
@@ -86,6 +88,7 @@ class UnitsJson(TypedDict):
     partial_work_reason: str
     sizing: Dict[str, Any]
     ceilings: Dict[str, Any]  # Per-unit provisional ceilings
+    layout_base_sha: Optional[str]  # Pre-implementation SHA anchor (optional, may be absent in older records)
     units: List[Unit]
 
 
@@ -427,8 +430,12 @@ def cmd_init(
     plan_path: Optional[str],
     sizing_path: Optional[str],
     supersede: bool,
+    split_finer: bool,
     partial_work_mode: Optional[str],
     partial_work_reason: Optional[str],
+    no_layout_base: bool,
+    step: str,
+    flow_dir: Optional[str],
 ) -> None:
     """Initialize units and progress records.
 
@@ -439,8 +446,12 @@ def cmd_init(
         plan_path: Path to plan file for SHA256 (required; store null if not provided).
         sizing_path: Path to sizing JSON (optional; can come from stdin).
         supersede: Whether to archive existing records.
+        split_finer: Whether this is a split-finer re-run.
         partial_work_mode: partial_work mode (none/keep/reset).
         partial_work_reason: Reason for partial work mode.
+        no_layout_base: Whether to suppress layout_base_sha pinning (only for fresh init).
+        step: Step name (implement or fix).
+        flow_dir: Flow directory (if this is a flow run).
 
     Raises:
         SystemExit(1) on validation failure.
@@ -596,6 +607,35 @@ def cmd_init(
             if existing_progress:
                 write_json_file(archive_progress, existing_progress)
 
+    # Determine layout_base_sha value
+    layout_base_sha: Optional[str] = None
+    is_scoped = re.fullmatch(r"scoped-a[0-9]+", record_dir.name) is not None
+
+    if existing_units is not None and (supersede or split_finer):
+        # Copy forward from existing record if being superseded or split-finer
+        layout_base_sha = existing_units.get("layout_base_sha")
+    elif is_scoped:
+        # Scoped init: inherit from main record
+        main_units_file = record_dir.parent / "units.json"
+        if main_units_file.exists():
+            main_units = read_units(main_units_file)
+            layout_base_sha = main_units.get("layout_base_sha")
+    elif step == "fix" and existing_units is None:
+        # First main-record init for fix step: try to inherit from implement record
+        if flow_dir:
+            try:
+                implement_dir = Path(flow_dir) / "units" / "implement"
+                implement_units_file = implement_dir / "units.json"
+                if implement_units_file.exists():
+                    implement_units = read_units(implement_units_file)
+                    layout_base_sha = implement_units.get("layout_base_sha")
+            except Exception:
+                pass
+
+    # If still None and not suppressed, pin the anchor value
+    if layout_base_sha is None and not no_layout_base:
+        layout_base_sha = anchor_sha
+
     # Build units with order
     units_list: List[Unit] = []
     for order, unit_data in enumerate(units_input):
@@ -636,6 +676,7 @@ def cmd_init(
         "partial_work_reason": pw_reason,
         "sizing": sizing_data,
         "ceilings": ceilings_info,
+        "layout_base_sha": layout_base_sha,
         "units": units_list,
     }
 
@@ -917,6 +958,35 @@ def cmd_tip(record_dir: Path) -> None:
     print(tip_sha)
 
 
+def cmd_layout_base(record_dir: Path, step: str, flow_dir: Optional[str]) -> None:
+    """Print the layout_base_sha value from the MAIN record (never scoped).
+
+    Args:
+        record_dir: Directory containing the record (or its parent if scoped).
+        step: Step name (implement or fix).
+        flow_dir: Flow directory (if a flow run).
+
+    Raises:
+        SystemExit(3) if the main record or field is absent.
+    """
+    # Always read from the MAIN record, never a scoped record
+    main_record_dir = record_dir.parent if re.fullmatch(r"scoped-a[0-9]+", record_dir.name) else record_dir
+    units_file = main_record_dir / "units.json"
+
+    if not units_file.exists():
+        print("unit-progress: layout-base: no units.json file found", file=sys.stderr)
+        sys.exit(3)
+
+    units_data = read_units(units_file)
+    layout_base_sha = units_data.get("layout_base_sha")
+
+    if layout_base_sha is None:
+        print("unit-progress: layout-base: layout_base_sha field is absent or null", file=sys.stderr)
+        sys.exit(3)
+
+    print(layout_base_sha)
+
+
 def main() -> None:
     """Parse arguments and dispatch to subcommand."""
     parser = argparse.ArgumentParser(
@@ -940,8 +1010,10 @@ def main() -> None:
     init_parser.add_argument("--plan", help="Path to plan file (optional; can come from stdin)")
     init_parser.add_argument("--sizing", help="Path to sizing JSON (optional; can come from stdin)")
     init_parser.add_argument("--supersede", action="store_true", help="Archive existing records")
+    init_parser.add_argument("--split-finer", action="store_true", help="Split finer re-run (copy forward existing layout_base_sha)")
     init_parser.add_argument("--partial-work", choices=PARTIAL_WORK_MODES, help="Partial work mode")
     init_parser.add_argument("--partial-work-reason", help="Reason for partial work")
+    init_parser.add_argument("--no-layout-base", action="store_true", help="Suppress layout_base_sha pinning (only fresh init)")
 
     # mark subcommand
     mark_parser = subparsers.add_parser("mark", help="Mark a unit with a new status")
@@ -960,6 +1032,9 @@ def main() -> None:
 
     # tip subcommand
     subparsers.add_parser("tip", help="Print the chain tip SHA")
+
+    # layout-base subcommand
+    subparsers.add_parser("layout-base", help="Print the layout_base_sha value from the MAIN record")
 
     args = parser.parse_args()
 
@@ -981,8 +1056,12 @@ def main() -> None:
                 plan_path=args.plan,
                 sizing_path=args.sizing,
                 supersede=args.supersede,
+                split_finer=getattr(args, "split_finer", False),
                 partial_work_mode=getattr(args, "partial_work", None),
                 partial_work_reason=getattr(args, "partial_work_reason", None),
+                no_layout_base=getattr(args, "no_layout_base", False),
+                step=args.step,
+                flow_dir=flow_dir_arg,
             )
         elif args.command == "mark":
             cmd_mark(
@@ -1009,6 +1088,8 @@ def main() -> None:
             cmd_pending(record_dir=record_dir)
         elif args.command == "tip":
             cmd_tip(record_dir=record_dir)
+        elif args.command == "layout-base":
+            cmd_layout_base(record_dir=record_dir, step=args.step, flow_dir=flow_dir_arg)
     except SystemExit:
         raise
 

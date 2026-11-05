@@ -6,7 +6,10 @@ Usage:
                           --test FILE::[CLASS::]NAME [--test ...]
                           [--impl-files PATH [PATH ...]]
     test-cleanup-check.py survivors --deletions FILE --collected FILE [--merged FILE]
-    test-cleanup-check.py names --base SHA [--head WORKTREE|HEAD] [--allow PATH [PATH ...]]
+    test-cleanup-check.py names [--hygiene] --base SHA [--head WORKTREE|HEAD] [--allow PATH [PATH ...]]
+    test-cleanup-check.py working-ids --base SHA --head REF
+    test-cleanup-check.py layout --base SHA [--impl PATH [PATH ...]] [--max-names N]
+    test-cleanup-check.py overlaps --report PATH [--report ...] --added-ids PATH --out PATH
 
 Runs in the current directory, which must be inside the target git repo. Paths are repo-root
 relative. Every subcommand prints one finding per line on stdout and exits:
@@ -71,6 +74,32 @@ names: no spec-blind name survives in the run's own working set (D2). "spec[-_ ]
   content counts as added); --head HEAD compares the committed HEAD with base. Hits print
   "spec-blind path <path>" or "spec-blind line <path>:<n> <text>". --allow exempts exact
   repo-relative paths.
+  --hygiene: match HYGIENE_TOKENS (spec_blind, spec, hardening, blackbox, review_fixes, followups,
+  phase_N, wave_N) as a suffix or entire value in ADDED test-file paths and test-definition names
+  only. Hits print one per line in the same format; segment-only matches (tokens appearing only as
+  inner segments) print after all hits, each prefixed "segment-only:", and never affect exit code.
+  Plain names (no flag) behaves exactly as before (spec-blind only).
+
+working-ids: print one file::name per line for every test definition ADDED between SHA and REF
+  (used for change tracking), sorted and de-duplicated. Only test files count; pre-existing tests
+  are not printed. Exit 0 on success (even with no output), 1 on git failure/unreadable input.
+
+layout: from git ls-tree / git show AT SHA ONLY, list test files whose basename contains the
+  module stem of any --impl path (stem = basename without extension, - and _ equivalent), each
+  followed by its test-definition names. Also list up to 3 sibling test file paths per test directory
+  as naming patterns. Never prints any line of a test body, only paths and names. A missing path at
+  SHA yields zero names and exit 0. Output capped by --max-names (default 60 names); when cut off,
+  prints final line "(truncated)". If --base is omitted, lists paths only (from current working tree)
+  and no names.
+
+overlaps: parse lines of the form "id | overlaps: id or none" from --report files (repeatable;
+  missing file counts as zero lines, not error). Strip surrounding whitespace and list markers.
+  Overwrite --out in full on every call. Write one markdown row per non-"none" overlap, tagged
+  "class-1 candidate": "- <new id> | overlaps: <survivor id> | class-1 candidate". "none" writes no
+  row. Unparseable lines and ids in --added-ids with no parseable report line are listed under
+  "unreported:" as "- <raw line stripped>". Last line is summary: "candidates: <C>  none: <K>
+  unreported: <U>". Print summary to stdout. Exit 0 on success, 1 if --added-ids or --out cannot be
+  read/written.
 
 Patterns, per framework (chosen from the file extension):
   python  (.py)      def NAME(  (test body sized by the AST: the def's lines through its end_lineno,
@@ -159,11 +188,59 @@ SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 DELETION_ID_COL = "id"
 DELETION_SURVIVOR_COL = "survivor or proof"
 C_ESCAPES = {"\\": "\\", '"': '"', "a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
+# Hygiene tokens for test file and test name classification
+HYGIENE_TOKENS: Tuple[str, ...] = ("spec_blind", "spec", "hardening", "blackbox", "review_fixes", "followups", "phase_N", "wave_N")
 
 
 def _fail(message: str) -> NoReturn:
     print(f"error: {message}", file=sys.stderr)
     sys.exit(1)
+
+
+def _hygiene_token_match(stem_or_name: str) -> Tuple[bool, bool]:
+    """Check if stem or test name contains a hygiene token as a suffix or entire value.
+
+    Returns (hit, segment_only):
+    - hit: True if token is a suffix or the entire value
+    - segment_only: True if token is only a segment in the middle (never part of the answer)
+    """
+    normalized = stem_or_name.lower().replace("-", "_")
+    segments = normalized.split("_")
+
+    for token in HYGIENE_TOKENS:
+        token_lower = token.lower()
+
+        if token_lower == "phase_n" or token_lower == "wave_n":
+            # Special handling for phase_N and wave_N
+            pattern = r"(phase|wave)_(\d+|[a-z])$"
+            if re.search(pattern, normalized):
+                return True, False  # Hit as suffix
+            # Check if it appears as a segment only
+            for segment in segments:
+                if re.match(r"(phase|wave)_(\d+|[a-z])$", segment):
+                    continue  # This is fine, skip
+                if segment in ("phase", "wave"):
+                    return False, True  # Segment-only match
+        else:
+            token_lower_norm = token_lower.replace("_", "")
+            normalized_clean = normalized.replace("_", "")
+
+            # Check if it's a suffix or entire value
+            if normalized == token_lower or normalized_clean.endswith(token_lower_norm):
+                return True, False
+
+            # Check if it's a segment-only
+            for segment in segments:
+                if segment == token_lower:
+                    return False, True
+
+    return False, False
+
+
+def _test_name_hygiene(test_name: str) -> Tuple[bool, bool]:
+    """Extract test name for hygiene checking (remove class/file prefix if present)."""
+    # For test names like "test_foo_spec_blind", check the name part
+    return _hygiene_token_match(test_name)
 
 
 def _git(args: List[str]) -> Tuple[int, str]:
@@ -865,28 +942,265 @@ def cmd_names(args: argparse.Namespace) -> int:
     _require_ref(args.head, allow_working=True)
     allow = {_norm(p) for p in args.allow}
     hits = 0
-    for path in _changed_paths(args.base, args.head):
-        if _norm(path) not in allow and SPEC_RE.search(path):
-            print(f"spec-blind path {path}")
-            hits += 1
-    # Explicit prefixes so the '+++ b/' header parse holds whatever diff.noprefix config says.
-    diff_args = ["diff", "--unified=0", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", args.base]
-    if args.head == "HEAD":
-        diff_args.append("HEAD")
-    for path, n, text in _added_lines(_git_ok(diff_args)):
-        if _norm(path) in allow or not SPEC_RE.search(text):
-            continue
-        print(f"spec-blind line {path}:{n} {text.strip()}")
-        hits += 1
-    if args.head == "WORKTREE":
-        for path in _untracked_paths():
+
+    if getattr(args, "hygiene", False):
+        # Hygiene mode: check added test file paths and test names only
+        segment_only_hits = []
+        diff_args = ["diff", "--unified=0", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", args.base]
+        if args.head == "HEAD":
+            diff_args.append("HEAD")
+
+        # Check added test file paths
+        for path, n, text in _added_lines(_git_ok(diff_args)):
             if _norm(path) in allow:
                 continue
-            for n, text in enumerate(_lines(_read_at("WORKTREE", path)), 1):
-                if SPEC_RE.search(text):
-                    print(f"spec-blind line {path}:{n} {text.strip()}")
+            lang = _lang(path)
+            if lang is None:
+                continue
+            # Check file path (stem) for hygiene tokens
+            stem = os.path.splitext(os.path.basename(path))[0]
+            hit, segment_only = _hygiene_token_match(stem)
+            if hit:
+                print(f"spec-blind path {path}")
+                hits += 1
+            elif segment_only:
+                segment_only_hits.append(f"segment-only: spec-blind path {path}")
+
+            # Check for added test definitions and their names
+            lines_list = _lines(_read_at(args.head, path))
+            for start, name, is_test in _find_starts(lang, lines_list):
+                if not is_test:
+                    continue
+                hit, segment_only = _hygiene_token_match(name)
+                if hit:
+                    print(f"spec-blind line {path}:{start + 1} test {name}")
                     hits += 1
+                elif segment_only:
+                    segment_only_hits.append(f"segment-only: spec-blind line {path}:{start + 1} test {name}")
+
+        # Print segment-only hits after all hits
+        for line in segment_only_hits:
+            print(line)
+    else:
+        # Original spec-blind mode
+        for path in _changed_paths(args.base, args.head):
+            if _norm(path) not in allow and SPEC_RE.search(path):
+                print(f"spec-blind path {path}")
+                hits += 1
+        # Explicit prefixes so the '+++ b/' header parse holds whatever diff.noprefix config says.
+        diff_args = ["diff", "--unified=0", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", args.base]
+        if args.head == "HEAD":
+            diff_args.append("HEAD")
+        for path, n, text in _added_lines(_git_ok(diff_args)):
+            if _norm(path) in allow or not SPEC_RE.search(text):
+                continue
+            print(f"spec-blind line {path}:{n} {text.strip()}")
+            hits += 1
+        if args.head == "WORKTREE":
+            for path in _untracked_paths():
+                if _norm(path) in allow:
+                    continue
+                for n, text in enumerate(_lines(_read_at("WORKTREE", path)), 1):
+                    if SPEC_RE.search(text):
+                        print(f"spec-blind line {path}:{n} {text.strip()}")
+                        hits += 1
+
     return 1 if hits else 0
+
+
+def cmd_working_ids(args: argparse.Namespace) -> int:
+    """Print one file::name per line for every test definition added between base and head."""
+    _require_ref(args.base, allow_working=False)
+    _require_ref(args.head, allow_working=False)
+
+    ids: List[str] = []
+    diff_args = ["diff", "--unified=0", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", args.base, args.head]
+
+    for path, n, text in _added_lines(_git_ok(diff_args)):
+        lang = _lang(path)
+        if lang is None:
+            continue
+        lines_list = _lines(_read_at(args.head, path))
+        for start, name, is_test in _find_starts(lang, lines_list):
+            if is_test:
+                ids.append(f"{path}::{name}")
+
+    # Sort and deduplicate
+    for test_id in sorted(set(ids)):
+        print(test_id)
+
+    return 0
+
+
+def cmd_layout(args: argparse.Namespace) -> int:
+    """List test files and names matching impl stems at a given SHA."""
+    _require_ref(args.base, allow_working=False)
+
+    impl_stems = set()
+    for impl_path in args.impl_paths:
+        stem = os.path.splitext(os.path.basename(impl_path))[0]
+        impl_stems.add(stem.lower().replace("-", "_"))
+
+    names_printed = 0
+    truncated = False
+
+    if args.impl_paths:
+        # Get test files at SHA
+        rc, out = _git(["ls-tree", "-r", "--name-only", args.base])
+        if rc != 0:
+            return 0
+
+        test_files: List[str] = []
+        for path in out.strip().split("\n"):
+            if not path:
+                continue
+            if _lang(path) is not None:
+                stem = os.path.splitext(os.path.basename(path))[0]
+                stem_normalized = stem.lower().replace("-", "_")
+                if stem_normalized in impl_stems:
+                    test_files.append(path)
+                    print(path)
+
+                    # Print test names
+                    file_text = _read_at(args.base, path)
+                    if file_text:
+                        lines_list = _lines(file_text)
+                        lang = _lang(path)
+                        for start, name, is_test in _find_starts(lang, lines_list):
+                            if is_test:
+                                print(f"  {name}")
+                                names_printed += 1
+                                if names_printed >= args.max_names:
+                                    truncated = True
+                                    break
+                    if truncated:
+                        break
+
+        # List sibling test files (up to 3 per directory)
+        test_dirs: Dict[str, List[str]] = {}
+        for path in out.strip().split("\n"):
+            if not path or _lang(path) is None:
+                continue
+            dir_path = os.path.dirname(path)
+            if dir_path not in test_dirs:
+                test_dirs[dir_path] = []
+            test_dirs[dir_path].append(os.path.basename(path))
+
+        for dir_path, files in sorted(test_dirs.items()):
+            if files and dir_path:
+                # Show up to 3 sibling patterns
+                for fname in sorted(files)[:3]:
+                    if f"{dir_path}/{fname}" not in test_files:
+                        print(f"{dir_path}/{fname}")
+    else:
+        # List paths only from working tree
+        for path in _git_ok(["ls-files"]).strip().split("\n"):
+            if path and _lang(path) is not None:
+                print(path)
+
+    if truncated:
+        print("(truncated)")
+
+    return 0
+
+
+def cmd_overlaps(args: argparse.Namespace) -> int:
+    """Parse overlap classifications from report files and produce markdown output."""
+    try:
+        # Read added ids
+        added_ids_text = _read_text(args.added_ids)
+        added_ids = set(ln.strip() for ln in added_ids_text.split("\n") if ln.strip())
+    except OSError:
+        _fail(f"cannot read {args.added_ids}")
+
+    candidates = 0
+    nones = 0
+    unreported_lines: List[str] = []
+    reported_ids: Set[str] = set()
+
+    # Parse report files
+    for report_path in args.reports:
+        try:
+            report_text = _read_text(report_path)
+        except OSError:
+            continue
+
+        for line in report_text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            # Strip list markers and backticks
+            line = line.lstrip("-* ").strip("`")
+
+            # Try to parse "id | overlaps: id or none"
+            if "overlaps:" not in line:
+                continue
+
+            parts = line.split("overlaps:")
+            if len(parts) != 2:
+                unreported_lines.append(line)
+                continue
+
+            new_id = parts[0].strip().strip("`").strip()
+            survivor_part = parts[1].strip().strip("`").strip()
+
+            if not new_id:
+                unreported_lines.append(line)
+                continue
+
+            reported_ids.add(new_id)
+
+            if survivor_part.lower() == "none":
+                nones += 1
+            else:
+                candidates += 1
+
+    # Find unreported ids
+    for test_id in added_ids:
+        if test_id not in reported_ids:
+            unreported_lines.append(test_id)
+
+    # Write output
+    try:
+        output_lines: List[str] = []
+        for line in unreported_lines:
+            output_lines.append(f"- {line}")
+
+        # Find overlaps and add them
+        for report_path in args.reports:
+            try:
+                report_text = _read_text(report_path)
+            except OSError:
+                continue
+
+            for line in report_text.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                line = line.lstrip("-* ").strip("`")
+                if "overlaps:" not in line or line.count("|") < 1:
+                    continue
+
+                parts = line.split("overlaps:")
+                if len(parts) == 2:
+                    survivor_part = parts[1].strip().strip("`").strip()
+                    if survivor_part.lower() != "none":
+                        # Extract new_id and survivor
+                        new_id = parts[0].strip().strip("|").strip().strip("`").strip()
+                        survivor = survivor_part.split("|")[0].strip().strip("`").strip()
+                        if new_id and survivor:
+                            output_lines.insert(0, f"- {new_id} | overlaps: {survivor} | class-1 candidate")
+
+        summary = f"candidates: {candidates}  none: {nones}  unreported: {len(unreported_lines)}"
+        output_lines.append(summary)
+
+        with open(args.out, "w") as f:
+            f.write("\n".join(output_lines) + "\n")
+
+        print(summary)
+        return 0
+    except OSError as e:
+        _fail(str(e))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -908,10 +1222,31 @@ def build_parser() -> argparse.ArgumentParser:
                       help="pre-merge -> post-merge id mapping, one '<old> -> <new>' per line")
 
     names = sub.add_parser("names", help="no spec-blind name in the run's working set")
+    names.add_argument("--hygiene", action="store_true", help="match hygiene tokens in test file stems and names")
     names.add_argument("--base", required=True)
     names.add_argument("--head", choices=["WORKTREE", "HEAD"], default="WORKTREE",
                        help="WORKTREE (default: working tree plus untracked files) or HEAD")
     names.add_argument("--allow", action="extend", nargs="+", default=[], help="exempt paths")
+
+    # working-ids subcommand
+    working_ids = sub.add_parser("working-ids", help="test ids added between base and head")
+    working_ids.add_argument("--base", required=True, help="base SHA")
+    working_ids.add_argument("--head", required=True, help="head ref")
+
+    # layout subcommand
+    layout = sub.add_parser("layout", help="test files and names matching impl stems at SHA")
+    layout.add_argument("--base", required=True, help="base SHA (commit only, not INDEX/WORKTREE)")
+    layout.add_argument("--impl", action="extend", nargs="+", default=[], dest="impl_paths",
+                        help="implementation paths (repeatable)")
+    layout.add_argument("--max-names", type=int, default=60, help="max test names per output (default 60)")
+
+    # overlaps subcommand
+    overlaps = sub.add_parser("overlaps", help="parse overlap classifications from reports")
+    overlaps.add_argument("--report", action="append", default=[], dest="reports",
+                          help="report file paths (repeatable)")
+    overlaps.add_argument("--added-ids", required=True, help="file with added test ids")
+    overlaps.add_argument("--out", required=True, help="output file path")
+
     return parser
 
 
@@ -921,7 +1256,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_fence(args)
     if args.cmd == "survivors":
         return cmd_survivors(args)
-    return cmd_names(args)
+    if args.cmd == "names":
+        return cmd_names(args)
+    if args.cmd == "working-ids":
+        return cmd_working_ids(args)
+    if args.cmd == "layout":
+        return cmd_layout(args)
+    if args.cmd == "overlaps":
+        return cmd_overlaps(args)
+    return 1
 
 
 if __name__ == "__main__":
