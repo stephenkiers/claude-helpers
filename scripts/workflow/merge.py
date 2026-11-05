@@ -498,12 +498,12 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
     """
     Apply a merge plan (mutating).
 
-    Executes the 3-path merge gate:
+    The full check gate (_run_merge_gate_checks) runs first, for every path. Then:
     1. Path 1: 'just merge' (if recipe exists)
-    2. Path 2: repo-cache.json check gate + gh pr merge --squash
-    3. Path 3: gh pr merge --squash (no gate, with warning marker)
+    2. Path 2: gh pr merge --squash, when the full check resolved and passed
+    3. Path 3: gh pr merge --squash (no gate, with warning marker), when no full check resolves
 
-    Note: 'just merge' (Path 1) and the repo-cache check command (Path 2) are deliberately
+    Note: 'just merge' (Path 1) and the check command resolved for the gate are deliberately
     NOT routed through mutations.check_mutation_allowed() — they're already-trusted,
     repo-configured content the maintainer wrote (same trust boundary the .md wrapper relied
     on before this CLI existed), not an argv shape this module constructed itself. The funnel
@@ -563,6 +563,17 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
         merge_gate_used = ""
         merge_succeeded = False
 
+        # The full check gate runs before every path, 'just merge' (Path 1) included: a merge recipe
+        # must not merge a tree the check gate would refuse. Nothing has merged yet at this point.
+        check_success, gate_applied, check_detail = _run_merge_gate_checks(Path(plan.target_worktree))
+        if not check_success:
+            if check_detail:
+                result.error = Unknown(f"Merge gate check failed: {check_detail}")
+            else:
+                result.error = Unknown("Merge gate check failed")
+            lock_file.unlink(missing_ok=True)  # gate runs before any merge: nothing merged
+            return result, result.error
+
         if _check_just_merge(plan.target_worktree):
             success, detail = _run_just_merge(plan.target_worktree)
             if success:
@@ -574,20 +585,7 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
                 return result, result.error
 
         if not merge_succeeded:
-            check_success, gate_applied, check_detail = _run_merge_gate_checks(Path(plan.target_worktree))
-            if not check_success:
-                if check_detail:
-                    result.error = Unknown(f"Merge gate check failed: {check_detail}")
-                else:
-                    result.error = Unknown("Merge gate check failed")
-                lock_file.unlink(missing_ok=True)  # gate runs before any merge: nothing merged
-                return result, result.error
-            if gate_applied:
-                merge_gate_used = "repo-cache check"
-
-        if not merge_succeeded:
-            if merge_gate_used == "":
-                merge_gate_used = "gh pr merge (no gate)"
+            merge_gate_used = "repo-cache check" if gate_applied else "gh pr merge (no gate)"
             success, detail = _run_gh_pr_merge(plan.pr_number, effective_cwd)
             if success:
                 merge_succeeded = True
@@ -811,48 +809,69 @@ def _run_just_merge(target_worktree: str) -> Tuple[bool, Optional[str]]:
         return False, str(e)
 
 
+def _base_ancestor_fresh(target_worktree: Path) -> bool:
+    """
+    True only when a fresh fetch of the base branch succeeds and origin/<base> is an ancestor of HEAD.
+
+    This is the precondition for reusing a stored full-check record on the merge gate (CP-W5): the
+    tree was checked on a history that still contains the current base. Any doubt (no default
+    branch, fetch failure, base not an ancestor) returns False, and the caller runs the check again.
+    """
+    base, err = git.get_default_branch(cwd=target_worktree)
+    if err or not base:
+        return False
+    try:
+        git.run_git_command(
+            ["fetch", "origin", f"refs/heads/{base}:refs/remotes/origin/{base}"],
+            cwd=target_worktree,
+        )
+    except Exception:
+        return False
+    try:
+        return git.is_ancestor(f"origin/{base}", "HEAD", cwd=target_worktree)
+    except Exception:
+        return False
+
+
 def _run_merge_gate_checks(target_worktree: Path) -> Tuple[bool, bool, Optional[str]]:
     """
-    Run repo-cache check gate via run_checks.
+    Run the full check gate before a merge (the only merge gate; a minimum check never satisfies it).
 
-    Returns (True, False, None) if no cache exists (gate not applied).
-    Returns (True, True, None) if gate passes (or a fresh /shipit check receipt covers it).
-    Returns (False, True, diagnostic_message) if gate fails.
+    The command resolves through resolve_check_detail (project.yaml, repo-cache, package.json, then
+    the justfile check recipe), so a repo without a repo-cache is still gated (#387). A malformed
+    repo-cache.json fails closed. The gate runs through checks.validate(mode="full"). A stored full
+    record for this tree is reused only when _base_ancestor_fresh holds; otherwise the check is
+    forced to run again.
+
+    Returns (True, False, None) if no full check resolves (gate not applied; the caller warns).
+    Returns (True, True, None) if the full check passes.
+    Returns (False, True, diagnostic_message) if the gate fails or cannot run.
     """
-    from .checks import run_checks, check_receipt_fresh
+    from .checks import resolve_check_detail, validate
 
     cache_file = target_worktree / ".claude" / "repo-cache.json"
-    if not cache_file.exists():
-        return True, False, None
+    if cache_file.exists():
+        _, err = read_repo_cache(cache_file)
+        if err:
+            return False, True, str(err)
 
-    cache_data, err = read_repo_cache(cache_file)
-    if err:
-        return False, True, str(err)
-    if not cache_data:
-        return True, False, None
+    try:
+        resolution = resolve_check_detail(target_worktree, None, mode="full")
+        if resolution.command is None:
+            return True, False, None
+        reuse = _base_ancestor_fresh(target_worktree)
+        result = validate(target_worktree, mode="full", force=not reuse, timeout=_get_merge_apply_timeout())
+    except Exception as e:
+        return False, True, f"check gate could not run: {e}"
 
-    # /shipit just ran this exact gate on this exact tree and base: don't repeat it.
-    # Any doubt (no/stale receipt, fetch failure) falls through to running the checks.
-    fresh, _reason = check_receipt_fresh(target_worktree, cache_data.commands, fetch=True)
-    if fresh:
-        return True, True, None
-
-    timeout = _get_merge_apply_timeout()
-    result, check_err = run_checks(
-        commands=cache_data.commands,
-        repo_root=target_worktree,
-        timeout=timeout
-    )
-
-    if check_err:
-        return False, True, str(check_err)
-
-    if not result.all_passed:
-        failed_cmd = result.failed_at or "unknown"
-        return False, True, f"Check '{failed_cmd}' failed"
-
-    if result.status == "no_checks_ran":
+    status = result.get("status")
+    if status == "error":
+        return False, True, str(result.get("error") or "check gate could not run")
+    if status == "no_checks_ran":
         return False, True, "No checks configured or all checks null"
+    if status != "passed" or not result.get("all_passed"):
+        failed_cmd = result.get("failed_at") or "unknown"
+        return False, True, f"Check '{failed_cmd}' failed"
 
     return True, True, None
 

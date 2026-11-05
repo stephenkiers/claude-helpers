@@ -239,7 +239,8 @@ def execute_check(
 def run_checks(
     commands: Dict[str, Optional[str]],
     repo_root: Path,
-    timeout: int = DEFAULT_CHECK_TIMEOUT_SECS
+    timeout: int = DEFAULT_CHECK_TIMEOUT_SECS,
+    env: Optional[Mapping[str, str]] = None,
 ) -> Tuple[CheckResults, Optional[Unknown]]:
     """
     Execute checks in canonical order, stopping at first failure.
@@ -270,7 +271,7 @@ def run_checks(
     for cmd_type in planned_order:
         cmd = commands[cmd_type]
         assert cmd is not None  # planned_order only includes non-null commands
-        check_result = execute_check(cmd, cwd=repo_root, timeout=timeout)
+        check_result = execute_check(cmd, cwd=repo_root, timeout=timeout, env=env)
 
         results.executed.append(cmd_type)
         step_result = CheckStepResult(
@@ -624,7 +625,7 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None, m
     worktree_yaml: Optional[Dict[str, Any]] = None
     if project_yaml.exists():
         worktree_yaml, load_note = _load_project_yaml(project_yaml)
-        check_cmd = worktree_yaml.get("commands", {}).get(check_key) if worktree_yaml else None
+        check_cmd = (worktree_yaml.get("commands") or {}).get(check_key) if worktree_yaml else None
         if isinstance(check_cmd, str) and check_cmd.strip():
             resolution = CheckResolution(check_cmd, "project.yaml", project_yaml, None, source_scope="worktree")
             resolution.fell_back_to_full = fell_back_to_full
@@ -639,7 +640,7 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None, m
         main_project_yaml = main_worktree / ".claude" / "project.yaml"
         if main_project_yaml.exists():
             main_yaml, load_note = _load_project_yaml(main_project_yaml)
-            check_cmd = main_yaml.get("commands", {}).get(check_key) if main_yaml else None
+            check_cmd = (main_yaml.get("commands") or {}).get(check_key) if main_yaml else None
             if isinstance(check_cmd, str) and check_cmd.strip():
                 resolution = CheckResolution(check_cmd, "project.yaml", main_project_yaml, None, source_scope="main")
                 resolution.fell_back_to_full = fell_back_to_full
@@ -1271,11 +1272,12 @@ def resolve_check_base(worktree: Path) -> Optional[str]:
         )
         if result.returncode != 0:
             return None
-        # Result is "refs/remotes/origin/<branch>"
+        # `git symbolic-ref` prints "refs/remotes/origin/<branch>" (no "ref: " prefix)
         origin_head = result.stdout.strip()
-        if not origin_head.startswith("ref: refs/remotes/origin/"):
+        remote_prefix = "refs/remotes/origin/"
+        if not origin_head.startswith(remote_prefix):
             return None
-        default_branch = origin_head[len("ref: refs/remotes/origin/"):]
+        default_branch = origin_head[len(remote_prefix):]
 
         # Get merge-base of HEAD with origin/<default_branch>
         result = subprocess.run(
@@ -1483,11 +1485,27 @@ def write_check_receipt(
     return True, None
 
 
+def _passing_record_hash(records_dir: Path, key: CheckKey) -> Optional[str]:
+    """Key hash of a passing record for `key` under records_dir, or None (missing, malformed, failed)."""
+    from .models import _canonical_key_serialisation
+
+    key_hash = hashlib.sha256(_canonical_key_serialisation(key).encode()).hexdigest()
+    record_path = records_dir / f"{key_hash}.json"
+    if not record_path.exists():
+        return None
+    try:
+        record = CheckRecord.from_dict(json.loads(record_path.read_text()))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return key_hash if record and record.passed else None
+
+
 def validate(
     worktree: Path,
     mode: str = "full",
     force: bool = False,
     main_worktree: Optional[Path] = None,
+    timeout: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Validate checks idempotently with per-key record caching.
@@ -1516,6 +1534,12 @@ def validate(
             "error": "No check command resolved",
         }
 
+    if timeout is None:
+        source_kind: ConfigKind = "project.yaml" if resolution.source == "project.yaml" else "repo-cache"
+        timeout, _timeout_source = resolve_check_timeout(
+            worktree, main_worktree, resolution.source_file, source_kind, resolution.source_scope,
+        )
+
     # Get tree
     tree = worktree_tree(worktree)
     if not tree:
@@ -1523,7 +1547,7 @@ def validate(
         result, err = run_checks(
             commands={"check": check_command},
             repo_root=worktree,
-            timeout=DEFAULT_CHECK_TIMEOUT_SECS,
+            timeout=timeout,
         )
         output = result.to_dict() if result else {}
         output.update({
@@ -1566,32 +1590,27 @@ def validate(
     cache_action = "forced" if force else "miss"
     satisfied_by = None
 
-    # Look up record if not forced
+    # Look up record if not forced. A passing full record also satisfies a minimum request.
     if key and not force:
         records_dir = worktree / ".claude" / "check-records"
-        if records_dir.exists():
-            # Compute key hash for filename
-            from .models import _canonical_key_serialisation
-            key_serial = _canonical_key_serialisation(key)
-            key_hash = hashlib.sha256(key_serial.encode()).hexdigest()
-            record_path = records_dir / f"{key_hash}.json"
+        hit_hash = _passing_record_hash(records_dir, key) if records_dir.exists() else None
+        if hit_hash is None and parsed_mode == "minimum":
+            full_key = check_key_of("full", tree, full_digest)
+            if full_key is not None and records_dir.exists():
+                hit_hash = _passing_record_hash(records_dir, full_key)
+        if hit_hash is not None:
+            cache_action = "hit"
+            satisfied_by = hit_hash
 
-            if record_path.exists():
-                try:
-                    record_data = json.loads(record_path.read_text())
-                    record = CheckRecord.from_dict(record_data)
-                    if record and record.passed:
-                        # Cache hit
-                        cache_action = "hit"
-                        satisfied_by = key_hash
-                except (json.JSONDecodeError, OSError):
-                    pass
-
-    # If cache hit, return immediately
+    # If cache hit, return immediately (same key set as a run; no results because nothing ran)
     if cache_action == "hit" and key:
         return {
             "status": "passed",
             "all_passed": True,
+            "results": [],
+            "planned": [],
+            "failed_at": None,
+            "skipped": [],
             "executed": [],
             "schema_version": 1,
             "mode_requested": mode,
@@ -1618,7 +1637,8 @@ def validate(
         result, err = run_checks(
             commands={"check": check_command},
             repo_root=worktree,
-            timeout=DEFAULT_CHECK_TIMEOUT_SECS,
+            timeout=timeout,
+            env=env,
         )
     finally:
         try:

@@ -7,8 +7,10 @@ Run with: python3 tests/test_workflow_checks.py
 
 import contextlib
 import json
+import logging
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -20,6 +22,7 @@ from workflow.checks import (
     execute_check, build_check_order, resolve_check_command, resolve_check_timeout,
     resolve_check_detail, detect_package_json_check, suggest_from_claude_md,
     ensure_check, record_check_answer, OPT_OUT_SOURCE, NO_CHECK_CONFIGURED_MESSAGE,
+    worktree_tree, canonical_changed_files, resolve_check_base,
 )
 from workflow.deps import LOCKFILE_MANAGERS
 from _test_harness import Harness
@@ -42,6 +45,47 @@ def _env_unset(name, value=None):
 def _write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
+
+
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+}
+
+
+def _git(cwd, *args):
+    return subprocess.run(
+        ["git", *args], cwd=str(cwd), env={**os.environ, **_GIT_ENV},
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _clone_fixture(root):
+    """Bare origin with three tracked files on main, cloned as `work` on branch `feature`."""
+    seed = root / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-q", "-b", "main")
+    _write(seed / ".gitignore", "ignored.log\n")
+    _write(seed / "keep.txt", "keep\n")
+    _write(seed / "old.txt", "old\n")
+    _write(seed / "gone.txt", "gone\n")
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-q", "-m", "init")
+    origin = root / "origin.git"
+    _git(root, "clone", "-q", "--bare", str(seed), str(origin))
+    work = root / "work"
+    _git(root, "clone", "-q", str(origin), str(work))
+    _git(work, "checkout", "-q", "-b", "feature")
+    return work
+
+
+class _ListHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
 
 
 if __name__ == "__main__":
@@ -960,6 +1004,111 @@ if __name__ == "__main__":
             "a CRLF project.yaml that fails verification is restored to its original bytes",
             not ok and data == b"# keep me\r\n",
             f"ok={ok} data={data!r} message={message!r}",
+        )
+
+    print("[Section 16] worktree_tree in linked worktrees and failure logging (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        work = _clone_fixture(root)
+        linked = root / "linked"
+        _git(work, "worktree", "add", "-q", "-b", "linked-branch", str(linked))
+        clean_tree = worktree_tree(linked)
+        test_result(
+            "worktree_tree: a clean linked worktree yields HEAD's tree SHA",
+            clean_tree is not None and clean_tree == _git(linked, "rev-parse", "HEAD^{tree}"),
+            f"tree={clean_tree!r}",
+        )
+        _write(linked / "untracked.txt", "new\n")
+        dirty_tree = worktree_tree(linked)
+        test_result(
+            "worktree_tree: an untracked non-ignored file changes the tree",
+            dirty_tree is not None and dirty_tree != clean_tree,
+            f"clean={clean_tree!r} dirty={dirty_tree!r}",
+        )
+        (linked / "untracked.txt").unlink()
+        restored_tree = worktree_tree(linked)
+        test_result(
+            "worktree_tree: removing the file restores the clean tree SHA",
+            restored_tree == clean_tree,
+            f"restored={restored_tree!r} clean={clean_tree!r}",
+        )
+        _write(linked / "ignored.log", "noise\n")
+        test_result(
+            "worktree_tree: a gitignored file does not change the tree",
+            worktree_tree(linked) == clean_tree,
+            f"tree={worktree_tree(linked)!r} clean={clean_tree!r}",
+        )
+        _write(linked / "stage-probe.txt", "probe\n")
+        status_before = _git(linked, "status", "--porcelain")
+        worktree_tree(linked)
+        status_after = _git(linked, "status", "--porcelain")
+        test_result(
+            "worktree_tree: leaves the real index untouched (status unchanged, nothing staged)",
+            status_before == status_after and "A  stage-probe.txt" not in status_after,
+            f"before={status_before!r} after={status_after!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        not_a_repo = Path(tmp) / "plain"
+        not_a_repo.mkdir()
+        handler = _ListHandler()
+        logging.getLogger().addHandler(handler)
+        try:
+            tree = worktree_tree(not_a_repo)
+        finally:
+            logging.getLogger().removeHandler(handler)
+        test_result(
+            "worktree_tree: a non-git directory returns None and logs the idempotency-disabled reason",
+            tree is None and any("idempotency disabled" in m for m in handler.messages),
+            f"tree={tree!r} messages={handler.messages!r}",
+        )
+
+    print("[Section 16b] resolve_check_base and canonical_changed_files (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _clone_fixture(Path(tmp))
+        origin_main = _git(work, "rev-parse", "origin/main")
+        base = resolve_check_base(work)
+        test_result(
+            "resolve_check_base: resolves to the merge-base with origin/<default> (symbolic-ref form)",
+            base == origin_main,
+            f"base={base!r} origin/main={origin_main!r}",
+        )
+
+        _write(work / "committed.txt", "c\n")
+        _git(work, "add", "committed.txt")
+        _git(work, "commit", "-q", "-m", "committed change")
+        _write(work / "keep.txt", "keep changed\n")
+        _git(work, "add", "keep.txt")
+        _write(work / "keep.txt", "keep changed again\n")
+        _write(work / "old.txt", "old changed\n")
+        _write(work / "untracked.txt", "u\n")
+        _write(work / "ignored.log", "noise\n")
+        _git(work, "mv", "gone.txt", "renamed.txt")
+
+        base = resolve_check_base(work)
+        files = canonical_changed_files(work, base)
+        expected = sorted(["committed.txt", "keep.txt", "old.txt", "untracked.txt", "gone.txt", "renamed.txt"])
+        test_result(
+            "canonical_changed_files: unions committed, staged, working, untracked; excludes ignored; both rename sides",
+            files == expected,
+            f"files={files!r} expected={expected!r}",
+        )
+        test_result(
+            "canonical_changed_files: sorted and unique (keep.txt is staged and modified again)",
+            files == sorted(set(files)),
+            f"files={files!r}",
+        )
+        test_result(
+            "canonical_changed_files: deterministic across calls on the same state",
+            canonical_changed_files(work, base) == files,
+            "second call differed",
+        )
+
+        no_base = canonical_changed_files(work, None)
+        test_result(
+            "canonical_changed_files with base=None returns an empty list (documented: no base, no hash)",
+            no_base == [],
+            f"no_base={no_base!r}",
         )
 
     print()

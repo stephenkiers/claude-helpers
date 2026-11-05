@@ -225,4 +225,129 @@ if __name__ == "__main__":
         fixture.cleanup()
 
     print()
+    print("[Section 6] merge gate reuses a stored full record only with a fresh base-ancestor precondition")
+
+    from unittest import mock as _mock
+    from workflow.checks import CheckResults, validate
+    from workflow.merge import _run_merge_gate_checks
+    from workflow.models import CheckRecord, FullKey, satisfies
+
+    def _fake_run_checks(calls):
+        def _run(*args, **kwargs):
+            calls.append(kwargs.get("command") or (args[0] if args else None))
+            return CheckResults(results=[], all_passed=True, status="passed", executed=["check"]), None
+        return _run
+
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+
+        # Real bare origin, so the base fetch in the gate can succeed or fail for real.
+        origin = fixture.tmpdir / "origin.git"
+        fixture._run_git(["init", "--bare", "-b", "main", str(origin)], cwd=fixture.tmpdir)
+        fixture.create_initial_commit("initial")
+        fixture._run_git(["remote", "add", "origin", str(origin)], cwd=fixture.repo_root)
+        fixture._run_git(["push", "-u", "origin", "main"], cwd=fixture.repo_root)
+        # origin/HEAD tells the check resolver and the gate which base is the default branch.
+        fixture._run_git(["remote", "set-head", "origin", "main"], cwd=fixture.repo_root)
+        # .claude/ is per-machine state and must stay out of the tree the check record keys on.
+        (fixture.repo_root / ".gitignore").write_text(".claude/\n")
+        fixture._run_git(["add", ".gitignore"], cwd=fixture.repo_root)
+        fixture._run_git(["commit", "-m", "ignore claude"], cwd=fixture.repo_root)
+        fixture._run_git(["push", "origin", "main"], cwd=fixture.repo_root)
+
+        fixture.create_branch("feature/gate")
+        wt_path = fixture.create_worktree("feature/gate")
+        fixture.commit_in_worktree(wt_path, "feature work")
+
+        (wt_path / ".claude").mkdir(exist_ok=True)
+        (wt_path / ".claude" / "repo-cache.json").write_text(json.dumps({
+            "commands": {"check": "make full-check", "check_minimum": "make min-check"}
+        }))
+
+        calls: list = []
+        with _mock.patch("workflow.checks.run_checks", side_effect=_fake_run_checks(calls)):
+            gate1 = _run_merge_gate_checks(wt_path)
+            count_after_first = len(calls)
+
+            gate2 = _run_merge_gate_checks(wt_path)
+            count_after_second = len(calls)
+
+            test_result(
+                "gate: first run executes the full check",
+                gate1 == (True, True, None) and count_after_first == 1,
+                f"gate={gate1!r} calls={calls}"
+            )
+            test_result(
+                "gate: second run reuses the stored full record when HEAD contains origin/main",
+                gate2 == (True, True, None) and count_after_second == 1,
+                f"gate={gate2!r} calls={calls}"
+            )
+
+            # Advance origin/main past HEAD: the record no longer satisfies the precondition.
+            fixture._run_git(["checkout", "main"], cwd=fixture.repo_root)
+            fixture.commit_in_worktree(fixture.repo_root, "advance main")
+            fixture._run_git(["push", "origin", "main"], cwd=fixture.repo_root)
+            gate3 = _run_merge_gate_checks(wt_path)
+            count_after_third = len(calls)
+            test_result(
+                "gate: advancing origin/main past HEAD forces the check to run again",
+                gate3 == (True, True, None) and count_after_third == 2,
+                f"gate={gate3!r} calls={calls}"
+            )
+
+            # Fetch failure (unreachable origin): the precondition cannot hold, so the check reruns.
+            fixture._run_git(["remote", "set-url", "origin", str(fixture.tmpdir / "missing.git")],
+                             cwd=fixture.repo_root)
+            gate4 = _run_merge_gate_checks(wt_path)
+            count_after_fourth = len(calls)
+            test_result(
+                "gate: a broken origin URL (fetch failure) forces the check to run again",
+                gate4 == (True, True, None) and count_after_fourth == 3,
+                f"gate={gate4!r} calls={calls}"
+            )
+
+        # A minimum record never satisfies the full gate.
+        fixture._run_git(["remote", "set-url", "origin", str(origin)], cwd=fixture.repo_root)
+        fixture._run_git(["push", "origin", "main"], cwd=fixture.repo_root)
+        records_dir = wt_path / ".claude" / "check-records"
+        before_min = set(records_dir.glob("*.json")) if records_dir.exists() else set()
+        min_calls: list = []
+        # resolve_check_base expects a "ref: " prefix that `git symbolic-ref` does not print, so it
+        # returns None in a real repo. Pin it to the real merge-base so the minimum record is written.
+        merge_base = fixture._run_git(["merge-base", "HEAD", "origin/main"], cwd=wt_path)
+        with _mock.patch("workflow.checks.run_checks", side_effect=_fake_run_checks(min_calls)):
+            with _mock.patch("workflow.checks.resolve_check_base", return_value=merge_base):
+                min_result = validate(wt_path, mode="minimum", force=True)
+        new_records = sorted(set(records_dir.glob("*.json")) - before_min)
+        test_result(
+            "gate: a stored minimum record exists after a minimum validate",
+            min_result.get("status") == "passed" and len(new_records) == 1,
+            f"result={min_result!r} new={new_records}"
+        )
+
+        if len(new_records) == 1:
+            min_record = CheckRecord.from_dict(json.loads(new_records[0].read_text()))
+            full_key = FullKey(tree=min_record.key.tree, full_digest=min_record.key.full_digest)
+            test_result(
+                "models.satisfies: a minimum record does not satisfy a full key",
+                satisfies(min_record, full_key) is False,
+                f"key={min_record.key!r}"
+            )
+
+        full_calls: list = []
+        with _mock.patch("workflow.checks.run_checks", side_effect=_fake_run_checks(full_calls)):
+            gate5 = _run_merge_gate_checks(wt_path)
+        test_result(
+            "gate: a stored minimum record does not satisfy the merge gate (full check runs)",
+            gate5 == (True, True, None) and len(full_calls) == 1,
+            f"gate={gate5!r} calls={full_calls}"
+        )
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
     h.summarize_and_exit()

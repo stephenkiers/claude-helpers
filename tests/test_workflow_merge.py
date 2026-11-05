@@ -19,6 +19,7 @@ from workflow.merge import plan_merge, apply_merge, merge_lock_path, MergePlan, 
 from workflow.safety import Unknown
 from workflow.merge import QueueDetection, QueueGuardDecision
 from workflow.merge import _resolve_pr_from_worktree
+from workflow.merge import _run_merge_gate_checks
 from _test_harness import Harness
 
 
@@ -324,7 +325,7 @@ if __name__ == "__main__":
                         )
 
         print()
-        print("[Section 11] apply_merge with repo-cache containing only commands.test gates properly")
+        print("[Section 11] apply_merge: a repo-cache with only commands.test is not the merge gate (full-only)")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
@@ -349,36 +350,122 @@ if __name__ == "__main__":
             with mock.patch("workflow.merge._check_just_merge") as mock_just:
                 with mock.patch("workflow.merge._run_gh_pr_merge") as mock_merge:
                     with mock.patch("workflow.merge.write_cache") as mock_write_cache:
-                        with mock.patch("workflow.checks.run_checks") as mock_checks:
+                        with mock.patch("workflow.checks.validate") as mock_validate:
                             mock_just.return_value = False
                             mock_merge.return_value = (True, None)
                             mock_write_cache.return_value = (True, None)
-
-                            from workflow.checks import CheckResults
-
-                            check_result = CheckResults(
-                                results=[],
-                                all_passed=True,
-                                status="passed",
-                                executed=["test"]
-                            )
-                            mock_checks.return_value = (check_result, None)
 
                             plan_json = json.dumps(plan.to_dict())
                             result, err = apply_merge(plan_json)
 
                             test_result(
-                                "apply_merge: repo-cache with only commands.test runs it",
-                                mock_checks.called
+                                "apply_merge: repo-cache with only commands.test does not run it as the gate",
+                                not mock_validate.called,
+                                f"validate calls={mock_validate.call_args_list}"
                             )
                             test_result(
-                                "apply_merge: repo-cache with only commands.test gates the merge",
-                                result.success is True and result.merge_gate_used == "repo-cache check"
+                                "apply_merge: repo-cache with only commands.test merges with 'gh pr merge (no gate)'",
+                                result.success is True and result.merge_gate_used == "gh pr merge (no gate)",
+                                f"gate={result.merge_gate_used!r}"
                             )
-                            test_result(
-                                "apply_merge: repo-cache with only commands.test does NOT skip to 'no gate'",
-                                "no gate" not in result.merge_gate_used
-                            )
+
+        print()
+        print("[Section 11b] merge gate resolves the full check and reuses or forces per base-ancestor precondition")
+
+        def _gate_repo(prefix: str, cache_text=None, yaml_text=None, justfile_text=None) -> Path:
+            root = Path(tempfile.mkdtemp(prefix=prefix))
+            (root / ".claude").mkdir()
+            if cache_text is not None:
+                (root / ".claude" / "repo-cache.json").write_text(cache_text)
+            if yaml_text is not None:
+                (root / ".claude" / "project.yaml").write_text(yaml_text)
+            if justfile_text is not None:
+                (root / "justfile").write_text(justfile_text)
+            return root
+
+        def _validate_ok(*_args, **_kwargs):
+            return {"status": "passed", "all_passed": True, "failed_at": None}
+
+        # 11b-1: justfile-only repo with no repo-cache is gated (#387).
+        wt = _gate_repo("gate-justfile-", justfile_text="check:\n\techo ok\n")
+        try:
+            with mock.patch("workflow.merge._base_ancestor_fresh", return_value=False):
+                with mock.patch("workflow.checks.validate", side_effect=_validate_ok) as mock_validate:
+                    gate = _run_merge_gate_checks(wt)
+            test_result(
+                "gate: justfile-only repo without repo-cache is gated (#387)",
+                gate == (True, True, None) and mock_validate.called,
+                f"gate={gate!r} calls={mock_validate.call_args_list}"
+            )
+            test_result(
+                "gate: validate is called with mode='full'",
+                mock_validate.called and mock_validate.call_args.kwargs.get("mode") == "full",
+                f"calls={mock_validate.call_args_list}"
+            )
+        finally:
+            shutil.rmtree(wt, ignore_errors=True)
+
+        # 11b-2: empty repo-cache with project.yaml commands.check is gated.
+        wt = _gate_repo(
+            "gate-yaml-",
+            cache_text=json.dumps({"commands": {}}),
+            yaml_text="commands:\n  check: make verify\n",
+        )
+        try:
+            with mock.patch("workflow.merge._base_ancestor_fresh", return_value=False):
+                with mock.patch("workflow.checks.validate", side_effect=_validate_ok) as mock_validate:
+                    gate = _run_merge_gate_checks(wt)
+            test_result(
+                "gate: empty repo-cache with project.yaml commands.check is gated",
+                gate == (True, True, None) and mock_validate.called,
+                f"gate={gate!r}"
+            )
+        finally:
+            shutil.rmtree(wt, ignore_errors=True)
+
+        # 11b-3: nothing resolvable -> no gate, merge proceeds with the NO GATE marker.
+        wt = _gate_repo("gate-none-")
+        try:
+            with mock.patch("workflow.checks.validate") as mock_validate:
+                gate = _run_merge_gate_checks(wt)
+            test_result(
+                "gate: nothing resolvable returns (True, False, None) without running validate",
+                gate == (True, False, None) and not mock_validate.called,
+                f"gate={gate!r}"
+            )
+        finally:
+            shutil.rmtree(wt, ignore_errors=True)
+
+        # 11b-4: malformed repo-cache fails closed.
+        wt = _gate_repo("gate-malformed-", cache_text="{not json")
+        try:
+            with mock.patch("workflow.checks.validate") as mock_validate:
+                gate = _run_merge_gate_checks(wt)
+            test_result(
+                "gate: malformed repo-cache fails closed without running checks",
+                gate[0] is False and gate[1] is True and gate[2] and not mock_validate.called,
+                f"gate={gate!r}"
+            )
+        finally:
+            shutil.rmtree(wt, ignore_errors=True)
+
+        # 11b-5: a failing gate refuses apply_merge before just merge runs.
+        wt = _gate_repo("gate-just-merge-", cache_text=json.dumps({"commands": {"check": "false"}}))
+        try:
+            plan = MergePlan(pr_number=52, head_ref="feature", target_worktree=str(wt), blocking_failures=[])
+            with mock.patch("workflow.merge._check_just_merge", return_value=True):
+                with mock.patch("workflow.merge._run_merge_gate_checks",
+                                return_value=(False, True, "Check 'false' failed")):
+                    with mock.patch("workflow.merge._run_just_merge") as mock_run_just:
+                        with mock.patch("workflow.merge._run_gh_pr_merge") as mock_merge:
+                            result, err = apply_merge(json.dumps(plan.to_dict()))
+            test_result(
+                "apply_merge: failing gate refuses before just merge runs",
+                result.success is False and not mock_run_just.called and not mock_merge.called,
+                f"success={result.success} just_called={mock_run_just.called}"
+            )
+        finally:
+            shutil.rmtree(wt, ignore_errors=True)
 
         print()
         print("[Section 12] Auto-detect PR from worktree when no argument given")

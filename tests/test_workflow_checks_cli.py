@@ -33,6 +33,50 @@ def _run_checks_cli(cache, env_extra=None):
     )
 
 
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+}
+
+
+def _git(cwd, *args):
+    return subprocess.run(
+        ["git", *args], cwd=str(cwd), env={**os.environ, **_GIT_ENV},
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _fixture_work_tree(root, commands):
+    """Bare origin with one commit on main, cloned as a work tree one commit ahead, with repo-cache commands."""
+    seed = root / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-q", "-b", "main")
+    (seed / ".claude").mkdir()
+    (seed / ".claude" / ".gitignore").write_text("check-records/\nrepo-cache.json\n")
+    (seed / "README.md").write_text("base\n")
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-q", "-m", "init")
+    origin = root / "origin.git"
+    _git(root, "clone", "-q", "--bare", str(seed), str(origin))
+    work = root / "work"
+    _git(root, "clone", "-q", str(origin), str(work))
+    _git(work, "checkout", "-q", "-b", "feature")
+    (work / "feature.txt").write_text("one\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "feature")
+    (work / ".claude" / "repo-cache.json").write_text(json.dumps({"version": 1, "commands": commands}) + "\n")
+    return work
+
+
+def _checks_cli(*args):
+    """Run `python3 -m scripts.workflow.cli checks <args>` from the repo root."""
+    env = {k: v for k, v in os.environ.items() if k != "SHIPIT_CHECK_TIMEOUT_SECS"}
+    return subprocess.run(
+        [sys.executable, "-m", "scripts.workflow.cli", "checks", *args],
+        capture_output=True, text=True, cwd=str(REPO_ROOT), env=env,
+    )
+
+
 if __name__ == "__main__":
     h = Harness("WORKFLOW CHECKS CLI TEST SUITE")
     test_result = h.test_result
@@ -484,6 +528,77 @@ if __name__ == "__main__":
         "(checkTimeoutSecs or SHIPIT_CHECK_TIMEOUT_SECS sets the limit)" in combined,
         f"out={combined[:300]!r}",
     )
+
+    def _parse_json(text):
+        try:
+            return json.loads(text)
+        except ValueError:
+            return {}
+
+    print("[Section 16] checks resolve-check --mode: minimum resolves check_minimum, full resolves check (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _fixture_work_tree(Path(tmp), {"check": "true", "check_minimum": "echo minimum-cmd && true"})
+        r_min = _checks_cli("resolve-check", "--worktree", str(work), "--mode", "minimum")
+        out_min = _parse_json(r_min.stdout)
+        test_result(
+            "resolve-check --mode minimum resolves the check_minimum command",
+            r_min.returncode == 0 and out_min.get("command") == "echo minimum-cmd && true",
+            f"rc={r_min.returncode} out={out_min!r} err={r_min.stderr[-300:]!r}",
+        )
+        r_full = _checks_cli("resolve-check", "--worktree", str(work), "--mode", "full")
+        out_full = _parse_json(r_full.stdout)
+        test_result(
+            "resolve-check --mode full resolves the check command",
+            r_full.returncode == 0 and out_full.get("command") == "true",
+            f"rc={r_full.returncode} out={out_full!r}",
+        )
+        r_bad = _checks_cli("resolve-check", "--worktree", str(work), "--mode", "bogus")
+        test_result(
+            "resolve-check with an invalid --mode exits 2 (argparse rejects it)",
+            r_bad.returncode == 2,
+            f"rc={r_bad.returncode} err={r_bad.stderr[-300:]!r}",
+        )
+        r_vbad = _checks_cli("validate", "--worktree", str(work), "--mode", "bogus")
+        test_result(
+            "validate with an invalid --mode exits 2 (argparse rejects it)",
+            r_vbad.returncode == 2,
+            f"rc={r_vbad.returncode} err={r_vbad.stderr[-300:]!r}",
+        )
+
+    print("[Section 16b] checks validate: exit codes and cache state through the CLI (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _fixture_work_tree(Path(tmp), {"check": "true", "check_minimum": "true"})
+        v1 = _checks_cli("validate", "--worktree", str(work), "--mode", "full")
+        j1 = _parse_json(v1.stdout)
+        v2 = _checks_cli("validate", "--worktree", str(work), "--mode", "full")
+        j2 = _parse_json(v2.stdout)
+        test_result(
+            "checks validate: a first passing run exits 0 and reports cache=miss",
+            v1.returncode == 0 and j1.get("status") == "passed" and j1.get("cache") == "miss",
+            f"rc={v1.returncode} out={j1!r} err={v1.stderr[-300:]!r}",
+        )
+        test_result(
+            "checks validate: a repeat run on the same tree exits 0 and reports cache=hit",
+            v2.returncode == 0 and j2.get("cache") == "hit" and j2.get("status") == "passed",
+            f"rc={v2.returncode} out={j2!r}",
+        )
+        v3 = _checks_cli("validate", "--worktree", str(work), "--mode", "full", "--force")
+        j3 = _parse_json(v3.stdout)
+        test_result(
+            "checks validate --force exits 0 and reports cache=forced",
+            v3.returncode == 0 and j3.get("cache") == "forced",
+            f"rc={v3.returncode} out={j3!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _fixture_work_tree(Path(tmp), {"check": "true", "check_minimum": "false"})
+        vf = _checks_cli("validate", "--worktree", str(work), "--mode", "minimum")
+        jf = _parse_json(vf.stdout)
+        test_result(
+            "checks validate: a failing minimum check exits 1 with a non-passed status",
+            vf.returncode == 1 and jf.get("status") not in (None, "passed"),
+            f"rc={vf.returncode} out={jf!r}",
+        )
 
     print()
     h.summarize_and_exit()

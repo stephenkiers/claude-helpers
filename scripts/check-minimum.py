@@ -41,8 +41,8 @@ def get_check_base_and_files() -> tuple:
         except Exception:
             pass
 
-    # Compute from scratch
-    base = resolve_check_base(worktree)
+    # Compute from scratch; an exported CHECK_BASE takes precedence over the computed merge-base
+    base = check_base or resolve_check_base(worktree)
     files = canonical_changed_files(worktree, base)
     return base, files
 
