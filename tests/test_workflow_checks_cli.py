@@ -600,5 +600,42 @@ if __name__ == "__main__":
             f"rc={vf.returncode} out={jf!r}",
         )
 
+    print("[Section 16c] resolve-check fallback and L0: checks run in a linked worktree records and hits (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _fixture_work_tree(Path(tmp), {"check": "true"})
+        r_fb = _checks_cli("resolve-check", "--worktree", str(work), "--mode", "minimum")
+        out_fb = _parse_json(r_fb.stdout)
+        test_result(
+            "resolve-check --mode minimum with no check_minimum resolves the full command and reports fell_back_to_full",
+            r_fb.returncode == 0 and out_fb.get("command") == "true" and out_fb.get("fell_back_to_full") is True,
+            f"rc={r_fb.returncode} out={out_fb!r} err={r_fb.stderr[-300:]!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main_wt = _fixture_work_tree(root, {"check": "true"})
+        linked = root / "linked"
+        _git(main_wt, "worktree", "add", "-q", "-b", "linked-branch", str(linked))
+        count = root / "count.txt"
+        cache_json = json.dumps({"version": 1, "commands": {"check": f"echo run >> '{count}' && true"}})
+        env = {k: v for k, v in os.environ.items() if k != "SHIPIT_CHECK_TIMEOUT_SECS"}
+        env["PYTHONPATH"] = str(REPO_ROOT)
+
+        def _run_in_linked():
+            return subprocess.run(
+                [sys.executable, "-m", "scripts.workflow.cli", "checks", "run", "-"],
+                input=cache_json, capture_output=True, text=True, cwd=str(linked), env=env,
+            )
+
+        first = _run_in_linked()
+        second = _run_in_linked()
+        runs = count.read_text().count("run") if count.exists() else 0
+        records = list((linked / ".claude" / "check-records").glob("*.json")) if (linked / ".claude" / "check-records").exists() else []
+        test_result(
+            "L0: checks run in a linked worktree writes a record and the second run on the unchanged tree hits (check executes once)",
+            first.returncode == 0 and second.returncode == 0 and runs == 1 and len(records) == 1,
+            f"rc1={first.returncode} rc2={second.returncode} runs={runs} records={records} err={first.stderr[-300:]!r}",
+        )
+
     print()
     h.summarize_and_exit()

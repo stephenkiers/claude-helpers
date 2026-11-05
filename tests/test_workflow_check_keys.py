@@ -287,6 +287,90 @@ def main():
                   actual_keys == expected_keys,
                   f"Expected {expected_keys} but got {actual_keys}")
 
+    # ========== Round 2: exhaustive satisfies table (#462 Part A, Step 4) ==========
+    import itertools
+
+    T, OT = "a" * 40, "e" * 40
+    F, OF = "b" * 64, "f" * 64
+    M, OM = "c" * 64, "1" * 64
+    H, OH = "d" * 64, "2" * 64
+    mismatches = []
+    cases = 0
+    for record_mode, request_kind in itertools.product(MODES, ("full", "minimum")):
+        for tree_eq, full_eq, min_eq, hash_eq in itertools.product((True, False), repeat=4):
+            cases += 1
+            if record_mode == "full":
+                rec_key = FullKey(tree=T, full_digest=F)
+            else:
+                rec_key = MinimumKey(tree=T, full_digest=F, minimum_digest=M, changed_files_hash=H)
+            rec = CheckRecord(schema_version=1, key=rec_key, passed=True, mode_executed=record_mode, written_at=0.0)
+            tree_r = T if tree_eq else OT
+            full_r = F if full_eq else OF
+            if request_kind == "full":
+                req = FullKey(tree=tree_r, full_digest=full_r)
+            else:
+                req = MinimumKey(tree=tree_r, full_digest=full_r,
+                                 minimum_digest=M if min_eq else OM, changed_files_hash=H if hash_eq else OH)
+            if record_mode == "full":
+                expected = tree_eq and full_eq
+            else:
+                expected = request_kind == "minimum" and tree_eq and full_eq and min_eq and hash_eq
+            if satisfies(rec, req) is not expected:
+                mismatches.append((record_mode, request_kind, tree_eq, full_eq, min_eq, hash_eq))
+    h.test_result(
+        f"satisfies truth table: all {cases} record-mode x request-kind x digest-equality cases match the spec",
+        not mismatches,
+        f"mismatches (first 5)={mismatches[:5]}",
+    )
+
+    # ========== Round 2: CheckRecord.from_dict extra fail-closed cases (#462 Part A, Step 4) ==========
+    h.test_result("from_dict rejects passed: false (only a pass is recorded)",
+                  CheckRecord.from_dict({**valid_data, "passed": False}) is None)
+    h.test_result("from_dict rejects a non-hex full_digest",
+                  CheckRecord.from_dict({**valid_data, "key": {**valid_data["key"], "full_digest": "z" * 64}}) is None)
+    h.test_result("from_dict rejects a minimum record missing minimum_digest",
+                  CheckRecord.from_dict({**min_dict, "key": {k: v for k, v in min_dict["key"].items()
+                                                             if k != "minimum_digest"}}) is None)
+    h.test_result("from_dict rejects a minimum record missing changed_files_hash",
+                  CheckRecord.from_dict({**min_dict, "key": {k: v for k, v in min_dict["key"].items()
+                                                             if k != "changed_files_hash"}}) is None)
+    h.test_result("from_dict rejects mode_executed 'minimum' on a full-shaped key",
+                  CheckRecord.from_dict({**valid_data, "mode_executed": "minimum"}) is None)
+
+    never_raised = True
+    for garbage in ({}, {"schema_version": 1}, {**valid_data, "key": "not-a-dict"}, {**valid_data, "key": ["a"]}):
+        try:
+            if CheckRecord.from_dict(garbage) is not None:
+                never_raised = False
+        except Exception:
+            never_raised = False
+    h.test_result("from_dict fails closed on malformed input and never raises", never_raised)
+
+    # ========== Round 2: key __post_init__ rejections (#462 Part A, Step 4) ==========
+    def _raises_value_error(make):
+        try:
+            make()
+        except ValueError:
+            return True
+        except Exception:
+            return False
+        return False
+
+    h.test_result("MinimumKey rejects a non-64-hex changed_files_hash",
+                  _raises_value_error(lambda: MinimumKey(tree=T, full_digest=F, minimum_digest=M,
+                                                         changed_files_hash="g" * 64)))
+    h.test_result("MinimumKey rejects an uppercase full_digest",
+                  _raises_value_error(lambda: MinimumKey(tree=T, full_digest=F.upper(), minimum_digest=M,
+                                                         changed_files_hash=H)))
+    h.test_result("FullKey rejects a 39-hex tree",
+                  _raises_value_error(lambda: FullKey(tree="a" * 39, full_digest=F)))
+
+    # ========== Round 2: check_key_of on an absent tree in minimum mode (#462 Part A, Step 4) ==========
+    h.test_result("check_key_of returns None for an empty tree (minimum mode)",
+                  check_key_of("minimum", "", F, M, H) is None)
+    h.test_result("check_key_of returns None for a None tree (minimum mode)",
+                  check_key_of("minimum", None, F, M, H) is None)
+
     h.summarize_and_exit()
 
 

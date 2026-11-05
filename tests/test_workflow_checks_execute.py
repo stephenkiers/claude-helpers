@@ -775,5 +775,65 @@ if __name__ == "__main__":
             f"first={first!r} second={second!r} runs={_runs(count)}",
         )
 
+    print("[Section 12e] validate: scratch changed-file list, unresolvable base, unknown-schema records (#462 Part A)")
+    from workflow.checks import resolve_check_base
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        copied = root / "copied-list.txt"
+        listing = root / "listing.txt"
+        cmd = f"cp \"$CHECK_CHANGED_FILES\" '{copied}' && printf '%s' \"$CHECK_CHANGED_FILES\" > '{listing}' && echo run >> '{count}'"
+        work = _fixture_clone(root, {"check": "true", "check_minimum": cmd})
+        (work / "untracked.txt").write_text("u\n")
+        out = validate(work, mode="minimum")
+        listed = copied.read_text() if copied.exists() else ""
+        scratch = Path(listing.read_text()) if listing.exists() else None
+        scratch_outside = scratch is not None and not str(scratch).startswith(str(work) + os.sep)
+        scratch_removed = scratch is not None and not scratch.exists()
+        test_result(
+            "validate minimum: CHECK_CHANGED_FILES lists committed and untracked files, lives outside the worktree, and is removed after the run",
+            out.get("status") == "passed" and "feature.txt" in listed and "untracked.txt" in listed
+            and scratch_outside and scratch_removed,
+            f"out={out!r} listed={listed!r} scratch={scratch!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": "true", "check_minimum": _counter_cmd(count)})
+        _git(work, "checkout", "-q", "--detach")
+        base = resolve_check_base(work)
+        m1 = validate(work, mode="minimum")
+        m2 = validate(work, mode="minimum")
+        records_dir = work / ".claude" / "check-records"
+        records = list(records_dir.glob("*.json")) if records_dir.exists() else []
+        test_result(
+            "resolve_check_base is None on a detached HEAD",
+            base is None,
+            f"base={base!r}",
+        )
+        test_result(
+            "validate minimum with an unresolvable base runs uncached: no hit, re-executes, writes no record",
+            m1.get("cache") != "hit" and m2.get("cache") != "hit" and _runs(count) == 2 and not records,
+            f"m1={m1!r} m2={m2!r} runs={_runs(count)} records={records}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        validate(work, mode="full")
+        for rec in (work / ".claude" / "check-records").glob("*.json"):
+            data = json.loads(rec.read_text())
+            data["schema_version"] = 2
+            rec.write_text(json.dumps(data) + "\n")
+        after = validate(work, mode="full")
+        test_result(
+            "validate: a record with an unknown schema_version fails closed (a miss that re-executes)",
+            after.get("cache") == "miss" and after.get("status") == "passed" and _runs(count) == 2,
+            f"after={after!r} runs={_runs(count)}",
+        )
+
     print()
     h.summarize_and_exit()

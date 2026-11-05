@@ -328,6 +328,49 @@ def main():
         f"rc={rc} calls={calls}",
     )
 
+    print("[Section 3d] selector and validate agree: the selector's list is the canonical list for the worktree")
+    from workflow.checks import resolve_check_base, canonical_changed_files
+    with tempfile.TemporaryDirectory() as tmp:
+        origin = Path(tmp) / "origin.git"
+        work = Path(tmp) / "work"
+        git_id = ["-c", "user.email=t@example.invalid", "-c", "user.name=t"]
+
+        def _g(cwd, *args):
+            return subprocess.run(["git", *git_id, *args], cwd=str(cwd), capture_output=True, text=True, check=True)
+
+        subprocess.run(["git", "init", "--bare", "-q", str(origin)], check=True, capture_output=True)
+        subprocess.run(["git", "init", "-q", str(work)], check=True, capture_output=True)
+        _g(work, "checkout", "-q", "-b", "main")
+        (work / "README.md").write_text("base\n")
+        _g(work, "add", "README.md")
+        _g(work, "commit", "-q", "-m", "base")
+        _g(work, "remote", "add", "origin", str(origin))
+        _g(work, "push", "-q", "origin", "main")
+        _g(work, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        _g(work, "checkout", "-q", "-b", "feature")
+        (work / "committed.txt").write_text("c\n")
+        _g(work, "add", "committed.txt")
+        _g(work, "commit", "-q", "-m", "feature")
+        (work / "staged.txt").write_text("s\n")
+        _g(work, "add", "staged.txt")
+        (work / "untracked.txt").write_text("u\n")
+
+        prev_cwd = os.getcwd()
+        try:
+            os.chdir(str(work))
+            with _with_env(CHECK_BASE=None, CHECK_CHANGED_FILES=None):
+                sel_base, sel_files = selector.get_check_base_and_files()
+        finally:
+            os.chdir(prev_cwd)
+        canon_base = resolve_check_base(work)
+        canon_files = canonical_changed_files(work, canon_base) if canon_base else None
+        test_result(
+            "selector base and changed-file list equal resolve_check_base and canonical_changed_files for the same worktree",
+            sel_base == canon_base and sel_files == canon_files
+            and "committed.txt" in sel_files and "staged.txt" in sel_files and "untracked.txt" in sel_files,
+            f"selector=({sel_base!r}, {sel_files!r}) canonical=({canon_base!r}, {canon_files!r})",
+        )
+
     print()
     h.summarize_and_exit()
 
