@@ -15,6 +15,7 @@ Driven only through the CLI (subprocess) against tiny throwaway git repos. Cover
 Run with: python3 tests/test_test_cleanup_check.py
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -965,6 +966,26 @@ def next_test():
                       rc == 0 and out == "",
                       f"rc={rc} out={out!r} err={err!r}")
 
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"tests/test_parser.py": "def test_a():\n    pass\n"})
+        commit(repo, {
+            "tests/test_parser_hardening.py": "def test_x_followups():\n    pass\n"
+        }, "add")
+        rc, out, err = run(repo, ["names", "--base", base])
+        h.test_result("without --hygiene, hygiene tokens in added paths and names are not checked (rc 0)",
+                      rc == 0 and out == "",
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"tests/test_parser.py": "def test_a():\n    pass\n"})
+        commit(repo, {
+            "tests/test_respec.py": "def test_x():\n    pass\n"
+        }, "add")
+        rc, out, err = run(repo, ["names", "--hygiene", "--base", base])
+        h.test_result("a token embedded inside a word (test_respec) is not a hygiene hit",
+                      rc == 0 and out == "",
+                      f"rc={rc} out={out!r} err={err!r}")
+
     print("[Section 18] working-ids: added tests only, sorted")
     with tempfile.TemporaryDirectory() as tmp:
         repo, base = make_repo(tmp, {"tests/test_parser.py": "def test_a():\n    pass\n"})
@@ -974,10 +995,9 @@ def next_test():
         }, "add")
         head_sha = git(repo, "rev-parse", "HEAD")
         rc, out, err = run(repo, ["working-ids", "--base", base, "--head", head_sha])
-        lines = sorted(out.strip().split("\n")) if out.strip() else []
-        h.test_result("working-ids returns exactly added tests in sorted order",
-                      rc == 0 and lines == ["tests/test_lexer.py::test_c", "tests/test_parser.py::test_b"],
-                      f"rc={rc} out={out!r} lines={lines} err={err!r}")
+        h.test_result("working-ids returns exactly the added tests, in sorted order, one per line",
+                      rc == 0 and out == "tests/test_lexer.py::test_c\ntests/test_parser.py::test_b\n",
+                      f"rc={rc} out={out!r} err={err!r}")
 
     with tempfile.TemporaryDirectory() as tmp:
         repo, base = make_repo(tmp, {"tests/test_parser.py": "def test_a():\n    pass\n"})
@@ -1008,68 +1028,165 @@ def next_test():
                       rc == 0 and out == "",
                       f"rc={rc} out={out!r} err={err!r}")
 
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {
+            "tests/test_parser.py": "def test_a():\n    assert 1\n\ndef test_b():\n    assert 2\n",
+            "src/parser.py": "def parse(x):\n    return x\n"
+        })
+        rc, out, err = run(repo, ["layout", "--impl", "src/parser.py"])
+        h.test_result("layout without --base lists only test paths from the working tree, no names",
+                      rc == 0 and out.split("\n") == ["tests/test_parser.py", ""],
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {
+            "tests/test_parser.py": "def test_a():\n    assert 1\n\ndef test_b():\n    assert 2\n\ndef test_c():\n    assert 3\n",
+            "src/parser.py": "def parse(x):\n    return x\n"
+        })
+        rc, out, err = run(repo, ["layout", "--base", base, "--impl", "src/parser.py", "--max-names", "2"])
+        h.test_result("layout prints (truncated) only when a name is actually cut off",
+                      rc == 0 and out.split("\n") == ["tests/test_parser.py", "  test_a", "  test_b", "(truncated)", ""],
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {
+            "tests/test_parser.py": "def test_a():\n    assert 1\n\ndef test_b():\n    assert 2\n\ndef test_c():\n    assert 3\n",
+            "src/parser.py": "def parse(x):\n    return x\n"
+        })
+        rc, out, err = run(repo, ["layout", "--base", base, "--impl", "src/parser.py", "--max-names", "3"])
+        h.test_result("layout with exactly max-names names does not print (truncated)",
+                      rc == 0 and "(truncated)" not in out and out.count("  test_") == 3,
+                      f"rc={rc} out={out!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"tests/test_parser.py": "def test_a():\n    assert 1\n"})
+        rc, out, err = run(repo, ["layout", "--base", "0123456789abcdef0123456789abcdef01234567",
+                                  "--impl", "src/parser.py"])
+        h.test_result("layout with an unknown --base SHA fails (no silent exit 0)",
+                      rc != 0,
+                      f"rc={rc} out={out!r} err={err!r}")
+
     print("[Section 20] overlaps: parse overlaps lines, build candidates")
+    # --added-ids and --report are file paths the command opens itself; nothing is read from stdin.
+    # --out is confined to the repo (or $FLOW_DIR), which needs a git repo as the cwd, so these run in one.
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        report1 = root / "report1.md"
-        report1.write_text("t::a | overlaps: none\nt::b | overlaps: t::old\nt::c overlaps t::x\n")
-        added_ids = root / "added.txt"
-        added_ids.write_text("t::b\nt::c\n")
-        candidates = root / "candidates.md"
-        rc, out, err = run(root, ["overlaps", "--report", str(report1), "--added-ids", str(added_ids),
-                                  "--out", str(candidates)])
-        h.test_result("overlaps parses reports and added-ids, produces candidates",
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        (repo / "report1.md").write_text("t::a | overlaps: none\nt::b | overlaps: t::old\nt::c overlaps t::x\n")
+        (repo / "added.txt").write_text("t::b\nt::c\n")
+        rc, out, err = run(repo, ["overlaps", "--report", "report1.md", "--added-ids", "added.txt",
+                                  "--out", "candidates.md"])
+        candidates = repo / "candidates.md"
+        h.test_result("overlaps parses reports and added-ids and writes --out",
                       rc == 0 and candidates.exists(),
                       f"rc={rc} out={out!r} err={err!r}")
-        content = candidates.read_text()
-        h.test_result("overlaps output contains class-1 candidate for t::b with survivor t::old",
-                      "t::b" in content and "t::old" in content and "class-1 candidate" in content,
-                      f"content={content!r}")
-        h.test_result("overlaps output reports unreported id t::c",
-                      "t::c" in content and "unreported" in content,
-                      f"content={content!r}")
-        h.test_result("overlaps summary shows candidates: 1, none: 0, unreported: 1",
-                      "candidates: 1" in content and "unreported: 1" in content,
+        content = candidates.read_text() if candidates.exists() else ""
+        h.test_result("overlaps writes exact rows: candidate t::b -> t::old, unreported t::c, summary last",
+                      content == "- t::b | overlaps: t::old | class-1 candidate\n"
+                                 "unreported:\n- t::c\ncandidates: 1  none: 0  unreported: 1\n",
                       f"content={content!r}")
 
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        report1 = root / "report1.md"
-        report1.write_text("t::a | overlaps: none\nt::b | overlaps: t::old\n")
-        report2 = root / "report2.md"
-        report2.write_text("t::d | overlaps: none\n")
-        added_ids = root / "added.txt"
-        added_ids.write_text("t::a\nt::b\nt::d\n")
-        candidates = root / "candidates.md"
-        rc, out, err = run(root, ["overlaps", "--report", str(report1), "--report", str(report2),
-                                  "--added-ids", str(added_ids), "--out", str(candidates)])
-        h.test_result("overlaps accepts multiple --report files",
-                      rc == 0 and candidates.exists(),
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        (repo / "report1.md").write_text("t::a | overlaps: none\nt::b | overlaps: t::old\n")
+        (repo / "report2.md").write_text("t::d | overlaps: NONE\nt::z | overlaps: t::q\n")
+        (repo / "added.txt").write_text("t::a\nt::b\nt::d\n")
+        rc, out, err = run(repo, ["overlaps", "--report", "report1.md", "--report", "report2.md",
+                                  "--added-ids", "added.txt", "--out", "candidates.md"])
+        candidates = repo / "candidates.md"
+        content = candidates.read_text() if candidates.exists() else ""
+        h.test_result("overlaps accepts multiple --report files, ignores ids not in added-ids, treats NONE as none",
+                      rc == 0 and content == "- t::b | overlaps: t::old | class-1 candidate\n"
+                                             "unreported:\ncandidates: 1  none: 2  unreported: 0\n",
+                      f"rc={rc} content={content!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        (repo / "report1.md").write_text("t::a | overlaps: none\n")
+        (repo / "added.txt").write_text("t::a\nt::b\n")
+        (repo / "candidates.md").write_text("old content\n")
+        rc, out, err = run(repo, ["overlaps", "--report", "report1.md", "--added-ids", "added.txt",
+                                  "--out", "candidates.md"])
+        content = (repo / "candidates.md").read_text()
+        h.test_result("overlaps overwrites --out file in full and lists unreported ids",
+                      rc == 0 and "old content" not in content and "- t::b" in content
+                      and "unreported:" in content,
+                      f"rc={rc} content={content!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        (repo / "added.txt").write_text("t::a\n")
+        rc, out, err = run(repo, ["overlaps", "--report", "missing-report.md", "--added-ids", "added.txt",
+                                  "--out", "candidates.md"])
+        content = (repo / "candidates.md").read_text() if (repo / "candidates.md").exists() else ""
+        h.test_result("overlaps with missing report file treats it as zero lines (t::a unreported)",
+                      rc == 0 and content == "unreported:\n- t::a\ncandidates: 0  none: 0  unreported: 1\n",
+                      f"rc={rc} content={content!r} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        (repo / "added.txt").write_text("t::a\n")
+        outside = Path(tmp) / "outside.md"
+        rc, out, err = run(repo, ["overlaps", "--added-ids", "added.txt", "--out", str(outside)])
+        h.test_result("overlaps refuses an absolute --out outside the repo",
+                      rc == 1 and not outside.exists() and "escapes" in err,
+                      f"rc={rc} err={err!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        (repo / "added.txt").write_text("t::a\n")
+        rc, out, err = run(repo, ["overlaps", "--added-ids", "added.txt", "--out", "../escape.md"])
+        h.test_result("overlaps refuses a relative --out that climbs out with ..",
+                      rc == 1 and not (Path(tmp) / "escape.md").exists(),
+                      f"rc={rc} err={err!r}")
+
+    print("[Section 21] hygiene-json: measurement JSON from scratch evidence")
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(Path(tmp) / "missing"), "--step", "4",
+                                  "--out", str(Path(tmp) / "m.json")])
+        h.test_result("hygiene-json exits 2 when --scratch is not a directory",
+                      rc == 2 and not (Path(tmp) / "m.json").exists(),
                       f"rc={rc} out={out!r} err={err!r}")
 
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        report1 = root / "report1.md"
-        report1.write_text("t::a | overlaps: none\n")
-        added_ids = root / "added.txt"
-        added_ids.write_text("t::a\nt::b\n")
-        candidates = root / "candidates.md"
-        candidates.write_text("old content\n")
-        rc, out, err = run(root, ["overlaps", "--report", str(report1), "--added-ids", str(added_ids),
-                                  "--out", str(candidates)])
-        h.test_result("overlaps overwrites --out file in full",
-                      rc == 0 and "old content" not in candidates.read_text(),
-                      f"rc={rc} content={candidates.read_text()!r}")
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        scratch = Path(tmp) / "scratch"
+        scratch.mkdir()
+        (scratch / "round2-hygiene.txt").write_text("round2-hygiene: 2 hits\nsegment-only: test_x_wave_2\n")
+        (scratch / "round4-hygiene.txt").write_text("tests/test_a.py::test_spec_x\nsegment-only: tests/t.py::test_wave_2\n")
+        (scratch / "round4-candidates.md").write_text("candidates: 1  none: 2  unreported: 0\n")
+        (scratch / "round4.md").write_text("round4: 3 deleted, 1 relocated\n")
+        (scratch / "layout-names-given.txt").write_text("true\n")
+        out_path = Path(tmp) / "measure.json"
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "4", "--out", str(out_path)])
+        h.test_result("hygiene-json prints the output path on success and exits 0",
+                      rc == 0 and out.strip() == str(out_path) and out_path.exists(),
+                      f"rc={rc} out={out!r} err={err!r}")
+        data = json.loads(out_path.read_text()) if out_path.exists() else {}
+        expected = {
+            "round2_hygiene_hits": 2, "round2_segment_only": 1,
+            "round4_hygiene_hits": 1, "round4_segment_only": 1,
+            "overlap_candidates": 1, "overlap_none": 2, "overlap_unreported": 0,
+            "round4_deleted": 3, "round4_relocated": 1,
+            "layout_names_given": True, "step": "4",
+        }
+        h.test_result("hygiene-json writes exactly the documented keys with the scratch values",
+                      data == expected, f"data={data!r}")
 
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        added_ids = root / "added.txt"
-        added_ids.write_text("t::a\n")
-        candidates = root / "candidates.md"
-        rc, out, err = run(root, ["overlaps", "--added-ids", str(added_ids), "--out", str(candidates)])
-        h.test_result("overlaps with missing report file treats it as zero lines",
-                      rc == 0 and candidates.exists(),
-                      f"rc={rc} out={out!r} err={err!r}")
+        repo, base = make_repo(tmp, {"README.md": "# r\n"})
+        scratch = Path(tmp) / "scratch"
+        scratch.mkdir()
+        (scratch / "round2-hygiene.txt").write_text("round2-hygiene: unavailable\n")
+        out_path = Path(tmp) / "measure.json"
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "2", "--out", str(out_path)])
+        data = json.loads(out_path.read_text()) if out_path.exists() else {}
+        h.test_result("hygiene-json reports null for missing or unavailable evidence and false for layout names",
+                      rc == 0 and data.get("round2_hygiene_hits") is None
+                      and data.get("round4_hygiene_hits") is None
+                      and data.get("overlap_candidates") is None
+                      and data.get("layout_names_given") is False,
+                      f"rc={rc} data={data!r} err={err!r}")
 
     h.summarize_and_exit()
 
