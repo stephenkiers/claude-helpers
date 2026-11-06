@@ -935,6 +935,68 @@ if __name__ == "__main__":
             f"slashed={slashed!r}",
         )
 
+    print("[Section 12g] checks-core: record cap, stale temp sweep, minimum failure evicts a full pass, records outside the tree (#462)")
+    import time
+    from workflow.models import FullKey, MinimumKey, record_filename_hash
+
+    with tempfile.TemporaryDirectory() as tmp:
+        records_dir = Path(tmp) / "records"
+        full_key = FullKey(tree="a" * 40, full_digest="b" * 64)
+        min_key = MinimumKey(tree="a" * 40, full_digest="b" * 64,
+                             minimum_digest="c" * 64, changed_files_hash="d" * 64)
+        checks_mod._write_record(records_dir, full_key)
+        full_file = records_dir / f"{record_filename_hash(full_key)}.json"
+        checks_mod._evict_older_pass(records_dir, min_key, run_started=time.time() + 60)
+        test_result(
+            "eviction: a failed minimum run also evicts the older full pass for the same tree",
+            not full_file.exists(),
+            f"full record still present: {full_file.exists()}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        records_dir = Path(tmp)
+        for i in range(5):
+            aged = records_dir / f"{i:064x}.json"
+            aged.write_text("{}")
+            os.utime(aged, (1000 + i, 1000 + i))
+        with mock.patch.object(checks_mod, "MAX_CHECK_RECORDS", 3):
+            checks_mod._sweep_records(records_dir)
+        remaining = sorted(p.name for p in records_dir.glob("*.json"))
+        test_result(
+            "record cap: the sweep keeps the newest MAX_CHECK_RECORDS records and removes the oldest",
+            remaining == [f"{i:064x}.json" for i in (2, 3, 4)],
+            f"remaining={remaining!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        records_dir = Path(tmp)
+        stale = records_dir / ".abc.killed.tmp"
+        stale.write_text("x")
+        os.utime(stale, (1000, 1000))
+        live = records_dir / ".def.running.tmp"
+        live.write_text("x")
+        checks_mod._sweep_records(records_dir)
+        test_result(
+            "stale temp sweep: a temp file older than the stale window is removed, a fresh one is kept",
+            not stale.exists() and live.exists(),
+            f"stale={stale.exists()} live={live.exists()}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        # Drop the ignore rules so the record directory is not ignored: exclusion must come from the
+        # pathspec alone, so records cannot change the tree they are keyed by.
+        (work / ".claude" / ".gitignore").write_text("")
+        first = validate(work, mode="full")
+        second = validate(work, mode="full")
+        test_result(
+            "record directory outside the tree: a second run hits the record written by the first",
+            first.get("cache") == "miss" and second.get("cache") == "hit" and _runs(count) == 1,
+            f"first={first.get('cache')} second={second.get('cache')} runs={_runs(count)}",
+        )
+
     err = validate(Path(tempfile.gettempdir()), mode="bogus")
     test_result(
         "validate error result: carries every ValidateResult key plus error (typed ValidateErrorResult)",

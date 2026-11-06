@@ -1111,6 +1111,37 @@ if __name__ == "__main__":
             f"no_base={no_base!r}",
         )
 
+        _write(work / "odd\nname.txt", "x\n")
+        odd_files = canonical_changed_files(work, base)
+        test_result(
+            "canonical_changed_files: a filename containing a newline is one NUL-separated entry",
+            odd_files is not None and "odd\nname.txt" in odd_files,
+            f"files={odd_files!r}",
+        )
+
+        unknown_base = canonical_changed_files(work, "0" * 40)
+        test_result(
+            "canonical_changed_files: an unknown base gives None (unknown), not an empty list",
+            unknown_base is None,
+            f"unknown_base={unknown_base!r}",
+        )
+
+        tree_before = worktree_tree(work)
+        _write(work / ".claude" / "check-records" / "r.json", "{}\n")
+        _git(work, "add", "-f", ".claude/check-records/r.json")
+        tree_after = worktree_tree(work)
+        test_result(
+            "worktree_tree: a force-added check record never changes the tree it is keyed by",
+            tree_before is not None and tree_before == tree_after,
+            f"before={tree_before!r} after={tree_after!r}",
+        )
+        files_with_record = canonical_changed_files(work, base)
+        test_result(
+            "canonical_changed_files: check records are excluded from the changed set",
+            files_with_record is not None and ".claude/check-records/r.json" not in files_with_record,
+            f"files={files_with_record!r}",
+        )
+
     print("[Section 16c] cache and record paths are git-ignored in this repo (#462 Part A)")
     repo_root = Path(__file__).resolve().parent.parent
     for ignored_path in [
@@ -1129,6 +1160,56 @@ if __name__ == "__main__":
             f"{ignored_path} is git-ignored (so validate records and caches never dirty the tree)",
             proc.returncode == 0,
             f"rc={proc.returncode} stderr={proc.stderr.strip()!r}",
+        )
+
+    print("[Section 17] checks-core: non-mapping commands and package-json re-derivation for check_minimum (#462)")
+    test_result(
+        "_command_from_mapping: a non-mapping commands value is no command and does not raise",
+        checks_module._command_from_mapping({"commands": ["make check"]}, "check") is None,
+    )
+    test_result(
+        "_command_from_mapping: a non-string value is no command",
+        checks_module._command_from_mapping({"commands": {"check": 3}}, "check") is None,
+    )
+    test_result(
+        "_command_from_mapping: a missing mapping is no command",
+        checks_module._command_from_mapping(None, "check") is None,
+    )
+    test_result(
+        "_command_from_mapping: the command is returned stripped",
+        checks_module._command_from_mapping({"commands": {"check": "  make check  "}}, "check") == "make check",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp) / "work"
+        _write(work / ".claude" / "project.yaml", "commands:\n  - make check\n")
+        raised = None
+        try:
+            list_detail = resolve_check_detail(work, None)
+        except Exception as e:  # noqa: BLE001 - any exception is the failure this checks for
+            raised = e
+            list_detail = None
+        test_result(
+            "resolve_check_detail: a project.yaml whose commands is a list does not raise and resolves no command",
+            raised is None and list_detail is not None and list_detail.command is None,
+            f"raised={raised!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        cache = root / "repo-cache.json"
+        cache.write_text(json.dumps({"commandSources": {"check": "package-json"}}))
+        min_resolution, _min_note = checks_module._repo_cache_check(cache, "check_minimum", "make quick", root, "worktree")
+        test_result(
+            "repo-cache check_minimum with package-json provenance is taken as written, not re-derived",
+            min_resolution is not None and min_resolution.command == "make quick"
+            and min_resolution.source == "repo-cache",
+            f"resolution={min_resolution!r}",
+        )
+        full_resolution, full_note = checks_module._repo_cache_check(cache, "check", "npm run check", root, "worktree")
+        test_result(
+            "repo-cache check with package-json provenance and no package.json here is not trusted",
+            full_resolution is None and bool(full_note),
+            f"resolution={full_resolution!r} note={full_note!r}",
         )
 
     print()

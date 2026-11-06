@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Callable, Any, Tuple
 
 from . import cleanup, merge, shipit, checks, deps, track, verify_queue, issue_comments, heal
-from .models import MODES
+from .models import MODES, parse_mode
 from .providers import GithubProvider, LocalProvider
 from .providers.base import Provider, ProviderError
 from . import worktrees
@@ -726,7 +726,7 @@ def main() -> None:
             try:
                 worktree_path = Path(args.worktree)
                 main_worktree_path = Path(args.main_worktree) if args.main_worktree else None
-                mode = args.mode if args.mode else "full"
+                mode = parse_mode(args.mode or "full") or "full"
                 resolution = checks.resolve_check_detail(worktree_path, main_worktree_path, mode=mode)
                 source_kind: checks.ConfigKind = "project.yaml" if resolution.source == "project.yaml" else "repo-cache"
                 timeout_secs, timeout_source = checks.resolve_check_timeout(
@@ -795,11 +795,8 @@ def main() -> None:
                     exit_code = 0 if (validate_result.get("status") == "passed") else 1
                 sys.exit(exit_code)
             except Exception as e:
-                output = {
-                    "status": "error",
-                    "error": str(e),
-                }
-                print(json.dumps(output))
+                requested = parse_mode(args.mode) if isinstance(args.mode, str) else None
+                print(json.dumps(checks.validate_error_result(str(e), requested or "full")))
                 sys.exit(2)
         else:
             checks_parser.print_help()

@@ -104,12 +104,12 @@ def main():
     # Create records
     full_record = CheckRecord(
         schema_version=1, key=FullKey(tree=valid_tree, full_digest=valid_digest),
-        passed=True, mode_executed="full", written_at=0.0
+        passed=True, written_at=0.0
     )
     min_record = CheckRecord(
         schema_version=1, key=MinimumKey(tree=valid_tree, full_digest=valid_digest,
                                          minimum_digest=valid_min_digest, changed_files_hash=valid_hash),
-        passed=True, mode_executed="minimum", written_at=0.0
+        passed=True, written_at=0.0
     )
 
     # Same tree, same digests
@@ -254,6 +254,44 @@ def main():
     h.test_result("parse_check_record accepts a record whose key matches its filename hash",
                   rec is not None and reason is None)
 
+    # ========== Record shape: only passes are recorded, mode is derived from the key (#12) ==========
+    try:
+        CheckRecord(schema_version=1, key=FullKey(tree=valid_tree, full_digest=valid_digest),
+                    passed=False, written_at=0.0)
+        h.test_result("CheckRecord(passed=False) raises ValueError", False)
+    except ValueError:
+        h.test_result("CheckRecord(passed=False) raises ValueError", True)
+    h.test_result("CheckRecord.mode_executed is 'full' for a FullKey record",
+                  full_record.mode_executed == "full")
+    h.test_result("CheckRecord.mode_executed is 'minimum' for a MinimumKey record",
+                  min_record.mode_executed == "minimum")
+
+    # ========== parse_check_record: the filename hash is checked only when a filename is given (#28) ==========
+    rec, reason = parse_check_record(valid_data)
+    h.test_result("parse_check_record without a filename accepts a well-formed record",
+                  rec is not None and reason is None, f"reason={reason!r}")
+
+    # ========== check_key_of: an empty digest never builds a key (#14) ==========
+    h.test_result("check_key_of returns None for an empty full_digest (full mode)",
+                  check_key_of("full", valid_tree, "") is None)
+    h.test_result("check_key_of returns None for an empty minimum_digest (minimum mode)",
+                  check_key_of("minimum", valid_tree, valid_digest, "", valid_hash) is None)
+
+    # ========== ChangedFilesSource names every source, including not-computed (#13) ==========
+    from typing import get_args
+    from workflow.models import ChangedFilesSource
+    h.test_result("ChangedFilesSource includes 'not-computed'",
+                  "not-computed" in get_args(ChangedFilesSource))
+
+    from workflow.checks import validate_error_result
+    from workflow.models import ValidateErrorResult
+    error_result = validate_error_result("boom", "minimum")
+    h.test_result("validate_error_result carries exactly the ValidateErrorResult keys",
+                  set(error_result.keys()) == set(get_type_hints(ValidateErrorResult).keys()),
+                  f"keys={sorted(error_result.keys())}")
+    h.test_result("validate_error_result keeps the requested mode and the message",
+                  error_result["mode_requested"] == "minimum" and error_result["error"] == "boom")
+
     # ========== Test CLI --mode choices (argparse, real subprocess) ==========
     import subprocess
 
@@ -314,7 +352,7 @@ def main():
                 rec_key = FullKey(tree=T, full_digest=F)
             else:
                 rec_key = MinimumKey(tree=T, full_digest=F, minimum_digest=M, changed_files_hash=H)
-            rec = CheckRecord(schema_version=1, key=rec_key, passed=True, mode_executed=record_mode, written_at=0.0)
+            rec = CheckRecord(schema_version=1, key=rec_key, passed=True, written_at=0.0)
             tree_r = T if tree_eq else OT
             full_r = F if full_eq else OF
             if request_kind == "full":

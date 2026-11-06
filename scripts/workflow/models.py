@@ -9,7 +9,7 @@ import hashlib
 import math
 import re
 from dataclasses import dataclass, field, asdict
-from typing import Optional, Dict, Any, List, Literal, TypedDict, Union, NoReturn, Tuple, Mapping, get_args
+from typing import Optional, Dict, Any, List, Literal, TypedDict, Union, NoReturn, Tuple, Mapping, cast, get_args
 
 
 GITHUB_CACHE_SCHEMA_VERSION = "1.0"
@@ -573,11 +573,14 @@ class ScoutVerdict:
 Mode = Literal["minimum", "full"]
 MODES: Tuple[Mode, ...] = get_args(Mode)  # ("minimum", "full")
 
+# Where a validate run's changed-file set came from ("not-computed" when validate never reached it)
+ChangedFilesSource = Literal["computed", "base-unresolved", "tree-unavailable", "not-computed"]
+
 
 def parse_mode(s: str) -> Optional[Mode]:
     """Parse a string to Mode. Returns None if not a valid mode."""
     if s in MODES:
-        return s  # type: ignore[return-value]
+        return cast(Mode, s)
     return None
 
 
@@ -633,19 +636,21 @@ def check_key_of(
     """
     if not tree:  # empty or None
         return None
+    if not full_digest:
+        return None
     if mode == "full":
         try:
             return FullKey(tree=tree, full_digest=full_digest)
         except ValueError:
             return None
     elif mode == "minimum":
-        if not changed_files_hash:
+        if not minimum_digest or not changed_files_hash:
             return None
         try:
             return MinimumKey(
                 tree=tree,
                 full_digest=full_digest,
-                minimum_digest=minimum_digest or "",  # Must be provided; validate will catch empty
+                minimum_digest=minimum_digest,
                 changed_files_hash=changed_files_hash
             )
         except ValueError:
@@ -712,9 +717,18 @@ class CheckRecord:
     """One cache record for a check result, keyed by (tree, digests, changed_files_hash)."""
     schema_version: int  # Currently 1
     key: CheckKey  # Embedded for re-verification
-    passed: bool  # True iff the check passed
-    mode_executed: Mode  # Mode that was actually run ("full" or "minimum")
+    passed: bool  # True iff the check passed; a record is only ever written for a pass
     written_at: float  # Unix timestamp when record was written
+
+    def __post_init__(self) -> None:
+        """Only a passing run is recorded: a record for a failure is a programming error."""
+        if self.passed is not True:
+            raise ValueError(f"CheckRecord is only written for a passing run, got passed={self.passed!r}")
+
+    @property
+    def mode_executed(self) -> Mode:
+        """The mode that was run, derived from the key type: a minimum key is a minimum run."""
+        return "minimum" if isinstance(self.key, MinimumKey) else "full"
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -822,16 +836,14 @@ def parse_check_record(
     if isinstance(key, MinimumKey) and mode != "minimum":
         return None, "minimum-shaped key with mode_executed full"
 
-    # The embedded key is always re-hashed; with no filename given it is checked against its own hash.
-    expected_hash = filename_hash if filename_hash is not None else record_filename_hash(key)
-    if record_filename_hash(key) != expected_hash:
+    # When the caller names the file it was read from, the embedded key must hash to that name.
+    if filename_hash is not None and record_filename_hash(key) != filename_hash:
         return None, "embedded key does not hash to the record filename"
 
     return CheckRecord(
         schema_version=schema_version,
         key=key,
         passed=True,
-        mode_executed=mode,
         written_at=written_at,
     ), None
 
@@ -868,7 +880,7 @@ class ValidateResult(CheckResultsDict, total=True):
     fell_back_to_full: bool
     cache: Literal["hit", "miss", "forced"]
     satisfied_by: Optional[str]  # filename hash or None
-    changed_files_source: str  # "computed" or reason for why it's not available
+    changed_files_source: ChangedFilesSource  # "computed", or the reason it is not available
 
 
 class ValidateErrorResult(ValidateResult, total=True):

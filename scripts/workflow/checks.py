@@ -16,9 +16,10 @@ import re
 import signal
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Dict, Iterator, Optional, TextIO, Tuple, Any, Mapping, Final, Literal
+from typing import List, Dict, Iterator, Optional, Set, TextIO, Tuple, Any, Mapping, Final, Literal
 
 from .safety import Unknown, fail_closed
 from .cache import read_repo_cache
@@ -26,6 +27,7 @@ from .deps import atomic_write_text, find_lockfile, read_json_object
 from .models import (
     validate_repo_cache, valid_timeout_secs, Mode, parse_mode, CheckKey, check_key_of, CheckRecord,
     FullKey, MinimumKey, satisfies, parse_check_record, record_filename_hash, CHECK_RECORD_SCHEMA_VERSION,
+    ChangedFilesSource,
     ValidateResult,
     ValidateErrorResult,
     CheckResultsDict,
@@ -50,6 +52,21 @@ DEFAULT_CHECK_TIMEOUT_SECS: Final = 300
 # The source value recorded when an explicit checkOptOut applies. Callers compare against this
 # constant (flow-verify-receipt.py does), never against a bare "opt-out" literal.
 OPT_OUT_SOURCE: Final = "opt-out"
+# Upper bound on one git command in the change-detection and tree helpers, so a wedged git cannot hang a gate.
+GIT_TIMEOUT_SECS: Final = 60
+# The check-record cache lives under .claude/check-records. It is excluded from every git computation
+# here (tree and changed set), so storing a record never changes the tree that keys it, wherever the
+# repo does or does not ignore the directory.
+RECORDS_REL_DIR: Final = Path(".claude") / "check-records"
+# Glob magic is required: a literal exclude of an ignored path makes `git add` exit 1
+# ("paths are ignored by one of your .gitignore files") even though the path is excluded.
+# The trailing /** is needed because glob `*` does not cross a `/`, so files inside the
+# directory (including force-added ones) would otherwise still match the tree.
+RECORDS_EXCLUDE_PATHSPEC: Final = ":(exclude,glob).claude/check-record*/**"
+# Most records kept per worktree; the oldest are removed after a write beyond this.
+MAX_CHECK_RECORDS: Final = 200
+# A temp file in the records directory older than this is crash residue, not a concurrent write.
+STALE_TEMP_SECS: Final = 3600
 
 # The config file kinds that may carry checkTimeoutSecs or commands.check. Explicit so that the
 # parser is chosen by kind, not by inspecting the file name.
@@ -339,15 +356,21 @@ def _load_project_yaml(path: Path) -> Tuple[Optional[Dict[str, Any]], Optional[s
     return (data if isinstance(data, dict) else {}), None
 
 
-def _check_command_from_mapping(data: Optional[Dict[str, Any]]) -> Optional[str]:
-    """The stripped commands.check string from a parsed project.yaml, or None."""
+def _command_from_mapping(data: Optional[Dict[str, Any]], key: str) -> Optional[str]:
+    """
+    The stripped, non-empty commands.<key> string from a parsed project.yaml, or None.
+
+    The one reader for every project.yaml command. A commands value that is not a mapping (a string
+    or a list, say) yields None rather than raising.
+    """
     if data is None:
         return None
-    commands = data.get("commands", {})
-    if isinstance(commands, dict):
-        check_cmd = commands.get("check")
-        if isinstance(check_cmd, str) and check_cmd.strip():
-            return check_cmd.strip()
+    commands = data.get("commands")
+    if not isinstance(commands, dict):
+        return None
+    value = commands.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return None
 
 
@@ -448,24 +471,26 @@ PACKAGE_JSON_UNDERIVED_NOTE = " (package-json check not re-derived for this work
 
 
 def _repo_cache_check(
-    cache_file: Path, check_cmd: str, worktree: Path, scope: ConfigScope
+    cache_file: Path, check_key: str, check_cmd: str, worktree: Path, scope: ConfigScope
 ) -> Tuple[Optional["CheckResolution"], str]:
     """
-    Turn a non-empty repo-cache check into a CheckResolution, or explain why it is not trusted.
+    Turn a non-empty repo-cache command into a CheckResolution, or explain why it is not trusted.
 
-    A check with package-json provenance was copied from some branch's package.json into the shared
-    cache, so it is not trusted as written: detection is re-run on the worktree being resolved and
-    that result is used. If that worktree derives no check, the cached value is ignored.
+    Only the `check` key can carry package-json provenance (commandSources.check). A check with that
+    provenance was copied from some branch's package.json into the shared cache, so it is not trusted
+    as written: detection is re-run on the worktree being resolved and that result is used. If that
+    worktree derives no check, the cached value is ignored. Any other key, including check_minimum,
+    is taken as written and labelled as a plain repo-cache value: it is never re-derived as the full
+    check, so a minimum resolution cannot come back mislabelled as the full command.
 
     Returns (resolution, note). resolution is None only in the ignored case, and note then names it.
     """
-    label = _repo_cache_label(cache_file)
-    if label != PACKAGE_JSON_LABEL:
-        return CheckResolution(check_cmd.strip(), label, cache_file, None, source_scope=scope), ""
-    detected = detect_package_json_check(worktree)
-    if detected is None:
-        return None, PACKAGE_JSON_UNDERIVED_NOTE
-    return CheckResolution(detected, PACKAGE_JSON_LABEL, cache_file, None, source_scope=scope), ""
+    if check_key == "check" and _repo_cache_label(cache_file) == PACKAGE_JSON_LABEL:
+        detected = detect_package_json_check(worktree)
+        if detected is None:
+            return None, PACKAGE_JSON_UNDERIVED_NOTE
+        return CheckResolution(detected, PACKAGE_JSON_LABEL, cache_file, None, source_scope=scope), ""
+    return CheckResolution(check_cmd.strip(), "repo-cache", cache_file, None, source_scope=scope), ""
 
 
 def suggest_from_claude_md(worktree: Path) -> Optional[str]:
@@ -539,7 +564,95 @@ class CheckResolution:
                 raise ValueError("a resolved command needs a real source and no failure_reason")
 
 
-def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None, mode: str = "full") -> CheckResolution:
+@dataclass
+class _ProjectYaml:
+    """One project.yaml read for resolution: its location, whether it exists, and its parsed mapping."""
+    path: Path
+    scope: ConfigScope
+    present: bool
+    mapping: Optional[Dict[str, Any]]
+    note: Optional[str]
+
+
+def _read_project_yaml_source(path: Path, scope: ConfigScope) -> _ProjectYaml:
+    """Read one project.yaml once. An absent file is recorded as not present, not as an error."""
+    if not path.exists():
+        return _ProjectYaml(path, scope, False, None, None)
+    mapping, note = _load_project_yaml(path)
+    return _ProjectYaml(path, scope, True, mapping, note)
+
+
+def _repo_cache_source(
+    cache_file: Path, scope: ConfigScope, check_key: str, worktree: Path, sources_tried: List[str]
+) -> Optional[CheckResolution]:
+    """
+    Resolve check_key from one repo-cache.json, noting in sources_tried why it was not used.
+
+    The note is "<scope> repo-cache.json (<key>)" plus the reason, when the file did not yield a command.
+    """
+    label = f"{scope} repo-cache.json"
+    if not cache_file.exists():
+        sources_tried.append(f"{label} ({check_key}, not found)")
+        return None
+    entry = f"{label} ({check_key})"
+    cache_data, read_err = read_repo_cache(cache_file)
+    if read_err or not cache_data:
+        sources_tried.append(entry + (f" ({read_err})" if read_err else " (validation failed)"))
+        return None
+    check_cmd = cache_data.commands.get(check_key)
+    if not isinstance(check_cmd, str) or not check_cmd.strip():
+        sources_tried.append(entry + REPO_CACHE_NO_KEY_SUFFIX)
+        return None
+    resolution, note = _repo_cache_check(cache_file, check_key, check_cmd, worktree, scope)
+    if resolution is None:
+        sources_tried.append(entry + note)
+    return resolution
+
+
+def _yaml_source(
+    source: Optional[_ProjectYaml], check_key: str, sources_tried: List[str]
+) -> Optional[CheckResolution]:
+    """Resolve check_key from one project.yaml. None source means that scope has no main worktree."""
+    if source is None:
+        return None
+    if not source.present:
+        sources_tried.append(f"{source.scope} project.yaml ({check_key}, not found)")
+        return None
+    command = _command_from_mapping(source.mapping, check_key)
+    if command is not None:
+        return CheckResolution(command, "project.yaml", source.path, None, source_scope=source.scope)
+    sources_tried.append(f"{source.scope} project.yaml ({source.note or NO_CHECK_KEY_NOTE})")
+    return None
+
+
+def _resolve_key(
+    worktree: Path,
+    main_worktree: Optional[Path],
+    check_key: str,
+    worktree_yaml: _ProjectYaml,
+    main_yaml: Optional[_ProjectYaml],
+    sources_tried: List[str],
+) -> Optional[CheckResolution]:
+    """
+    Return the first source that yields check_key, or None.
+
+    Order: worktree repo-cache.json, main repo-cache.json, worktree project.yaml, main project.yaml.
+    """
+    cache_sources: List[Tuple[Path, ConfigScope]] = [(worktree / ".claude" / "repo-cache.json", "worktree")]
+    if main_worktree is not None:
+        cache_sources.append((main_worktree / ".claude" / "repo-cache.json", "main"))
+    for cache_file, scope in cache_sources:
+        resolution = _repo_cache_source(cache_file, scope, check_key, worktree, sources_tried)
+        if resolution is not None:
+            return resolution
+    for yaml_source in (worktree_yaml, main_yaml):
+        resolution = _yaml_source(yaml_source, check_key, sources_tried)
+        if resolution is not None:
+            return resolution
+    return None
+
+
+def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None, mode: Mode = "full") -> CheckResolution:
     """
     Resolve the check command with fallback logic, reporting the supplying file.
 
@@ -582,125 +695,29 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None, m
     repository-committer-controlled at their source.
     """
     sources_tried: List[str] = []
-    check_key = "check_minimum" if mode == "minimum" else "check"
     fell_back_to_full = False
 
-    # 1. Try repo-cache.json in worktree
-    cache_file = worktree / ".claude" / "repo-cache.json"
-    if cache_file.exists():
-        cache_data, read_err = read_repo_cache(cache_file)
-        sources_tried.append(f"worktree repo-cache.json ({check_key})")
-        if not read_err and cache_data:
-            check_cmd = cache_data.commands.get(check_key)
-            if isinstance(check_cmd, str) and check_cmd.strip():
-                resolution, note = _repo_cache_check(cache_file, check_cmd, worktree, "worktree")
-                if resolution is not None:
-                    resolution.fell_back_to_full = fell_back_to_full
-                    return resolution
-                sources_tried[-1] += note
-            else:
-                sources_tried[-1] += REPO_CACHE_NO_KEY_SUFFIX
-        else:
-            sources_tried[-1] += f" ({read_err})" if read_err else " (validation failed)"
-    else:
-        sources_tried.append(f"worktree repo-cache.json ({check_key}, not found)")
-
-    # 2. Try repo-cache.json in main worktree if worktree had no check
+    # Each project.yaml is read once; its mapping serves both the command lookup and the opt-out.
+    worktree_yaml = _read_project_yaml_source(worktree / ".claude" / "project.yaml", "worktree")
+    main_yaml: Optional[_ProjectYaml] = None
     if main_worktree:
-        main_cache_file = main_worktree / ".claude" / "repo-cache.json"
-        if main_cache_file.exists():
-            cache_data, read_err = read_repo_cache(main_cache_file)
-            sources_tried.append(f"main repo-cache.json ({check_key})")
-            if not read_err and cache_data:
-                check_cmd = cache_data.commands.get(check_key)
-                if isinstance(check_cmd, str) and check_cmd.strip():
-                    resolution, note = _repo_cache_check(main_cache_file, check_cmd, worktree, "main")
-                    if resolution is not None:
-                        resolution.fell_back_to_full = fell_back_to_full
-                        return resolution
-                    sources_tried[-1] += note
-                else:
-                    sources_tried[-1] += REPO_CACHE_NO_KEY_SUFFIX
-            else:
-                sources_tried[-1] += f" ({read_err})" if read_err else " (validation failed)"
-        else:
-            sources_tried.append(f"main repo-cache.json ({check_key}, not found)")
+        main_yaml = _read_project_yaml_source(main_worktree / ".claude" / "project.yaml", "main")
 
-    # 3. Try project.yaml in worktree (parsed once; the mapping is reused for the opt-out below)
-    project_yaml = worktree / ".claude" / "project.yaml"
-    worktree_yaml: Optional[Dict[str, Any]] = None
-    if project_yaml.exists():
-        worktree_yaml, load_note = _load_project_yaml(project_yaml)
-        check_cmd = (worktree_yaml.get("commands") or {}).get(check_key) if worktree_yaml else None
-        if isinstance(check_cmd, str) and check_cmd.strip():
-            resolution = CheckResolution(check_cmd, "project.yaml", project_yaml, None, source_scope="worktree")
-            resolution.fell_back_to_full = fell_back_to_full
-            return resolution
-        sources_tried.append(f"worktree project.yaml ({load_note or NO_CHECK_KEY_NOTE})")
-    else:
-        sources_tried.append(f"worktree project.yaml ({check_key}, not found)")
+    # Steps 1-4: repo-cache and project.yaml for the requested key (check_minimum in minimum mode).
+    check_key = "check_minimum" if mode == "minimum" else "check"
+    resolution = _resolve_key(worktree, main_worktree, check_key, worktree_yaml, main_yaml, sources_tried)
+    if resolution is not None:
+        resolution.fell_back_to_full = False
+        return resolution
 
-    # 4. Try project.yaml in main worktree if worktree had no check
-    main_yaml: Optional[Dict[str, Any]] = None
-    if main_worktree:
-        main_project_yaml = main_worktree / ".claude" / "project.yaml"
-        if main_project_yaml.exists():
-            main_yaml, load_note = _load_project_yaml(main_project_yaml)
-            check_cmd = (main_yaml.get("commands") or {}).get(check_key) if main_yaml else None
-            if isinstance(check_cmd, str) and check_cmd.strip():
-                resolution = CheckResolution(check_cmd, "project.yaml", main_project_yaml, None, source_scope="main")
-                resolution.fell_back_to_full = fell_back_to_full
-                return resolution
-            sources_tried.append(f"main project.yaml ({load_note or NO_CHECK_KEY_NOTE})")
-        else:
-            sources_tried.append(f"main project.yaml ({check_key}, not found)")
-
-    # If minimum mode and nothing found, fall back to full check
+    # Minimum mode with no check_minimum anywhere: the same sources for "check". The fallback's own
+    # notes are not reported; the failure message lists the check_minimum attempts only.
     if mode == "minimum":
         fell_back_to_full = True
-        # Re-try the same sources but for "check" instead
-        check_key = "check"
-
-        # Try repo-cache in worktree
-        cache_file = worktree / ".claude" / "repo-cache.json"
-        if cache_file.exists():
-            cache_data, read_err = read_repo_cache(cache_file)
-            if not read_err and cache_data:
-                check_cmd = cache_data.commands.get("check")
-                if isinstance(check_cmd, str) and check_cmd.strip():
-                    resolution, note = _repo_cache_check(cache_file, check_cmd, worktree, "worktree")
-                    if resolution is not None:
-                        resolution.fell_back_to_full = True
-                        return resolution
-
-        # Try repo-cache in main
-        if main_worktree:
-            main_cache_file = main_worktree / ".claude" / "repo-cache.json"
-            if main_cache_file.exists():
-                cache_data, read_err = read_repo_cache(main_cache_file)
-                if not read_err and cache_data:
-                    check_cmd = cache_data.commands.get("check")
-                    if isinstance(check_cmd, str) and check_cmd.strip():
-                        resolution, note = _repo_cache_check(main_cache_file, check_cmd, worktree, "main")
-                        if resolution is not None:
-                            resolution.fell_back_to_full = True
-                            return resolution
-
-        # Try project.yaml in worktree
-        if worktree_yaml:
-            check_cmd = _check_command_from_mapping(worktree_yaml)
-            if check_cmd:
-                resolution = CheckResolution(check_cmd, "project.yaml", project_yaml, None, source_scope="worktree")
-                resolution.fell_back_to_full = True
-                return resolution
-
-        # Try project.yaml in main
-        if main_yaml:
-            check_cmd = _check_command_from_mapping(main_yaml)
-            if check_cmd:
-                resolution = CheckResolution(check_cmd, "project.yaml", main_project_yaml, None, source_scope="main")
-                resolution.fell_back_to_full = True
-                return resolution
+        resolution = _resolve_key(worktree, main_worktree, "check", worktree_yaml, main_yaml, [])
+        if resolution is not None:
+            resolution.fell_back_to_full = True
+            return resolution
 
     # 5. Try justfile check recipe
     justfile = worktree / "justfile"
@@ -726,7 +743,9 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None, m
         sources_tried.append("justfile (not found)")
 
     # No command resolved: explicit opt-out (worktree first, then main) before failing closed.
-    opt_out_reason, opt_out_invalid = _resolve_opt_out(worktree_yaml, main_yaml)
+    opt_out_reason, opt_out_invalid = _resolve_opt_out(
+        worktree_yaml.mapping, main_yaml.mapping if main_yaml is not None else None
+    )
     if opt_out_reason is not None:
         return CheckResolution(
             None,
@@ -1164,11 +1183,12 @@ def worktree_tree(worktree: Path) -> Optional[str]:
             capture_output=True,
             text=True,
             check=True,
+            timeout=GIT_TIMEOUT_SECS,
         )
         git_dir_raw = result.stdout.strip()
         if not git_dir_raw:
             reason = "git rev-parse --git-dir returned empty"
-            logging.warning(f"idempotency disabled: no tree: {reason}")
+            logging.warning("idempotency disabled: no tree: %s", reason)
             return None
 
         # Create temp index file in system temp directory, not in the git dir
@@ -1186,15 +1206,18 @@ def worktree_tree(worktree: Path) -> Optional[str]:
                 env=env,
                 capture_output=True,
                 check=True,
+                timeout=GIT_TIMEOUT_SECS,
             )
 
-            # Stage all changes
+            # Stage all changes, except the check-record cache itself: records must never change the
+            # tree they are keyed by, whether or not the repo ignores .claude/check-records.
             subprocess.run(
-                ["git", "add", "-A"],
+                ["git", "add", "-A", "--", ".", RECORDS_EXCLUDE_PATHSPEC],
                 cwd=worktree,
                 env=env,
                 capture_output=True,
                 check=True,
+                timeout=GIT_TIMEOUT_SECS,
             )
 
             # Get tree SHA
@@ -1205,12 +1228,13 @@ def worktree_tree(worktree: Path) -> Optional[str]:
                 capture_output=True,
                 text=True,
                 check=True,
+                timeout=GIT_TIMEOUT_SECS,
             )
             tree = result.stdout.strip()
             # Never return an empty tree: it cannot key a record
             if not tree:
                 reason = "git write-tree returned empty"
-                logging.warning(f"idempotency disabled: no tree: {reason}")
+                logging.warning("idempotency disabled: no tree: %s", reason)
                 return None
             return tree
         finally:
@@ -1221,13 +1245,11 @@ def worktree_tree(worktree: Path) -> Optional[str]:
                 pass
     except Exception as e:
         reason = str(e)
-        logging.warning(f"idempotency disabled: no tree: {reason}")
+        logging.warning("idempotency disabled: no tree: %s", reason)
         return None
 
 
 def _commands_digest(commands: Mapping[str, Optional[str]]) -> str:
-    import hashlib
-
     canonical = json.dumps({k: commands[k] for k in sorted(commands)}, sort_keys=True)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -1246,6 +1268,7 @@ def resolve_check_base(worktree: Path) -> Optional[str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=GIT_TIMEOUT_SECS,
         )
         if detached.returncode != 0:
             return None
@@ -1265,6 +1288,7 @@ def resolve_check_base(worktree: Path) -> Optional[str]:
             capture_output=True,
             text=True,
             check=True,
+            timeout=GIT_TIMEOUT_SECS,
         )
         base_sha = result.stdout.strip()
         if not base_sha:
@@ -1285,39 +1309,45 @@ def canonical_changed_files(worktree: Path, base: Optional[str]) -> Optional[Lis
     if not base:
         return None
 
-    files_set: set = set()
+    # -z: NUL-separated output, so a filename containing a newline is one entry, not two.
+    # The record directory is excluded for the same reason it is excluded from worktree_tree.
+    files_set: Set[str] = set()
     try:
         # Committed and working-tree changes (both rename sides)
         result = subprocess.run(
-            ["git", "diff", "--name-only", "--no-renames", base],
+            ["git", "diff", "--name-only", "-z", "--no-renames", base, "--", ".", RECORDS_EXCLUDE_PATHSPEC],
             cwd=worktree,
             capture_output=True,
             text=True,
             check=True,
+            timeout=GIT_TIMEOUT_SECS,
         )
-        files_set.update(f for f in result.stdout.strip().split("\n") if f)
+        files_set.update(f for f in result.stdout.split("\0") if f)
 
         # Staged changes
         result = subprocess.run(
-            ["git", "diff", "--cached", "--name-only", "--no-renames"],
+            ["git", "diff", "--cached", "--name-only", "-z", "--no-renames", "--", ".", RECORDS_EXCLUDE_PATHSPEC],
             cwd=worktree,
             capture_output=True,
             text=True,
             check=True,
+            timeout=GIT_TIMEOUT_SECS,
         )
-        files_set.update(f for f in result.stdout.strip().split("\n") if f)
+        files_set.update(f for f in result.stdout.split("\0") if f)
 
         # Untracked non-ignored files
         result = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard", "--full-name"],
+            ["git", "ls-files", "--others", "--exclude-standard", "--full-name", "-z", "--", ".", RECORDS_EXCLUDE_PATHSPEC],
             cwd=worktree,
             capture_output=True,
             text=True,
             check=True,
+            timeout=GIT_TIMEOUT_SECS,
         )
-        files_set.update(f for f in result.stdout.strip().split("\n") if f)
-    except Exception:
+        files_set.update(f for f in result.stdout.split("\0") if f)
+    except Exception as e:
         # On error the changed set is unknown (no hash, validate runs uncached)
+        logging.debug("changed-file set unknown: %s", e)
         return None
 
     return sorted(files_set)
@@ -1344,15 +1374,20 @@ def _read_record(path: Path, filename_hash: str) -> Optional[CheckRecord]:
     return record
 
 
-def _lookup_satisfying_record(records_dir: Path, requested: CheckKey) -> Optional[Tuple[str, CheckRecord]]:
+def _satisfying_keys(requested: CheckKey) -> List[CheckKey]:
     """
-    Find a passing record that satisfies `requested` (models.satisfies). A minimum request is also
-    satisfied by the full record for the same tree and full digest, since a passing full run covers it.
+    The keys whose records can satisfy `requested`: the key itself, plus, for a minimum request, the
+    full key of the same tree and full digest, since a passing full run covers a minimum request.
     """
-    candidates: List[CheckKey] = [requested]
+    keys: List[CheckKey] = [requested]
     if isinstance(requested, MinimumKey):
-        candidates.append(FullKey(tree=requested.tree, full_digest=requested.full_digest))
-    for candidate in candidates:
+        keys.append(FullKey(tree=requested.tree, full_digest=requested.full_digest))
+    return keys
+
+
+def _lookup_satisfying_record(records_dir: Path, requested: CheckKey) -> Optional[Tuple[str, CheckRecord]]:
+    """Find a passing record that satisfies `requested` (models.satisfies) among _satisfying_keys."""
+    for candidate in _satisfying_keys(requested):
         name = record_filename_hash(candidate)
         record = _read_record(records_dir / f"{name}.json", name)
         if record is not None and satisfies(record, requested):
@@ -1360,17 +1395,40 @@ def _lookup_satisfying_record(records_dir: Path, requested: CheckKey) -> Optiona
     return None
 
 
-def _write_record(records_dir: Path, key: CheckKey, mode_executed: Mode) -> str:
-    """Write a passing record atomically (same-directory unique temp, then os.replace). Returns the stem."""
-    import time
+def _mtime(path: Path) -> float:
+    """Modification time, or 0.0 when the file has already gone (sorts it first; removal then no-ops)."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
+
+def _sweep_records(records_dir: Path) -> None:
+    """
+    Best-effort housekeeping after a write. Temp files left by killed runs are removed once older than
+    STALE_TEMP_SECS, and the oldest records are removed so at most MAX_CHECK_RECORDS remain. Failures
+    are ignored: the record cache is advisory, so a sweep that cannot finish only leaves extra files.
+    """
+    with contextlib.suppress(OSError):
+        now = time.time()
+        for tmp in records_dir.glob(".*.tmp"):
+            if now - _mtime(tmp) > STALE_TEMP_SECS:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp)
+        records = sorted(records_dir.glob("*.json"), key=_mtime)
+        for stale in records[: max(0, len(records) - MAX_CHECK_RECORDS)]:
+            with contextlib.suppress(OSError):
+                os.remove(stale)
+
+
+def _write_record(records_dir: Path, key: CheckKey) -> str:
+    """Write a passing record atomically (same-directory unique temp, then os.replace). Returns the stem."""
     name = record_filename_hash(key)
     records_dir.mkdir(parents=True, exist_ok=True)
     record = CheckRecord(
         schema_version=CHECK_RECORD_SCHEMA_VERSION,
         key=key,
         passed=True,
-        mode_executed=mode_executed,
         written_at=time.time(),
     )
     fd, tmp_name = tempfile.mkstemp(dir=str(records_dir), prefix=f".{name}.", suffix=".tmp")
@@ -1382,20 +1440,13 @@ def _write_record(records_dir: Path, key: CheckKey, mode_executed: Mode) -> str:
         with contextlib.suppress(OSError):
             os.remove(tmp_name)
         raise
+    _sweep_records(records_dir)
     return name
 
 
-def _evict_older_pass(records_dir: Path, key: CheckKey, run_started: float) -> None:
-    """
-    A failed run evicts only a passing record for this exact key written before the run started.
-
-    The record is first moved aside with one atomic rename, then judged from the moved file, so the
-    age check and the removal act on the same bytes: a pass written by a concurrent run after the
-    rename lands at the original path and is never touched. If the moved record turns out to be
-    fresh it is put back, unless a newer record already took its place. The only cost of the race is
-    a transient miss (a re-run), never a deleted fresh pass or a wrong hit.
-    """
-    name = record_filename_hash(key)
+def _evict_one(records_dir: Path, candidate: CheckKey, requested: CheckKey, run_started: float) -> None:
+    """Evict the record stored under `candidate` if it is an older pass that satisfies `requested`."""
+    name = record_filename_hash(candidate)
     path = records_dir / f"{name}.json"
     aside = records_dir / f".{name}.evict.{os.getpid()}.tmp"
     try:
@@ -1404,13 +1455,34 @@ def _evict_older_pass(records_dir: Path, key: CheckKey, run_started: float) -> N
         return  # nothing to evict, or it vanished under us
     try:
         record = _read_record(aside, name)
-        if record is not None and record.passed and record.written_at < run_started:
+        if (
+            record is not None
+            and record.passed
+            and record.written_at < run_started
+            and satisfies(record, requested)
+        ):
             return  # stale pass: evicted (the aside copy is removed below)
         with contextlib.suppress(OSError):
             os.link(aside, path)  # fresh (or unreadable): restore; FileExistsError means a newer record won
     finally:
         with contextlib.suppress(OSError):
             os.remove(aside)
+
+
+def _evict_older_pass(records_dir: Path, key: CheckKey, run_started: float) -> None:
+    """
+    A failed run evicts only a passing record that satisfies `key` and was written before the run started.
+
+    Candidates are the _satisfying_keys of `key`, so a failed minimum run also evicts the full pass for
+    the same tree that would otherwise keep answering it. Each candidate is first moved aside with one
+    atomic rename, then judged from the moved file, so the age check and the removal act on the same
+    bytes: a pass written by a concurrent run after the rename lands at the original path and is never
+    touched. If the moved record turns out to be fresh it is put back, unless a newer record already took
+    its place. The only cost of the race is a transient miss (a re-run), never a deleted fresh pass or a
+    wrong hit.
+    """
+    for candidate in _satisfying_keys(key):
+        _evict_one(records_dir, candidate, key, run_started)
 
 
 def _export_check_env(base: Optional[str], changed: List[str]) -> Tuple[Dict[str, str], Optional[str]]:
@@ -1429,7 +1501,7 @@ def _export_check_env(base: Optional[str], changed: List[str]) -> Tuple[Dict[str
         if scratch is not None:
             with contextlib.suppress(OSError):
                 os.remove(scratch)
-        logging.warning(f"CHECK_CHANGED_FILES not exported: {e}")
+        logging.warning("CHECK_CHANGED_FILES not exported: %s", e)
         env.pop("CHECK_CHANGED_FILES", None)
         return env, None
     env["CHECK_CHANGED_FILES"] = scratch
@@ -1450,7 +1522,7 @@ def _result_fields(results: CheckResults) -> CheckResultsDict:
     )
 
 
-def _validate_error(message: str, requested: Mode) -> ValidateErrorResult:
+def validate_error_result(message: str, requested: Mode) -> ValidateErrorResult:
     """A validate error result carrying every ValidateResult key plus `error`."""
     base = _result_fields(CheckResults())
     base["status"] = "error"
@@ -1496,8 +1568,6 @@ def _run_recorded(
     `exports` is (base, changed files) and sets CHECK_BASE / CHECK_CHANGED_FILES for the run; None leaves
     the caller's environment untouched. `key=None` disables caching.
     """
-    import time
-
     records_dir = worktree / ".claude" / "check-records"
     cache_action: Literal["hit", "miss", "forced"] = "forced" if force else "miss"
     satisfied_by: Optional[str] = None
@@ -1529,14 +1599,50 @@ def _run_recorded(
         if passed:
             if worktree_tree(worktree) == key.tree:
                 try:
-                    satisfied_by = _write_record(records_dir, key, mode_executed)
+                    satisfied_by = _write_record(records_dir, key)
                 except OSError as e:
-                    logging.warning(f"idempotency disabled: record not written: {e}")
+                    logging.warning("idempotency disabled: record not written: %s", e)
             else:
                 logging.warning("idempotency disabled: tree changed during the run; no record written")
         else:
             _evict_older_pass(records_dir, key, run_started)
     return _RecordedRun(cache_action, satisfied_by, mode_executed, result, err)
+
+
+def _digest_inputs(
+    commands: Mapping[str, Optional[str]], *, minimum: bool, command: Optional[str], source: Optional[str]
+) -> Dict[str, Optional[str]]:
+    """
+    Digest inputs for one mode: the repo-cache commands of that mode, plus the resolved command and its
+    source. The full inputs exclude check_minimum; the minimum inputs hold only check_minimum.
+    """
+    if minimum:
+        inputs: Dict[str, Optional[str]] = {k: v for k, v in commands.items() if k == "check_minimum"}
+        inputs["resolved check_minimum"] = command
+        inputs["resolved check_minimum source"] = source
+    else:
+        inputs = {k: v for k, v in commands.items() if k != "check_minimum"}
+        inputs["resolved check"] = command
+        inputs["resolved check source"] = source
+    return inputs
+
+
+def _changed_set(worktree: Path) -> Tuple[Optional[str], List[str], Optional[str], ChangedFilesSource]:
+    """
+    The base, the canonical changed-file list, its hash, and where the set came from.
+
+    An unresolved base or an uncomputable list gives base None, no list and no hash, with source
+    "base-unresolved": the record cache is then bypassed for the run.
+    """
+    base = resolve_check_base(worktree)
+    if base is None:
+        logging.warning("idempotency disabled: no base: merge-base with origin default is unresolved")
+        return None, [], None, "base-unresolved"
+    computed = canonical_changed_files(worktree, base)
+    if computed is None:
+        logging.warning("idempotency disabled: no changed files: the list could not be computed")
+        return None, [], None, "base-unresolved"
+    return base, computed, changed_files_hash(computed), "computed"
 
 
 def validate(
@@ -1560,15 +1666,15 @@ def validate(
     """
     requested = parse_mode(mode)
     if requested is None:
-        return _validate_error(f"invalid mode: {mode!r}", "full")
+        return validate_error_result(f"invalid mode: {mode!r}", "full")
 
     resolution = resolve_check_detail(worktree, main_worktree, mode=requested)
     if resolution.failure_reason:
-        return _validate_error(resolution.failure_reason, requested)
+        return validate_error_result(resolution.failure_reason, requested)
 
     check_command = resolution.command
     if not check_command:
-        return _validate_error("No check command resolved", requested)
+        return validate_error_result("No check command resolved", requested)
 
     if timeout is None:
         source_kind: ConfigKind = "project.yaml" if resolution.source == "project.yaml" else "repo-cache"
@@ -1585,40 +1691,29 @@ def validate(
     # source. A command that changes from any source (project.yaml, main worktree, justfile) with an
     # unchanged tree therefore misses instead of reusing a pass earned by a different command.
     cache_data, _ = read_repo_cache(worktree / ".claude" / "repo-cache.json")
-    commands_dict = cache_data.commands if cache_data else {}
+    commands_dict: Mapping[str, Optional[str]] = cache_data.commands if cache_data else {}
     full_resolution = (
         resolution if requested == "full" else resolve_check_detail(worktree, main_worktree, mode="full")
     )
-    full_inputs: Dict[str, Optional[str]] = {k: v for k, v in commands_dict.items() if k != "check_minimum"}
-    full_inputs["resolved check"] = full_resolution.command
-    full_inputs["resolved check source"] = full_resolution.source
+    full_inputs = _digest_inputs(
+        commands_dict, minimum=False, command=full_resolution.command, source=full_resolution.source
+    )
     # The effective timeout is part of the key: a pass under a looser limit does not prove a pass under
     # a stricter one (a check that needs 400s passes at 900s and must not satisfy a 300s request).
     full_inputs["run timeout secs"] = str(timeout)
     full_digest = _commands_digest(full_inputs)
-    minimum_inputs: Dict[str, Optional[str]] = {k: v for k, v in commands_dict.items() if k == "check_minimum"}
-    minimum_inputs["resolved check_minimum"] = None if resolution.fell_back_to_full else resolution.command
-    minimum_inputs["resolved check_minimum source"] = None if resolution.fell_back_to_full else resolution.source
+    fell_back = resolution.fell_back_to_full
+    minimum_inputs = _digest_inputs(
+        commands_dict,
+        minimum=True,
+        command=None if fell_back else resolution.command,
+        source=None if fell_back else resolution.source,
+    )
     minimum_digest = _commands_digest(minimum_inputs)
 
     # Changed files: one canonical computation, hashed exactly as exported. An unresolved base means no hash.
     tree = worktree_tree(worktree)
-    base = resolve_check_base(worktree)
-    changed: List[str] = []
-    files_hash: Optional[str] = None
-    changed_source = "computed"
-    if base is None:
-        changed_source = "base-unresolved"
-        logging.warning("idempotency disabled: no base: merge-base with origin default is unresolved")
-    else:
-        computed = canonical_changed_files(worktree, base)
-        if computed is None:
-            base = None
-            changed_source = "base-unresolved"
-            logging.warning("idempotency disabled: no changed files: the list could not be computed")
-        else:
-            changed = computed
-            files_hash = changed_files_hash(changed)
+    base, changed, files_hash, changed_source = _changed_set(worktree)
     if tree is None:
         changed_source = "tree-unavailable"
 
