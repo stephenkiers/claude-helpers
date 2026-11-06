@@ -113,8 +113,8 @@ if __name__ == "__main__":
         )
 
         test_result(
-            "selector handles missing test gracefully (falls back or returns empty)",
-            "error" not in result.stderr.lower() or "file not found" not in result.stderr.lower(),
+            "selector handles missing test gracefully (no fatal errors)",
+            "error" not in result.stderr.lower() and "file not found" not in result.stderr.lower(),
             f"Selector should fall back gracefully, not error. stderr={result.stderr[:200]}"
         )
 
@@ -142,9 +142,9 @@ if __name__ == "__main__":
 
         # Exact behavior depends on implementation; we just check it runs without crash
         test_result(
-            "selector handles malformed CHECK_BASE without crashing",
-            True,
-            f"Script completed. rc={result.returncode}"
+            "selector handles malformed CHECK_BASE without crashing (exit 0)",
+            result.returncode == 0,
+            f"Script should handle gracefully. Got rc={result.returncode}, stderr={result.stderr[:100]}"
         )
 
     print()
@@ -197,9 +197,9 @@ if __name__ == "__main__":
     )
 
     test_result(
-        "help text uses clear language",
-        "usage:" in help_text.lower() or "selector" in help_text.lower() or "check" in help_text.lower(),
-        f"Help should be readable and relevant"
+        "help text mentions check-minimum explicitly",
+        "check-minimum" in help_text.lower() or "check" in help_text.lower(),
+        f"Help should describe the check-minimum tool"
     )
 
     print()
@@ -259,9 +259,9 @@ if __name__ == "__main__":
         final_status = _git(repo, "status", "--porcelain")
 
         test_result(
-            "selector --dry-run produces output",
-            len(result.stdout) > 0,
-            f"Expected stdout output from dry-run"
+            "selector --dry-run produces meaningful output",
+            len(result.stdout) > 20,  # More than just whitespace/minimal output
+            f"Expected substantive stdout output from dry-run, got: {result.stdout[:50]}"
         )
 
         test_result(

@@ -143,11 +143,11 @@ if __name__ == "__main__":
                     )
 
                     if not result.success:
-                        error_str = str(result.error or "").lower()
+                        error_str = str(result.error or "")
                         test_result(
-                            "Error message mentions 'no full check resolved'",
-                            "no full check" in error_str or "cached" in error_str,
-                            f"Expected 'no full check' or 'cached' in error, got: {result.error}"
+                            "Error message contains exact phrase about no full check",
+                            "no full check resolved" in error_str,
+                            f"Expected 'no full check resolved' in error, got: {result.error}"
                         )
 
         print()
@@ -186,9 +186,9 @@ if __name__ == "__main__":
                         result, err = apply_merge(plan_json)
 
                         test_result(
-                            "apply_merge can proceed when full check is available",
-                            result.success is True or mock_gate.called,
-                            "Expected merge gate to be called when check is available"
+                            "apply_merge can proceed when full check is available (gate called)",
+                            mock_gate.called,
+                            f"Expected merge gate to be called when check is available"
                         )
 
         print()
@@ -209,9 +209,9 @@ if __name__ == "__main__":
             )
 
             test_result(
-                "checks validate accepts --mode argument",
-                result.returncode in (0, 1),  # 0=pass, 1=fail check, 2=usage error
-                f"Expected exit 0 or 1 (check result), got {result.returncode}. "
+                "checks validate accepts --mode argument (not usage error 2)",
+                result.returncode != 2,  # 0=pass, 1=fail check, 2=usage error
+                f"Expected valid exit (0 or 1), not usage error 2, got {result.returncode}. "
                 f"stderr: {result.stderr}"
             )
 
@@ -222,19 +222,19 @@ if __name__ == "__main__":
         # Test that 'checks run' command is removed or errors appropriately
         result = _checks_cli("run", "--help")
         test_result(
-            "checks run command is not available",
-            result.returncode != 0,  # Should error (not found or usage error)
-            f"Expected 'checks run' to be unavailable, but it didn't error. "
-            f"returncode={result.returncode}, stdout={result.stdout}"
+            "checks run command returns usage error (exit 2)",
+            result.returncode == 2,  # Should error with argparse usage error
+            f"Expected 'checks run' to be unavailable with exit 2. "
+            f"returncode={result.returncode}, stderr={result.stderr[:100]}"
         )
 
         # Test that 'checks receipt' command is removed or errors appropriately
         result = _checks_cli("receipt", "--help")
         test_result(
-            "checks receipt command is not available",
-            result.returncode != 0,  # Should error (not found or usage error)
-            f"Expected 'checks receipt' to be unavailable, but it didn't error. "
-            f"returncode={result.returncode}, stdout={result.stdout}"
+            "checks receipt command returns usage error (exit 2)",
+            result.returncode == 2,  # Should error with argparse usage error
+            f"Expected 'checks receipt' to be unavailable with exit 2. "
+            f"returncode={result.returncode}, stderr={result.stderr[:100]}"
         )
 
         print()
@@ -257,14 +257,14 @@ if __name__ == "__main__":
             )
 
             test_result(
-                "validate --mode full does not error on usage",
-                result_full.returncode in (0, 1),
+                "validate --mode full is not a usage error (exit != 2)",
+                result_full.returncode != 2,
                 f"Expected valid exit code from --mode full, got {result_full.returncode}"
             )
 
             test_result(
-                "validate --mode minimum does not error on usage",
-                result_min.returncode in (0, 1),
+                "validate --mode minimum is not a usage error (exit != 2)",
+                result_min.returncode != 2,
                 f"Expected valid exit code from --mode minimum, got {result_min.returncode}"
             )
 

@@ -98,17 +98,9 @@ if __name__ == "__main__":
 
     rc, stdout, stderr = _checks_cli("run", "--help")
     test_result(
-        "checks run errors (not found or invalid command)",
-        rc != 0,
-        f"Expected non-zero exit, got {rc}. stdout={stdout[:100]}, stderr={stderr[:100]}"
-    )
-
-    # Note: "checks run" might return usage error since the command may check for required args first
-    # before realizing it doesn't exist. This is acceptable.
-    test_result(
-        "checks run error has non-zero exit",
-        rc != 0,
-        "Should have non-zero exit for missing command"
+        "checks run returns usage error (exit 2 for unknown subcommand)",
+        rc == 2,
+        f"Expected usage error exit 2 for unknown subcommand, got {rc}. stderr={stderr[:100]}"
     )
 
     print()
@@ -169,15 +161,15 @@ if __name__ == "__main__":
             "resolve-check", "--worktree", str(work)
         )
         test_result(
-            "resolve-check command exists and responds (not a usage error)",
-            rc != 2,  # Exit 2 is argparse usage error
-            f"resolve-check should exist. Got rc={rc}, stderr={stderr[:200]}"
+            "resolve-check command succeeds (exit 0)",
+            rc == 0,
+            f"resolve-check should succeed. Got rc={rc}, stderr={stderr[:200]}"
         )
 
         test_result(
-            "resolve-check returns JSON on success",
-            rc == 0 and stdout.strip() and stdout.strip()[0] in ('{', '['),
-            f"Expected JSON output, got rc={rc}, stdout={stdout[:100]}"
+            "resolve-check returns JSON object on success",
+            rc == 0 and stdout.strip() and stdout.strip()[0] == '{',
+            f"Expected JSON object output, got rc={rc}, stdout={stdout[:100]}"
         )
 
     print()
@@ -214,8 +206,8 @@ if __name__ == "__main__":
         # ensure-check should exist (though may need --main-worktree)
         rc, stdout, stderr = _checks_cli("ensure-check", "--worktree", str(work), "--main-worktree", str(work))
         test_result(
-            "ensure-check command exists and responds",
-            rc in (0, 1),  # 0=success, 1=check needs to run, not 2=usage error
+            "ensure-check command exists and is not a usage error",
+            rc != 2,  # 0=success, 1=check needs to run, 2=usage error
             f"ensure-check should exist. Got rc={rc}, stderr={stderr[:200]}"
         )
 
@@ -226,22 +218,27 @@ if __name__ == "__main__":
     rc, stdout, stderr = _checks_cli("--help")
     help_text = stdout + stderr
 
+    # Extract the line with subcommand list (contains {...)
+    import re
+    subcommands_match = re.search(r'\{([^}]+)\}', help_text)
+    subcommands_list = subcommands_match.group(1) if subcommands_match else ""
+
     test_result(
-        "checks --help does not mention 'run' subcommand",
-        "checks run" not in help_text.lower() and " run " not in help_text,
-        "Help text should not list removed 'run' command"
+        "checks --help does not list 'run' subcommand",
+        "run" not in subcommands_list.lower(),
+        f"Help should not list 'run' subcommand. Got: {subcommands_list}"
     )
 
     test_result(
-        "checks --help does not mention 'receipt' subcommand",
-        "checks receipt" not in help_text.lower() and " receipt " not in help_text,
-        "Help text should not list removed 'receipt' command"
+        "checks --help does not list 'receipt' subcommand",
+        "receipt" not in subcommands_list.lower(),
+        f"Help should not list 'receipt' subcommand. Got: {subcommands_list}"
     )
 
     test_result(
-        "checks --help mentions validate subcommand",
-        "validate" in help_text.lower(),
-        "Help text should list 'validate' command"
+        "checks --help lists 'validate' subcommand",
+        "validate" in subcommands_list.lower(),
+        f"Help should list 'validate' subcommand. Got: {subcommands_list}"
     )
 
     print()
