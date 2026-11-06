@@ -473,3 +473,9 @@ top of the base allowlist.
 - **Error messages:** point to the config schema (this ADR section).
 - **Debugging:** `merge-queue status` shows holder, current step, and elapsed time. `result.json`
   captures the outcome and logs. `merge-queue reverify` is the escape hatch for flaky E2E.
+
+**Amendment (#462, 2026-11-05): force-push gates vs the merge gate.** The authorized force-pushes in Context
+(`/stack-sync`, `/shipit`) are gated at PR level by the minimum check (`checks validate --mode minimum`), per
+the ADR-0012 and ADR-0023 2026-11-05 amendments. The merge gate, on the queue and off-queue routes, runs the
+full check and is the authoritative gate; a minimum pass never satisfies it. The four-command list above is
+unchanged, and so is the queue's own pinned push, which still runs only after the full gate passes.

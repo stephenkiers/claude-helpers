@@ -12,7 +12,8 @@ here — `/shipit` or `/expert-rebase` already pushed it. This command syncs the
 each child is rebased onto its updated parent (ongoing) or onto the default branch (post-merge), inside
 the child's own worktree via `git -C`, then force-pushed only after the **project minimum check gate**
 (the repo's own minimum check command if declared, or full check, read from `.claude/project.yaml` and
-`.claude/repo-cache.json`, and run inside the child's worktree before any push) passes.
+`.claude/repo-cache.json`, and run inside the child's worktree before any push) passes. The minimum gate is
+a PR-level gate; the merge gate remains the authoritative full check (ADR-0012 2026-11-05 amendment).
 
 Routing follows the layout model recorded in `docs/adr/0012-stack-sync.md` (ADR-0012):
 `single-driver` delegates to the `gh stack sync` cascade (one working copy drives the whole stack);

@@ -395,3 +395,7 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 **Supersedes:** Amendment 11's `checks run` contract (the bullet beginning "`checks run` keeps its CLI contract") and its receipt paragraph (the bullet beginning "**Receipts go through the same boundary**"). The `checks validate` contract, the record cache and the caching contract stay in force.
 
 **Consequences:** `checks run` and `checks receipt` are no longer subcommands and fail as unknown commands. Any external caller of those commands must move to `checks validate`. No receipt file is written or read; the merge gate reads per-key records only.
+
+### Amendment 13: gate modes for `checks validate` (2026-11-05, #462)
+
+**Decision (no code change).** `checks validate --mode minimum` is the gate that PR-level steps and force-push gates run (`/shipit`, `/stack-sync`, and the flow verify/implement/fix steps). `checks validate --mode full` is the gate the merge path runs (ADR-0021), and it is the authoritative one. A minimum record never satisfies the merge gate. This is the human ruling on #462 (Needs-you #2, option A) and refines the ADR-0012 2026-11-05 amendment and ADR-0023 2026-11-05 amendment (#462). Amendment 12's removal of `checks run` and `checks receipt` stands. The exit-code and timeout paragraphs of earlier amendments that name `checks run` are superseded by Amendment 12; `docs/workflow-cli-invariants.md` now describes `checks validate`.

@@ -437,7 +437,7 @@ if ! git -C <CHILD_WT> merge-base --is-ancestor '@{u}' HEAD 2>/dev/null \
       exit 1
     fi
     git -C <CHILD_WT> branch --set-upstream-to=origin/<CHILD_BRANCH>   # re-link tracking (symmetric with the reset path above)
-    # Gate — force-push ONLY after the project's minimum checks pass. A runnable gate, not a comment:
+    # Gate — force-push ONLY after the project's minimum check passes (the merge gate runs the full check). A runnable gate, not a comment:
     # a bare comment here would be silently skipped when the whole block is pasted and run.
     source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local" >&2; exit 1; }
     ( cd <CHILD_WT> && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks validate --mode minimum --worktree <CHILD_WT> >/dev/null ) || { echo "<CHILD_BRANCH>: checks failed or no check resolved — not force-pushing"; exit 1; }
@@ -448,7 +448,7 @@ else
   git -C <CHILD_WT> branch -f backup/<CHILD_BRANCH> HEAD   # snapshot before rewriting history
   git -C <CHILD_WT> rebase --onto <NEW_BASE> <OLD_BASE>
   git -C <CHILD_WT> branch --set-upstream-to=origin/<CHILD_BRANCH>   # re-link tracking (symmetric with the reset path above)
-  # Gate — force-push ONLY after the project's minimum checks pass. A runnable gate, not a comment:
+  # Gate — force-push ONLY after the project's minimum check passes (the merge gate runs the full check). A runnable gate, not a comment:
   # a bare comment here would be silently skipped when the whole block is pasted and run.
   source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local" >&2; exit 1; }
   ( cd <CHILD_WT> && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks validate --mode minimum --worktree <CHILD_WT> >/dev/null ) || { echo "<CHILD_BRANCH>: checks failed or no check resolved — not force-pushing"; exit 1; }

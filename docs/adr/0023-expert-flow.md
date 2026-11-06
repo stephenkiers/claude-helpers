@@ -1317,3 +1317,11 @@ This amendment narrows the rules for unknown coverage rows in the assess stage b
 - The 2026-11-01 amendment's fix-mode classification sentence (the "Amendment (2026-11-01): fix-mode coverage reads the Doing-it File cell" section): narrowed by the Decisions and "Narrows" paragraph above, and by the fix-mode resolver.
 
 **Required by the Q1 round-2 confirmation:** The negative test case where A passes (anchor verified) and B fails (range does not overlap) → receipt fails with `range-overlap` reason, row stays unknown.
+
+## Amendment (2026-11-05, #462): force-push gates run the minimum check; the merge gate is authoritative
+
+**Policy (human ruling, Needs-you #2, option A):** minimum check at PR level and at force-push gates; the full check runs only at the merge gate, which is the authoritative gate.
+
+- **Flow force-pushes.** The ship step's `/shipit` push, the `/stack-sync` child force-pushes it delegates to, and the cleanup route's force-pushes all gate on `checks validate --mode minimum` (which falls back to the full command when `check_minimum` is undeclared). This refines the ship-step force-push wording above without changing the order of steps.
+- **The verify step's receipt is advisory.** The verify step's `CHECK:` receipt is not the authoritative gate, and neither is `/shipit`'s check gate in ship. Both are PR-level gates. The authoritative gate is the full check run by the merge step through `/merge-and-cleanup` or `/queued-merge` (ADR-0021). A minimum pass never satisfies the merge gate, and a direct `gh pr merge` bypasses it.
+- **Wording corrected.** `commands/expert-flow.md`'s verify section no longer calls `/shipit`'s CI run "the authoritative gate"; it names the merge gate.

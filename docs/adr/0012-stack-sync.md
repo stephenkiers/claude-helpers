@@ -107,3 +107,14 @@ harness is found. `STACK_SYNC_MANUAL=1` opts out of auto-execution entirely, lea
 - **Cross-reference ADR-0011.** This ADR is the sync companion to ADR-0011's push routing. Any new command
   that syncs or rebases a stack must consult ADR-0011 for the layout model and this ADR for the sync-side
   invariants.
+
+## Amendment (2026-11-05, #462): force-push gates run the minimum check; the merge gate is authoritative
+
+Human ruling (Needs-you #2, option A): the minimum check is acceptable as the gate for force-pushes. Force-push
+gates in the per-branch arm (the Restack-a-child block, `commands/stack-sync.md` and `commands/cleanup.md`)
+run `checks validate --mode minimum` from `<CHILD_WT>`, which falls back to the full command when
+`check_minimum` is undeclared. The merge gate runs the full check and remains the authoritative gate. This
+refines the Consequences bullet above that says the repo-cache gate runs "the project's build/test checks":
+the gate is still required and still runs before each per-branch force-push, but the command it runs at that
+point is the minimum check, not the full suite. The two-gate structure (confirmation plus check gate) and
+the single-driver arm's ungated push are unchanged.
