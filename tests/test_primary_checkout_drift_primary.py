@@ -35,8 +35,8 @@ DOC = REPO_ROOT / "commands" / "implement-with-haiku.md"
 # Synthetic porcelain (pure cases)
 # ----------------------------------------------------------------------------
 
-# (a) Todoed shape: bare entry, detached merge-queue scratch, three ticket worktrees, main last.
-TODOED = (
+# (a) Bare ticket-layout shape: bare entry, detached merge-queue scratch, three ticket worktrees, main last.
+BARE_TICKET_LAYOUT = (
     "worktree /r/.bare\nbare\n\n"
     "worktree /r/worktrees/merge-scratch\nHEAD 1111111\ndetached\n\n"
     "worktree /r/worktrees/ticket-1\nHEAD 2222222\nbranch refs/heads/ticket-1\n\n"
@@ -215,8 +215,8 @@ def main() -> None:
     select = drift.select_primary
 
     # ---- pure cases ------------------------------------------------------------
-    print("[Pure a] Todoed shape: bare entry, detached scratch, ticket worktrees, main last")
-    recs = parse(TODOED)
+    print("[Pure a] Bare ticket-layout shape: bare entry, detached scratch, ticket worktrees, main last")
+    recs = parse(BARE_TICKET_LAYOUT)
     h.test_result("(a) parser yields six records", len(recs) == 6, str(len(recs)))
     h.test_result("(a) parser: first record is bare with no branch",
                   bool(recs[0].bare) and recs[0].branch is None, repr(recs[0]))
@@ -284,7 +284,7 @@ def main() -> None:
         root = Path(tmp_s)
 
         # ---- real-git bare layout ---------------------------------------------
-        print("[Blackbox bare] primary from the ticket worktree on the Todoed-shaped layout")
+        print("[Blackbox bare] primary from the ticket worktree on the bare ticket layout")
         bare_repo = make_bare_layout(root / "bare")
         ticket = bare_repo / "worktrees" / "ticket-441"
         main_wt = bare_repo / "worktrees" / "main"

@@ -788,7 +788,7 @@ drift procedure goes into the label only.
 **Literal recorded at site 1.** The orchestrator records the resolved primary path once, at site 1. Later
 consuming sites use that literal and do not resolve again. Each use is guarded by a re-check:
 `git -C <literal> rev-parse --show-toplevel` must succeed and match the literal by realpath. A literal that
-ends in `.bare`, or that equals a bare first porcelain entry, is rejected. Outside the cwd-drift failure
+ends in `.bare`, or that resolves (by realpath) to a bare first porcelain entry, is rejected. Outside the cwd-drift failure
 procedure, a failed re-check is `no-usable-primary`. Inside that procedure, a re-check failure keeps the
 drift reason and its evidence, and is reported in the label only.
 
@@ -796,12 +796,12 @@ drift reason and its evidence, and is reported in the label only.
 from edits by a sibling flow or the human when an agent is given, or guesses, that path. It does not cover
 the #293 `--git-dir` vector: `git rev-parse --git-dir` in a bare layout resolves to
 `<repo>/.bare/worktrees/<name>`, which is outside the watched worktree. That vector is NOT covered here;
-its follow-up is #TBD (.bare write question). A sibling worktree other than the default branch is also
+its follow-up is #474 (.bare write question). A sibling worktree other than the default branch is also
 outside the watch; the re-check guards the literal's identity, not the contents of other worktrees.
 
 **`/expert-fleet` interaction.** Now that the barrier really runs in bare layouts, a sibling flow under
 `/expert-fleet` that fast-forwards `worktrees/main` while a run is mid-implement makes the barrier report
-`FAIL head-moved`. It stays a FAIL for now. Any change to that verdict is a separate decision.
+`FAIL head-moved`. It stays a FAIL for now. Any change to that verdict is a separate decision, tracked in #475.
 
 **Layout and placement.** The hand-built `.bare` layout (`<repo>/.bare` plus `<repo>/worktrees/*`) is a
 supported repo state per `docs/workflow-cli-invariants.md` (Phase 1 test coverage lists bare worktree setup).
@@ -815,11 +815,11 @@ path at the first space, while the resolver keeps it whole. Unit placement is un
 is not fixed by this amendment.
 
 **Follow-ups.**
-- #TBD: the first-entry sites in `commands/cleanup.md`, `commands/verify-queue.md`,
+- #472: the first-entry sites in `commands/cleanup.md`, `commands/verify-queue.md`,
   `prompts/worktree-reference.md`, `commands/track-and-start.md`, `scripts/setup-pr-worktree.sh`,
   `scripts/find-stray-haiku-worktree.sh` and `scripts/in-flight-snapshot.py`.
-- #TBD: `scripts/workflow/worktrees.py:63` (`detect_main_worktree`) and the ADR-0010 detect-parent logic,
+- #473: `scripts/workflow/worktrees.py:63` (`detect_main_worktree`) and the ADR-0010 detect-parent logic,
   which use the same first-entry rule.
-- #356: relocate the resolver into `scripts/workflow/worktrees.py` before a second consumer is wired.
-- #TBD (.bare write question): whether agents may write under `<repo>/.bare`, the 2026-10-19 incident
+- #356 (relocation tracked in #473): relocate the resolver into `scripts/workflow/worktrees.py` before a second consumer is wired.
+- #474 (.bare write question): whether agents may write under `<repo>/.bare`, the 2026-10-19 incident
   (ticket 293) vector above.

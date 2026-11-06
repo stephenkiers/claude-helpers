@@ -1288,7 +1288,8 @@ fi
 [[ -z "$RECHECK_FAIL" && "<PRIMARY_CHECKOUT>" == *.bare ]] && RECHECK_FAIL="literal ends in .bare"
 if [[ -z "$RECHECK_FAIL" ]]; then
   FIRST_BLOCK=$(git worktree list --porcelain | grep -m1 -A1 '^worktree ')
-  if [[ "$FIRST_BLOCK" == "worktree <PRIMARY_CHECKOUT>"$'\n'bare ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
+  FIRST_LINE=${FIRST_BLOCK%%$'\n'*}; FIRST_REAL=$(cd "${FIRST_LINE#worktree }" 2>/dev/null && pwd -P)
+  if [[ "${FIRST_BLOCK#*$'\n'}" == bare && -n "$FIRST_REAL" && "$FIRST_REAL" == "$LIT_REAL" ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
 fi
 if [[ -n "$RECHECK_FAIL" ]]; then
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 --cause no-usable-primary \
@@ -1336,7 +1337,8 @@ fi
 [[ -z "$RECHECK_FAIL" && "<PRIMARY_CHECKOUT>" == *.bare ]] && RECHECK_FAIL="literal ends in .bare"
 if [[ -z "$RECHECK_FAIL" ]]; then
   FIRST_BLOCK=$(git worktree list --porcelain | grep -m1 -A1 '^worktree ')
-  if [[ "$FIRST_BLOCK" == "worktree <PRIMARY_CHECKOUT>"$'\n'bare ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
+  FIRST_LINE=${FIRST_BLOCK%%$'\n'*}; FIRST_REAL=$(cd "${FIRST_LINE#worktree }" 2>/dev/null && pwd -P)
+  if [[ "${FIRST_BLOCK#*$'\n'}" == bare && -n "$FIRST_REAL" && "$FIRST_REAL" == "$LIT_REAL" ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
 fi
 if [[ -n "$RECHECK_FAIL" ]]; then
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 --cause no-usable-primary \
@@ -1389,7 +1391,8 @@ fi
 [[ -z "$RECHECK_FAIL" && "<PRIMARY_CHECKOUT>" == *.bare ]] && RECHECK_FAIL="literal ends in .bare"
 if [[ -z "$RECHECK_FAIL" ]]; then
   FIRST_BLOCK=$(git worktree list --porcelain | grep -m1 -A1 '^worktree ')
-  if [[ "$FIRST_BLOCK" == "worktree <PRIMARY_CHECKOUT>"$'\n'bare ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
+  FIRST_LINE=${FIRST_BLOCK%%$'\n'*}; FIRST_REAL=$(cd "${FIRST_LINE#worktree }" 2>/dev/null && pwd -P)
+  if [[ "${FIRST_BLOCK#*$'\n'}" == bare && -n "$FIRST_REAL" && "$FIRST_REAL" == "$LIT_REAL" ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
 fi
 # primary-recheck: end
 ```
@@ -2217,7 +2220,8 @@ fi
 [[ -z "$RECHECK_FAIL" && "<PRIMARY_CHECKOUT>" == *.bare ]] && RECHECK_FAIL="literal ends in .bare"
 if [[ -z "$RECHECK_FAIL" ]]; then
   FIRST_BLOCK=$(git worktree list --porcelain | grep -m1 -A1 '^worktree ')
-  if [[ "$FIRST_BLOCK" == "worktree <PRIMARY_CHECKOUT>"$'\n'bare ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
+  FIRST_LINE=${FIRST_BLOCK%%$'\n'*}; FIRST_REAL=$(cd "${FIRST_LINE#worktree }" 2>/dev/null && pwd -P)
+  if [[ "${FIRST_BLOCK#*$'\n'}" == bare && -n "$FIRST_REAL" && "$FIRST_REAL" == "$LIT_REAL" ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
 fi
 if [[ -n "$RECHECK_FAIL" ]]; then
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 --cause no-usable-primary \
