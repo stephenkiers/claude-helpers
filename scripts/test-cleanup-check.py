@@ -10,7 +10,14 @@ Usage:
     test-cleanup-check.py working-ids --base SHA --head REF
     test-cleanup-check.py layout [--base SHA] [--impl PATH [PATH ...]] [--max-names N]
     test-cleanup-check.py overlaps --report PATH [--report ...] --added-ids PATH --out PATH
-    test-cleanup-check.py hygiene-json --scratch DIR --step STEP [--layout-names-given-file FILE] --out FILE
+    test-cleanup-check.py layout-evidence --step implement|fix (--flow-dir DIR | --scratch DIR)
+                          [--impl PATH [PATH ...]] --out FILE [--names-given-file FILE]
+    test-cleanup-check.py hygiene-json --scratch DIR --step implement|fix [--layout-names-given-file FILE]
+                          [--skip-round2] [--skip-round4] [--flow-dir DIR] --out FILE
+
+Output paths (overlaps --out, hygiene-json --out, layout-evidence --out and --names-given-file) are
+confined to the repo toplevel, FLOW_DIR (the environment variable, or the --flow-dir the subcommand
+was given), or the system temp dir, where the run's scratch directory lives (mktemp -d).
 
 Runs in the current directory, which must be inside the target git repo. Paths are repo-root
 relative. Every subcommand prints one finding per line on stdout and exits:
@@ -82,7 +89,8 @@ names: no spec-blind name survives in the run's own working set (D2). "spec[-_ ]
   added). Untracked files count as added under the default WORKTREE head. Hits print one per line in
   the same format; segment-only matches (tokens appearing only as inner segments) print after all
   hits, each prefixed "segment-only:", and never affect exit code.
-  Plain names (no flag) behaves exactly as before (spec-blind only).
+  Plain names (no flag) behaves exactly as before (spec-blind only). In --hygiene mode an error
+  (bad ref, failed git call) exits 3, so a caller can tell an error from hits (exit 1).
 
 working-ids: print one file::name per line for every test definition ADDED between SHA and REF
   (used for change tracking), sorted and de-duplicated. Only test files count, and an edited test
@@ -97,13 +105,19 @@ layout: from git ls-tree / git show AT SHA ONLY, list test files that match the 
   body, only paths and names. A missing path at SHA yields zero names and exit 0. A git ls-tree
   failure exits 1. Output capped by --max-names (default 60 names); "(truncated)" is printed only when
   a name was actually cut off. If --base is omitted, lists test paths only (from the working tree)
-  and no names.
+  and no names (the listing is of the repo toplevel, whatever the current directory).
+
+layout-evidence: the layout step in one call. Resolves layout_base_sha by running unit-progress.py
+  (next to this script) with the global flags first, then `layout-base`. On exit 0 with a SHA, runs
+  the base-aware layout; otherwise (no usable SHA, or the base-aware layout fails) runs the base-less
+  layout. Writes the layout output to --out and `true` (base-aware, names given) or `false` to the
+  names-given file (default <flow-dir or scratch>/layout-names-given.txt). Prints --out on success.
 
 overlaps: parse lines of the form "id | overlaps: id or none" from --report files (repeatable;
   missing or unreadable file counts as zero lines, not error). Strip surrounding whitespace and list
   markers. Only ids in --added-ids are considered; each id counts once, and "none" (any case) is a
-  no-overlap verdict. Overwrite --out in full on every call. --out is confined to the repo toplevel
-  (or FLOW_DIR when set; an absolute path must resolve under one of them). Write one markdown row per
+  no-overlap verdict. Overwrite --out in full on every call. --out is confined to the repo toplevel,
+  FLOW_DIR, or the system temp dir (an absolute path must resolve under one of them). Write one markdown row per
   non-"none" overlap, tagged "class-1 candidate": "- <new id> | overlaps: <survivor id> | class-1
   candidate". Unparseable lines and ids in --added-ids with no parseable report line are listed
   under the "unreported:" heading as "- <id>". Last line is summary: "candidates: <C>  none: <K>
@@ -115,7 +129,10 @@ hygiene-json: file-only (no git). Reads the Round 2 and Round 4 hygiene evidence
   and writes one JSON object to --out (json.dump): round2_hygiene_hits, round2_segment_only,
   round4_hygiene_hits, round4_segment_only, overlap_candidates, overlap_none, overlap_unreported,
   round4_deleted, round4_relocated, layout_names_given, step. Missing or unavailable evidence is
-  null (counts default to 0 for round4.md). Prints the --out path on success. Exit 2 when --scratch
+  null (counts default to 0 for round4.md). A `hygiene-error:` first line in a hygiene file also
+  gives null. --skip-round2 / --skip-round4 force the fields of a round the run did not re-produce
+  to null, ignoring any stale file from an earlier run (--skip-round4 covers the Round 4 hygiene
+  fields and the overlap fields). --out is confined as above. Prints the --out path on success. Exit 2 when --scratch
   is not a directory.
 
 Patterns, per framework (chosen from the file extension):
@@ -143,7 +160,9 @@ line (e.g. in a parametrize argument list) will not be flagged as a violation.
 
 import argparse
 import ast
+import contextlib
 import difflib
+import io
 import json
 import os
 import tempfile
@@ -288,11 +307,12 @@ def _confine(path: str) -> None:
         _fail(f"path escapes the repo root: {path!r}")
 
 
-def _confine_output(path: str) -> None:
-    """Fail closed unless an output path lies inside the repo toplevel (or under $FLOW_DIR, when set).
+def _confine_output(path: str, extra_roots: Sequence[str] = ()) -> None:
+    """Fail closed unless an output path lies inside the repo toplevel, $FLOW_DIR (when set), the
+    system temp dir (where the run's scratch lives) or one of extra_roots.
 
     A relative path goes through _confine. An absolute path (the flow passes its scratch directory)
-    must resolve under the toplevel or under FLOW_DIR; anything else is rejected."""
+    must resolve under one of those roots; anything else is rejected."""
     if not os.path.isabs(path):
         _confine(path)
         return
@@ -301,6 +321,7 @@ def _confine_output(path: str) -> None:
     flow_dir = os.environ.get("FLOW_DIR", "")
     if flow_dir:
         roots.append(os.path.realpath(flow_dir))
+    roots.extend(os.path.realpath(r) for r in extra_roots if r)
     # the run's scratch directory comes from mktemp -d, i.e. under the system temp dir
     roots.append(os.path.realpath(tempfile.gettempdir()))
     if not any(full.startswith(root + os.sep) for root in roots):
@@ -1114,7 +1135,7 @@ def cmd_layout(args: argparse.Namespace) -> int:
     """List test files and names matching impl stems. With --base, reads only from that SHA; without
     it, lists the test paths of the working tree and no names."""
     if args.base is None:
-        for path in _git_ok(["ls-files"]).strip().split("\n"):
+        for path in _git_ok(["-C", _toplevel(), "ls-files"]).strip().split("\n"):
             if path and _lang(path) is not None and _is_test_path(path):
                 print(path)
         return 0
@@ -1241,6 +1262,9 @@ def _existing_file(scratch: str, names: Sequence[str]) -> Optional[str]:
     return None
 
 
+HYGIENE_ERROR_PREFIX = "hygiene-error:"
+
+
 def _round2_hygiene(scratch: str) -> Tuple[Optional[int], Optional[int]]:
     """(hits, segment_only) from round2-hygiene.txt (or .md). Missing or unavailable gives (None, None).
 
@@ -1251,6 +1275,8 @@ def _round2_hygiene(scratch: str) -> Tuple[Optional[int], Optional[int]]:
     lines = _lines(_read_text(path))
     segment_only = sum(1 for ln in lines if ln.startswith(SEGMENT_PREFIX))
     first = lines[0] if lines else ""
+    if first.startswith(HYGIENE_ERROR_PREFIX):
+        return None, None
     is_summary = first.startswith("round2-hygiene:")
     tail = first.rsplit(": ", 1)[-1].strip() if is_summary else first.strip()
     if tail.startswith("unavailable"):
@@ -1269,6 +1295,8 @@ def _round4_hygiene(scratch: str) -> Tuple[Optional[int], Optional[int]]:
     if not os.path.isfile(path):
         return None, None
     lines = [ln for ln in _lines(_read_text(path)) if ln.strip()]
+    if lines and lines[0].startswith(HYGIENE_ERROR_PREFIX):
+        return None, None
     segment_only = sum(1 for ln in lines if ln.startswith(SEGMENT_PREFIX))
     return len(lines) - segment_only, segment_only
 
@@ -1303,12 +1331,13 @@ def cmd_hygiene_json(args: argparse.Namespace) -> int:
     if not os.path.isdir(scratch):
         print(f"error: --scratch is not a directory: {scratch}", file=sys.stderr)
         return 2
+    _confine_output(args.out, [args.flow_dir] if args.flow_dir else [])
     names_file = args.layout_names_given_file or os.path.join(scratch, "layout-names-given.txt")
     layout_given = os.path.isfile(names_file) and _read_text(names_file).strip() == "true"
 
-    r2_hits, r2_segment = _round2_hygiene(scratch)
-    r4_hits, r4_segment = _round4_hygiene(scratch)
-    cand, none, unreported = _round4_candidates(scratch)
+    r2_hits, r2_segment = (None, None) if args.skip_round2 else _round2_hygiene(scratch)
+    r4_hits, r4_segment = (None, None) if args.skip_round4 else _round4_hygiene(scratch)
+    cand, none, unreported = (None, None, None) if args.skip_round4 else _round4_candidates(scratch)
     deleted, relocated = _round4_counts(scratch)
     measurement = {
         "round2_hygiene_hits": r2_hits,
@@ -1327,6 +1356,56 @@ def cmd_hygiene_json(args: argparse.Namespace) -> int:
         with open(args.out, "w", encoding="utf-8") as fh:
             json.dump(measurement, fh, indent=2)
             fh.write("\n")
+    except OSError as exc:
+        _fail(str(exc))
+    print(args.out)
+    return 0
+
+
+def _capture_layout(base: Optional[str], impl_paths: List[str]) -> Optional[str]:
+    """Output of cmd_layout, or None when it fails (a failed layout never partially counts)."""
+    ns = argparse.Namespace(base=base, impl_paths=impl_paths, max_names=60)
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = cmd_layout(ns)
+    except SystemExit:
+        return None
+    return buf.getvalue() if rc == 0 else None
+
+
+def _resolve_layout_base(step: str, flow_dir: Optional[str], scratch: Optional[str]) -> Optional[str]:
+    """layout_base_sha from unit-progress.py layout-base (global flags first); None when unusable."""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "unit-progress.py")
+    where = ["--flow-dir", flow_dir] if flow_dir else ["--scratch", scratch or ""]
+    proc = subprocess.run([sys.executable, script, "--step", step, *where, "layout-base"],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    sys.stderr.write(proc.stderr.decode("utf-8", "replace"))
+    value = proc.stdout.decode("utf-8", "replace").strip()
+    if proc.returncode != 0 or not re.fullmatch(r"[0-9a-fA-F]{7,64}", value):
+        return None
+    return value
+
+
+def cmd_layout_evidence(args: argparse.Namespace) -> int:
+    """Write the layout evidence and the names-given flag for the spec-blind test author prompt."""
+    where = args.flow_dir or args.scratch
+    extra = [args.flow_dir] if args.flow_dir else []
+    names_file = args.names_given_file or os.path.join(where, "layout-names-given.txt")
+    _confine_output(args.out, extra)
+    _confine_output(names_file, extra)
+    base = _resolve_layout_base(args.step, args.flow_dir, args.scratch)
+    evidence = _capture_layout(base, args.impl_paths) if base else None
+    names_given = evidence is not None
+    if evidence is None:
+        evidence = _capture_layout(None, args.impl_paths)
+    if evidence is None:
+        _fail("layout failed")
+    try:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(evidence)
+        with open(names_file, "w", encoding="utf-8") as fh:
+            fh.write("true\n" if names_given else "false\n")
     except OSError as exc:
         _fail(str(exc))
     print(args.out)
@@ -1381,11 +1460,30 @@ def build_parser() -> argparse.ArgumentParser:
     # hygiene-json subcommand
     hygiene_json = sub.add_parser("hygiene-json", help="write the test hygiene measurement JSON")
     hygiene_json.add_argument("--scratch", required=True, help="scratch directory with round evidence files")
-    hygiene_json.add_argument("--step", required=True, help="step id recorded in the JSON")
+    hygiene_json.add_argument("--step", required=True, choices=["implement", "fix"],
+                              help="step id recorded in the JSON")
+    hygiene_json.add_argument("--skip-round2", action="store_true",
+                              help="Round 2 evidence was not re-produced this run: write null for it")
+    hygiene_json.add_argument("--skip-round4", action="store_true",
+                              help="Round 4 evidence was not re-produced this run: write null for it")
+    hygiene_json.add_argument("--flow-dir", default=None, dest="flow_dir",
+                              help="flow directory, an additional allowed root for --out")
     hygiene_json.add_argument("--layout-names-given-file", default=None, dest="layout_names_given_file",
                               help="file holding 'true' when layout names were given (default: "
                               "<scratch>/layout-names-given.txt)")
     hygiene_json.add_argument("--out", required=True, help="output JSON file path")
+
+    # layout-evidence subcommand
+    layout_ev = sub.add_parser("layout-evidence", help="resolve the layout base and write layout evidence")
+    layout_ev.add_argument("--step", required=True, choices=["implement", "fix"])
+    where = layout_ev.add_mutually_exclusive_group(required=True)
+    where.add_argument("--flow-dir", default=None, dest="flow_dir")
+    where.add_argument("--scratch", default=None)
+    layout_ev.add_argument("--impl", action="extend", nargs="+", default=[], dest="impl_paths",
+                           help="implementation paths")
+    layout_ev.add_argument("--out", required=True, help="evidence output file path")
+    layout_ev.add_argument("--names-given-file", default=None, dest="names_given_file",
+                           help="file to receive true/false (default: <flow-dir or scratch>/layout-names-given.txt)")
 
     return parser
 
@@ -1397,7 +1495,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.cmd == "survivors":
         return cmd_survivors(args)
     if args.cmd == "names":
-        return cmd_names(args)
+        if not args.hygiene:
+            return cmd_names(args)
+        try:
+            return cmd_names(args)
+        except SystemExit as exc:
+            # hygiene mode: an error (exit 1 from _fail) is distinct from hits (also exit 1)
+            return 3 if exc.code == 1 else int(exc.code or 0)
     if args.cmd == "working-ids":
         return cmd_working_ids(args)
     if args.cmd == "layout":
@@ -1406,6 +1510,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_overlaps(args)
     if args.cmd == "hygiene-json":
         return cmd_hygiene_json(args)
+    if args.cmd == "layout-evidence":
+        return cmd_layout_evidence(args)
     return 1
 
 

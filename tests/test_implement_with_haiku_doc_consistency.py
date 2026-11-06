@@ -14,6 +14,8 @@ Run with: python3 tests/test_implement_with_haiku_doc_consistency.py
 import importlib.util
 import json
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1470,27 +1472,57 @@ print("[Unit C] layout-base wiring, hygiene measurement, ADR hedge")
 
 ADR_0019 = read(ADRS / "0019-content-driven-pause-checkpoints.md")
 
-# (a) every unit-progress.py layout-base invocation carries --step and a flow/scratch arg BEFORE the
-# subcommand, and never refers to an undefined $STEP.
-layout_base_calls = [
-    ln for ln in IMPLEMENT_WITH_HAIKU.splitlines()
-    if "unit-progress.py" in ln and "layout-base" in ln
+# (a) the layout-base resolution lives in `test-cleanup-check.py layout-evidence` (tested in
+# test_test_cleanup_check.py); the doc makes ONE call with --step and the PROGRESS array, and no
+# inline unit-progress.py layout-base shell remains.
+inline_layout_base = [
+    ln.strip() for blk, _ in extract_bash_blocks(IMPLEMENT_WITH_HAIKU) for ln in blk.splitlines()
+    if "unit-progress.py" in ln and "layout-base" in ln and not ln.lstrip().startswith("#")
 ]
-bad_layout_base_calls = []
-for ln in layout_base_calls:
-    before_subcommand = ln[: ln.index("layout-base")]
-    has_step = "--step" in before_subcommand
-    has_progress_arg = (
-        "--flow-dir" in before_subcommand
-        or "--scratch" in before_subcommand
-        or "PROGRESS_ARG" in before_subcommand
-    )
-    uses_step_var = re.search(r"\$\{?STEP\}?\b", ln) is not None
-    if not (has_step and has_progress_arg) or uses_step_var:
-        bad_layout_base_calls.append(ln.strip())
-t("(a) every unit-progress.py layout-base call has --step and --flow-dir/--scratch before the subcommand",
-  len(layout_base_calls) >= 1 and not bad_layout_base_calls,
-  f"found {len(layout_base_calls)} layout-base call(s); bad: {bad_layout_base_calls}")
+layout_evidence_calls = [
+    ln for ln in IMPLEMENT_WITH_HAIKU.splitlines()
+    if 'test-cleanup-check.py" layout-evidence' in ln
+]
+t("(a) the doc has exactly one layout-evidence call, with --step and the PROGRESS array",
+  len(layout_evidence_calls) == 1 and '--step "<implement|fix>"' in layout_evidence_calls[0]
+  and '"${PROGRESS[@]}"' in layout_evidence_calls[0] and not inline_layout_base
+  and "$STEP" not in layout_evidence_calls[0],
+  f"calls: {layout_evidence_calls}; inline layout-base lines: {inline_layout_base}")
+
+# (a2) PROGRESS is a shell array. No string-built PROGRESS_ARG remains, and the doc's own construction,
+# run under bash (and zsh when installed), hands the script separate argv words.
+t("(a2) no PROGRESS_ARG string construction remains in the doc",
+  "PROGRESS_ARG" not in IMPLEMENT_WITH_HAIKU,
+  "PROGRESS_ARG still present in implement-with-haiku.md")
+progress_defs = sorted(set(re.findall(
+    r'^if \[\[ -n "\$\{FLOW_DIR\}" \]\]; then PROGRESS=\(.*?\); else PROGRESS=\(.*?\); fi$',
+    IMPLEMENT_WITH_HAIKU, re.M)))
+t("(a2) the doc defines PROGRESS with one canonical one-line array construction",
+  len(progress_defs) == 1, f"distinct constructions: {progress_defs}")
+uses_without_def = []
+for blk, lineno in extract_bash_blocks(IMPLEMENT_WITH_HAIKU):
+    if '"${PROGRESS[@]}"' in blk and "PROGRESS=(" not in blk:
+        uses_without_def.append(lineno)
+t("(a2) every bash block that expands PROGRESS defines it in the same block",
+  not uses_without_def, f"blocks without a definition (line numbers): {uses_without_def}")
+for shell in ("bash", "zsh"):
+    exe = shutil.which(shell)
+    if exe is None or not progress_defs:
+        continue
+    with tempfile.TemporaryDirectory() as shell_tmp:
+        flow_path = str(Path(shell_tmp) / "flow dir")
+        scratch_path = str(Path(shell_tmp) / "scratch dir")
+        construction = progress_defs[0].replace("<SCRATCH_PATH>", scratch_path)
+        stub = "import json, sys; print(json.dumps(sys.argv[1:]))"
+        for flow_set, expected in ((True, ["--flow-dir", flow_path]), (False, ["--scratch", scratch_path])):
+            script = (f'FLOW_DIR={json.dumps(flow_path) if flow_set else json.dumps("")}\n'
+                      f"{construction}\n"
+                      f'{shlex.quote(sys.executable)} -c {shlex.quote(stub)} "${{PROGRESS[@]}}"\n')
+            proc = subprocess.run([exe, "-c", script], capture_output=True, text=True, timeout=30)
+            got = json.loads(proc.stdout) if proc.returncode == 0 and proc.stdout.strip() else None
+            t(f"(a2) under {shell} the doc's PROGRESS construction yields argv {expected[0]} <path> "
+              f"({'FLOW_DIR set' if flow_set else 'FLOW_DIR empty'})",
+              got == expected, f"rc={proc.returncode} got={got!r} err={proc.stderr.strip()!r}")
 
 # (b) hygiene measurement is one hygiene-json call; the printf JSON construction is gone.
 t("(b) the doc invokes test-cleanup-check.py hygiene-json",
@@ -1500,12 +1532,12 @@ t("(b) the doc no longer hand-builds test-hygiene.json with printf (no round2_hy
   r'round2_hygiene_hits\"' not in IMPLEMENT_WITH_HAIKU,
   "printf construction of round2_hygiene_hits still present")
 
-# (c) layout-names-given is persisted to a file in the same bash block as the layout-base call,
-# and no LAYOUT_NAMES_GIVEN shell variable is reset to a literal anywhere in the doc.
-t("(c) layout-names-given.txt is written in the same bash block as the layout-base call",
-  any("layout-base" in blk and "layout-names-given.txt" in blk
+# (c) layout-names-given.txt is written by the layout-evidence call (--names-given-file), and
+# hygiene-json reads it from the same scratch path.
+t("(c) the layout-evidence call passes --names-given-file <SCRATCH_PATH>/layout-names-given.txt",
+  any("layout-evidence" in blk and '--names-given-file "<SCRATCH_PATH>/layout-names-given.txt"' in blk
       for blk, _ in extract_bash_blocks(IMPLEMENT_WITH_HAIKU)),
-  "no bash block both calls layout-base and writes layout-names-given.txt")
+  "no bash block calls layout-evidence with --names-given-file")
 t("(c) no LAYOUT_NAMES_GIVEN= shell reset remains in the doc",
   "LAYOUT_NAMES_GIVEN=" not in IMPLEMENT_WITH_HAIKU,
   "LAYOUT_NAMES_GIVEN= still assigned in implement-with-haiku.md")

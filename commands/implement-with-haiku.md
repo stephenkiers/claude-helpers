@@ -368,7 +368,7 @@ wrote and never re-derive it from a fresh run.
 - **Register.** When a `DONE round2-apply` row exists, re-read `<SCRATCH_PATH>/disagreements.json`, through
   the path on the second line of `<SCRATCH_PATH>/round2-apply.txt`. Never re-derive the register from a
   fresh run. Terminal entries are kept as they are. Round 4's 4.0a resumes from the first non-terminal entry.
-- **Evidence files.** `round2-hygiene.txt`, `round4-working-ids.txt` and `round4-candidates.md` are evidence that is never trusted on resume. The hygiene scan re-runs whenever Round 2 has been applied, and 4.1 always rebuilds the id file and then the candidates. Neither has a restore case, because neither writes the tree.
+- **Evidence files.** `round2-hygiene.txt`, `round4-working-ids.txt` and `round4-candidates.md` are evidence that is never trusted on resume. The hygiene scan re-runs whenever Round 2 has been applied, and 4.1 always rebuilds the id file and then the candidates. A run that skips a block passes `--skip-round2` / `--skip-round4` to `hygiene-json` (4.6b), so a stale file from an earlier invocation is read as `null`. Neither has a restore case, because neither writes the tree.
 - **Take over.** Each `human-takeover` entry re-runs against the current tree. Green → `impl-fixed` (ruler
   `human`, reason "resolved by take over"). Still red → `awaiting-human`, and the human is asked again, once.
 - **Answers already saved.** An approved human answer saved for an entry is never asked again. The saved copy
@@ -751,17 +751,14 @@ SIZING_STATUS=$(jq -r '.status // "unknown"' "<SCRATCH_PATH>/sizing.json" 2>/dev
 **1. Resume detection.** If a prior run exists for this step (i.e. `unit-progress.py` finds an existing main record), `--split-finer` was not passed, and `--only-units` was not passed, run `check` to verify integrity. Pass `--flow-dir "$FLOW_DIR"` in flows; use `--scratch` only when `FLOW_DIR` is empty. The exit codes: 0 = record present and consistent (resume); 1 = integrity mismatch; 3 = NO record exists (fresh run, not an error). Any other exit is treated as mismatch. Integrity means: plan hash and anchor match and every committed sha is an ancestor of HEAD (HEAD need not equal the chain tip).
 
 ```bash
-PROGRESS_ARG=""
-if [[ -n "${FLOW_DIR}" ]]; then
-  PROGRESS_ARG="--flow-dir \"${FLOW_DIR}\""
-else
-  PROGRESS_ARG="--scratch \"<SCRATCH_PATH>\""
-fi
-python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} check --plan "<PLAN_PATH>" --anchor "$START_SHA" --head "$(git rev-parse HEAD)"
+# PROGRESS is a shell array, so each flag and its value stay separate words (bash and zsh). Bash blocks
+# do not share state: every block that uses it defines it first.
+if [[ -n "${FLOW_DIR}" ]]; then PROGRESS=(--flow-dir "${FLOW_DIR}"); else PROGRESS=(--scratch "<SCRATCH_PATH>"); fi
+python3 "$HOME/.claude/scripts/unit-progress.py" --step implement "${PROGRESS[@]}" check --plan "<PLAN_PATH>" --anchor "$START_SHA" --head "$(git rev-parse HEAD)"
 CHECK_EXIT=$?
 if [[ $CHECK_EXIT -eq 0 ]]; then
   # Resume: load persisted units and run only pending ids
-  PENDING_UNITS=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} pending)
+  PENDING_UNITS=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement "${PROGRESS[@]}" pending)
   if [[ -z "$PENDING_UNITS" ]]; then
     # Nothing pending: skip Steps 4a–4d, go to Integration Gate
     printf '%s\n' "No pending units; proceeding to Integration Gate." >&2
@@ -814,11 +811,12 @@ Write the unit-list JSON to `<SCRATCH_PATH>/split-input.json` (with `Write`), th
 refusal is a signal to repair the split, not to bypass `init`:
 
 ```bash
+if [[ -n "${FLOW_DIR}" ]]; then PROGRESS=(--flow-dir "${FLOW_DIR}"); else PROGRESS=(--scratch "<SCRATCH_PATH>"); fi
 LAYOUT_BASE_ARG=""
 if [ -n "$PARTIAL_BASE" ]; then
   LAYOUT_BASE_ARG="--no-layout-base"
 fi
-INIT_REASON=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} \
+INIT_REASON=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement "${PROGRESS[@]}" \
   init --anchor "$START_SHA" --base "$START_SHA" --plan "<PLAN_PATH>" --sizing "<SCRATCH_PATH>/sizing.json" \
   ${LAYOUT_BASE_ARG} < "<SCRATCH_PATH>/split-input.json" 2>&1 >/dev/null)
 INIT_EXIT=$?
@@ -1059,7 +1057,8 @@ anything yet that would sweep those files in; note it and re-check at that unit'
 **If the worktree is genuinely empty** (no staged changes after the above, and primary checkout
 clean on this unit's files): Mark unit `failed`:
 ```bash
-python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} mark --unit-id "<unit-id>" --status failed
+if [[ -n "${FLOW_DIR}" ]]; then PROGRESS=(--flow-dir "${FLOW_DIR}"); else PROGRESS=(--scratch "<SCRATCH_PATH>"); fi
+python3 "$HOME/.claude/scripts/unit-progress.py" --step implement "${PROGRESS[@]}" mark --unit-id "<unit-id>" --status failed
 ```
 Record `<unit-id>: no report (unit failed)` for
 use in Round 3 pass 1's input list below (same pattern as the Step 4c report-file check uses for
@@ -1201,7 +1200,8 @@ git commit -m "$(cat <<'EOF'
 Unit-Id: <unit-id>
 EOF
 )"
-python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} mark --unit-id "<unit-id>" --status committed --sha "$(git rev-parse HEAD)"
+if [[ -n "${FLOW_DIR}" ]]; then PROGRESS=(--flow-dir "${FLOW_DIR}"); else PROGRESS=(--scratch "<SCRATCH_PATH>"); fi
+python3 "$HOME/.claude/scripts/unit-progress.py" --step implement "${PROGRESS[@]}" mark --unit-id "<unit-id>" --status committed --sha "$(git rev-parse HEAD)"
 ```
 The `Unit-Id: <unit-id>` trailer is recorded in the commit message for human readability and is log-only; no script reads it, and the true unit record is in the persisted `units.json` file maintained by `unit-progress.py`. Committing here — in the ticket worktree — is what lets pre-commit hooks run correctly; this is
 the fix for the nested-worktree hook-resolution failures seen historically.
@@ -1610,28 +1610,19 @@ below, never the shell variable name (same rule as decision 14: a prompt contain
 `$R2_WT_PATH` hands the agent a path that does not exist, since shell variables don't persist across
 separate Bash calls).
 
-Extract the layout evidence from tests that existed before this run's implementation. This requires
-the pre-implementation base SHA stored in the unit record:
+Extract the layout evidence from tests that existed before this run's implementation. One call does it
+all: `layout-evidence` reads the pre-implementation base SHA stored in the unit record (by running
+`unit-progress.py layout-base` itself), runs the base-aware layout when the SHA is usable, falls back to the
+base-less layout when it is not, writes the evidence to `--out`, and writes `true`/`false` to the
+names-given file for the measurement block (4.6b). The global flags (`--flow-dir` or `--scratch`) are the
+`PROGRESS` array:
 
 ```bash
-PROGRESS_ARG=""
-if [[ -n "${FLOW_DIR}" ]]; then
-  PROGRESS_ARG="--flow-dir \"${FLOW_DIR}\""
-else
-  PROGRESS_ARG="--scratch \"<SCRATCH_PATH>\""
-fi
-# Global flags (--step, --flow-dir or --scratch) come before the subcommand. Exit 3 means no usable
-# layout_base_sha; the reason is printed on stderr and the base-less fallback below runs.
-LAYOUT_BASE=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step "<implement|fix>" ${PROGRESS_ARG} layout-base) || LAYOUT_BASE=""
-LAYOUT_EVIDENCE=""
-# The flag is persisted to a file so the measurement block (4.6b) can read it in a later Bash call.
-if [ -n "$LAYOUT_BASE" ] && LAYOUT_EVIDENCE=$(python3 "$HOME/.claude/scripts/test-cleanup-check.py" layout --base "$LAYOUT_BASE" --impl <IMPL_FILES>); then
-  printf '%s\n' true > "<SCRATCH_PATH>/layout-names-given.txt"
-else
-  LAYOUT_EVIDENCE=$(python3 "$HOME/.claude/scripts/test-cleanup-check.py" layout --impl <IMPL_FILES> 2>/dev/null)
-  printf '%s\n' false > "<SCRATCH_PATH>/layout-names-given.txt"
-fi
+if [[ -n "${FLOW_DIR}" ]]; then PROGRESS=(--flow-dir "${FLOW_DIR}"); else PROGRESS=(--scratch "<SCRATCH_PATH>"); fi
+python3 "$HOME/.claude/scripts/test-cleanup-check.py" layout-evidence --step "<implement|fix>" "${PROGRESS[@]}" --impl <IMPL_FILES> --out "<SCRATCH_PATH>/layout-evidence.txt" --names-given-file "<SCRATCH_PATH>/layout-names-given.txt" || printf '%s\n' "layout-evidence: unavailable (exit $?)" > "<SCRATCH_PATH>/layout-evidence.txt"
 ```
+
+`<LAYOUT_EVIDENCE>` below is the content of `<SCRATCH_PATH>/layout-evidence.txt` (read it with `Read`).
 
 Launch a background `plan-implementer` in `$R2_WT_PATH` with a **spec-blind test author** prompt:
 
@@ -1850,6 +1841,7 @@ python3 "$HOME/.claude/scripts/test-cleanup-check.py" names --hygiene --base "$R
 HYGIENE_EXIT=$?
 # <SCRATCH_PATH>/round2-hygiene.txt is the one Round 2 hygiene file: a `round2-hygiene: <N> hits` (or
 # `unavailable (<exit>)`) header, then the raw hit lines. The hygiene-json subcommand reads it.
+# names --hygiene exits 0 (no hits), 1 (hits) or 3 (an error: bad ref, git failure); an error is never a hit.
 if [ $HYGIENE_EXIT -eq 0 ]; then
   printf '%s\n' "round2-hygiene: 0 hits" > "<SCRATCH_PATH>/round2-hygiene.txt"
   grep '^segment-only:' "<SCRATCH_PATH>/round2-names.raw" >> "<SCRATCH_PATH>/round2-hygiene.txt" || true
@@ -2320,7 +2312,14 @@ fi
 
 Also run the hygiene scan for Round 4 measurement only (not gated); this run includes Round 3 additions:
 ```bash
-python3 "$HOME/.claude/scripts/test-cleanup-check.py" names --hygiene --base "$ROUND2_START_SHA" --head HEAD > "<SCRATCH_PATH>/round4-hygiene.txt" 2>&1 || true
+python3 "$HOME/.claude/scripts/test-cleanup-check.py" names --hygiene --base "$ROUND2_START_SHA" --head HEAD > "<SCRATCH_PATH>/round4-names.raw" 2>&1
+HYGIENE4_EXIT=$?
+if [ $HYGIENE4_EXIT -eq 0 ] || [ $HYGIENE4_EXIT -eq 1 ]; then
+  cat "<SCRATCH_PATH>/round4-names.raw" > "<SCRATCH_PATH>/round4-hygiene.txt"
+else
+  # exit 3 is an error, not a hit: no counts; hygiene-json reads the first line as null
+  { printf '%s\n' "hygiene-error: names --hygiene exit $HYGIENE4_EXIT"; cat "<SCRATCH_PATH>/round4-names.raw"; } > "<SCRATCH_PATH>/round4-hygiene.txt"
+fi
 ```
 
 ### 4.2 Learn the repo's convention (evidence, not assumption)
@@ -2368,19 +2367,22 @@ With blocking entries present the row is still `DONE`. The Final check is where 
 
 Write the per-run test hygiene measurement with one call. `hygiene-json` reads the scratch evidence
 (`round2-hygiene.txt`, `round4-hygiene.txt`, `round4-candidates.md`, `round4.md` and `layout-names-given.txt`)
-and writes the JSON; it does the parsing, so no shell arithmetic is needed here:
+and writes the JSON; it does the parsing, so no shell arithmetic is needed here. Pass `--skip-round2` when this
+invocation did not run the Round 2 hygiene scan block, and `--skip-round4` when it did not run the Round 4
+hygiene scan and the 4.1 candidates blocks (the resume path after Round 1 skips them). A skipped round is
+written as `null` and a stale file from an earlier invocation is ignored:
 ```bash
-python3 "$HOME/.claude/scripts/test-cleanup-check.py" hygiene-json --scratch "<SCRATCH_PATH>" --step "<implement|fix>" --out "<SCRATCH_PATH>/test-hygiene.json" || printf '%s\n' "test-hygiene: measurement not written (hygiene-json exit $?)" >&2
+python3 "$HOME/.claude/scripts/test-cleanup-check.py" hygiene-json --scratch "<SCRATCH_PATH>" --step "<implement|fix>" [--skip-round2] [--skip-round4] --out "<SCRATCH_PATH>/test-hygiene.json" || printf '%s\n' "test-hygiene: measurement not written (hygiene-json exit $?)" >&2
 
-# Copy to FLOW_DIR if set and allowed (best-effort; the scratch copy is the record of truth)
-if [ -n "$FLOW_DIR" ] && [ -d "$FLOW_DIR" ]; then
-  cp "<SCRATCH_PATH>/test-hygiene.json" "$FLOW_DIR/test-hygiene-<STEP>.json" 2>/dev/null || true
+# In a flow, write the same measurement to FLOW_DIR with a second call (no cp); a failure is reported, not hidden
+if [ -n "$FLOW_DIR" ]; then
+  python3 "$HOME/.claude/scripts/test-cleanup-check.py" hygiene-json --scratch "<SCRATCH_PATH>" --step "<implement|fix>" [--skip-round2] [--skip-round4] --flow-dir "$FLOW_DIR" --out "$FLOW_DIR/test-hygiene-<STEP>.json" || printf '%s\n' "test-hygiene: FLOW_DIR copy not written (hygiene-json exit $?)" >&2
 fi
 ```
 
-On a `--resume-after-round1` run that does not re-produce the Round 2 or Round 4 evidence files, the
-hygiene and overlap fields are written as `null` (`round4_deleted` and `round4_relocated` default to `0`
-when `round4.md` is absent), and `layout_names_given` is `false` when the flag file is absent.
+On a `--resume-after-round1` run, the skipped rounds' hygiene and overlap fields are written as `null`
+(`round4_deleted` and `round4_relocated` default to `0` when `round4.md` is absent), and `layout_names_given` is
+`false` when the flag file is absent.
 
 ---
 

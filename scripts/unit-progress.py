@@ -665,8 +665,15 @@ def cmd_init(
             Path(flow_dir) / "units" / "implement" / "units.json"
         )
 
+    # --split-finer and --supersede never pin: with no copy-forward source the value stays null.
+    if (supersede or split_finer) and not copy_source_found and not is_scoped:
+        print(
+            "unit-progress: init: warning: no layout_base_sha to copy forward for "
+            "--split-finer/--supersede; leaving layout_base_sha null",
+            file=sys.stderr,
+        )
     # Fresh main-record init with no copy-forward source: pin the anchor unless suppressed
-    if not copy_source_found and not is_scoped and not no_layout_base:
+    elif not copy_source_found and not is_scoped and not no_layout_base:
         layout_base_sha = anchor_sha
 
     # Build units with order

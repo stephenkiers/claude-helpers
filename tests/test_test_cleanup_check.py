@@ -1147,7 +1147,7 @@ def next_test():
     print("[Section 21] hygiene-json: measurement JSON from scratch evidence")
     with tempfile.TemporaryDirectory() as tmp:
         repo, base = make_repo(tmp, {"README.md": "# r\n"})
-        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(Path(tmp) / "missing"), "--step", "4",
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(Path(tmp) / "missing"), "--step", "implement",
                                   "--out", str(Path(tmp) / "m.json")])
         h.test_result("hygiene-json exits 2 when --scratch is not a directory",
                       rc == 2 and not (Path(tmp) / "m.json").exists(),
@@ -1163,7 +1163,7 @@ def next_test():
         (scratch / "round4.md").write_text("round4: 3 deleted, 1 relocated\n")
         (scratch / "layout-names-given.txt").write_text("true\n")
         out_path = Path(tmp) / "measure.json"
-        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "4", "--out", str(out_path)])
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "implement", "--out", str(out_path)])
         h.test_result("hygiene-json prints the output path on success and exits 0",
                       rc == 0 and out.strip() == str(out_path) and out_path.exists(),
                       f"rc={rc} out={out!r} err={err!r}")
@@ -1173,7 +1173,7 @@ def next_test():
             "round4_hygiene_hits": 1, "round4_segment_only": 1,
             "overlap_candidates": 1, "overlap_none": 2, "overlap_unreported": 0,
             "round4_deleted": 3, "round4_relocated": 1,
-            "layout_names_given": True, "step": "4",
+            "layout_names_given": True, "step": "implement",
         }
         h.test_result("hygiene-json writes exactly the documented keys with the scratch values",
                       data == expected, f"data={data!r}")
@@ -1184,7 +1184,7 @@ def next_test():
         scratch.mkdir()
         (scratch / "round2-hygiene.txt").write_text("round2-hygiene: unavailable\n")
         out_path = Path(tmp) / "measure.json"
-        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "2", "--out", str(out_path)])
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "fix", "--out", str(out_path)])
         data = json.loads(out_path.read_text()) if out_path.exists() else {}
         h.test_result("hygiene-json reports null for missing or unavailable evidence and false for layout names",
                       rc == 0 and data.get("round2_hygiene_hits") is None
@@ -1194,6 +1194,7 @@ def next_test():
                       f"rc={rc} data={data!r} err={err!r}")
 
     check_round2_gaps(h)
+    check_round3_followups(h)
 
     h.summarize_and_exit()
 
@@ -1243,6 +1244,188 @@ def check_round2_gaps(h):
         h.test_result("hygiene-json records layout_names_given true from the default scratch file",
                       rc == 0 and data.get("layout_names_given") is True,
                       f"rc={rc} data={data!r} err={err!r}")
+
+
+UNIT_SIZING = {"schema_version": 1, "kind": "plan", "steps": 2, "files": 2, "findings": None,
+               "ceilings": {"steps": 8, "files": 12, "findings": 16}, "min_units": 1, "status": "ok", "reason": ""}
+PROGRESS = REPO_ROOT / "scripts" / "unit-progress.py"
+
+
+def init_units(scratch, anchor, extra_args=(), env=None, where=None):
+    """Run unit-progress.py init (fresh main record pinned to `anchor`) for the implement step."""
+    payload = json.dumps({"units": [{"unit_id": "u1", "sub_task": "one", "owned_files": ["a.py"]}],
+                          "sizing": UNIT_SIZING, "basis": "single", "single_reason": "test"})
+    cmd = [sys.executable, str(PROGRESS), "--step", "implement", *(where or ["--scratch", str(scratch)]),
+           "init", "--anchor", anchor, "--base", anchor, *extra_args]
+    return subprocess.run(cmd, input=payload, capture_output=True, text=True, env=env)
+
+
+def check_round3_followups(h):
+    """Round 3 follow-ups: names --hygiene error exit, hygiene-error evidence, skip flags, output
+    confinement, layout-evidence, exact rows."""
+    print("[Section 22] Round 3 follow-ups")
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base = make_repo(tmp, {"README.md": "# r\n", "src/parser.py": "x = 1\n",
+                                     "tests/test_parser.py": BASE_PY, "tests/test_other.py": BASE_PY})
+        bad = "0" * 39 + "1"
+
+        # names --hygiene: an error exits 3, hits exit 1; plain names keeps exit 1 for an error.
+        rc, out, err = run(repo, ["names", "--hygiene", "--base", bad, "--head", "HEAD"])
+        h.test_result("names --hygiene with a bad base exits 3 and reports the error on stderr",
+                      rc == 3 and out == "" and "bad-ref" in err, f"rc={rc} out={out!r} err={err!r}")
+        rc, out, err = run(repo, ["names", "--base", bad, "--head", "HEAD"])
+        h.test_result("plain names with a bad base still exits 1", rc == 1, f"rc={rc} err={err!r}")
+
+        # exact rows
+        head = commit(repo, {"tests/test_parser_hardening.py": "def test_alpha_followups():\n    assert 1\n"}, "add")
+        rc, out, err = run(repo, ["names", "--hygiene", "--base", base, "--head", "HEAD"])
+        h.test_result("names --hygiene prints exactly the path row then the name row",
+                      rc == 1 and out.splitlines() == [
+                          "spec-blind path tests/test_parser_hardening.py",
+                          "spec-blind line tests/test_parser_hardening.py:1 test test_alpha_followups"],
+                      f"rc={rc} out={out!r} err={err!r}")
+        rc, out, err = run(repo, ["working-ids", "--base", base, "--head", head])
+        h.test_result("working-ids prints exactly the added ids, sorted",
+                      rc == 0 and out.splitlines() == ["tests/test_parser_hardening.py::test_alpha_followups"],
+                      f"rc={rc} out={out!r} err={err!r}")
+
+        # hygiene-json: hygiene-error first line, skip flags, confinement
+        scratch = Path(tmp) / "scratch"
+        scratch.mkdir()
+        (scratch / "round2-hygiene.txt").write_text("hygiene-error: names --hygiene exit 3\nerror: bad-ref x\n")
+        (scratch / "round4-hygiene.txt").write_text("hygiene-error: names --hygiene exit 3\nerror: bad-ref x\n")
+        out_path = Path(tmp) / "m.json"
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "fix", "--out", str(out_path)])
+        data = json.loads(out_path.read_text()) if out_path.exists() else {}
+        h.test_result("hygiene-json treats a hygiene-error first line as null for hits and segment_only (both rounds)",
+                      rc == 0 and all(data.get(k) is None for k in (
+                          "round2_hygiene_hits", "round2_segment_only", "round4_hygiene_hits",
+                          "round4_segment_only")), f"rc={rc} data={data!r} err={err!r}")
+
+        (scratch / "round2-hygiene.txt").write_text("round2-hygiene: 2 hits\n")
+        (scratch / "round4-hygiene.txt").write_text("tests/a.py::test_x_hardening\n")
+        (scratch / "round4-candidates.md").write_text("candidates: 1  none: 0  unreported: 0\n")
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "fix", "--out", str(out_path),
+                                  "--skip-round2", "--skip-round4"])
+        data = json.loads(out_path.read_text())
+        h.test_result("hygiene-json --skip-round2 --skip-round4 ignore stale evidence files",
+                      rc == 0 and all(data[k] is None for k in (
+                          "round2_hygiene_hits", "round2_segment_only", "round4_hygiene_hits", "round4_segment_only",
+                          "overlap_candidates", "overlap_none", "overlap_unreported")), f"data={data!r}")
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "fix", "--out", str(out_path),
+                                  "--skip-round4"])
+        data = json.loads(out_path.read_text())
+        h.test_result("hygiene-json --skip-round4 alone keeps the Round 2 count",
+                      data["round2_hygiene_hits"] == 2 and data["round4_hygiene_hits"] is None
+                      and data["overlap_candidates"] is None, f"data={data!r}")
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "fix", "--out", str(out_path),
+                                  "--skip-round2"])
+        data = json.loads(out_path.read_text())
+        h.test_result("hygiene-json --skip-round2 alone keeps the Round 4 count",
+                      data["round2_hygiene_hits"] is None and data["round4_hygiene_hits"] == 1
+                      and data["overlap_candidates"] == 1, f"data={data!r}")
+
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "bogus", "--out", str(out_path)])
+        h.test_result("hygiene-json rejects a --step other than implement or fix", rc == 2, f"rc={rc}")
+
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "fix", "--out", "/usr/m.json"])
+        h.test_result("hygiene-json rejects an --out outside the repo, FLOW_DIR and the temp dir",
+                      rc == 1 and "escapes" in err and not Path("/usr/m.json").exists(), f"rc={rc} err={err!r}")
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "fix", "--out", "../m.json"])
+        h.test_result("hygiene-json rejects a relative --out with '..'", rc == 1, f"rc={rc} err={err!r}")
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "fix", "--out", "rel-m.json"])
+        h.test_result("hygiene-json accepts a relative --out inside the repo",
+                      rc == 0 and (Path(repo) / "rel-m.json").exists(), f"rc={rc} err={err!r}")
+
+        # layout-evidence
+        ev = Path(tmp) / "scratch" / "evidence.txt"
+        rc, out, err = run(repo, ["layout-evidence", "--step", "implement", "--scratch", str(scratch),
+                                  "--impl", "src/parser.py", "--out", str(ev)])
+        h.test_result("layout-evidence without a unit record falls back to the base-less layout",
+                      rc == 0 and out.strip() == str(ev)
+                      and "tests/test_parser.py" in ev.read_text().splitlines()
+                      and "  test_parse_basic" not in ev.read_text()
+                      and (scratch / "layout-names-given.txt").read_text().strip() == "false",
+                      f"rc={rc} out={out!r} err={err!r}")
+        res = init_units(scratch, base)
+        rc, out, err = run(repo, ["layout-evidence", "--step", "implement", "--scratch", str(scratch),
+                                  "--impl", "src/parser.py", "--out", str(ev)])
+        text = ev.read_text()
+        h.test_result("layout-evidence with a pinned layout_base_sha lists test names and writes true",
+                      res.returncode == 0 and rc == 0 and text.splitlines()[:3] == [
+                          "tests/test_parser.py", "  test_parse_basic", "  test_green_other"]
+                      and (scratch / "layout-names-given.txt").read_text().strip() == "true",
+                      f"init rc={res.returncode} rc={rc} text={text!r} err={err!r}")
+        names_file = Path(tmp) / "given.txt"
+        rc, out, err = run(repo, ["layout-evidence", "--step", "implement", "--scratch", str(scratch),
+                                  "--impl", "src/parser.py", "--out", str(ev), "--names-given-file", str(names_file)])
+        h.test_result("layout-evidence --names-given-file overrides the default flag file",
+                      rc == 0 and names_file.read_text().strip() == "true", f"rc={rc} err={err!r}")
+        rc, out, err = run(repo, ["layout-evidence", "--step", "implement", "--scratch", str(scratch),
+                                  "--impl", "src/parser.py", "--out", "/usr/ev.txt"])
+        h.test_result("layout-evidence rejects an --out outside the allowed roots",
+                      rc == 1 and "escapes" in err, f"rc={rc} err={err!r}")
+        rc, out, err = run(repo, ["layout-evidence", "--step", "implement", "--scratch", str(scratch),
+                                  "--impl", "src/parser.py", "--out", str(ev), "--names-given-file", "/usr/g.txt"])
+        h.test_result("layout-evidence rejects a --names-given-file outside the allowed roots",
+                      rc == 1 and "escapes" in err, f"rc={rc} err={err!r}")
+        rc, out, err = run(repo, ["layout-evidence", "--step", "implement", "--scratch", str(scratch),
+                                  "--impl", "src/parser.py", "--out", "rel-ev.txt"])
+        h.test_result("layout-evidence accepts a relative --out inside the repo",
+                      rc == 0 and (Path(repo) / "rel-ev.txt").exists(), f"rc={rc} err={err!r}")
+        rc, out, err = run(repo, ["layout-evidence", "--step", "implement", "--out", str(ev)])
+        h.test_result("layout-evidence requires --flow-dir or --scratch", rc == 2, f"rc={rc}")
+
+        # a pinned SHA that is not in the repo falls back to the base-less layout
+        scratch2 = Path(tmp) / "scratch2"
+        scratch2.mkdir()
+        init_units(scratch2, bad)
+        ev2 = scratch2 / "evidence.txt"
+        rc, out, err = run(repo, ["layout-evidence", "--step", "implement", "--scratch", str(scratch2),
+                                  "--impl", "src/parser.py", "--out", str(ev2)])
+        h.test_result("layout-evidence with an unknown pinned SHA falls back to base-less and writes false",
+                      rc == 0 and "  test_parse_basic" not in ev2.read_text()
+                      and (scratch2 / "layout-names-given.txt").read_text().strip() == "false",
+                      f"rc={rc} err={err!r}")
+
+        # --flow-dir: flow dirs live under $HOME/.claude/flows, outside every default root
+        home = Path(tmp) / "home"
+        flow = home / ".claude" / "flows" / "repo" / "1-x-abc123"
+        flow.mkdir(parents=True)
+        (flow / "log.md").write_text("")
+        env = {**os.environ, "HOME": str(home)}
+        res = init_units(None, base, env=env, where=["--flow-dir", str(flow)])
+        fev = flow / "layout-evidence.txt"
+        proc = subprocess.run([sys.executable, str(CHECK), "layout-evidence", "--step", "implement",
+                               "--flow-dir", str(flow), "--impl", "src/parser.py", "--out", str(fev)],
+                              cwd=str(repo), capture_output=True, text=True, env=env)
+        h.test_result("layout-evidence with --flow-dir resolves the base and writes under the flow dir",
+                      res.returncode == 0 and proc.returncode == 0
+                      and "  test_parse_basic" in fev.read_text()
+                      and (flow / "layout-names-given.txt").read_text().strip() == "true",
+                      f"init={res.stderr!r} rc={proc.returncode} err={proc.stderr!r}")
+
+        # layout (no base) lists from the repo toplevel even from a subdirectory
+        proc = subprocess.run([sys.executable, str(CHECK), "layout"], cwd=str(Path(repo) / "src"),
+                              capture_output=True, text=True)
+        h.test_result("layout without --base lists test paths from the toplevel when run in a subdirectory",
+                      proc.returncode == 0 and "tests/test_parser.py" in proc.stdout.splitlines(),
+                      f"rc={proc.returncode} out={proc.stdout!r}")
+
+        # overlaps --out confinement (same rule)
+        ids = Path(tmp) / "ids.txt"
+        ids.write_text("tests/t.py::a\n")
+        rc, out, err = run(repo, ["overlaps", "--added-ids", str(ids), "--out", "/usr/o.md"])
+        h.test_result("overlaps rejects an --out outside the allowed roots", rc == 1 and "escapes" in err,
+                      f"rc={rc} err={err!r}")
+        rc, out, err = run(repo, ["overlaps", "--added-ids", str(ids), "--out", str(Path(tmp) / "o.md")])
+        h.test_result("overlaps accepts an --out under the system temp dir", rc == 0, f"rc={rc} err={err!r}")
+
+        # hygiene-json --flow-dir adds an allowed root
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "fix",
+                                  "--flow-dir", str(flow), "--out", str(flow / "test-hygiene-fix.json")])
+        h.test_result("hygiene-json --flow-dir allows an --out under the flow dir",
+                      rc == 0 and (flow / "test-hygiene-fix.json").exists(), f"rc={rc} err={err!r}")
 
 
 if __name__ == "__main__":

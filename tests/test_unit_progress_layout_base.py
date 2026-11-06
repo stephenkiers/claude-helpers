@@ -148,6 +148,7 @@ def main():
                       data.get("layout_base_sha") is None, f"layout_base_sha={data.get('layout_base_sha')!r}")
 
     check_layout_base_flow_dir(h)
+    check_no_pin_without_source(h)
 
     h.summarize_and_exit()
 
@@ -173,6 +174,18 @@ def check_layout_base_flow_dir(h):
                       f"init rc={init_res.returncode} err={init_res.stderr.strip()!r} "
                       f"layout-base rc={show_res.returncode} out={show_res.stdout!r} "
                       f"err={show_res.stderr.strip()!r}")
+
+
+def check_no_pin_without_source(h):
+    """--split-finer and --supersede with no copy-forward source never pin: null plus a warning."""
+    for flag in ("--split-finer", "--supersede"):
+        with tempfile.TemporaryDirectory() as scratch:
+            code, _out, err = init(scratch, extra=(flag,))
+            data = json.loads(units_path(scratch).read_text()) if units_path(scratch).exists() else {}
+            h.test_result(f"{flag} with no source record: layout_base_sha stays null and a warning is printed",
+                          code == 0 and data.get("layout_base_sha") is None and "warning" in err
+                          and "leaving layout_base_sha null" in err,
+                          f"rc={code} sha={data.get('layout_base_sha')!r} err={err!r}")
 
 
 if __name__ == "__main__":
