@@ -2421,9 +2421,10 @@ on resume").
 
 ## Final check (orchestrator-run, once per step, after the last commit)
 
-The integration gate proves the build and type-check only. It does not prove the configured check
-(`commands.check`) passed. This section runs that resolved check exactly once per step, through the
-existing Python runner, on the tree the step hands on.
+The integration gate proves the build and type-check only. It does not prove the configured minimum check
+(`commands.check_minimum`, or `commands.check` if minimum is undeclared) passed. This section runs that
+resolved minimum check exactly once per step, through the existing Python runner, on the tree the step hands on.
+A receipt naming the resolved full check command is also accepted (a full pass satisfies a minimum request).
 
 **When it runs.** Exactly once per step, after the step's last commit. It is never skippable.
 - When Round 4 runs: after 4.6's `git commit` and the `round4` ledger row.
@@ -2440,7 +2441,7 @@ survive between Bash calls, so each block below re-reads what it needs from the 
 **1. Resolve the check.** Write the resolver's JSON to a scratch file:
 ```bash
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
-PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks resolve-check --worktree <WORKTREE> --main-worktree <MAIN_WORKTREE> > <SCRATCH_PATH>/resolve-check.json
+PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks resolve-check --worktree <WORKTREE> --main-worktree <MAIN_WORKTREE> --mode minimum > <SCRATCH_PATH>/resolve-check.json
 ```
 Ignore `resolve-check`'s exit code. It exits `1` for both an opt-out and a missing check, so do not branch
 on the exit status (no `|| stop`); do not branch on the exit status at all. Branch only on the JSON `source` and `command` fields. If
@@ -2456,7 +2457,7 @@ jq -r '.failure_reason // empty' <SCRATCH_PATH>/resolve-check.json
 
 **2. Run the check (only when `command` is set).** Everything in this block runs in one Bash call,
 launched with `run_in_background`. The run's timeout is the JSON's `timeout_secs`, never a value you pick
-or hardcode. The check runs from `<WORKTREE>`: `checks run` takes its repo root from the current
+or hardcode. The check runs from `<WORKTREE>`: `checks validate` takes its repo root from the current
 directory, so a run started anywhere else checks the wrong tree. Only the resolved command runs, not the
 cache's full lint/test/build set; that is deliberate.
 ```bash
@@ -2466,9 +2467,10 @@ CHECK_CMD=$(jq -r '.command // empty' <SCRATCH_PATH>/resolve-check.json)
 TIMEOUT=$(jq -r '.timeout_secs // empty' <SCRATCH_PATH>/resolve-check.json)
 CHECK_SHA=$(cd <WORKTREE> && git rev-parse HEAD)
 printf '%s\n' "$CHECK_SHA" > <SCRATCH_PATH>/check-sha.txt
-CACHE_JSON=$(jq -n --arg cmd "$CHECK_CMD" --argjson t "$TIMEOUT" '{commands: {check: $cmd}, checkTimeoutSecs: $t}')
-cd <WORKTREE> && printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks run - > <SCRATCH_PATH>/full-check.json
+cd <WORKTREE> && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks validate --mode minimum --worktree <WORKTREE> --main-worktree <MAIN_WORKTREE> > <SCRATCH_PATH>/full-check.json
 ```
+`--main-worktree` makes validate read the same command and timeout sources that `resolve-check` read, so the
+`command` and `timeout_secs` it reports in `full-check.json` are the ones that ran.
 Never wrap this in `timeout` or `gtimeout` (see Gate step 1). The block's first check, before anything is
 written or launched, requires a clean tree: the porcelain status of `<WORKTREE>` must print nothing. Any
 output exits `2` without starting the run, which is the not-run outcome `check-not-run: worktree not clean`
@@ -2522,7 +2524,7 @@ K=3 iterations, because the integration gate's budget closed before the fan-out.
    output with `grep` or `tail`, not the whole log.
 2. Commit the fix as Gate step 4 does, then re-run Gate step 1 on the new HEAD.
 3. Re-run this Final check from "1. Resolve the check" on the new HEAD: a fresh resolve, a fresh
-   `CHECK_SHA`, and one full-check run for that HEAD. Each iteration's run is the single full check for
+   `CHECK_SHA`, and one minimum-check run for that HEAD. Each iteration's run is the single minimum check for
    that HEAD, so the once-per-tree bound holds.
 
 If the check still fails after K iterations, stop with `gate-not-converged`:

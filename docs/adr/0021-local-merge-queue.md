@@ -436,6 +436,16 @@ top of the base allowlist.
 
 **Status:** Accepted (2026-11-02). Phase 6 skips `git rebase` when `origin/<base>` is already an ancestor of HEAD, logs a stderr line and a `rebase_skipped` queue event, and goes straight to the gate. On the skip path the rebase result and the pre-rebase tip are the same commit, so Decision 5's tested-commit recovery applies unchanged (in code, `_restore_worktree_to_orig_head` resets to `orig_head` after a post-rebase kickback, which on the skip path is the tested commit; on the replaying path it is the pre-rebase tip), and `tested_sha == orig_head == lease_sha` makes the audited `force_push_tested` push in Phase 8 a no-op (the same state an already-current linear branch reaches; it remains the only push site). This matches Decision 3, because the gate still runs on the base plus the PR, and HEAD's tree equals base plus the PR's net diff, the same tree the squash lands. The Phase 9 base-unchanged re-check stays mandatory as the backstop. A branch that merged an older base still takes the replaying rebase (tracked as a follow-up, #431).
 
+## Amendment: Full-only off-queue merges with base-ancestor precondition on cached hits (#387)
+
+**Status:** Accepted (2026-11-05, #387). Off-queue merges (plain `/merge-and-cleanup` route, not through `/queued-merge`) require a full-mode check gate only (D2): `merge.py::_run_merge_gate_checks` accepts a full-mode record and never a minimum-mode record. A full-mode cached record on the target tree is a valid hit only if a fresh `git fetch` of the base succeeds and `git merge-base --is-ancestor origin/<base> HEAD` succeeds (CP-W5); otherwise, or if the fetch fails, the full check runs. The ancestry check is a consumer precondition, not a cache-key field: both modes stay cached (Q2 = A). The gate resolves the full command through the same chain as `checks resolve-check` (repo-cache, with a package.json-derived value re-derived from the worktree, then project.yaml, then the justfile), so a repo whose only check is a justfile recipe is gated, and the repo-cache early returns are removed (the #387 regression). The `just merge` justfile recipe (Path 1) is not a declared exception: until that is decided, `apply_merge` runs the same full-only gate, with the precondition, before Path 1, and a non-pass refuses the merge before `just merge` runs. This is the stricter default, and it changes only in repos that define `just merge`. Queue-routing detection stays a fresh live check (2026-10-01 amendment), with no cache. The forged-receipt backstop now rests on the full gate at merge, on sanctioned routes only: a direct `gh pr merge` bypasses it.
+
+**Amendment (#462, unit 3a).** The merge gate runs `checks validate` with the main worktree, so the `command` and `timeout_secs` it reports are the values that ran, and it fails closed: when no full check resolves but cached commands exist, the merge is refused with "no full check resolved, but cached commands exist" (a repo with no cached commands still merges with the no-gate marker).
+
+**Live-at-default change L0 (`worktree_tree`).** `checks.py`'s `worktree_tree` resolves the git dir with `git rev-parse --git-dir`, so linked worktrees (where `.git` is a file) get a real tree. A failure to write the tree logs "idempotency disabled" and never counts as a check failure. Before this fix, receipts from linked worktrees carried `tree: ""`. Cache hits therefore begin for existing callers on the first merge after this change, not only for the new modes. Rollback unit: the `checks.py` change alone.
+
+**Cross-references.** #431 (a branch that merged an older base still takes the replaying rebase in Phase 6) is unchanged by this amendment. #447 was delivered by #460 (`e593c96a`) and is resolved; this amendment adds no work under it.
+
 ## Follow-ups
 
 - **GitHub ruleset:** after two clean weeks of local queuing, add a GitHub ruleset requiring the
@@ -463,3 +473,9 @@ top of the base allowlist.
 - **Error messages:** point to the config schema (this ADR section).
 - **Debugging:** `merge-queue status` shows holder, current step, and elapsed time. `result.json`
   captures the outcome and logs. `merge-queue reverify` is the escape hatch for flaky E2E.
+
+**Amendment (#462, 2026-11-05): force-push gates vs the merge gate.** The authorized force-pushes in Context
+(`/stack-sync`, `/shipit`) are gated at PR level by the minimum check (`checks validate --mode minimum`), per
+the ADR-0012 and ADR-0023 2026-11-05 amendments. The merge gate, on the queue and off-queue routes, runs the
+full check and is the authoritative gate; a minimum pass never satisfies it. The four-command list above is
+unchanged, and so is the queue's own pinned push, which still runs only after the full gate passes.

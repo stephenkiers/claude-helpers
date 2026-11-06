@@ -446,4 +446,61 @@ if __name__ == "__main__":
             )
 
     print()
+    print("[Section 11] CHECK accepts the resolved minimum or full command; any other command is rejected (#462)")
+
+    def write_min_cache(repo: str, full: str = "just check", minimum=None) -> None:
+        commands = {"check": full}
+        if minimum is not None:
+            commands["check_minimum"] = minimum
+        cache_dir = Path(repo) / ".claude"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / "repo-cache.json").write_text(json.dumps({"commands": commands}))
+
+    with tempfile.TemporaryDirectory() as home:
+        repo, base_sha, head_sha = make_repo(home)
+        write_min_cache(repo, minimum="just check-minimum")
+        receipt = write_receipt(home, receipt_text(passing_lines(head_sha, command="just check-minimum", source="repo-cache")))
+        exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
+        test_result(
+            "rule (b) #462: CHECK 'just check-minimum' is accepted when it is the resolved minimum command",
+            exit_code == 0,
+            f"rc={exit_code} stdout={stdout[:300]!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as home:
+        repo, base_sha, head_sha = make_repo(home)
+        write_min_cache(repo, minimum="just check-minimum")
+        receipt = write_receipt(home, receipt_text(passing_lines(head_sha, command="just check", source="repo-cache")))
+        exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
+        test_result(
+            "rule (b) #462: CHECK 'just check' is accepted when the full command is configured alongside a minimum",
+            exit_code == 0,
+            f"rc={exit_code} stdout={stdout[:300]!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as home:
+        repo, base_sha, head_sha = make_repo(home)
+        write_min_cache(repo, minimum="just check-minimum")
+        receipt = write_receipt(home, receipt_text(passing_lines(head_sha, command="ruff check .", source="repo-cache")))
+        exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
+        test_result(
+            "rule (b) #462 negative: 'ruff check .' is rejected, naming both resolved commands",
+            exit_code == 1 and "check substituted: receipt ran 'ruff check .', resolved 'just check' or 'just check-minimum'" in stdout,
+            f"rc={exit_code} stdout={stdout[:300]!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as home:
+        repo, base_sha, head_sha = make_repo(home)
+        cache_dir = Path(repo) / ".claude"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / "repo-cache.json").write_text(json.dumps({"commands": {"check_minimum": "just check-minimum"}}))
+        receipt = write_receipt(home, receipt_text(passing_lines(head_sha, command="just check-minimum", source="repo-cache")))
+        exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
+        test_result(
+            "rule (b) #462: a minimum-only cache accepts CHECK 'just check-minimum'",
+            exit_code == 0,
+            f"rc={exit_code} stdout={stdout[:300]!r}",
+        )
+
+    print()
     h.summarize_and_exit()

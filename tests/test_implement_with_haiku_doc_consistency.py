@@ -829,7 +829,7 @@ def table_row(marker):
     return ""
 
 
-for tok in ("checks resolve-check", "checks run -", "run_in_background", "cd <WORKTREE>", "rev-parse HEAD",
+for tok in ("checks resolve-check", "checks validate --mode minimum -", "run_in_background", "cd <WORKTREE>", "rev-parse HEAD",
             "timeout_secs"):
     t(f"(#338) doc names {tok!r}", tok in DOC)
 
@@ -848,6 +848,15 @@ t("(#338) doc says the exit status is not branched on (use source/command from r
 
 t("(#338) no `resolve-check ... ||` shell fallback (the exit code is never the gate)",
   not any("resolve-check" in line and "||" in line for line in DOC.splitlines()))
+
+t("(#387) the final check resolves the minimum check (`resolve-check --mode minimum`)",
+  "resolve-check --worktree <WORKTREE> --main-worktree <MAIN_WORKTREE> --mode minimum" in DOC)
+
+t("(#387) the final check runs `checks validate`, never `checks run`",
+  "checks validate" in DOC and "checks run" not in DOC)
+
+t("(#387) the final check is one minimum check, not one full check",
+  "one minimum-check run" in DOC and "one full-check run" not in DOC)
 
 # Heading order: 4.6 Verify green, then commit -> ## Final check -> ## Final summary
 pos_46 = DOC.find("### 4.6 Verify green, then commit")

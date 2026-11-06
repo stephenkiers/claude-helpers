@@ -286,14 +286,10 @@ invoked from):
 ```bash
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
-# Resolve the default branch for the attestation
-DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
-DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
-
-# Run checks via deterministic CLI. Exit codes: 0 = passed, 1 = a check failed,
-# 2 = nothing ran (empty/all-null cache) or a coverage-assertion violation.
-CACHE_JSON=$(cat .claude/repo-cache.json 2>/dev/null || echo '{}')
-CHECK_RESULT=$(printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks run - --base "origin/${DEFAULT_BRANCH}")
+# Run checks via deterministic CLI from the worktree. `validate` resolves the check command, the merge-base
+# and the changed files itself; it takes no stdin and no --base. Exit codes: 0 = passed, 1 = a check failed,
+# 2 = nothing ran (empty/all-null cache), a config or usage error, or a coverage-assertion violation.
+CHECK_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks validate --mode minimum --worktree "$(pwd)")
 CHECK_EXIT=$?
 CHECK_STATUS=$(printf '%s' "$CHECK_RESULT" | jq -r '.status // "unknown"')
 CHECK_EXECUTED=$(printf '%s' "$CHECK_RESULT" | jq -r '.executed // [] | join(", ")')
@@ -383,19 +379,10 @@ Write commit message:
 
 (The wrapper's modeling step handles this; the CLI just commits the message already written.)
 
-**Record the check receipt.** Once the commit exists, write the receipt that lets
-`/merge-and-cleanup` skip re-running the gate you just passed. The receipt is written only from the
-attestation that the checks run recorded; it fails silently if the attestation was not recorded (e.g.,
-when checks failed or did not run), or if HEAD's tree differs from what the checks ran on. The receipt
-records the tree, configured commands, and base tip; merge reuses it only while all three still match
-(a moved base means a rebase may change the tree, so merge re-runs the checks then).
-
-```bash
-source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || true
-if [ "$CHECK_EXIT" = "0" ]; then
-  PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks receipt write --worktree . >/dev/null 2>&1 || true
-fi
-```
+**No separate receipt step.** `checks validate` writes its own per-key record when the check passes
+with the tree unchanged, so there is nothing to write after the commit. The record is keyed on the tree
+and the minimum (or full) digests. A minimum record never satisfies the merge gate: `/merge-and-cleanup`
+runs the full check gate on its own route (ADR-0021), so a `/shipit` pass is a PR-level pass only.
 
 ## 5. Push & PR
 

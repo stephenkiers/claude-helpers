@@ -123,25 +123,29 @@ git.run_git_command(f"merge-base --is-ancestor {ancestor} {descendant}")
 
 **Caller responsibility:** Inspect results and handle errors explicitly; never assume success.
 
-**`checks run` CLI exit codes:** `0` = all executed checks passed, `1` = a check failed, `2` = nothing
-ran (empty/all-null `commands`) or the coverage assertion below was violated. `--allow-no-checks`
-converts `2` → `0` while still reporting `status` in the JSON output, for callers that have
-independently confirmed no checks apply. `--timeout` bounds each check (precedence: `--timeout`, then
-`SHIPIT_CHECK_TIMEOUT_SECS`, then the repo cache's `checkTimeoutSecs`, then 300s).
+**`checks validate` CLI exit codes (2026-11-05, #462):** `0` = the check passed, `1` = a check failed,
+`2` = a config or usage error (`status: "error"` in the JSON output). `checks run` and `checks receipt` were
+removed (ADR-0013 Amendment 12); callers use `checks validate --mode minimum|full`. The `checks validate`
+output is a JSON object on stdout. The coverage assertion below still applies to the `run_checks()` helper.
+
+**Gate modes (2026-11-05, #462):** PR-level gates and force-push gates (`/shipit`, `/stack-sync`, flow
+verify/implement/fix) run `checks validate --mode minimum`, which falls back to the full command when
+`commands.check_minimum` is undeclared. The merge gate (`merge.py`, ADR-0021) runs the full check and is the
+authoritative gate. A minimum record never satisfies the merge gate.
 
 ## Change Note: checkTimeoutSecs Semantics (2026-10-13)
 
-**Scope:** The `checkTimeoutSecs` per-repo override is honored only by `checks run` (`scripts/workflow/cli.py`);
+**Scope:** The `checkTimeoutSecs` per-repo override is honored by `checks validate` (`scripts/workflow/cli.py`);
 the cleanup path uses its own timeout logic (`scripts/workflow/cleanup.py`) and does not read `checkTimeoutSecs`.
 To ensure future compatibility and correct caching, `RepoCacheData.to_dict()` now explicitly maps the
 internal `check_timeout_secs` field to the JSON key `checkTimeoutSecs` (camelCase), matching what
 `from_dict()` reads. This fixes a round-trip inconsistency where to_dict() would have output `check_timeout_secs`
 (snake_case), breaking the cache's ability to preserve the value across a read-and-rewrite cycle.
 
-**Timeout precedence** (applies to `checks run` only):
-1. `--timeout` command-line flag (highest priority)
-2. `SHIPIT_CHECK_TIMEOUT_SECS` environment variable
-3. Cache's `checkTimeoutSecs` field (repo-level override)
+**Timeout precedence** (applies to `checks validate`; resolved by `checks.resolve_check_timeout`; the `--timeout` flag was removed with `checks run`):
+1. `SHIPIT_CHECK_TIMEOUT_SECS` environment variable
+2. `checkTimeoutSecs` in the file the command was resolved from (project.yaml or repo-cache)
+3. `checkTimeoutSecs` in the worktree repo-cache.json, then the main repo-cache.json
 4. 300 seconds (default)
 
 ## Check Gate Coverage (ADR-0013 Amendment 3)
@@ -150,7 +154,9 @@ internal `check_timeout_secs` field to the JSON key `checkTimeoutSecs` (camelCas
 `executed ∪ skipped` (by command type) must always equal the full set of keys present in the input
 `commands` map — null-valued keys included, since `build_check_order` records a `null_command` skip
 entry for every key present, not just non-null ones — a gate that silently drops a configured
-command is a defect, not a valid outcome.
+command is a defect, not a valid outcome. **A cached pass reports `cache: hit`, `executed: []`, never
+silent success.** Project configuration (`.claude/project.yaml`, the local tier per ADR-0005) owns the
+declared checks.
 
 **Rationale:** `/shipit`'s gate once returned `{"results": [], "all_passed": true}` for a cache with
 `commands.test` set but an empty `parallelizable` array — a check gate that passes having run

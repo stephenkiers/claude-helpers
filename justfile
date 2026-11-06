@@ -25,3 +25,7 @@ typecheck:
 # Auto-fix what ruff can fix safely, leave the rest for manual review.
 fix:
     ruff check . --fix
+
+# Minimum check: lint + typecheck + tests for changed files (see scripts/check-minimum.py)
+check-minimum:
+    python3 scripts/check-minimum.py

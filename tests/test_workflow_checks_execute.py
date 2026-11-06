@@ -8,6 +8,9 @@ and the guarantee that no gate passes without executing something.
 Run with: python3 tests/test_workflow_checks_execute.py
 """
 
+import json
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -15,9 +18,69 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.checks import run_checks, execute_check, CheckResult, CheckResults
+from workflow.checks import (
+    run_checks, execute_check, CheckResult, CheckResults, validate, build_check_order,
+    NON_CHECK_COMMANDS,
+)
 from workflow.safety import Unknown
 from _test_harness import Harness
+
+
+# Keys validate() adds on top of CheckResults.to_dict() (#462 Part A key-set pin).
+EXTRA_KEYS = frozenset({
+    "schema_version", "mode_requested", "mode_executed", "fell_back_to_full",
+    "cache", "satisfied_by", "changed_files_source", "command", "timeout_secs",
+})
+TO_DICT_KEYS = frozenset({"results", "all_passed", "failed_at", "planned", "executed", "skipped", "status"})
+
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+}
+
+
+def _git(cwd, *args):
+    return subprocess.run(
+        ["git", *args], cwd=str(cwd), env={**os.environ, **_GIT_ENV},
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _fixture_clone(root, cache_commands):
+    """Bare origin with one commit on main, cloned as a work tree one commit ahead on `feature`.
+
+    The repo-cache.json is written untracked and gitignored (as in a real repo), so it does not
+    change the tree. Returns the work tree path.
+    """
+    seed = root / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-q", "-b", "main")
+    (seed / ".claude").mkdir()
+    (seed / ".claude" / ".gitignore").write_text("check-records/\nrepo-cache.json\n")
+    (seed / "README.md").write_text("base\n")
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-q", "-m", "init")
+    origin = root / "origin.git"
+    _git(root, "clone", "-q", "--bare", str(seed), str(origin))
+    work = root / "work"
+    _git(root, "clone", "-q", str(origin), str(work))
+    _git(work, "checkout", "-q", "-b", "feature")
+    (work / "feature.txt").write_text("one\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "feature")
+    (work / ".claude" / "repo-cache.json").write_text(
+        json.dumps({"version": 1, "commands": cache_commands}) + "\n"
+    )
+    return work
+
+
+def _counter_cmd(path, ok=True):
+    """Shell command that records one execution in `path` and passes or fails."""
+    return f"echo run >> '{path}' && {'true' if ok else 'false'}"
+
+
+def _runs(path):
+    return path.read_text().count("run") if path.exists() else 0
 
 
 if __name__ == "__main__":
@@ -55,7 +118,7 @@ if __name__ == "__main__":
         repo_root = Path(tmpdir)
         execution_order = []
 
-        def mock_execute_check(command, cwd=None, timeout=300):
+        def mock_execute_check(command, cwd=None, timeout=300, env=None):
             """Mock execute_check that records order."""
             execution_order.append(command)
             return CheckResult(
@@ -101,7 +164,7 @@ if __name__ == "__main__":
         repo_root = Path(tmpdir)
         execution_calls = []
 
-        def mock_execute_fail(command, cwd=None, timeout=300):
+        def mock_execute_fail(command, cwd=None, timeout=300, env=None):
             """Mock that fails at 'lint' and records all calls."""
             execution_calls.append(command)
             success = "lint" not in command
@@ -191,7 +254,7 @@ if __name__ == "__main__":
         repo_root = Path(tmpdir)
         executed_commands = []
 
-        def mock_execute_track(command, cwd=None, timeout=300):
+        def mock_execute_track(command, cwd=None, timeout=300, env=None):
             """Mock that tracks executed commands."""
             executed_commands.append(command)
             return CheckResult(
@@ -232,7 +295,7 @@ if __name__ == "__main__":
         repo_root = Path(tmpdir)
         executed_types = []
 
-        def mock_execute_selective(command, cwd=None, timeout=300):
+        def mock_execute_selective(command, cwd=None, timeout=300, env=None):
             """Track which command types are called."""
             # Parse the command to guess type (simplistic but works for test)
             if "lint" in command:
@@ -385,7 +448,7 @@ if __name__ == "__main__":
         repo_root = Path(tmpdir)
         executed = []
 
-        def mock_track(command, cwd=None, timeout=300):
+        def mock_track(command, cwd=None, timeout=300, env=None):
             executed.append(command)
             return CheckResult(
                 success=True,
@@ -452,6 +515,496 @@ if __name__ == "__main__":
         "execute_check: a slow command times out (returns, does not hang) with PATH=/nonexistent",
         not result.success and result.error is not None and "timed out" in str(result.error).lower(),
         f"success={result.success} error={result.error!r}",
+    )
+
+    print("[Section 12] validate: cache miss/hit/--force, failing runs, malformed records (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        first = validate(work, mode="full")
+        second = validate(work, mode="full")
+        test_result(
+            "validate: first run is a miss, executes once, and passes",
+            first.get("cache") == "miss" and first.get("status") == "passed" and _runs(count) == 1,
+            f"first={first!r} runs={_runs(count)}",
+        )
+        test_result(
+            "validate: second run on the same tree is a hit with no re-execution",
+            second.get("cache") == "hit" and second.get("status") == "passed"
+            and _runs(count) == 1 and second.get("satisfied_by") == first.get("satisfied_by"),
+            f"second={second!r} runs={_runs(count)}",
+        )
+        forced = validate(work, mode="full", force=True)
+        test_result(
+            "validate: --force bypasses a cache hit and re-executes",
+            forced.get("cache") == "forced" and forced.get("status") == "passed" and _runs(count) == 2,
+            f"forced={forced!r} runs={_runs(count)}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        main_dir = root / "main-wt"
+        (main_dir / ".claude").mkdir(parents=True)
+        yaml_path = main_dir / ".claude" / "project.yaml"
+        work = _fixture_clone(root, {"lint": "true"})
+        yaml_path.write_text(f"commands:\n  check: \"echo A >> '{count}'\"\n")
+        y1 = validate(work, mode="full", main_worktree=main_dir)
+        yaml_path.write_text(f"commands:\n  check: \"echo B >> '{count}'\"\n")
+        y2 = validate(work, mode="full", main_worktree=main_dir)
+        y3 = validate(work, mode="full", main_worktree=main_dir)
+        test_result(
+            "validate: a check command that changes in project.yaml (tree and repo-cache unchanged) is a miss, then the new command hits",
+            y1.get("status") == "passed" and y2.get("cache") == "miss" and y3.get("cache") == "hit"
+            and count.read_text().count("A") == 1 and count.read_text().count("B") == 1,
+            f"y1={y1!r} y2={y2!r} y3={y3!r} count={count.read_text() if count.exists() else ''!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count, ok=False)})
+        r1 = validate(work, mode="full")
+        r2 = validate(work, mode="full")
+        records_dir = work / ".claude" / "check-records"
+        pass_records = list(records_dir.glob("*.json")) if records_dir.exists() else []
+        test_result(
+            "validate: a failing run writes no pass record, so the next run is a miss that re-executes",
+            r1.get("status") != "passed" and r2.get("cache") == "miss" and _runs(count) == 2 and not pass_records,
+            f"r1={r1!r} r2={r2!r} runs={_runs(count)} records={pass_records}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        validate(work, mode="full")
+        record = next((work / ".claude" / "check-records").glob("*.json"))
+        record.write_text("{not json")
+        after = validate(work, mode="full")
+        test_result(
+            "validate: a malformed record is a miss and the check re-runs",
+            after.get("cache") == "miss" and after.get("status") == "passed" and _runs(count) == 2,
+            f"after={after!r} runs={_runs(count)}",
+        )
+
+    print("[Section 12b] validate: minimum keying, full-satisfies-minimum, fallback (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count), "check_minimum": _counter_cmd(count)})
+        m1 = validate(work, mode="minimum")
+        m2 = validate(work, mode="minimum")
+        test_result(
+            "validate minimum: a repeat minimum run on the same key is a hit",
+            m1.get("cache") == "miss" and m2.get("cache") == "hit" and _runs(count) == 1,
+            f"m1={m1!r} m2={m2!r} runs={_runs(count)}",
+        )
+        cache_file = work / ".claude" / "repo-cache.json"
+        cache_file.write_text(json.dumps({"version": 1, "commands": {
+            "check": _counter_cmd(count),
+            "check_minimum": _counter_cmd(count) + " # changed",
+        }}) + "\n")
+        m3 = validate(work, mode="minimum")
+        test_result(
+            "validate minimum: changing check_minimum changes the key (miss, re-executes)",
+            m3.get("cache") == "miss" and _runs(count) == 2,
+            f"m3={m3!r} runs={_runs(count)}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count), "check_minimum": _counter_cmd(count)})
+        validate(work, mode="full")
+        minimum = validate(work, mode="minimum")
+        test_result(
+            "validate: a passing full run satisfies a minimum request (hit, no re-execution)",
+            minimum.get("cache") == "hit" and minimum.get("status") == "passed" and _runs(count) == 1,
+            f"minimum={minimum!r} runs={_runs(count)}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count), "check_minimum": _counter_cmd(count)})
+        validate(work, mode="minimum")
+        full = validate(work, mode="full")
+        test_result(
+            "validate: a passing minimum run does NOT satisfy a full request (miss, re-executes)",
+            full.get("cache") == "miss" and _runs(count) == 2,
+            f"full={full!r} runs={_runs(count)}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        out = validate(work, mode="minimum")
+        test_result(
+            "validate minimum with no check_minimum declared falls back to full",
+            out.get("status") == "passed" and out.get("fell_back_to_full") is True
+            and out.get("mode_executed") == "full" and _runs(count) == 1,
+            f"out={out!r} runs={_runs(count)}",
+        )
+
+    test_result(
+        "NON_CHECK_COMMANDS excludes install and check_minimum from executed extras",
+        "install" in NON_CHECK_COMMANDS and "check_minimum" in NON_CHECK_COMMANDS,
+        f"NON_CHECK_COMMANDS={sorted(NON_CHECK_COMMANDS)}",
+    )
+    planned, _skipped = build_check_order({"install": "npm ci", "check": "make", "check_minimum": "make min"})
+    test_result(
+        "build_check_order: check_minimum and install are never planned as extra checks",
+        "check_minimum" not in planned and "install" not in planned and planned == ["check"],
+        f"planned={planned}",
+    )
+
+    print("[Section 12c] validate: environment export and key-set pin (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        seen = root / "seen.txt"
+        work = _fixture_clone(root, {"check": f"printf '%s' \"$CHECK_BASE\" > '{seen}'"})
+        out = validate(work, mode="full")
+        base_sha = _git(work, "rev-parse", "origin/main")
+        test_result(
+            "validate: the check command receives CHECK_BASE (the merge-base) in its environment",
+            out.get("status") == "passed" and seen.exists() and seen.read_text() == base_sha,
+            f"out={out!r} seen={seen.read_text() if seen.exists() else None!r} base={base_sha}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        miss_out = validate(work, mode="full")
+        hit_out = validate(work, mode="full")
+        test_result(
+            "validate: miss-path output keys equal CheckResults.to_dict keys plus the validate extras",
+            set(miss_out.keys()) == TO_DICT_KEYS | EXTRA_KEYS,
+            f"extra={sorted(set(miss_out.keys()) ^ (TO_DICT_KEYS | EXTRA_KEYS))}",
+        )
+        test_result(
+            "validate: hit-path output has the same key set as the miss path",
+            hit_out.get("cache") == "hit" and set(hit_out.keys()) == TO_DICT_KEYS | EXTRA_KEYS,
+            f"extra={sorted(set(hit_out.keys()) ^ (TO_DICT_KEYS | EXTRA_KEYS))}",
+        )
+
+    print("[Section 12d] validate: base movement, untracked files, eviction, tree mutation, fallback caching (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        first = validate(work, mode="full")
+        other = root / "other"
+        _git(root, "clone", "-q", str(root / "origin.git"), str(other))
+        (other / "later.txt").write_text("later\n")
+        _git(other, "add", "-A")
+        _git(other, "commit", "-q", "-m", "later")
+        _git(other, "push", "-q", "origin", "main")
+        _git(work, "fetch", "-q", "origin")
+        second = validate(work, mode="full")
+        test_result(
+            "validate: an advanced origin/main with the same merge-base is still a hit (no re-execution)",
+            second.get("cache") == "hit" and first.get("satisfied_by") == second.get("satisfied_by")
+            and _runs(count) == 1,
+            f"second={second!r} runs={_runs(count)}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count), "check_minimum": _counter_cmd(count)})
+        m1 = validate(work, mode="minimum")
+        # M1 adds the same feature.txt content on main, so HEAD's tree is unchanged but its merge-base moves.
+        other = root / "other"
+        _git(root, "clone", "-q", str(root / "origin.git"), str(other))
+        (other / "feature.txt").write_text("one\n")
+        _git(other, "add", "-A")
+        _git(other, "commit", "-q", "-m", "same content on main")
+        _git(other, "push", "-q", "origin", "main")
+        m1_sha = _git(other, "rev-parse", "HEAD")
+        _git(work, "fetch", "-q", "origin")
+        tree = _git(work, "rev-parse", "HEAD^{tree}")
+        new_head = _git(work, "commit-tree", tree, "-p", m1_sha, "-m", "rebased onto same content")
+        _git(work, "update-ref", "refs/heads/feature", new_head)
+        m2 = validate(work, mode="minimum")
+        test_result(
+            "validate minimum: same tree with a different merge-base is a miss (changed-files hash differs)",
+            m1.get("cache") == "miss" and m2.get("cache") == "miss" and _runs(count) == 2,
+            f"m1={m1!r} m2={m2!r} runs={_runs(count)}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        validate(work, mode="full")
+        (work / "untracked-notes.txt").write_text("not committed\n")
+        after = validate(work, mode="full")
+        test_result(
+            "validate: an untracked (non-ignored) file changes the tree and is a miss",
+            after.get("cache") == "miss" and _runs(count) == 2,
+            f"after={after!r} runs={_runs(count)}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        flag = root / "fail-flag.txt"
+        work = _fixture_clone(root, {"check": f"echo run >> '{count}' && test ! -f '{flag}'"})
+        passed = validate(work, mode="full")
+        records_dir = work / ".claude" / "check-records"
+        recorded = list(records_dir.glob("*.json")) if records_dir.exists() else []
+        flag.write_text("fail now\n")
+        forced_fail = validate(work, mode="full", force=True)
+        remaining = list(records_dir.glob("*.json")) if records_dir.exists() else []
+        test_result(
+            "validate: a forced failing run evicts the older pass record for the same key",
+            passed.get("status") == "passed" and len(recorded) == 1
+            and forced_fail.get("status") != "passed" and remaining == [],
+            f"passed={passed!r} recorded={recorded} forced_fail={forced_fail!r} remaining={remaining}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        mutated = root / "work" / "mutated.txt"  # _fixture_clone places the work tree at root/work
+        work = _fixture_clone(root, {"check": f"echo run >> '{count}' && echo x > '{mutated}'"})
+        out = validate(work, mode="full")
+        records_dir = work / ".claude" / "check-records"
+        recorded = list(records_dir.glob("*.json")) if records_dir.exists() else []
+        test_result(
+            "validate: a tree that changes during the run writes no record (next run is a miss)",
+            out.get("status") == "passed" and recorded == [],
+            f"out={out!r} records={recorded}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        first = validate(work, mode="minimum")
+        second = validate(work, mode="minimum")
+        test_result(
+            "validate minimum fallback is keyed as full and caches: second run is a hit with no re-execution",
+            first.get("fell_back_to_full") is True and first.get("cache") == "miss"
+            and second.get("cache") == "hit" and _runs(count) == 1,
+            f"first={first!r} second={second!r} runs={_runs(count)}",
+        )
+
+    print("[Section 12e] validate: scratch changed-file list, unresolvable base, unknown-schema records (#462 Part A)")
+    from workflow.checks import resolve_check_base
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        copied = root / "copied-list.txt"
+        listing = root / "listing.txt"
+        cmd = f"cp \"$CHECK_CHANGED_FILES\" '{copied}' && printf '%s' \"$CHECK_CHANGED_FILES\" > '{listing}' && echo run >> '{count}'"
+        work = _fixture_clone(root, {"check": "true", "check_minimum": cmd})
+        (work / "untracked.txt").write_text("u\n")
+        out = validate(work, mode="minimum")
+        listed = copied.read_text() if copied.exists() else ""
+        scratch = Path(listing.read_text()) if listing.exists() else None
+        scratch_outside = scratch is not None and not str(scratch).startswith(str(work) + os.sep)
+        scratch_removed = scratch is not None and not scratch.exists()
+        test_result(
+            "validate minimum: CHECK_CHANGED_FILES lists committed and untracked files, lives outside the worktree, and is removed after the run",
+            out.get("status") == "passed" and "feature.txt" in listed and "untracked.txt" in listed
+            and scratch_outside and scratch_removed,
+            f"out={out!r} listed={listed!r} scratch={scratch!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": "true", "check_minimum": _counter_cmd(count)})
+        _git(work, "checkout", "-q", "--detach")
+        base = resolve_check_base(work)
+        m1 = validate(work, mode="minimum")
+        m2 = validate(work, mode="minimum")
+        records_dir = work / ".claude" / "check-records"
+        records = list(records_dir.glob("*.json")) if records_dir.exists() else []
+        test_result(
+            "resolve_check_base is None on a detached HEAD",
+            base is None,
+            f"base={base!r}",
+        )
+        test_result(
+            "validate minimum with an unresolvable base runs uncached: no hit, re-executes, writes no record",
+            m1.get("cache") != "hit" and m2.get("cache") != "hit" and _runs(count) == 2 and not records,
+            f"m1={m1!r} m2={m2!r} runs={_runs(count)} records={records}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        validate(work, mode="full")
+        for rec in (work / ".claude" / "check-records").glob("*.json"):
+            data = json.loads(rec.read_text())
+            data["schema_version"] = 2
+            rec.write_text(json.dumps(data) + "\n")
+        after = validate(work, mode="full")
+        test_result(
+            "validate: a record with an unknown schema_version fails closed (a miss that re-executes)",
+            after.get("cache") == "miss" and after.get("status") == "passed" and _runs(count) == 2,
+            f"after={after!r} runs={_runs(count)}",
+        )
+
+    print("[Section 12f] validate: timeout in the key, atomic eviction, shared default branch, typed error (#462)")
+    import time
+    from typing import get_type_hints
+    from workflow import checks as checks_mod, git as git_mod
+    from workflow.models import ValidateResult
+    from workflow.checks import ValidateErrorReport
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        loose = validate(work, mode="full", timeout=900)
+        same = validate(work, mode="full", timeout=900)
+        strict = validate(work, mode="full", timeout=300)
+        test_result(
+            "validate: a pass under a 900s limit is reused at 900s but is a miss under a stricter 300s limit",
+            loose.get("cache") == "miss" and same.get("cache") == "hit" and strict.get("cache") == "miss"
+            and _runs(count) == 2,
+            f"loose={loose.get('cache')} same={same.get('cache')} strict={strict.get('cache')} runs={_runs(count)}",
+        )
+        loose_min = validate(work, mode="minimum", timeout=900)
+        strict_min = validate(work, mode="minimum", timeout=300)
+        test_result(
+            "validate minimum (falls back to full): the timeout keys it the same way",
+            loose_min.get("cache") == "hit" and strict_min.get("cache") == "hit",
+            f"loose_min={loose_min.get('cache')} strict_min={strict_min.get('cache')}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        validate(work, mode="full")
+        records_dir = work / ".claude" / "check-records"
+        rec_path = next(records_dir.glob("*.json"))
+        rec = checks_mod._read_record(rec_path, rec_path.stem)
+        assert rec is not None
+        checks_mod._evict_older_pass(records_dir, rec.key, run_started=rec.written_at - 5)
+        test_result(
+            "_evict_older_pass: a pass written after the failed run started is put back, not evicted",
+            rec_path.exists() and not list(records_dir.glob(".*.tmp")),
+            f"exists={rec_path.exists()} leftovers={list(records_dir.glob('.*.tmp'))}",
+        )
+        checks_mod._evict_older_pass(records_dir, rec.key, run_started=rec.written_at + 5)
+        test_result(
+            "_evict_older_pass: a pass older than the failed run is evicted and leaves no moved-aside file",
+            not rec_path.exists() and not list(records_dir.glob(".*.tmp")),
+            f"exists={rec_path.exists()} leftovers={list(records_dir.glob('.*.tmp'))}",
+        )
+        checks_mod._evict_older_pass(records_dir, rec.key, run_started=time.time())
+        test_result(
+            "_evict_older_pass: nothing to evict is a quiet no-op",
+            not rec_path.exists(),
+            "record reappeared",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        work = _fixture_clone(root, {"check": "true"})
+        by_symref, _ = git_mod.get_default_branch(cwd=work)
+        _git(work, "remote", "set-head", "origin", "-d")
+        by_fallback, _ = git_mod.get_default_branch(cwd=work)
+        base_after = resolve_check_base(work)
+        test_result(
+            "default branch: one resolver for the selector and the merge gate (origin/HEAD, then local main)",
+            by_symref == "main" and by_fallback == "main" and base_after is not None,
+            f"symref={by_symref!r} fallback={by_fallback!r} base={base_after!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        work = _fixture_clone(root, {"check": "true"})
+        _git(work, "branch", "release/2", "origin/main")
+        _git(work, "update-ref", "refs/remotes/origin/release/2", "origin/main")
+        _git(work, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/release/2")
+        slashed, _ = git_mod.get_default_branch(cwd=work)
+        test_result(
+            "default branch: a slashed default branch name keeps its full name",
+            slashed == "release/2",
+            f"slashed={slashed!r}",
+        )
+
+    print("[Section 12g] checks-core: record cap, stale temp sweep, minimum failure evicts a full pass, records outside the tree (#462)")
+    import time
+    from workflow.models import FullKey, MinimumKey, record_filename_hash
+
+    with tempfile.TemporaryDirectory() as tmp:
+        records_dir = Path(tmp) / "records"
+        full_key = FullKey(tree="a" * 40, full_digest="b" * 64)
+        min_key = MinimumKey(tree="a" * 40, full_digest="b" * 64,
+                             minimum_digest="c" * 64, changed_files_hash="d" * 64)
+        checks_mod._write_record(records_dir, full_key)
+        full_file = records_dir / f"{record_filename_hash(full_key)}.json"
+        checks_mod._evict_older_pass(records_dir, min_key, run_started=time.time() + 60)
+        test_result(
+            "eviction: a failed minimum run also evicts the older full pass for the same tree",
+            not full_file.exists(),
+            f"full record still present: {full_file.exists()}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        records_dir = Path(tmp)
+        for i in range(5):
+            aged = records_dir / f"{i:064x}.json"
+            aged.write_text("{}")
+            os.utime(aged, (1000 + i, 1000 + i))
+        with mock.patch.object(checks_mod, "MAX_CHECK_RECORDS", 3):
+            checks_mod._sweep_records(records_dir)
+        remaining = sorted(p.name for p in records_dir.glob("*.json"))
+        test_result(
+            "record cap: the sweep keeps the newest MAX_CHECK_RECORDS records and removes the oldest",
+            remaining == [f"{i:064x}.json" for i in (2, 3, 4)],
+            f"remaining={remaining!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        records_dir = Path(tmp)
+        stale = records_dir / ".abc.killed.tmp"
+        stale.write_text("x")
+        os.utime(stale, (1000, 1000))
+        live = records_dir / ".def.running.tmp"
+        live.write_text("x")
+        checks_mod._sweep_records(records_dir)
+        test_result(
+            "stale temp sweep: a temp file older than the stale window is removed, a fresh one is kept",
+            not stale.exists() and live.exists(),
+            f"stale={stale.exists()} live={live.exists()}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        count = root / "count.txt"
+        work = _fixture_clone(root, {"check": _counter_cmd(count)})
+        # Drop the ignore rules so the record directory is not ignored: exclusion must come from the
+        # pathspec alone, so records cannot change the tree they are keyed by.
+        (work / ".claude" / ".gitignore").write_text("")
+        first = validate(work, mode="full")
+        second = validate(work, mode="full")
+        test_result(
+            "record directory outside the tree: a second run hits the record written by the first",
+            first.get("cache") == "miss" and second.get("cache") == "hit" and _runs(count) == 1,
+            f"first={first.get('cache')} second={second.get('cache')} runs={_runs(count)}",
+        )
+
+    err = validate(Path(tempfile.gettempdir()), mode="bogus")
+    test_result(
+        "validate error result: carries every ValidateResult key plus error (typed ValidateErrorReport)",
+        set(err) == set(get_type_hints(ValidateErrorReport))
+        and set(get_type_hints(ValidateResult)) < set(err) and err.get("status") == "error"
+        and isinstance(err.get("error"), str),
+        f"keys={sorted(err)}",
     )
 
     print()

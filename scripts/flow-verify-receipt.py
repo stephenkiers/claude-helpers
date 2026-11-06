@@ -2676,9 +2676,21 @@ def _check_gate_reason(
     # Resolve against the step's own worktree (where the Final check resolved and ran); fall back to --repo.
     resolve_root = Path(check_worktree) if check_worktree else Path(repo)
     try:
-        command, source, failure_reason = checks.resolve_check_command(resolve_root, main_path)
+        # The receipt may name either the resolved minimum command (check_minimum, or the full
+        # command when check_minimum is absent) or the resolved full command. Both resolve from
+        # the same config, so the receipt still cannot vouch for a command the resolver did not report.
+        full = checks.resolve_check_detail(resolve_root, main_path, mode="full")
+        minimum = checks.resolve_check_detail(resolve_root, main_path, mode="minimum")
     except Exception as exc:  # a resolver crash means the check could not run, not that none is configured
         return f"check-not-run: resolver unavailable ({type(exc).__name__}: {exc})"
+
+    # Resolutions that name a command, full first; the first one is the primary view for the
+    # opt-out, contradiction and not-configured rules below.
+    accepted = [r for r in (full, minimum) if r.command is not None]
+    if accepted:
+        command, source, failure_reason = accepted[0].command, accepted[0].source, accepted[0].failure_reason
+    else:
+        command, source, failure_reason = None, full.source, full.failure_reason
 
     # Contradictory resolver output (a command and an opt-out at once) is never a valid basis for a pass.
     if command is not None and source == OPT_OUT_SOURCE:
@@ -2702,17 +2714,20 @@ def _check_gate_reason(
             f"({' '.join((failure_reason or 'no reason reported by the resolver').split())})"
         )
     else:
-        # Rule (b): the receipt must name the resolved command verbatim.
-        if outcome.check != command:
-            return f"check substituted: receipt ran '{outcome.check}', resolved '{command}'"
+        # Rule (b): the receipt must name a resolved command verbatim: the minimum or the full one.
+        matched = next((r for r in accepted if r.command == outcome.check), None)
+        if matched is None:
+            # Unique, in order: a minimum resolution that fell back to the full command repeats it.
+            expected = " or ".join(dict.fromkeys(f"'{r.command}'" for r in accepted))
+            return f"check substituted: receipt ran '{outcome.check}', resolved {expected}"
         # Rule (c): a resolved check must have passed; CHECK_EXIT none or missing is not a pass.
         if check_exit != "0":
             return f"check did not pass: CHECK_EXIT '{check_exit}'"
-        # The receipt's CHECK_SOURCE must match where the resolver found the command.
-        if outcome.source != source:
+        # The receipt's CHECK_SOURCE must match where the resolver found the matched command.
+        if outcome.source != matched.source:
             return (
                 f"check source mismatch: receipt CHECK_SOURCE '{outcome.source or 'none'}', "
-                f"resolver source '{source or 'none'}'"
+                f"resolver source '{matched.source or 'none'}'"
             )
 
     # Rule (f): the check must have run on the step's final HEAD, not on an earlier tree.

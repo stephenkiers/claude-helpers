@@ -141,7 +141,9 @@ def get_default_branch(cwd: Optional[Path] = None) -> Tuple[Optional[str], Optio
     try:
         ref = run_git_command(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd=cwd, check=False)
         if ref:
-            return ref.split("/")[-1], None
+            # Strip the whole remote prefix: a default branch named like "release/2" keeps its slash.
+            prefix = "refs/remotes/origin/"
+            return (ref[len(prefix):] if ref.startswith(prefix) else ref.split("/")[-1]), None
     except RuntimeError:
         pass
 

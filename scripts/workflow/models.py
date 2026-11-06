@@ -5,8 +5,11 @@ Schema versioning allows safe migration of cache formats; each cache validates
 its own schema_version and content structure.
 """
 
+import hashlib
+import math
+import re
 from dataclasses import dataclass, field, asdict
-from typing import Optional, Dict, Any, List, Literal, TypedDict
+from typing import Optional, Dict, Any, List, Literal, TypedDict, Union, NoReturn, Tuple, Mapping, cast, get_args
 
 
 GITHUB_CACHE_SCHEMA_VERSION = "1.0"
@@ -563,3 +566,328 @@ class ScoutVerdict:
         ):
             raise ValueError(f"Invalid scout verdict reason: {reason!r}")
         return cls(comment_id=comment_id, verdict=verdict, reason=reason)
+
+
+# Check modes and records (ADR-0013 Amendment 11, Step 4 of plan)
+
+Mode = Literal["minimum", "full"]
+MODES: Tuple[Mode, ...] = get_args(Mode)  # ("minimum", "full")
+
+# Where a validate run's changed-file set came from ("not-computed" when validate never reached it)
+ChangedFilesSource = Literal["computed", "base-unresolved", "tree-unavailable", "not-computed"]
+
+
+def parse_mode(s: str) -> Optional[Mode]:
+    """Parse a string to Mode. Returns None if not a valid mode."""
+    if s in MODES:
+        return cast(Mode, s)
+    return None
+
+
+@dataclass(frozen=True)
+class FullKey:
+    """Check record key for full-mode checks. tree and full_digest must not be empty."""
+    tree: str  # 40-hex SHA
+    full_digest: str  # 64-hex SHA256
+
+    def __post_init__(self) -> None:
+        """Validate hex fields."""
+        if not re.fullmatch(r"[0-9a-f]{40}", self.tree):
+            raise ValueError(f"Invalid tree (not 40-hex): {self.tree}")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.full_digest):
+            raise ValueError(f"Invalid full_digest (not 64-hex): {self.full_digest}")
+
+
+@dataclass(frozen=True)
+class MinimumKey:
+    """Check record key for minimum-mode checks. All fields must not be empty."""
+    tree: str  # 40-hex SHA
+    full_digest: str  # 64-hex SHA256
+    minimum_digest: str  # 64-hex SHA256
+    changed_files_hash: str  # 64-hex SHA256
+
+    def __post_init__(self) -> None:
+        """Validate hex fields."""
+        if not re.fullmatch(r"[0-9a-f]{40}", self.tree):
+            raise ValueError(f"Invalid tree (not 40-hex): {self.tree}")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.full_digest):
+            raise ValueError(f"Invalid full_digest (not 64-hex): {self.full_digest}")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.minimum_digest):
+            raise ValueError(f"Invalid minimum_digest (not 64-hex): {self.minimum_digest}")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.changed_files_hash):
+            raise ValueError(f"Invalid changed_files_hash (not 64-hex): {self.changed_files_hash}")
+
+
+CheckKey = Union[FullKey, MinimumKey]
+
+
+def check_key_of(
+    mode: Mode,
+    tree: Optional[str],
+    full_digest: str,
+    minimum_digest: Optional[str] = None,
+    changed_files_hash: Optional[str] = None
+) -> Optional[CheckKey]:
+    """
+    Build a CheckKey for the given mode. Returns None if the tree is empty/missing
+    or if minimum mode but changed_files_hash is missing.
+
+    Pure builder; returns None when cache is impossible (no tree or no base).
+    """
+    if not tree:  # empty or None
+        return None
+    if not full_digest:
+        return None
+    if mode == "full":
+        try:
+            return FullKey(tree=tree, full_digest=full_digest)
+        except ValueError:
+            return None
+    elif mode == "minimum":
+        if not minimum_digest or not changed_files_hash:
+            return None
+        try:
+            return MinimumKey(
+                tree=tree,
+                full_digest=full_digest,
+                minimum_digest=minimum_digest,
+                changed_files_hash=changed_files_hash
+            )
+        except ValueError:
+            return None
+    return None
+
+
+def _canonical_key_serialisation(key: CheckKey) -> str:
+    """
+    Canonical serialisation of a CheckKey for hashing and integrity checks.
+
+    Order is: mode:tree:digest1:digest2 (with mode-specific digest count).
+    """
+    if isinstance(key, FullKey):
+        return f"full:{key.tree}:{key.full_digest}"
+    elif isinstance(key, MinimumKey):
+        return f"minimum:{key.tree}:{key.full_digest}:{key.minimum_digest}:{key.changed_files_hash}"
+    else:
+        _never(key)
+
+
+def _never(x: NoReturn) -> NoReturn:
+    """Helper for exhaustive type checks (Python 3.8 has no assert_never)."""
+    raise AssertionError(f"Unhandled case: {x}")
+
+
+def satisfies(record: "CheckRecord", requested: CheckKey) -> bool:
+    """
+    Check if a record satisfies a requested key.
+
+    A full record satisfies a full or minimum request when tree and full_digest match.
+    A minimum record satisfies only a minimum request when tree, full_digest, minimum_digest,
+    and changed_files_hash all match. A minimum record never satisfies a full request.
+    """
+    if not isinstance(record, CheckRecord):
+        return False
+
+    record_key = record.key
+    if isinstance(record_key, FullKey):
+        if isinstance(requested, FullKey):
+            return record_key.tree == requested.tree and record_key.full_digest == requested.full_digest
+        elif isinstance(requested, MinimumKey):
+            return record_key.tree == requested.tree and record_key.full_digest == requested.full_digest
+        else:
+            _never(requested)
+    elif isinstance(record_key, MinimumKey):
+        if isinstance(requested, FullKey):
+            return False  # minimum never satisfies full
+        elif isinstance(requested, MinimumKey):
+            return (
+                record_key.tree == requested.tree
+                and record_key.full_digest == requested.full_digest
+                and record_key.minimum_digest == requested.minimum_digest
+                and record_key.changed_files_hash == requested.changed_files_hash
+            )
+        else:
+            _never(requested)
+    else:
+        _never(record_key)
+
+
+@dataclass
+class CheckRecord:
+    """One cache record for a check result, keyed by (tree, digests, changed_files_hash)."""
+    schema_version: int  # Currently 1
+    key: CheckKey  # Embedded for re-verification
+    passed: bool  # True iff the check passed; a record is only ever written for a pass
+    written_at: float  # Unix timestamp when record was written
+
+    def __post_init__(self) -> None:
+        """Only a passing run is recorded: a record for a failure is a programming error."""
+        if self.passed is not True:
+            raise ValueError(f"CheckRecord is only written for a passing run, got passed={self.passed!r}")
+
+    @property
+    def mode_executed(self) -> Mode:
+        """The mode that was run, derived from the key type: a minimum key is a minimum run."""
+        return "minimum" if isinstance(self.key, MinimumKey) else "full"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        if isinstance(self.key, FullKey):
+            key_dict = {
+                "tree": self.key.tree,
+                "full_digest": self.key.full_digest,
+            }
+        else:  # MinimumKey
+            key_dict = {
+                "tree": self.key.tree,
+                "full_digest": self.key.full_digest,
+                "minimum_digest": self.key.minimum_digest,
+                "changed_files_hash": self.key.changed_files_hash,
+            }
+        return {
+            "schema_version": self.schema_version,
+            "key": key_dict,
+            "passed": self.passed,
+            "mode_executed": self.mode_executed,
+            "written_at": self.written_at,
+        }
+
+    @staticmethod
+    def from_dict(data: Mapping[str, object], filename_hash: Optional[str] = None) -> Optional["CheckRecord"]:
+        """
+        Parse a CheckRecord from a dict, fail-closed. Returns None on any validation failure.
+        Never raises. The single parse boundary; see parse_check_record for the rules and reasons.
+        """
+        record, _reason = parse_check_record(data, filename_hash)
+        return record
+
+
+CHECK_RECORD_SCHEMA_VERSION = 1
+_RECORD_KEYS = frozenset({"schema_version", "key", "passed", "mode_executed", "written_at"})
+_FULL_KEY_FIELDS = frozenset({"tree", "full_digest"})
+_MINIMUM_KEY_FIELDS = frozenset({"tree", "full_digest", "minimum_digest", "changed_files_hash"})
+
+
+def record_filename_hash(key: CheckKey) -> str:
+    """Record filename stem: sha256 of the canonical key serialisation (the one canonical form)."""
+    return hashlib.sha256(_canonical_key_serialisation(key).encode()).hexdigest()
+
+
+def parse_check_record(
+    data: object, filename_hash: Optional[str] = None
+) -> Tuple[Optional[CheckRecord], Optional[str]]:
+    """
+    Fail-closed parse of one record. Returns (record, None) or (None, reason); never raises.
+
+    Rules (ADR-0013 Amendment 11, CP-W4): the exact top-level and key-level key sets; bool is never
+    accepted as an int; passed must be exactly True; mode_executed must match the key type (a
+    minimum record carries a MinimumKey, a full record a FullKey); when filename_hash is given the
+    embedded key must re-hash to it.
+    """
+    if not isinstance(data, dict):
+        return None, "record is not a JSON object"
+    if set(data.keys()) != _RECORD_KEYS:
+        return None, f"key set mismatch: {sorted(str(k) for k in data.keys())}"
+
+    schema_version = data["schema_version"]
+    if type(schema_version) is not int or schema_version != CHECK_RECORD_SCHEMA_VERSION:
+        return None, f"schema_version is not {CHECK_RECORD_SCHEMA_VERSION}: {schema_version!r}"
+
+    passed = data["passed"]
+    if type(passed) is not bool or passed is not True:
+        return None, f"passed is not exactly true: {passed!r}"
+
+    mode_raw = data["mode_executed"]
+    mode = parse_mode(mode_raw) if isinstance(mode_raw, str) else None
+    if mode is None:
+        return None, f"mode_executed is not a mode: {mode_raw!r}"
+
+    written_at = data["written_at"]
+    if type(written_at) not in (int, float):
+        return None, f"written_at is not a number: {written_at!r}"
+    if type(written_at) is float and not math.isfinite(written_at):
+        return None, f"written_at is not finite: {written_at!r}"
+
+    key_data = data["key"]
+    if not isinstance(key_data, dict):
+        return None, "key is not a JSON object"
+    key_fields = set(key_data.keys())
+    if not all(type(v) is str for v in key_data.values()):
+        return None, "key fields are not all strings"
+
+    key: CheckKey
+    try:
+        if key_fields == _FULL_KEY_FIELDS:
+            key = FullKey(tree=key_data["tree"], full_digest=key_data["full_digest"])
+        elif key_fields == _MINIMUM_KEY_FIELDS:
+            key = MinimumKey(
+                tree=key_data["tree"],
+                full_digest=key_data["full_digest"],
+                minimum_digest=key_data["minimum_digest"],
+                changed_files_hash=key_data["changed_files_hash"],
+            )
+        else:
+            return None, f"key has unknown shape: {sorted(str(k) for k in key_fields)}"
+    except ValueError as e:
+        return None, f"key rejected: {e}"
+
+    if isinstance(key, FullKey) and mode != "full":
+        return None, "full-shaped key with mode_executed minimum"
+    if isinstance(key, MinimumKey) and mode != "minimum":
+        return None, "minimum-shaped key with mode_executed full"
+
+    # When the caller names the file it was read from, the embedded key must hash to that name.
+    if filename_hash is not None and record_filename_hash(key) != filename_hash:
+        return None, "embedded key does not hash to the record filename"
+
+    return CheckRecord(
+        schema_version=schema_version,
+        key=key,
+        passed=True,
+        written_at=written_at,
+    ), None
+
+
+class CheckStepResultDict(TypedDict, total=True):
+    """One step result."""
+    step: str
+    passed: bool
+    message: str
+
+
+class SkippedCheckReasonDict(TypedDict, total=True):
+    """One skipped check reason."""
+    reason: str
+    explanation: str
+
+
+class CheckResultsDict(TypedDict, total=True):
+    """Base TypedDict for CheckResults.to_dict()."""
+    results: List[CheckStepResultDict]
+    all_passed: bool
+    failed_at: Optional[str]
+    planned: List[str]
+    executed: List[str]
+    skipped: List[SkippedCheckReasonDict]
+    status: str
+
+
+class ValidateResult(CheckResultsDict, total=True):
+    """Result of checks validate (a run, or a cache hit)."""
+    schema_version: int
+    mode_requested: Mode
+    mode_executed: Mode
+    fell_back_to_full: bool
+    cache: Literal["hit", "miss", "forced"]
+    satisfied_by: Optional[str]  # filename hash or None
+    changed_files_source: ChangedFilesSource  # "computed", or the reason it is not available
+
+
+class ValidateErrorResult(ValidateResult, total=True):
+    """
+    Result of checks validate when it could not run: every ValidateResult key (so a consumer that
+    indexes `status` or `cache` never sees a KeyError) plus the `error` message. A subtype of
+    ValidateResult, so `validate()` can return either under the one annotation.
+    """
+    error: str
+

@@ -10,9 +10,10 @@ argument-hint: [--dry-run] [--yes|-y] [--flow=<dir>] [pivot-branch]
 Layout-routed stack sync. The **pivot** (the branch whose children need syncing) is **not** re-pushed
 here — `/shipit` or `/expert-rebase` already pushed it. This command syncs the pivot's **descendants**:
 each child is rebased onto its updated parent (ongoing) or onto the default branch (post-merge), inside
-the child's own worktree via `git -C`, then force-pushed only after the **project check gate** (the
-repo's own check/test command, read from `.claude/repo-cache.json` and run inside the child's worktree
-before any push) passes.
+the child's own worktree via `git -C`, then force-pushed only after the **project minimum check gate**
+(the repo's own minimum check command if declared, or full check, read from `.claude/project.yaml` and
+`.claude/repo-cache.json`, and run inside the child's worktree before any push) passes. The minimum gate is
+a PR-level gate; the merge gate remains the authoritative full check (ADR-0012 2026-11-05 amendment).
 
 Routing follows the layout model recorded in `docs/adr/0012-stack-sync.md` (ADR-0012):
 `single-driver` delegates to the `gh stack sync` cascade (one working copy drives the whole stack);
@@ -676,4 +677,4 @@ names, emit the command with `printf '%q'` instead.)
   union of both detectors, same dedupe-by-branch, same lookup-failure flag — keep the two in sync when
   editing either.
 - `--force-with-lease` (never bare `--force`) is used for every push, and every push is gated behind
-  the project's check command from `.claude/repo-cache.json` inside the canonical block.
+  the project's minimum check (`checks validate --mode minimum`, which resolves the command the same way every other gate does) inside the canonical block.

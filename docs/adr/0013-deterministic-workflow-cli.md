@@ -345,3 +345,57 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 - **Environment (accepted residual):** installs run with the full environment (`dict(os.environ)`), so lifecycle scripts can see credentials such as `GH_TOKEN` and `NPM_TOKEN`. This exposure is accepted, not mitigated. Installs already execute branch-controlled lifecycle scripts by design, so scrubbing the environment would not close the exposure to those scripts, and it would break private-registry authentication, which installs need.
 
 **Consequences:** The CLI's writes outside the flow-directory prefix are CLI-owned, not step-agent `Write`, and their paths are limited to the files listed above. The orchestrator and step agents still hold no package-manager grant; install execution happens only inside the CLI. This rule does not extend to any other CLI write or subprocess. A new one needs its own amendment.
+
+### Amendment 11: `commands.check_minimum` selector, changed-files export, per-key records, and caching contract (2026-11-05, #387)
+
+**Problem:** Minimum checks per PR (ADR-0023 amendment 2026-11-05) require a project-declared `check_minimum` selector, its inputs must be exported for non-cooperating selectors, and records must be per-key (FullKey vs MinimumKey) with distinct cache semantics and no read-modify-write.
+
+**Decision:**
+
+- **`commands.check_minimum` (new key):**
+  - Optional top-level key in `project.yaml` (local tier, ADR-0005). If absent, steps fall back to `commands.check`.
+  - Defines a shell command that selects and runs a subset of the full check suite. One declared command; no composition within it.
+  - `check_minimum` is not run as an extra check by `build_check_order`; it is a standalone selector resolved once per flow step or `/shipit` run.
+  
+- **Changed-files export (canonical list computation):**
+  - `scripts/workflow/checks.py` defines `canonical_changed_files(worktree, base) -> Optional[List[str]]` (committed, staged, uncommitted, untracked non-ignored, both sides of renames, deletions; sorted, unique; `None` when there is no base or a subprocess fails, so an unknown changed set can never be hashed as an empty one). The list is serialized NUL-separated and hashed with `sha256` to produce `changed_files_hash`.
+  - `resolve_check_base(worktree) -> Optional[str]` computes the merge-base of HEAD with `origin/<default-branch>`, taking the default branch from `git.get_default_branch` (origin/HEAD, then local `main`/`master`), the same resolver the merge gate uses. When the base is `None`, there is no hash, and minimum mode returns uncached.
+  - `checks validate --mode minimum|full [--worktree path]` computes `CHECK_BASE` and `CHECK_CHANGED_FILES` (the path of a scratch file whose first line is the base and whose remainder is the NUL-separated list) and exports them as environment variables to the resolved `check_minimum` or `commands.check` command. It hashes the same list it exports. When the list cannot be computed (the base is unresolved, including on a detached HEAD, or a subprocess fails) no minimum key is formed: the run is uncached and writes no minimum record. The full and minimum digests also cover the resolved command string and its source, so a command that changes with an unchanged tree is a miss.
+  - `checks resolve-check --mode minimum|full` (default `full`, so existing callers are unchanged) returns the command for that mode and its provenance. For `minimum` with `check_minimum` undeclared it returns the full command with `fell_back_to_full: true`; it never skips silently.
+  - The exports are written to a scratch file under `tempfile.gettempdir()` (outside the worktree) for the selector's reference, created and deleted by the CLI.
+  - **Selector non-cooperation:** A selector that ignores the exported variables but selects from the tree, base and changed files (e.g., by re-computing them) is still keyed correctly by `validate`'s own list. One that selects from anything outside that set (env vars not exported, `HEAD~1`, network, files outside the tree) is unsafe to cache; the caching contract (below) documents this risk and requires selector authors to document their inputs. This repo's `scripts/check-minimum.py` selector reads only the tree, base and exported list, with an invariant comment.
+
+- **Per-key records under `.claude/check-records/`:**
+  - One file per key, named `<sha256(canonical-key-serialization)>.json`.
+  - Record contains the key (embedded, for integrity re-check on read), `passed: true`, and a timestamp.
+  - Atomic: tmp file plus `os.replace`; no read-modify-write.
+  - `CheckRecord.from_dict` (`scripts/workflow/models.py`) parses and validates the exact key set, `passed: true`, `schema_version` constant match, all hex fields, and the mode (FullKey vs MinimumKey).
+  - The effective run timeout is part of the full digest (and so of every key) in both `checks validate` and `checks run`: a pass under a looser limit never satisfies a request under a stricter one.
+  - A failed run evicts a stale pass by moving it aside with one atomic rename, judging the moved file, and restoring it if it is fresh, so a concurrent fresh pass is never deleted (the worst case is one transient miss).
+  - **Receipts go through the same boundary.** `check-receipt.json` (schema 2) is an embedded `CheckRecord` (a full-mode record) plus `base_ref`/`base_sha`; `parse_receipt` in `checks.py` calls `parse_check_record`, so there is one parser. The base is receipt-only: it feeds the merge-gate base-currency rule and is never part of a key. Schema-1 (flat, pre-record) receipts, records with an empty tree, and any record the boundary rejects are a miss.
+  - `checks run` keeps its CLI contract (same arguments, JSON shape, exit codes, the invalid-cache-JSON exit 1) but is no longer a pure pass-through: in a git worktree it consults and writes the same per-key record cache (a full-mode key from the tree, the commands digest and the timeout), so a second run on an unchanged tree is a hit (L0). Outside a git tree it runs every time and writes no record.
+  - A hit is reported as `cache: hit`, `executed: []`. A miss is `cache: miss` or `cache: forced` (when `--force` is passed).
+
+- **Caching contract (key hashing invariant):**
+  - The minimum key hashes the list `validate` computes itself: `MinimumKey = (tree, minimum_digest, full_digest, changed_files_hash)`.
+  - A `check_minimum` command that selects from anything other than the tree, `CHECK_BASE` and `CHECK_CHANGED_FILES` is unsafe to cache. A selector that reads network state, other env vars, or files outside the tree may see different inputs on a second run with the same tree and base, causing a miss when a hit should have occurred, or worse, a hit when the cache is stale.
+  - Project authors declaring `check_minimum` must document their selector's inputs. This repo's selector and its test enforce this invariant for this codebase.
+
+**Consequences:** Verify, implement and fix steps get cache hits across unchanged code at different bases. The minimum and full digests are separate, so a single repo can use both modes without evicting each other's caches. Off-queue and queue merges both run the full check (ADR-0021), so the full key (missing the base) correctly ignores base movement. The caching contract is a residual risk: a selector that ignores the exports and reads outside the tree will silently produce stale results on a hit. This is why `resolve-check` is the only entry point for the resolver, and why selector authors must document their invariants.
+
+### Amendment 12: Removal of `checks run` and `checks receipt` (2026-11-05, #462)
+
+**Problem:** `checks run` and `checks receipt` (the check-receipt chain) were added under Amendment 11 but had no caller on the merge path. The merge gate and the `/expert-flow` verify step read the per-key record cache through `checks validate` and `resolve_check_detail`, never the `run` CLI or the `check-receipt.json` artifact. Keeping an unreachable write surface and a second receipt schema doubled the parser and cache paths the gate must trust.
+
+**Decision:** Remove both subcommands and the receipt chain.
+- Removed: the `checks run` and `checks receipt` CLI subcommands and their handlers in `scripts/workflow/cli.py`.
+- Removed: `check-receipt.json` (schema 2) and `check-attestation.json`, their schema constants, and the functions `write_check_receipt`, `record_check_attestation`, `parse_receipt`, `check_receipt_fresh`, `receipt_base_current`, `run_checks_recorded` and `_resolve_sha` in `scripts/workflow/checks.py`.
+- Kept: `checks validate` and its per-key record cache under `.claude/check-records/` (`FullKey` and `MinimumKey`, the `CHECK_BASE` and `CHECK_CHANGED_FILES` exports, and the eviction rule). `resolve_check_detail` remains the resolver, and `resolve_check_command` remains as a wrapper because a test still calls it. `resolve-check`, `ensure-check` and `record-check-answer` are unchanged.
+
+**Supersedes:** Amendment 11's `checks run` contract (the bullet beginning "`checks run` keeps its CLI contract") and its receipt paragraph (the bullet beginning "**Receipts go through the same boundary**"). The `checks validate` contract, the record cache and the caching contract stay in force.
+
+**Consequences:** `checks run` and `checks receipt` are no longer subcommands and fail as unknown commands. Any external caller of those commands must move to `checks validate`. No receipt file is written or read; the merge gate reads per-key records only.
+
+### Amendment 13: gate modes for `checks validate` (2026-11-05, #462)
+
+**Decision (no code change).** `checks validate --mode minimum` is the gate that PR-level steps and force-push gates run (`/shipit`, `/stack-sync`, and the flow verify/implement/fix steps). `checks validate --mode full` is the gate the merge path runs (ADR-0021), and it is the authoritative one. A minimum record never satisfies the merge gate. This is the human ruling on #462 (Needs-you #2, option A) and refines the ADR-0012 2026-11-05 amendment and ADR-0023 2026-11-05 amendment (#462). Amendment 12's removal of `checks run` and `checks receipt` stands. The exit-code and timeout paragraphs of earlier amendments that name `checks run` are superseded by Amendment 12; `docs/workflow-cli-invariants.md` now describes `checks validate`.

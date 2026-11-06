@@ -2135,10 +2135,10 @@ Artifact check: ≥1 new commit since `bases.fix`, unless the review's `claude-a
 ```bash
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
-PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks resolve-check --worktree "<WORKTREE>" --main-worktree "<MAIN_WORKTREE>"
+PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks resolve-check --worktree "<WORKTREE>" --main-worktree "<MAIN_WORKTREE>" --mode minimum
 ```
 
-This prints a JSON object with keys `command`, `source`, and `failure_reason`. Resolution order (commands.check only per ADR-0023 Decision 4):
+This prints a JSON object with keys `command`, `source`, `failure_reason`, and `fell_back_to_full` (true when `check_minimum` is not declared and the full check was resolved instead). Resolution order (commands.check only per ADR-0023 Decision 4):
 1. worktree repo-cache.json
 2. main worktree repo-cache.json (via `<MAIN_WORKTREE>` placeholder)
 3. worktree project.yaml
@@ -2164,8 +2164,8 @@ Verify is deliberately *only* the
 check command (epic decision 4, ADR-0023 Decision 4):
 coverage, performance, and E2E are `/expert-is-it-done`'s job after merge. The exit code is
 reported by the step agent, not measured by the orchestrator, so verify is **advisory**: the
-authoritative gate is `/shipit`'s own local CI run in the ship step.
-Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in ship is the gate.
+authoritative gate is the full check at merge (ADR-0021; the merge gate is authoritative, not verify or ship). `/shipit`'s check gate in the ship step is a PR-level minimum gate (ADR-0023 2026-11-05 amendment (#462)).
+Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in ship is a PR-level gate, and the merge gate decides.
 
 **assess.** An orchestrator stage (not a step-loop step), placed here to validate and disposition all outstanding items before the ship stage. (Note: assess is `07`; ship and merge are `08` and `09` when `state.json` has `outstanding_format: 2`, and `07` and `08` in an older flow. The receipt is `07-assess.md` either way.) Define the marker path once: `MARKER=${FLOW_DIR}/steps/08-ship.outstanding.md`, or `${FLOW_DIR}/steps/07-ship.outstanding.md` when `state.json` has no `outstanding_format`. Use `MARKER` everywhere below. Set `step: "assess"`, increment `attempts.assess`, log `assess begin`, `stage-begin --stage assess`, `WRITE-STATE`. Then, in order:
 

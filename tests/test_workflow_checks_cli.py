@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Test suite for checks CLI subprocess invocation and exit codes.
+Test suite for the checks CLI subprocess invocation and exit codes.
 
-Tests that the CLI properly exits with:
-- 0: checks passed
-- 1: a check failed
-- 2: no checks ran / coverage violation
+Covers resolve-check, ensure-check, record-check-answer and validate. The `checks run`
+subcommand and the check receipt were removed (ADR-0013 Amendment 12), so they are not tested here.
+
+Exit codes exercised:
+- resolve-check: 0 when a command resolves, 1 when it does not (opt-out or not configured)
+- validate: 0 passed, 1 failed, 2 for a usage error (argparse)
 
 Run with: python3 tests/test_workflow_checks_cli.py
 """
@@ -13,6 +15,7 @@ Run with: python3 tests/test_workflow_checks_cli.py
 import sys
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -22,14 +25,47 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 from _test_harness import Harness, REPO_ROOT
 
 
-def _run_checks_cli(cache, env_extra=None):
-    """Run `checks run -` with the given repo-cache dict on stdin; return the CompletedProcess."""
-    env = {k: v for k, v in os.environ.items() if k != "SHIPIT_CHECK_TIMEOUT_SECS"}
-    env.update(env_extra or {})
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+}
+
+
+def _git(cwd, *args):
     return subprocess.run(
-        [sys.executable, "-m", "scripts.workflow.cli", "checks", "run", "-"],
-        input=json.dumps(cache), capture_output=True, text=True,
-        cwd=str(REPO_ROOT), env=env,
+        ["git", *args], cwd=str(cwd), env={**os.environ, **_GIT_ENV},
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _fixture_work_tree(root, commands):
+    """Bare origin with one commit on main, cloned as a work tree one commit ahead, with repo-cache commands."""
+    seed = root / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-q", "-b", "main")
+    (seed / ".claude").mkdir()
+    (seed / ".claude" / ".gitignore").write_text("check-records/\nrepo-cache.json\n")
+    (seed / "README.md").write_text("base\n")
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-q", "-m", "init")
+    origin = root / "origin.git"
+    _git(root, "clone", "-q", "--bare", str(seed), str(origin))
+    work = root / "work"
+    _git(root, "clone", "-q", str(origin), str(work))
+    _git(work, "checkout", "-q", "-b", "feature")
+    (work / "feature.txt").write_text("one\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "feature")
+    (work / ".claude" / "repo-cache.json").write_text(json.dumps({"version": 1, "commands": commands}) + "\n")
+    return work
+
+
+def _checks_cli(*args):
+    """Run `python3 -m scripts.workflow.cli checks <args>` from the repo root."""
+    env = {k: v for k, v in os.environ.items() if k != "SHIPIT_CHECK_TIMEOUT_SECS"}
+    return subprocess.run(
+        [sys.executable, "-m", "scripts.workflow.cli", "checks", *args],
+        capture_output=True, text=True, cwd=str(REPO_ROOT), env=env,
     )
 
 
@@ -37,195 +73,6 @@ if __name__ == "__main__":
     h = Harness("WORKFLOW CHECKS CLI TEST SUITE")
     test_result = h.test_result
 
-    print("[Section 1] CLI exit code 2 when no checks ran (empty cache)")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cache_json = "{}"
-        proc = subprocess.run(
-            [sys.executable, "-m", "scripts.workflow.cli", "checks", "run", "-"],
-            input=cache_json,
-            capture_output=True,
-            text=True,
-            cwd=Path(__file__).parent.parent
-        )
-
-        test_result(
-            "checks run with empty cache exits 2",
-            proc.returncode == 2
-        )
-        try:
-            output = json.loads(proc.stdout)
-            test_result(
-                "checks run output is valid JSON",
-                isinstance(output, dict)
-            )
-            test_result(
-                "checks run status is 'no_checks_ran'",
-                output.get("status") == "no_checks_ran"
-            )
-            test_result(
-                "checks run all_passed is False",
-                output.get("all_passed") is False
-            )
-        except json.JSONDecodeError:
-            test_result(
-                "checks run output is valid JSON",
-                False
-            )
-
-    print()
-    print("[Section 2] CLI exit code 0 when checks pass")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cache_json = json.dumps({
-            "commands": {
-                "test": "true"
-            }
-        })
-        proc = subprocess.run(
-            [sys.executable, "-m", "scripts.workflow.cli", "checks", "run", "-"],
-            input=cache_json,
-            capture_output=True,
-            text=True,
-            cwd=Path(__file__).parent.parent
-        )
-
-        test_result(
-            "checks run with passing test exits 0",
-            proc.returncode == 0
-        )
-        try:
-            output = json.loads(proc.stdout)
-            test_result(
-                "checks run status is 'passed'",
-                output.get("status") == "passed"
-            )
-            test_result(
-                "checks run all_passed is True",
-                output.get("all_passed") is True
-            )
-        except json.JSONDecodeError:
-            test_result(
-                "checks run output is valid JSON",
-                False
-            )
-
-    print()
-    print("[Section 3] CLI exit code 1 when check fails")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cache_json = json.dumps({
-            "commands": {
-                "test": "false"
-            }
-        })
-        proc = subprocess.run(
-            [sys.executable, "-m", "scripts.workflow.cli", "checks", "run", "-"],
-            input=cache_json,
-            capture_output=True,
-            text=True,
-            cwd=Path(__file__).parent.parent
-        )
-
-        test_result(
-            "checks run with failing test exits 1",
-            proc.returncode == 1
-        )
-        try:
-            output = json.loads(proc.stdout)
-            test_result(
-                "checks run status is 'failed'",
-                output.get("status") == "failed"
-            )
-            test_result(
-                "checks run all_passed is False",
-                output.get("all_passed") is False
-            )
-        except json.JSONDecodeError:
-            test_result(
-                "checks run output is valid JSON",
-                False
-            )
-
-    print()
-    print("[Section 4] CLI --allow-no-checks flag converts exit 2 to 0")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cache_json = "{}"
-        proc = subprocess.run(
-            [sys.executable, "-m", "scripts.workflow.cli", "checks", "run", "--allow-no-checks", "-"],
-            input=cache_json,
-            capture_output=True,
-            text=True,
-            cwd=Path(__file__).parent.parent
-        )
-
-        test_result(
-            "checks run --allow-no-checks with empty cache exits 0",
-            proc.returncode == 0
-        )
-        try:
-            output = json.loads(proc.stdout)
-            test_result(
-                "checks run --allow-no-checks status still 'no_checks_ran'",
-                output.get("status") == "no_checks_ran"
-            )
-        except json.JSONDecodeError:
-            test_result(
-                "checks run --allow-no-checks output is valid JSON",
-                False
-            )
-
-    print()
-    print("[Section 5] CLI --timeout flag")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cache_json = json.dumps({
-            "commands": {
-                "test": "true"
-            }
-        })
-        proc = subprocess.run(
-            [sys.executable, "-m", "scripts.workflow.cli", "checks", "run", "--timeout", "10", "-"],
-            input=cache_json,
-            capture_output=True,
-            text=True,
-            cwd=Path(__file__).parent.parent
-        )
-
-        test_result(
-            "checks run --timeout completes successfully",
-            proc.returncode == 0
-        )
-
-    print()
-    print("[Section 6] Timeout precedence: cache checkTimeoutSecs < env < --timeout")
-
-    def run_slow(extra_args, env_extra, cache_timeout):
-        import os
-        cache = {"commands": {"test": "sleep 1.5"}}
-        if cache_timeout is not None:
-            cache["checkTimeoutSecs"] = cache_timeout
-        env = {k: v for k, v in os.environ.items() if k != "SHIPIT_CHECK_TIMEOUT_SECS"}
-        env.update(env_extra)
-        return subprocess.run(
-            [sys.executable, "-m", "scripts.workflow.cli", "checks", "run", *extra_args, "-"],
-            input=json.dumps(cache), capture_output=True, text=True,
-            cwd=Path(__file__).parent.parent, env=env
-        )
-
-    proc = run_slow([], {}, 1)
-    test_result("cache checkTimeoutSecs=1 times out a 1.5s check", proc.returncode == 1 and "timed out after 1s" in proc.stdout)
-    proc = run_slow([], {}, 10)
-    test_result("cache checkTimeoutSecs=10 lets a 1.5s check pass", proc.returncode == 0)
-    proc = run_slow([], {"SHIPIT_CHECK_TIMEOUT_SECS": "1"}, 10)
-    test_result("env overrides cache", proc.returncode == 1 and "timed out after 1s" in proc.stdout)
-    proc = run_slow(["--timeout", "10"], {"SHIPIT_CHECK_TIMEOUT_SECS": "1"}, 1)
-    test_result("--timeout overrides env and cache", proc.returncode == 0)
-    proc = run_slow([], {}, -5)
-    test_result("invalid cache checkTimeoutSecs falls back to default (1.5s check passes)", proc.returncode == 0)
-
-    print()
     print("[Section 7] checks resolve-check: JSON fields, opt-out vs not-configured exit 1 (#338)")
 
     def clean_env(**extra):
@@ -320,75 +167,6 @@ if __name__ == "__main__":
             f"not-configured source={out.get('source')!r} opt-out source={opt_out_source!r}",
         )
 
-    print()
-    print("[Section 8] checks run -: a resolved timeout, the timeout prefix, and no exit 2 on a timeout (#338)")
-
-    from workflow.checks import TIMEOUT_ERROR_PREFIX
-
-    def run_cli_cache(cache, cwd=None, env_extra=None):
-        import os
-        env = {k: v for k, v in os.environ.items() if k != "SHIPIT_CHECK_TIMEOUT_SECS"}
-        env["PYTHONPATH"] = str(Path(__file__).parent.parent)
-        env.update(env_extra or {})
-        return subprocess.run(
-            [sys.executable, "-m", "scripts.workflow.cli", "checks", "run", "-"],
-            input=json.dumps(cache), capture_output=True, text=True,
-            cwd=cwd or Path(__file__).parent.parent, env=env,
-        )
-
-    proc = run_cli_cache({"commands": {"check": "exit 0"}, "checkTimeoutSecs": 5})
-    out = json.loads(proc.stdout) if proc.stdout.strip() else {}
-    test_result(
-        "checks run - with a passing single check exits 0",
-        proc.returncode == 0 and out.get("status") == "passed",
-        f"rc={proc.returncode} out={out}",
-    )
-    test_result(
-        "checks run - runs only the check command (planned and executed are ['check'])",
-        out.get("planned") == ["check"] and out.get("executed") == ["check"],
-        f"planned={out.get('planned')} executed={out.get('executed')}",
-    )
-
-    proc = run_cli_cache({"commands": {"check": "exit 3"}, "checkTimeoutSecs": 5})
-    test_result(
-        "checks run - with a failing check (exit 3) exits 1",
-        proc.returncode == 1,
-        f"rc={proc.returncode}",
-    )
-
-    proc = run_cli_cache({"commands": {"check": "/bin/sleep 5"}, "checkTimeoutSecs": 1})
-    out = json.loads(proc.stdout) if proc.stdout.strip() else {}
-    errors = [r.get("error") or "" for r in out.get("results", [])]
-    test_result(
-        "checks run - timeout exits 1 (not 2) with the timeout prefix in the step error",
-        proc.returncode == 1 and any(e.startswith(TIMEOUT_ERROR_PREFIX) for e in errors),
-        f"rc={proc.returncode} errors={errors}",
-    )
-
-    print()
-    print("[Section 9] checks run -: the check runs from the cwd it is started in (#338 cwd contract)")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        worktree = Path(tmpdir) / "worktree"
-        elsewhere = Path(tmpdir) / "elsewhere"
-        worktree.mkdir()
-        elsewhere.mkdir()
-        (worktree / "marker").write_text("here\n")
-
-        proc_wt = run_cli_cache({"commands": {"check": "test -f marker"}}, cwd=worktree)
-        test_result(
-            "checks run - started in the worktree runs the command there (marker found, exit 0)",
-            proc_wt.returncode == 0,
-            f"rc={proc_wt.returncode} out={proc_wt.stdout[:200]!r}",
-        )
-
-        proc_else = run_cli_cache({"commands": {"check": "test -f marker"}}, cwd=elsewhere)
-        test_result(
-            "checks run - started outside the worktree checks the wrong tree (no marker, exit 1)",
-            proc_else.returncode == 1,
-            f"rc={proc_else.returncode} out={proc_else.stdout[:200]!r}",
-        )
-
     print("[Section 10] checks ensure-check CLI: CHECK_SOURCE first line and CHECK_ACTION (#417 Step 2)")
 
     def run_checks_cli(args):
@@ -469,21 +247,139 @@ if __name__ == "__main__":
             f"rc={proc.returncode} err={proc.stderr[-200:]!r}",
         )
 
-    print()
-    print("[Section 4] A timed-out check's failure output names checkTimeoutSecs (from hardening spec)")
+    def _parse_json(text):
+        try:
+            return json.loads(text)
+        except ValueError:
+            return {}
 
-    proc = _run_checks_cli({"commands": {"test": "sleep 3"}, "checkTimeoutSecs": 1})
-    combined = proc.stdout + proc.stderr
+    print("[Section 16] checks resolve-check --mode: minimum resolves check_minimum, full resolves check (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _fixture_work_tree(Path(tmp), {"check": "true", "check_minimum": "echo minimum-cmd && true"})
+        r_min = _checks_cli("resolve-check", "--worktree", str(work), "--mode", "minimum")
+        out_min = _parse_json(r_min.stdout)
+        test_result(
+            "resolve-check --mode minimum resolves the check_minimum command",
+            r_min.returncode == 0 and out_min.get("command") == "echo minimum-cmd && true",
+            f"rc={r_min.returncode} out={out_min!r} err={r_min.stderr[-300:]!r}",
+        )
+        r_full = _checks_cli("resolve-check", "--worktree", str(work), "--mode", "full")
+        out_full = _parse_json(r_full.stdout)
+        test_result(
+            "resolve-check --mode full resolves the check command",
+            r_full.returncode == 0 and out_full.get("command") == "true",
+            f"rc={r_full.returncode} out={out_full!r}",
+        )
+        r_bad = _checks_cli("resolve-check", "--worktree", str(work), "--mode", "bogus")
+        test_result(
+            "resolve-check with an invalid --mode exits 2 (argparse rejects it)",
+            r_bad.returncode == 2,
+            f"rc={r_bad.returncode} err={r_bad.stderr[-300:]!r}",
+        )
+        r_vbad = _checks_cli("validate", "--worktree", str(work), "--mode", "bogus")
+        test_result(
+            "validate with an invalid --mode exits 2 (argparse rejects it)",
+            r_vbad.returncode == 2,
+            f"rc={r_vbad.returncode} err={r_vbad.stderr[-300:]!r}",
+        )
+
+    print("[Section 16b] checks validate: exit codes and cache state through the CLI (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _fixture_work_tree(Path(tmp), {"check": "true", "check_minimum": "true"})
+        v1 = _checks_cli("validate", "--worktree", str(work), "--mode", "full")
+        j1 = _parse_json(v1.stdout)
+        v2 = _checks_cli("validate", "--worktree", str(work), "--mode", "full")
+        j2 = _parse_json(v2.stdout)
+        test_result(
+            "checks validate: a first passing run exits 0 and reports cache=miss",
+            v1.returncode == 0 and j1.get("status") == "passed" and j1.get("cache") == "miss",
+            f"rc={v1.returncode} out={j1!r} err={v1.stderr[-300:]!r}",
+        )
+        test_result(
+            "checks validate: a repeat run on the same tree exits 0 and reports cache=hit",
+            v2.returncode == 0 and j2.get("cache") == "hit" and j2.get("status") == "passed",
+            f"rc={v2.returncode} out={j2!r}",
+        )
+        v3 = _checks_cli("validate", "--worktree", str(work), "--mode", "full", "--force")
+        j3 = _parse_json(v3.stdout)
+        test_result(
+            "checks validate --force exits 0 and reports cache=forced",
+            v3.returncode == 0 and j3.get("cache") == "forced",
+            f"rc={v3.returncode} out={j3!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _fixture_work_tree(Path(tmp), {"check": "true", "check_minimum": "false"})
+        vf = _checks_cli("validate", "--worktree", str(work), "--mode", "minimum")
+        jf = _parse_json(vf.stdout)
+        test_result(
+            "checks validate: a failing minimum check exits 1 with a non-passed status",
+            vf.returncode == 1 and jf.get("status") not in (None, "passed"),
+            f"rc={vf.returncode} out={jf!r}",
+        )
+
+    print("[Section 16c] resolve-check falls back to the full command when check_minimum is undeclared (#462 Part A)")
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _fixture_work_tree(Path(tmp), {"check": "true"})
+        r_fb = _checks_cli("resolve-check", "--worktree", str(work), "--mode", "minimum")
+        out_fb = _parse_json(r_fb.stdout)
+        test_result(
+            "resolve-check --mode minimum with no check_minimum resolves the full command and reports fell_back_to_full",
+            r_fb.returncode == 0 and out_fb.get("command") == "true" and out_fb.get("fell_back_to_full") is True,
+            f"rc={r_fb.returncode} out={out_fb!r} err={r_fb.stderr[-300:]!r}",
+        )
+
+    print("[Section 16d] checks validate --main-worktree: the reported command and timeout are the ones that ran (#462 Part 3a)")
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "main_root").mkdir()
+        (Path(tmp) / "wt_root").mkdir()
+        main = _fixture_work_tree(Path(tmp) / "main_root", {"check": "true"})
+        (main / ".claude" / "repo-cache.json").write_text(
+            json.dumps({"version": 1, "commands": {"check": "true"}, "checkTimeoutSecs": 123}) + "\n"
+        )
+        work = _fixture_work_tree(Path(tmp) / "wt_root", {})
+        vm = _checks_cli("validate", "--worktree", str(work), "--main-worktree", str(main), "--mode", "full")
+        jm = _parse_json(vm.stdout)
+        test_result(
+            "checks validate --main-worktree: a passing run reports the main command and the main timeout",
+            vm.returncode == 0 and jm.get("status") == "passed" and jm.get("command") == "true"
+            and jm.get("timeout_secs") == 123,
+            f"rc={vm.returncode} out={jm!r} err={vm.stderr[-300:]!r}",
+        )
+        vn = _checks_cli("validate", "--worktree", str(work), "--mode", "full")
+        jn = _parse_json(vn.stdout)
+        test_result(
+            "checks validate without --main-worktree: no command resolves, so the error result reports command None",
+            vn.returncode == 2 and jn.get("status") == "error" and jn.get("command") is None
+            and jn.get("timeout_secs") is None,
+            f"rc={vn.returncode} out={jn!r}",
+        )
+
+    print()
+    print("[Section 17] checks CLI surface: run/receipt subcommands are gone, invalid --mode is a usage error (#462 Part 3)")
+    for removed in ("run", "receipt"):
+        rr = _checks_cli(removed, "--help")
+        test_result(
+            f"checks {removed} is an unknown subcommand (argparse usage error, exit 2)",
+            rr.returncode == 2,
+            f"rc={rr.returncode} err={rr.stderr[-200:]!r}",
+        )
+    rh = _checks_cli("--help")
+    listed = re.search(r"\{([^}]+)\}", rh.stdout + rh.stderr)
+    names = listed.group(1).split(",") if listed else []
     test_result(
-        "timed-out check (checkTimeoutSecs=1, sleep 3): exit 1 and the timeout is reported",
-        proc.returncode == 1 and "timed out after 1s" in combined,
-        f"rc={proc.returncode} out={combined[:300]!r}",
+        "checks --help lists validate but neither run nor receipt",
+        "validate" in names and "run" not in names and "receipt" not in names,
+        f"subcommands={names!r}",
     )
-    test_result(
-        "timed-out check failure output names checkTimeoutSecs",
-        "(checkTimeoutSecs or SHIPIT_CHECK_TIMEOUT_SECS sets the limit)" in combined,
-        f"out={combined[:300]!r}",
-    )
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _fixture_work_tree(Path(tmp), {"check": "true"})
+        rm = _checks_cli("validate", "--worktree", str(work), "--mode", "invalid-mode")
+        test_result(
+            "checks validate --mode invalid-mode is rejected as a usage error (exit 2)",
+            rm.returncode == 2,
+            f"rc={rm.returncode} err={rm.stderr[-200:]!r}",
+        )
 
     print()
     h.summarize_and_exit()

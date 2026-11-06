@@ -573,10 +573,10 @@ t("stack-sync.md gates push with 'force-with-lease'",
 # The runnable gate lives in the canonical Restack block, not in stack-sync.md:
 # CHECK_CMD is read from .claude/repo-cache.json and must be non-empty before any
 # force-push. Assert the gate's shape (mechanism), not just the filename keyword.
-t("worktree-reference.md gates force-push on the repo-cache.json CHECK_CMD",
-  re.search(r'CHECK_CMD=\$\(jq[^\n]*repo-cache\.json.{0,220}\[ -n "\$CHECK_CMD" \]',
+t("worktree-reference.md gates force-push on the resolved minimum check (checks validate --mode minimum)",
+  re.search(r'checks validate --mode minimum --worktree <CHILD_WT>[^\n]*not force-pushing.{0,200}push --force-with-lease',
             WORKTREE_REF, re.DOTALL) is not None,
-  "expected the canonical Restack block to read CHECK_CMD from repo-cache.json and require it non-empty before force-push")
+  "expected the canonical Restack block to run checks validate --mode minimum and refuse to force-push when it fails")
 
 # The confirmation gate is Step 5's job specifically — scope the assertions there.
 t("stack-sync.md Step 5 confirmation requires AskUserQuestion",
