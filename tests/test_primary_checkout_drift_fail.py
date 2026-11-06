@@ -160,6 +160,52 @@ def main() -> None:
         code, _, err = run_fail(script, "--compare-exit", "1", "--receipt", str(Path(tmp) / "nodir" / "r.md"))
         h.test_result("exit 1 and warning", code == 1 and "could not write receipt" in err, err)
 
+        print("[Test 10] --cause on --compare-exit 2: Reason, stderr line and FAILURE_CLASS per value")
+        for cause in ("probe-failed", "baseline-unavailable", "no-usable-primary", "resolver-failed"):
+            cause_receipt = Path(tmp) / f"cause-{cause}.md"
+            code, _, err = run_fail(script, "--compare-exit", "2", "--cause", cause, "--receipt", str(cause_receipt))
+            text = cause_receipt.read_text() if cause_receipt.exists() else ""
+            h.test_result(f"--cause {cause}: exit 1", code == 1, str(code))
+            h.test_result(f"--cause {cause}: Reason line", f"Reason: primary-checkout-drift: {cause}\n" in text, text)
+            h.test_result(f"--cause {cause}: FAILURE_CLASS cwd-drift", "FAILURE_CLASS: cwd-drift\n" in text, text)
+            h.test_result(f"--cause {cause}: stderr FAILED line names cause",
+                          f"FAILED: primary-checkout-drift {cause}" in err, err)
+
+        print("[Test 11] no --cause is byte-identical to explicit baseline-unavailable (test 2 invocation)")
+        default_r = Path(tmp) / "default-cause.md"
+        explicit_r = Path(tmp) / "explicit-cause.md"
+        run_fail(script, "--compare-exit", "2", "--receipt", str(default_r), "--fail-paths", "ignored.py", "--detail")
+        run_fail(script, "--compare-exit", "2", "--cause", "baseline-unavailable", "--receipt", str(explicit_r),
+                 "--fail-paths", "ignored.py", "--detail")
+        h.test_result("default receipt exists", default_r.exists(), str(default_r))
+        h.test_result("default receipt byte-identical to explicit baseline-unavailable",
+                      default_r.read_bytes() == explicit_r.read_bytes(),
+                      f"default={default_r.read_text() if default_r.exists() else ''!r}")
+        h.test_result("default receipt keeps test 2 Reason",
+                      "Reason: primary-checkout-drift: baseline-unavailable\n" in default_r.read_text(),
+                      default_r.read_text() if default_r.exists() else "")
+
+        print("[Test 12] invalid --cause rejected by argparse")
+        code, _, err = run_fail(script, "--compare-exit", "2", "--cause", "made-up")
+        h.test_result("invalid --cause: exit 2 with invalid choice", code == 2 and "invalid choice" in err,
+                      f"code={code} err={err}")
+
+        print("[Test 13] D4: --cause with --compare-exit 1 warns, writes drift receipt, exits 1")
+        d4_r = Path(tmp) / "d4.md"
+        code, _, err = run_fail(script, "--compare-exit", "1", "--cause", "probe-failed", "--receipt", str(d4_r),
+                                "--fail-paths", "a.py")
+        d4_text = d4_r.read_text() if d4_r.exists() else ""
+        h.test_result("D4: exit 1", code == 1, str(code))
+        h.test_result("D4: stderr warning line",
+                      "fail: --cause is only valid with --compare-exit 2; ignored" in err, err)
+        h.test_result("D4: normal drift receipt written",
+                      "Reason: primary-checkout-drift: a.py\n" in d4_text and "FAILURE_CLASS: cwd-drift\n" in d4_text,
+                      d4_text)
+        h.test_result("D4: cause not used as Reason", "primary-checkout-drift: probe-failed" not in d4_text, d4_text)
+        code, _, err = run_fail(script, "--compare-exit", "1", "--receipt", str(d4_r), "--fail-paths", "a.py")
+        h.test_result("D4 negative control: no --cause means no warning",
+                      "--cause is only valid" not in err, err)
+
     print("[Test 9] doc routes every barrier through `fail` (no inlined telemetry or heredoc)")
     doc = DOC.read_text()
     h.test_result("no inlined cwd_drift telemetry call", not re.search(r"run-metrics\.py\" command-end[^\n]*cwd_drift", doc))
