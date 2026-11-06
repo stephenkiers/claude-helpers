@@ -368,6 +368,7 @@ wrote and never re-derive it from a fresh run.
 - **Register.** When a `DONE round2-apply` row exists, re-read `<SCRATCH_PATH>/disagreements.json`, through
   the path on the second line of `<SCRATCH_PATH>/round2-apply.txt`. Never re-derive the register from a
   fresh run. Terminal entries are kept as they are. Round 4's 4.0a resumes from the first non-terminal entry.
+- **Evidence files.** `round2-hygiene.txt`, `round4-working-ids.txt` and `round4-candidates.md` are evidence that is never trusted on resume. The hygiene scan re-runs whenever Round 2 has been applied, and 4.1 always rebuilds the id file and then the candidates. A run that skips a block passes `--skip-round2` / `--skip-round4` to `hygiene-json` (4.6b), so a stale file from an earlier invocation is read as `null`. Neither has a restore case, because neither writes the tree.
 - **Take over.** Each `human-takeover` entry re-runs against the current tree. Green → `impl-fixed` (ruler
   `human`, reason "resolved by take over"). Still red → `awaiting-human`, and the human is asked again, once.
 - **Answers already saved.** An approved human answer saved for an entry is never asked again. The saved copy
@@ -750,17 +751,14 @@ SIZING_STATUS=$(jq -r '.status // "unknown"' "<SCRATCH_PATH>/sizing.json" 2>/dev
 **1. Resume detection.** If a prior run exists for this step (i.e. `unit-progress.py` finds an existing main record), `--split-finer` was not passed, and `--only-units` was not passed, run `check` to verify integrity. Pass `--flow-dir "$FLOW_DIR"` in flows; use `--scratch` only when `FLOW_DIR` is empty. The exit codes: 0 = record present and consistent (resume); 1 = integrity mismatch; 3 = NO record exists (fresh run, not an error). Any other exit is treated as mismatch. Integrity means: plan hash and anchor match and every committed sha is an ancestor of HEAD (HEAD need not equal the chain tip).
 
 ```bash
-PROGRESS_ARG=""
-if [[ -n "${FLOW_DIR}" ]]; then
-  PROGRESS_ARG="--flow-dir \"${FLOW_DIR}\""
-else
-  PROGRESS_ARG="--scratch \"<SCRATCH_PATH>\""
-fi
-python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} check --plan "<PLAN_PATH>" --anchor "$START_SHA" --head "$(git rev-parse HEAD)"
+# PROGRESS is a shell array, so each flag and its value stay separate words (bash and zsh). Bash blocks
+# do not share state: every block that uses it defines it first.
+if [[ -n "${FLOW_DIR}" ]]; then PROGRESS=(--flow-dir "${FLOW_DIR}"); else PROGRESS=(--scratch "<SCRATCH_PATH>"); fi
+python3 "$HOME/.claude/scripts/unit-progress.py" --step implement "${PROGRESS[@]}" check --plan "<PLAN_PATH>" --anchor "$START_SHA" --head "$(git rev-parse HEAD)"
 CHECK_EXIT=$?
 if [[ $CHECK_EXIT -eq 0 ]]; then
   # Resume: load persisted units and run only pending ids
-  PENDING_UNITS=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} pending)
+  PENDING_UNITS=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement "${PROGRESS[@]}" pending)
   if [[ -z "$PENDING_UNITS" ]]; then
     # Nothing pending: skip Steps 4a–4d, go to Integration Gate
     printf '%s\n' "No pending units; proceeding to Integration Gate." >&2
@@ -813,9 +811,14 @@ Write the unit-list JSON to `<SCRATCH_PATH>/split-input.json` (with `Write`), th
 refusal is a signal to repair the split, not to bypass `init`:
 
 ```bash
-INIT_REASON=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} \
+if [[ -n "${FLOW_DIR}" ]]; then PROGRESS=(--flow-dir "${FLOW_DIR}"); else PROGRESS=(--scratch "<SCRATCH_PATH>"); fi
+LAYOUT_BASE_ARG=""
+if [ -n "$PARTIAL_BASE" ]; then
+  LAYOUT_BASE_ARG="--no-layout-base"
+fi
+INIT_REASON=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step implement "${PROGRESS[@]}" \
   init --anchor "$START_SHA" --base "$START_SHA" --plan "<PLAN_PATH>" --sizing "<SCRATCH_PATH>/sizing.json" \
-  < "<SCRATCH_PATH>/split-input.json" 2>&1 >/dev/null)
+  ${LAYOUT_BASE_ARG} < "<SCRATCH_PATH>/split-input.json" 2>&1 >/dev/null)
 INIT_EXIT=$?
 if [[ $INIT_EXIT -ne 0 ]]; then
   printf '%s\n' "unit-split-refused: $INIT_REASON" >&2
@@ -836,7 +839,7 @@ On init failure, write the FAILED receipt (when `FLOW_DIR` is set) with
 - **Keep**: stage and commit uncommitted partial work as one commit `partial work kept for split-finer (attempt <ATTEMPT>)` (files the earlier attempt added are removed first with DISCARDED_ADDED_FILES validation).
 - **Reset**: restore each file changed since `START_SHA` from `START_SHA` via `git show` and `Write`, remove files added since `START_SHA`, commit if HEAD moved.
 - Record judgment and reason in units.json via `--partial-work` and `--partial-work-reason` flags; the receipt body and SPLIT_ATTEMPT line.
-- Call `init --supersede --anchor "$START_SHA" --base <post-commit HEAD>` (base differs from anchor only when keeping/resetting committed work).
+- Call `init --supersede --split-finer --anchor "$START_SHA" --base <post-commit HEAD>` (base differs from anchor only when keeping/resetting committed work). `--split-finer` makes `init` copy the existing `layout_base_sha` forward and never re-pin it; do not drop the flag on a split-finer re-run.
 
 **5. Handle `--only-units` without a record.** After fresh split, if `ONLY_UNITS` is non-empty, filter to include only units whose `id` is in the comma-separated list. All ownership and forbidden-file rules remain for the filtered set. Exit 1 with a loud error on unknown ids.
 
@@ -1054,7 +1057,8 @@ anything yet that would sweep those files in; note it and re-check at that unit'
 **If the worktree is genuinely empty** (no staged changes after the above, and primary checkout
 clean on this unit's files): Mark unit `failed`:
 ```bash
-python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} mark --unit-id "<unit-id>" --status failed
+if [[ -n "${FLOW_DIR}" ]]; then PROGRESS=(--flow-dir "${FLOW_DIR}"); else PROGRESS=(--scratch "<SCRATCH_PATH>"); fi
+python3 "$HOME/.claude/scripts/unit-progress.py" --step implement "${PROGRESS[@]}" mark --unit-id "<unit-id>" --status failed
 ```
 Record `<unit-id>: no report (unit failed)` for
 use in Round 3 pass 1's input list below (same pattern as the Step 4c report-file check uses for
@@ -1196,7 +1200,8 @@ git commit -m "$(cat <<'EOF'
 Unit-Id: <unit-id>
 EOF
 )"
-python3 "$HOME/.claude/scripts/unit-progress.py" --step implement ${PROGRESS_ARG} mark --unit-id "<unit-id>" --status committed --sha "$(git rev-parse HEAD)"
+if [[ -n "${FLOW_DIR}" ]]; then PROGRESS=(--flow-dir "${FLOW_DIR}"); else PROGRESS=(--scratch "<SCRATCH_PATH>"); fi
+python3 "$HOME/.claude/scripts/unit-progress.py" --step implement "${PROGRESS[@]}" mark --unit-id "<unit-id>" --status committed --sha "$(git rev-parse HEAD)"
 ```
 The `Unit-Id: <unit-id>` trailer is recorded in the commit message for human readability and is log-only; no script reads it, and the true unit record is in the persisted `units.json` file maintained by `unit-progress.py`. Committing here — in the ticket worktree — is what lets pre-commit hooks run correctly; this is
 the fix for the nested-worktree hook-resolution failures seen historically.
@@ -1605,6 +1610,20 @@ below, never the shell variable name (same rule as decision 14: a prompt contain
 `$R2_WT_PATH` hands the agent a path that does not exist, since shell variables don't persist across
 separate Bash calls).
 
+Extract the layout evidence from tests that existed before this run's implementation. One call does it
+all: `layout-evidence` reads the pre-implementation base SHA stored in the unit record (by running
+`unit-progress.py layout-base` itself), runs the base-aware layout when the SHA is usable, falls back to the
+base-less layout when it is not, writes the evidence to `--out`, and writes `true`/`false` to the
+names-given file for the measurement block (4.6b). The global flags (`--flow-dir` or `--scratch`) are the
+`PROGRESS` array:
+
+```bash
+if [[ -n "${FLOW_DIR}" ]]; then PROGRESS=(--flow-dir "${FLOW_DIR}"); else PROGRESS=(--scratch "<SCRATCH_PATH>"); fi
+python3 "$HOME/.claude/scripts/test-cleanup-check.py" layout-evidence --step "<implement|fix>" "${PROGRESS[@]}" --impl <IMPL_FILES> --out "<SCRATCH_PATH>/layout-evidence.txt" --names-given-file "<SCRATCH_PATH>/layout-names-given.txt" || printf '%s\n' "layout-evidence: unavailable (exit $?)" > "<SCRATCH_PATH>/layout-evidence.txt"
+```
+
+`<LAYOUT_EVIDENCE>` below is the content of `<SCRATCH_PATH>/layout-evidence.txt` (read it with `Read`).
+
 Launch a background `plan-implementer` in `$R2_WT_PATH` with a **spec-blind test author** prompt:
 
 > `Working directory: <R2_WT_PATH>` (this exact prefix — `plan-implementer`'s first step greps for
@@ -1626,6 +1645,10 @@ Launch a background `plan-implementer` in `$R2_WT_PATH` with a **spec-blind test
 > - Existing test files (to learn project conventions, fixtures, helpers)
 > - Test config (`pytest.ini`, `vitest.config.*`, `jest.config.*`, `Cargo.toml` test sections, etc.)
 > - The plan above
+> - **Layout evidence (orchestrator-extracted; paths and test names only, from before this run):**
+>   ```
+>   <LAYOUT_EVIDENCE>
+>   ```
 >
 > Treat this as your plan:
 > 1. Identify the project's test framework and conventions.
@@ -1633,15 +1656,15 @@ Launch a background `plan-implementer` in `$R2_WT_PATH` with a **spec-blind test
 >    that already cover the plan's symbols.** List what you find. Do not add near-duplicate coverage
 >    for behavior something already tests — this is the single most common failure of this pass.
 > 3. Identify what behavior the plan implies should be testable that isn't already covered.
-> 4. Write tests covering that behavior — happy path plus at least one edge case per testable unit. **Add them to the existing test file for the module or feature under test** (the file step 2 found covering the plan's symbols), registered in that file's existing runner (its `main()` call list, case list, or top-level calls). Create a new test file only when no test file for that module exists, and name it after the module under test (`test_<module>.py`), never after this pass, the plan, or a wave or unit (`_spec_blind`, `_spec`, `_hardening`, `_blackbox`, `_review_fixes`, `_followups`, `_phase_N`, `_wave_a`). Before adding a test function, check its name is not already defined in the target file.
+> 4. Write tests covering that behavior — happy path plus at least one edge case per testable unit. **Add them to the existing test file for the module or feature under test** (the file step 2 found covering the plan's symbols), registered in that file's existing runner (its `main()` call list, case list, or top-level calls). Create a new test file only when no test file for that module exists, and name it after the module under test (`test_<module>.py`), never after this pass, the plan, or a wave or unit (`_spec_blind`, `_spec`, `_hardening`, `_blackbox`, `_review_fixes`, `_followups`, `_phase_N`, `_wave_N` with N matching a digit or single letter). Before adding a test function, check its name is not already defined in the target file.
 >    **Every new test must import and call the real production symbol it claims to cover.** A test
 >    that asserts against a hand-built local copy of the logic, or that would still pass if the
->    implementation were deleted, is not coverage — it's a defect.
+>    implementation were deleted, is not coverage — it's a defect. Do not assert a stored snapshot of current output unless the plan defines that output. Do not add a test whose subject is a private helper unless the plan names it. If a test you add overlaps an existing one, still add it as a new test and name the existing test in your report.
 > 5. Run the tests. **Do not fix the implementation if tests fail** — failing tests are signal.
 > 6. **Stage your changes (`git add -A`) and do not commit.** The orchestrator applies your diff
 >    and commits it.
 > 7. Report: framework used, existing coverage found (step 2), test files changed (existing files appended to, and any new files with why no existing file fitted), pass/fail summary,
->    failure messages verbatim if any.
+>    failure messages verbatim if any, and for every test you added, one line `<new id> | overlaps: <existing id or none>`. Write the report to `<SCRATCH_PATH>/round2-author-report.md` and set `REPORT_FILE:` in your trailer to that path.
 > 8. **Self-check (required):** end your report with a line `SPEC_BLIND: yes` if you did not read
 >    any forbidden file or run `git diff`/`git status`, or `SPEC_BLIND: no` followed by what you
 >    read and why. Be honest — this is for evaluating whether the spec-blind constraint holds.
@@ -1808,6 +1831,29 @@ use the Incomplete-report menu (Re-run / Inspect / Skip / Abort) below.
 
 Then re-run the new tests yourself and record actual pass/fail counts — **never echo the agent's
 claimed counts into the summary uncorrected.**
+
+### Test-hygiene scan (detect-only)
+
+Scan the added test names for a configured set of hygiene tokens (spec-blind, spec, hardening, blackbox, review_fixes, followups, phase_N, wave_N, where N matches a digit or single letter). The scan detects only; it makes no rename, no `git mv`, no staging, no commit, no ledger row. Hits are fixed only at Round 4.5. Record the scan result:
+
+```bash
+python3 "$HOME/.claude/scripts/test-cleanup-check.py" names --hygiene --base "$ROUND2_START_SHA" --head HEAD > "<SCRATCH_PATH>/round2-names.raw" 2>&1
+HYGIENE_EXIT=$?
+# <SCRATCH_PATH>/round2-hygiene.txt is the one Round 2 hygiene file: a `round2-hygiene: <N> hits` (or
+# `unavailable (<exit>)`) header, then the raw hit lines. The hygiene-json subcommand reads it.
+# names --hygiene exits 0 (no hits), 1 (hits) or 3 (an error: bad ref, git failure); an error is never a hit.
+if [ $HYGIENE_EXIT -eq 0 ]; then
+  printf '%s\n' "round2-hygiene: 0 hits" > "<SCRATCH_PATH>/round2-hygiene.txt"
+  grep '^segment-only:' "<SCRATCH_PATH>/round2-names.raw" >> "<SCRATCH_PATH>/round2-hygiene.txt" || true
+elif [ $HYGIENE_EXIT -eq 1 ]; then
+  printf '%s\n' "round2-hygiene: $(grep -vc '^segment-only:' '<SCRATCH_PATH>/round2-names.raw' || true) hits" > "<SCRATCH_PATH>/round2-hygiene.txt"
+  cat "<SCRATCH_PATH>/round2-names.raw" >> "<SCRATCH_PATH>/round2-hygiene.txt"
+else
+  printf '%s\n' "round2-hygiene: unavailable ($HYGIENE_EXIT)" > "<SCRATCH_PATH>/round2-hygiene.txt"
+fi
+```
+
+No deletion, rename or commit. The run continues regardless of the scan result.
 
 ### Write the disagreement register
 
@@ -2038,7 +2084,8 @@ Launch a background `plan-implementer` (main worktree) with:
 > 8. **Report file:** write your full report (all three sections and the test status) to
 >    `<SCRATCH_PATH>/round3-followup-report.md` using the `Write` tool, and set `REPORT_FILE:` in your
 >    trailer to that exact path. Put the register path `<SCRATCH_PATH>/disagreements.json` in the report
->    body (not on its first line). Keep your reply to the trailer plus at most two sentences.
+>    body (not on its first line). For every test you added, add one line `<new id> | overlaps: <existing id or none>`.
+>    Keep your reply to the trailer plus at most two sentences.
 >
 > [Full report trailer per plan-implementer instructions, ending in `REPORT_FILE: <path> | none`]
 >
@@ -2252,6 +2299,29 @@ Enumerate at **test** granularity (the collected test ids, `file::name`), not on
 : > "<SCRATCH_PATH>/round4-merged.txt"
 ```
 
+Write the working-set test ids with one `file::name` per line. The `overlaps` command will use this to find added ids that have no overlaps line:
+```bash
+python3 "$HOME/.claude/scripts/test-cleanup-check.py" working-ids --base "$ROUND2_START_SHA" --head HEAD > "<SCRATCH_PATH>/round4-working-ids.txt"
+WORKINGIDS_EXIT=$?
+if [ $WORKINGIDS_EXIT -eq 0 ]; then
+  python3 "$HOME/.claude/scripts/test-cleanup-check.py" overlaps --report "<SCRATCH_PATH>/round2-author-report.md" --report "<SCRATCH_PATH>/round3-followup-report.md" --added-ids "<SCRATCH_PATH>/round4-working-ids.txt" --out "<SCRATCH_PATH>/round4-candidates.md"
+else
+  printf '%s\n' "candidates: unavailable ($WORKINGIDS_EXIT)" > "<SCRATCH_PATH>/round4-candidates.md"
+fi
+```
+
+Also run the hygiene scan for Round 4 measurement only (not gated); this run includes Round 3 additions:
+```bash
+python3 "$HOME/.claude/scripts/test-cleanup-check.py" names --hygiene --base "$ROUND2_START_SHA" --head HEAD > "<SCRATCH_PATH>/round4-names.raw" 2>&1
+HYGIENE4_EXIT=$?
+if [ $HYGIENE4_EXIT -eq 0 ] || [ $HYGIENE4_EXIT -eq 1 ]; then
+  cat "<SCRATCH_PATH>/round4-names.raw" > "<SCRATCH_PATH>/round4-hygiene.txt"
+else
+  # exit 3 is an error, not a hit: no counts; hygiene-json reads the first line as null
+  { printf '%s\n' "hygiene-error: names --hygiene exit $HYGIENE4_EXIT"; cat "<SCRATCH_PATH>/round4-names.raw"; } > "<SCRATCH_PATH>/round4-hygiene.txt"
+fi
+```
+
 ### 4.2 Learn the repo's convention (evidence, not assumption)
 
 Determine the target layout/naming by inspecting *sibling* tests that already existed at `START_SHA`.
@@ -2274,132 +2344,13 @@ git ls-tree -r --name-only "$START_SHA" | rg '(test|spec)' | rg '\.(py|ts|tsx|js
 If there are **zero** pre-existing tests to learn from, do not guess a bespoke layout — fall back to
 the framework's documented default and note in the final summary that no in-repo precedent existed.
 
-### 4.3 Classify each test in the working set
+### 4.3-4.6 Cleanup (shared doctrine)
 
-Classify in this order. The first class that applies wins.
+Read `~/.claude/prompts/test-cleanup-reference.md` for sections 4.3 (Classify), 4.4 (Delete), 4.5 (Relocate, rename and merge), and 4.6 (Verify green, then commit). The reference doc holds the shared cleanup doctrine used by both `/implement-with-haiku` and `/expert-test-cleanup` (#463).
 
-- **(0) Exempt.** `test-correct-blocking` entries, and tests a human ruled to keep. **Never deleted.** They
-  still go through 4.5 as Unique (merged and renamed), with the test body byte-identical: only the location,
-  enclosing names and import lines change, so the oracle is untouched and no spec-blind name survives.
-- **(1) Duplicate.** Part C's `comm` dedup against `START_SHA`, or a Sonnet-judged duplicate of a sibling
-  test. It **must name the surviving test id**.
-- **(2) No-op, mechanical.** Any of: reference-check `vacuous` (the file references no `IMPL_FILES` symbol),
-  a hand-built copy of the logic (the "would still pass if the implementation were deleted" defect the Round 2
-  prompt already forbids), or `snapshot-pinned` (Q5b). **Record the proof kind.** The No-op bucket is the
-  slot a future at-base proof (#367) joins.
-- **(3) Judgment delete.** Sonnet may delete any other test that adds no regression value. It **must name the
-  surviving test that covers the behaviour**. This class is the interim trim until the test budget in #367
-  lands; it is not itself a budget, and it decides no per-file or per-suite count.
-- **(4) Unique.** Everything else. Merged in 4.5.
+### 4.6a Record Round 4 evidence
 
-Two evidence rules still hold:
-- Part C's **mutation-smoke** `vacuous` flag is **suite-level, not per-file**: it reverts one impl file and
-  re-runs the whole `TEST_FILES` set, so it never names which test is junk. Treat it like `weak-assertion`:
-  surface it, and at most hand the tests that *reference the reverted file* to Round 3 to strengthen. **Never**
-  expand a suite-level mutation-smoke flag into a deletion. It may only support a judgment delete that also
-  names a survivor.
-- A `weak-assertion` flag is fixable, not worthless. It is never a deletion reason on its own.
-
-### 4.4 Delete
-
-Write `<SCRATCH_PATH>/round4-deletions.md` **before** the first deletion, so resume knows what was decided.
-It is one markdown table with this header row:
-
-`| id | class | change | reason | survivor or proof | commit |`
-
-- `id` is the deleted test's id as collected (`file::name`).
-- `class` is `human-spec-wrong`, `duplicate`, `no-op` or `judgment`.
-- `change` is `deleted` for a cleanup row; a `human-spec-wrong` row is `amended` or `deleted`.
-- `reason` is the reason. For a `human-spec-wrong` row it is the human's reason, and the ruler is always `human`.
-- `survivor or proof` is the surviving test's id, or `proof:<kind>` when the proof is mechanical (for example
-  `proof:comm-dedup`, `proof:reference-check`, `proof:snapshot-pinned`). A `human-spec-wrong` row uses
-  `proof:human-ruling`.
-- `commit` is empty for a cleanup row, and holds the full SHA of the ruling commit for a `human-spec-wrong` row.
-
-The table starts with one row per register entry ruled `human-spec-wrong`, then one row per cleanup deletion.
-Test ids are parsed from the `id` and `survivor or proof` cells. The `proof:` markers and the SHA cells are the
-only cells exempt from being parsed as test ids. A malformed row (wrong cell count, an empty `id`, an
-unparseable test id) makes the cleanup helper exit 1; it is never skipped. A header-only table is a
-valid empty table.
-
-Then delete each (1)–(3) test, one at a time, with `git rm` or by deleting the test function. Record path
-and reason for the final summary.
-
-**Record what evidence was available.** Part C's mutation smoke can be skipped whole-cloth (dirty-file
-precondition, or no comparison operator found — see Part C). When it was skipped, the reference-check
-is Round 4's *only* machine-checked junk evidence, so a `Deleted (junk): 0` result means "not vetted
-by the smoke," not "vetted and clean." Note in the summary whether the mutation smoke ran or was
-skipped (with reason) so a human can tell those two cases apart.
-
-### 4.5 Relocate, rename and merge the survivors
-
-The **default for each Unique test (Exempt included) is to merge it into the module's normal test file**,
-under 4.2's convention. A new file is created only when the module has none. Move each survivor to the
-4.2 convention:
-
-- **Record the target before writing it.** Before the first write to any target file, append the target
-  path to `<SCRATCH_PATH>/round4-merged.txt`, so resume knows every path Round 4 may have touched. Then
-  record each merged or renamed survivor as `<old id> -> <new id>` in the same file, where `<old id>` is the
-  id the survivor carries in `round4-deletions.md` and `<new id>` is its id in the final tree. This file is the
-  `--merged` input to `survivors` in 4.6(a), so a survivor named by its pre-merge id is looked up under its new id.
-- Write each Exempt test's new id into its register entry's `final_id`.
-- **Drop every spec-blind name** (file, function, describe and class names). The body of an Exempt test
-  stays byte-identical.
-- Move with `git mv` where a whole file moves, so history is preserved.
-- Rewrite the moved tests' own imports for their new location, and update any references to them
-  elsewhere (test config include globs, `conftest.py`, barrel files) — grep for the old path/name first.
-- **Merge rather than clobber:** if a survivor's target path collides with an existing test file, fold
-  the new tests into the existing file under the repo's conventions instead of overwriting. A pass-named file (`*_spec_blind`, `*_spec`, `*_hardening`, `*_blackbox`, `*_review_fixes`, `*_followups`, `*_phase_N`) is never a valid end state.
-- **Snapshot-pinned tests (Q5b).** Before deleting one, check it against 4.6(b)'s behaviour floor. If its
-  deletion would leave a changed public symbol with no test, keep it and flag it in the summary as
-  "snapshot-pinned, not spec-derived".
-
-### 4.6 Verify green, then commit
-
-Run these post-conditions in this order, before the commit. Each is a hard gate. Use a **fresh full
-collection under the new layout** for (a) and (c), never a path-scoped re-run of the pre-move set (the old
-paths no longer exist, and a stale include target would silently run the wrong set while still reporting
-a plausible count). Each helper call must exit 0; a non-zero exit (exit 1 with a named reason) is a hard
-failure that stops the gate immediately.
-
-- **(a) Named survivors.** Collect the test ids of the final tree (one per line, into
-  `<SCRATCH_PATH>/collected.txt`), then run:
-  ```bash
-  python3 "$HOME/.claude/scripts/test-cleanup-check.py" survivors --deletions "<SCRATCH_PATH>/round4-deletions.md" --collected "<SCRATCH_PATH>/collected.txt" --merged "<SCRATCH_PATH>/round4-merged.txt"
-  ```
-  Each missing survivor is printed with the deleted test that named it. That deleted test is restored from
-  the pre-Round-4 SHA, removed from `round4-deletions.md`, and sent back through 4.5 as Unique (merged and
-  renamed). This is how two duplicates are kept from deleting each other.
-- **(b) Behaviour floor.** Each public symbol added or changed in `IMPL_FILES` across `START_SHA..HEAD` is
-  referenced by at least one test in the final tree. A miss restores the last deleted test that referenced
-  the symbol, removes it from the deletions list, and sends it through 4.5 as Unique.
-- Repeat (a) and (b) until neither restores anything. This is bounded: each pass only restores, never deletes.
-- **(c) Count.** Only then, a fresh full collection. The total must match pre-cleanup minus the final
-  deletions. **For any file merged in 4.5,** the target file's collected test count must rise by exactly the
-  folded-in count. A same-name collision (e.g. two `test_boundary()` in one module) silently shadows one test
-  with no error, and only a per-file count check catches it.
-- **(d) Red set.** The set of red tests must equal **exactly** the `final_id`s of the register's
-  `test-correct-blocking` entries. Every other test must be green, and every blocking test must still be red.
-  Any other red test is a mistake to fix (an import or path, as today) before committing. It is not cleanup.
-- **(e) No spec-blind name survives.**
-  ```bash
-  python3 "$HOME/.claude/scripts/test-cleanup-check.py" names --base "$ROUND2_START_SHA" --head WORKTREE
-  ```
-  `--head WORKTREE` checks the working tree, including untracked files, which is the tree the commit is about to
-  record. Checking only committed HEAD would miss a name that is still uncommitted. A hit is a hard failure: fix the name, then re-run. Exempt tests were renamed in 4.5, so a blocking test
-  cannot cause a names hit.
-- **(f) Round 2 branch and worktree gone.** `git worktree list` no longer shows `<R2_WT_PATH>`, and
-  `git rev-parse --verify --quiet "refs/heads/<R2_BRANCH>"` prints nothing.
-- **(g) Gate step 1.** Re-run gate step 1 (build/type-check), since moves can break import paths.
-
-Then commit, as one commit. The deletions and merges travel in its body, so review and audit can see them:
-```bash
-git commit -m "test: clean up spec-blind tests (<D> deleted, <M> merged)"
-```
-The body lists every deletion with its reason and its survivor or proof, and every merged id as
-`<old id> -> <new id>`. That is the provenance for #367 and later audits.
-
-Once the commit has landed and check (d) holds, write the Round 4 evidence. The first line keeps its
+Once the cleanup commit from 4.6 has landed and check (d) holds, write the Round 4 evidence. The first line keeps its
 current shape, because the Final summary's verbatim render and the `coverage-fix-358` fixture read it.
 `<R>` counts tests merged or relocated in 4.5, Exempt included. The later lines point at the blocking set
 and the working files:
@@ -2412,10 +2363,26 @@ printf '%s DONE round4 %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round4.md" >> "<LEDGER_
 With blocking entries present the row is still `DONE`. The Final check is where the run fails loudly (see
 "Spec-blind gate" in the Final check).
 
-If tests go red after a move, fix the import or path (the expected failure mode). A relocation that changes
-pass/fail counts beyond the intended deletions is a mistake, not cleanup. A second run over a cleaned tree
-must be a no-op: Step 0 writes the row from the cleanup commit instead of re-running (see "Spec-blind state
-on resume").
+### 4.6b Record hygiene measurement
+
+Write the per-run test hygiene measurement with one call. `hygiene-json` reads the scratch evidence
+(`round2-hygiene.txt`, `round4-hygiene.txt`, `round4-candidates.md`, `round4.md` and `layout-names-given.txt`)
+and writes the JSON; it does the parsing, so no shell arithmetic is needed here. Pass `--skip-round2` when this
+invocation did not run the Round 2 hygiene scan block, and `--skip-round4` when it did not run the Round 4
+hygiene scan and the 4.1 candidates blocks (the resume path after Round 1 skips them). A skipped round is
+written as `null` and a stale file from an earlier invocation is ignored:
+```bash
+python3 "$HOME/.claude/scripts/test-cleanup-check.py" hygiene-json --scratch "<SCRATCH_PATH>" --step "<implement|fix>" [--skip-round2] [--skip-round4] --out "<SCRATCH_PATH>/test-hygiene.json" || printf '%s\n' "test-hygiene: measurement not written (hygiene-json exit $?)" >&2
+
+# In a flow, write the same measurement to FLOW_DIR with a second call (no cp); a failure is reported, not hidden
+if [ -n "$FLOW_DIR" ]; then
+  python3 "$HOME/.claude/scripts/test-cleanup-check.py" hygiene-json --scratch "<SCRATCH_PATH>" --step "<implement|fix>" [--skip-round2] [--skip-round4] --flow-dir "$FLOW_DIR" --out "$FLOW_DIR/test-hygiene-<STEP>.json" || printf '%s\n' "test-hygiene: FLOW_DIR copy not written (hygiene-json exit $?)" >&2
+fi
+```
+
+On a `--resume-after-round1` run, the skipped rounds' hygiene and overlap fields are written as `null`
+(`round4_deleted` and `round4_relocated` default to `0` when `round4.md` is absent), and `layout_names_given` is
+`false` when the flag file is absent.
 
 ---
 
@@ -2787,6 +2754,7 @@ ROUND 4 — Test cleanup (orchestrator-run)
   Deleted (junk; cleanup classes duplicate, no-op, judgment only — human-spec-wrong rows are listed under DELETED TESTS): <count, paths + reason>
   Relocated/renamed: <count>  (e.g. tests/test_wave_a_spec.py → <repo-convention path>)
   Post-cleanup test status (orchestrator re-run — AUTHORITATIVE final status): <P passed, F failed>
+  Test hygiene: round2 hits <a>, round4 hits <b>, overlap hints <c> (unreported <u>), round4 relocated <R> -> <path of measurement file>
 SPEC-BLIND DISAGREEMENTS (register: <SCRATCH_PATH>/disagreements.json)
   Entries: <count>   Terminal: <count>   Blocking (test-correct-blocking, by final_id): <count, ids or none>
   <id> → <terminal status>   ruler: <ruler>   reason: <reason>   (take-over resolutions included)

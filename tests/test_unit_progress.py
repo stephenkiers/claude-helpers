@@ -151,6 +151,15 @@ def _hardening_cases(h):
         h.test_result("scoped record without main record rejected", code != 0, err)
 
 
+def commit_file(repo: Path, name: str) -> str:
+    """Create one commit in repo adding file `name`. Returns the new HEAD SHA."""
+    (repo / name).write_text(name + "\n")
+    ident = ["-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", *ident, "add", name], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", *ident, "commit", "-m", name], cwd=repo, check=True, capture_output=True)
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+
+
 def main() -> None:
     h = Harness("unit-progress.py")
     # Use valid 40-character hex SHA for tests
@@ -288,6 +297,106 @@ def main() -> None:
 
         code, out, err = run_progress_cmd(["tip"], scratch=str(scratch3))
         h.test_result("tip returns SHA", code == 0 and len(out.strip()) == 40, f"exit {code}, output: {out}")
+
+    print("\n[Test 13] layout_base_sha: first implement init pins START_SHA")
+    git = GitFixture(Path(tmp) / "git4")
+    sha4 = git.create_initial_commit("fourth")
+    units = create_unit_list("single", 1)
+    sizing = create_minimal_sizing_result()
+    sizing["min_units"] = 1
+    flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "single", "single_reason": "test"})
+    scratch4 = Path(tmp) / "scratch4"
+    scratch4.mkdir()
+    code, out, err = run_progress_cmd(["init", "--anchor", sha4, "--base", sha4], stdin_data=flow_input, scratch=str(scratch4))
+    h.test_result("init succeeds for layout_base test", code == 0, f"exit {code}: {err}")
+
+    units_file = scratch4 / "units" / "implement" / "units.json"
+    assert units_file.exists(), f"units.json not written: {units_file}"
+    data = json.loads(units_file.read_text())
+    h.test_result("fresh init pins layout_base_sha to START_SHA",
+                  data.get("layout_base_sha") == sha4,
+                  f"layout_base_sha: {data.get('layout_base_sha')!r}, expected {sha4}")
+
+    print("\n[Test 14] layout_base_sha: --supersede keeps the original value")
+    # Create another commit on the git repo
+    (git.repo_root / "file5.txt").write_text("fifth\n")
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "file5.txt"],
+                   cwd=git.repo_root, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "fifth"],
+                   cwd=git.repo_root, capture_output=True, text=True, check=True)
+    sha4_b = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git.repo_root,
+                           capture_output=True, text=True, check=True).stdout.strip()
+    units = create_unit_list("single", 1)
+    sizing = create_minimal_sizing_result()
+    sizing["min_units"] = 1
+    flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "single", "single_reason": "test"})
+    code, out, err = run_progress_cmd(["init", "--supersede", "--anchor", sha4_b, "--base", sha4_b],
+                                      stdin_data=flow_input, scratch=str(scratch4), cwd=str(git.repo_root))
+    h.test_result("supersede init succeeds", code == 0, f"exit {code}: {err}")
+
+    units_file = scratch4 / "units" / "implement" / "units.json"
+    assert units_file.exists(), f"units.json missing after --supersede: {units_file}"
+    data = json.loads(units_file.read_text())
+    h.test_result("supersede records the new anchor", data.get("anchor_sha") == sha4_b,
+                  f"anchor_sha: {data.get('anchor_sha')!r}, expected {sha4_b}")
+    h.test_result("--supersede does not re-pin layout_base_sha (stays the original anchor)",
+                  data.get("layout_base_sha") == sha4,
+                  f"layout_base_sha: {data.get('layout_base_sha')!r}, expected {sha4}")
+
+    sha4_c = commit_file(git.repo_root, "file6.txt")
+    print("\n[Test 14b] layout_base_sha: --split-finer copies forward and does not re-pin")
+    units = create_unit_list("single", 1)
+    sizing = create_minimal_sizing_result()
+    sizing["min_units"] = 1
+    flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "single", "single_reason": "test"})
+    code, out, err = run_progress_cmd(["init", "--supersede", "--split-finer", "--anchor", sha4_c, "--base", sha4_c],
+                                      stdin_data=flow_input, scratch=str(scratch4), cwd=str(git.repo_root))
+    h.test_result("split-finer init succeeds", code == 0, f"exit {code}: {err}")
+    assert units_file.exists(), f"units.json missing after --split-finer: {units_file}"
+    data = json.loads(units_file.read_text())
+    h.test_result("split-finer records the new anchor", data.get("anchor_sha") == sha4_c,
+                  f"anchor_sha: {data.get('anchor_sha')!r}, expected {sha4_c}")
+    h.test_result("--split-finer does not re-pin layout_base_sha (stays the original anchor)",
+                  data.get("layout_base_sha") == sha4,
+                  f"layout_base_sha: {data.get('layout_base_sha')!r}, expected {sha4}")
+
+    print("\n[Test 15] layout_base_sha: --no-layout-base is rejected with --supersede")
+    units = create_unit_list("single", 1)
+    sizing = create_minimal_sizing_result()
+    sizing["min_units"] = 1
+    flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "single", "single_reason": "test"})
+    before_bytes = units_file.read_bytes()
+    before_entries = sorted(p.name for p in units_file.parent.iterdir())
+    code, out, err = run_progress_cmd(["init", "--supersede", "--no-layout-base", "--anchor", sha4_c, "--base", sha4_c],
+                                      stdin_data=flow_input, scratch=str(scratch4), cwd=str(git.repo_root))
+    h.test_result("--no-layout-base with --supersede exits 1", code == 1, f"exit {code}: {err}")
+    h.test_result("rejection names the conflict",
+                  err == "unit-progress: init: --no-layout-base cannot be combined with --supersede "
+                         "(suppression is only for fresh init)", f"stderr: {err!r}")
+    h.test_result("rejected init leaves units.json byte-identical", units_file.read_bytes() == before_bytes)
+    h.test_result("rejected init writes no archive or other record file",
+                  sorted(p.name for p in units_file.parent.iterdir()) == before_entries)
+
+    print("\n[Test 16] layout_base_sha: scoped init inherits from main record")
+    units = create_unit_list("parallel", 1)
+    sizing = create_minimal_sizing_result()
+    sizing["min_units"] = 1
+    flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "parallel", "single_reason": None})
+    code, out, err = run_progress_cmd(["--scope", "scoped-a3", "init", "--anchor", sha4_b, "--base", sha4_b],
+                                      stdin_data=flow_input, scratch=str(scratch4), cwd=str(git.repo_root))
+    h.test_result("scoped init succeeds", code == 0, f"exit {code}: {err}")
+
+    scoped_units_file = scratch4 / "units" / "implement" / "scoped-a3" / "units.json"
+    assert scoped_units_file.exists(), f"scoped units.json not written: {scoped_units_file}"
+    data = json.loads(scoped_units_file.read_text())
+    h.test_result("scoped layout_base_sha inherits from main record",
+                  data.get("layout_base_sha") == sha4,
+                  f"scoped layout_base_sha: {data.get('layout_base_sha')!r}, expected {sha4}")
+
+    print("\n[Test 17] layout-base read-only subcommand")
+    code, out, err = run_progress_cmd(["layout-base"], scratch=str(scratch4))
+    h.test_result("layout-base reads main record and prints value", code == 0 and out.strip() == sha4,
+                  f"exit {code}, output: {out!r}, expected: {sha4}")
 
     _hardening_cases(h)
     h.summarize_and_exit()

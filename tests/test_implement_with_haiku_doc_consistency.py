@@ -12,7 +12,10 @@ Run with: python3 tests/test_implement_with_haiku_doc_consistency.py
 """
 
 import importlib.util
+import json
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,6 +30,7 @@ import telemetry_schema
 COMMANDS = REPO_ROOT / "commands"
 AGENTS = REPO_ROOT / "agents"
 ADRS = REPO_ROOT / "docs" / "adr"
+PROMPTS = REPO_ROOT / "prompts"
 
 
 def read(path):
@@ -85,6 +89,7 @@ def replace_angle_bracket_placeholders(text):
 IMPLEMENT_WITH_HAIKU = read(COMMANDS / "implement-with-haiku.md")
 PLAN_IMPLEMENTER = read(AGENTS / "plan-implementer.md")
 ADR_0008 = read(ADRS / "0008-machine-enforced-agent-guardrails.md")
+TEST_CLEANUP_REFERENCE = read(PROMPTS / "test-cleanup-reference.md")
 
 h = Harness("IMPLEMENT-WITH-HAIKU DOCUMENT CONSISTENCY TEST SUITE")
 t = h.test_result
@@ -858,13 +863,13 @@ t("(#387) the final check runs `checks validate`, never `checks run`",
 t("(#387) the final check is one minimum check, not one full check",
   "one minimum-check run" in DOC and "one full-check run" not in DOC)
 
-# Heading order: 4.6 Verify green, then commit -> ## Final check -> ## Final summary
-pos_46 = DOC.find("### 4.6 Verify green, then commit")
+# Heading order: 4.6a Record Round 4 evidence -> ## Final check -> ## Final summary
+pos_46a = DOC.find("### 4.6a Record Round 4 evidence")
 pos_final = DOC.find("## Final check")
 pos_summary = DOC.find("## Final summary")
-t("(#338) the Final check section sits after 4.6 Verify green, then commit",
-  pos_46 != -1 and pos_final != -1 and pos_46 < pos_final,
-  f"4.6={pos_46} final={pos_final}")
+t("(#338) the Final check section sits after 4.6a Record Round 4 evidence",
+  pos_46a != -1 and pos_final != -1 and pos_46a < pos_final,
+  f"4.6a={pos_46a} final={pos_final}")
 t("(#338) the Final check section sits before ## Final summary",
   pos_final != -1 and pos_summary != -1 and pos_final < pos_summary,
   f"final={pos_final} summary={pos_summary}")
@@ -1312,11 +1317,36 @@ HELPER_FORM = 'python3 "$HOME/.claude/scripts/test-cleanup-check.py"'
 HELPER_GRANT = 'Bash(python3 "$HOME/.claude/scripts/test-cleanup-check.py":*)'
 R4_4A = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.0a", "### 4.1 Enumerate")
 R4_1 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.1 Enumerate", "### 4.2 Learn")
-R4_3 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.3 Classify", "### 4.4 Delete")
-R4_4 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.4 Delete", "### 4.5 Relocate")
-R4_5 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.5 Relocate", "### 4.6 Verify")
-R4_6 = doc_section(IMPLEMENT_WITH_HAIKU, "### 4.6 Verify", "## Final check")
+# R4_3-R4_6 are now in the reference doc; assert they exist there and not in the command doc
+R4_3 = doc_section(TEST_CLEANUP_REFERENCE, "### 4.3 Classify", "### 4.4 Delete")
+R4_4 = doc_section(TEST_CLEANUP_REFERENCE, "### 4.4 Delete", "### 4.5 Relocate")
+R4_5 = doc_section(TEST_CLEANUP_REFERENCE, "### 4.5 Relocate", "### 4.6 Verify")
+R4_6_start = TEST_CLEANUP_REFERENCE.find("### 4.6 Verify")
+_r46_tail = TEST_CLEANUP_REFERENCE[R4_6_start:] if R4_6_start != -1 else ""
+_r46_next = [i for i in (_r46_tail.find("\n## "), _r46_tail.find("\n### ", 1)) if i != -1]
+R4_6 = _r46_tail[:min(_r46_next)] if _r46_next else _r46_tail
 RESUME = doc_section(IMPLEMENT_WITH_HAIKU, "### Spec-blind state on resume", "## Step 1:")
+
+# Assert that 4.3-4.6 headings exist in the reference doc and are absent from the command doc
+t("prompts/test-cleanup-reference.md exists and contains 4.3-4.6",
+  TEST_CLEANUP_REFERENCE != "",
+  "reference doc not found or empty")
+
+t("4.3 Classify heading exists in reference doc",
+  "### 4.3 Classify" in TEST_CLEANUP_REFERENCE,
+  "missing ### 4.3 Classify in reference doc")
+
+t("4.3-4.6 sections are absent from command doc",
+  "### 4.3 Classify" not in IMPLEMENT_WITH_HAIKU
+  and "### 4.4 Delete" not in IMPLEMENT_WITH_HAIKU
+  and "### 4.5 Relocate" not in IMPLEMENT_WITH_HAIKU
+  and "### 4.6 Verify" not in IMPLEMENT_WITH_HAIKU,
+  "4.3-4.6 still present in command doc instead of pointer")
+
+t("command doc references the reference doc under Round 4",
+  "~/.claude/prompts/test-cleanup-reference.md" in IMPLEMENT_WITH_HAIKU
+  and "Read `~/.claude/prompts/test-cleanup-reference.md`" in IMPLEMENT_WITH_HAIKU,
+  "command doc doesn't reference the reference doc")
 
 t("frontmatter grants the test-cleanup-check helper",
   HELPER_GRANT in IMPLEMENT_WITH_HAIKU.split("\n---", 1)[0],
@@ -1409,10 +1439,11 @@ t("4.6 commit body lists deletions and merged ids",
   "merged" in R4_6 and "reason" in R4_6.lower(),
   "4.6 commit body does not list deletions and merged ids")
 
-t("4.6 precedes the Final check",
-  IMPLEMENT_WITH_HAIKU.find("### 4.6 Verify green, then commit")
-  < IMPLEMENT_WITH_HAIKU.find("## Final check") > 0,
-  "4.6 is not before the Final check")
+_p46a = IMPLEMENT_WITH_HAIKU.find("### 4.6a Record Round 4 evidence")
+_pfinal = IMPLEMENT_WITH_HAIKU.find("## Final check")
+t("4.6a precedes the Final check",
+  _p46a != -1 and _pfinal != -1 and _p46a < _pfinal,
+  "4.6a is not before the Final check")
 
 t("Final summary has the new spec-blind sections",
   all(s in IMPLEMENT_WITH_HAIKU for s in (
@@ -1432,6 +1463,136 @@ ledger_spec_lines = [
 t("no new step id or ledger row kind for spec-blind state",
   not ledger_spec_lines,
   f"ledger call lines naming spec-blind state: {ledger_spec_lines}")
+
+# ============================================================================
+# UNIT C (#464): layout-base wiring, persisted layout flag, hygiene-json measurement
+# ============================================================================
+print()
+print("[Unit C] layout-base wiring, hygiene measurement, ADR hedge")
+
+ADR_0019 = read(ADRS / "0019-content-driven-pause-checkpoints.md")
+
+# (a) the layout-base resolution lives in `test-cleanup-check.py layout-evidence` (tested in
+# test_test_cleanup_check.py); the doc makes ONE call with --step and the PROGRESS array, and no
+# inline unit-progress.py layout-base shell remains.
+inline_layout_base = [
+    ln.strip() for blk, _ in extract_bash_blocks(IMPLEMENT_WITH_HAIKU) for ln in blk.splitlines()
+    if "unit-progress.py" in ln and "layout-base" in ln and not ln.lstrip().startswith("#")
+]
+layout_evidence_calls = [
+    ln for ln in IMPLEMENT_WITH_HAIKU.splitlines()
+    if 'test-cleanup-check.py" layout-evidence' in ln
+]
+t("(a) the doc has exactly one layout-evidence call, with --step and the PROGRESS array",
+  len(layout_evidence_calls) == 1 and '--step "<implement|fix>"' in layout_evidence_calls[0]
+  and '"${PROGRESS[@]}"' in layout_evidence_calls[0] and not inline_layout_base
+  and "$STEP" not in layout_evidence_calls[0],
+  f"calls: {layout_evidence_calls}; inline layout-base lines: {inline_layout_base}")
+
+# (a2) PROGRESS is a shell array. No string-built PROGRESS_ARG remains, and the doc's own construction,
+# run under bash (and zsh when installed), hands the script separate argv words.
+t("(a2) no PROGRESS_ARG string construction remains in the doc",
+  "PROGRESS_ARG" not in IMPLEMENT_WITH_HAIKU,
+  "PROGRESS_ARG still present in implement-with-haiku.md")
+progress_defs = sorted(set(re.findall(
+    r'^if \[\[ -n "\$\{FLOW_DIR\}" \]\]; then PROGRESS=\(.*?\); else PROGRESS=\(.*?\); fi$',
+    IMPLEMENT_WITH_HAIKU, re.M)))
+t("(a2) the doc defines PROGRESS with one canonical one-line array construction",
+  len(progress_defs) == 1, f"distinct constructions: {progress_defs}")
+uses_without_def = []
+for blk, lineno in extract_bash_blocks(IMPLEMENT_WITH_HAIKU):
+    if '"${PROGRESS[@]}"' in blk and "PROGRESS=(" not in blk:
+        uses_without_def.append(lineno)
+t("(a2) every bash block that expands PROGRESS defines it in the same block",
+  not uses_without_def, f"blocks without a definition (line numbers): {uses_without_def}")
+for shell in ("bash", "zsh"):
+    exe = shutil.which(shell)
+    if exe is None or not progress_defs:
+        continue
+    with tempfile.TemporaryDirectory() as shell_tmp:
+        flow_path = str(Path(shell_tmp) / "flow dir")
+        scratch_path = str(Path(shell_tmp) / "scratch dir")
+        construction = progress_defs[0].replace("<SCRATCH_PATH>", scratch_path)
+        stub = "import json, sys; print(json.dumps(sys.argv[1:]))"
+        for flow_set, expected in ((True, ["--flow-dir", flow_path]), (False, ["--scratch", scratch_path])):
+            script = (f'FLOW_DIR={json.dumps(flow_path) if flow_set else json.dumps("")}\n'
+                      f"{construction}\n"
+                      f'{shlex.quote(sys.executable)} -c {shlex.quote(stub)} "${{PROGRESS[@]}}"\n')
+            proc = subprocess.run([exe, "-c", script], capture_output=True, text=True, timeout=30)
+            got = json.loads(proc.stdout) if proc.returncode == 0 and proc.stdout.strip() else None
+            t(f"(a2) under {shell} the doc's PROGRESS construction yields argv {expected[0]} <path> "
+              f"({'FLOW_DIR set' if flow_set else 'FLOW_DIR empty'})",
+              got == expected, f"rc={proc.returncode} got={got!r} err={proc.stderr.strip()!r}")
+
+# (b) hygiene measurement is one hygiene-json call; the printf JSON construction is gone.
+t("(b) the doc invokes test-cleanup-check.py hygiene-json",
+  'test-cleanup-check.py" hygiene-json' in IMPLEMENT_WITH_HAIKU,
+  "hygiene-json invocation missing from implement-with-haiku.md")
+t("(b) the doc no longer hand-builds test-hygiene.json with printf (no round2_hygiene_hits key)",
+  r'round2_hygiene_hits\"' not in IMPLEMENT_WITH_HAIKU,
+  "printf construction of round2_hygiene_hits still present")
+
+# (c) layout-names-given.txt is written by the layout-evidence call (--names-given-file), and
+# hygiene-json reads it from the same scratch path.
+t("(c) the layout-evidence call passes --names-given-file <SCRATCH_PATH>/layout-names-given.txt",
+  any("layout-evidence" in blk and '--names-given-file "<SCRATCH_PATH>/layout-names-given.txt"' in blk
+      for blk, _ in extract_bash_blocks(IMPLEMENT_WITH_HAIKU)),
+  "no bash block calls layout-evidence with --names-given-file")
+t("(c) no LAYOUT_NAMES_GIVEN= shell reset remains in the doc",
+  "LAYOUT_NAMES_GIVEN=" not in IMPLEMENT_WITH_HAIKU,
+  "LAYOUT_NAMES_GIVEN= still assigned in implement-with-haiku.md")
+
+# (e) the measurement has its own 4.6b heading; 4.6a keeps its name (tests and Final check depend on it)
+t("(e) hygiene measurement has its own '### 4.6b Record hygiene measurement' heading",
+  "### 4.6b Record hygiene measurement" in IMPLEMENT_WITH_HAIKU
+  and "### 4.6a Record Round 4 evidence" in IMPLEMENT_WITH_HAIKU,
+  "4.6b heading missing or 4.6a heading renamed")
+
+# (d) the ADR no longer hedges the FLOW_DIR hygiene copy
+t("(d) ADR-0019 no longer contains 'if no allowlist forbids it'",
+  "if no allowlist forbids it" not in ADR_0019,
+  "ADR-0019 still hedges the test-hygiene FLOW_DIR copy")
+t("(d) ADR-0019 states test-hygiene-<STEP>.json is a sanctioned FLOW_DIR artifact",
+  "sanctioned FLOW_DIR artifact" in ADR_0019 and "hygiene-json" in ADR_0019,
+  "ADR-0019 does not state the sanctioned artifact plainly")
+
+# (f) end-to-end: hygiene-json on scratch dirs in the doc's file formats
+def run_hygiene_json(scratch_dir):
+    """Run hygiene-json against a scratch dir; return (exit code, parsed JSON or None, stderr)."""
+    out_path = Path(scratch_dir) / "test-hygiene.json"
+    proc = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "test-cleanup-check.py"),
+         "hygiene-json", "--scratch", scratch_dir, "--step", "implement", "--out", str(out_path)],
+        capture_output=True, text=True, timeout=60,
+    )
+    parsed = None
+    if proc.returncode == 0 and out_path.is_file():
+        parsed = json.loads(out_path.read_text())
+    return proc.returncode, parsed, proc.stderr
+
+with tempfile.TemporaryDirectory() as empty_scratch:
+    rc, parsed, err = run_hygiene_json(empty_scratch)
+    t("(f) hygiene-json with no round2 evidence exits 0 and writes parseable JSON",
+      rc == 0 and parsed is not None,
+      f"exit {rc}, stderr: {err.strip()}")
+    t("(f) hygiene-json with no round2 evidence yields null hits and layout_names_given false",
+      parsed is not None and parsed["round2_hygiene_hits"] is None
+      and parsed["round4_hygiene_hits"] is None and parsed["overlap_candidates"] is None
+      and parsed["layout_names_given"] is False and parsed["step"] == "implement",
+      f"parsed: {parsed}")
+
+with tempfile.TemporaryDirectory() as doc_scratch:
+    Path(doc_scratch, "round2-hygiene.txt").write_text(
+        "round2-hygiene: 2 hits\n"
+        "spec-blind line tests/test_x.py:3 test spec_check\n"
+        "segment-only: spec-blind path tests/test_y.py\n"
+    )
+    Path(doc_scratch, "layout-names-given.txt").write_text("true\n")
+    rc, parsed, err = run_hygiene_json(doc_scratch)
+    t("(f) hygiene-json reads the doc's round2-hygiene.txt header and layout-names-given.txt flag",
+      rc == 0 and parsed is not None and parsed["round2_hygiene_hits"] == 2
+      and parsed["round2_segment_only"] == 1 and parsed["layout_names_given"] is True,
+      f"exit {rc}, parsed: {parsed}, stderr: {err.strip()}")
 
 print()
 
