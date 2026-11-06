@@ -1655,7 +1655,7 @@ print("[#441] primary-checkout resolver: assignment, pipeline, site-1 arms, re-c
 DRIFT_SCRIPT = REPO_ROOT / "scripts" / "primary-checkout-drift.py"
 DRIFT_SRC = read(DRIFT_SCRIPT)
 DOC_441 = IMPLEMENT_WITH_HAIKU
-ANCHOR = "never the shell variable name"
+ANCHOR = "Record the printed `PRIMARY_CHECKOUT:` value"
 PIPELINE_RE = r"git worktree list --porcelain \| grep '\^worktree ' \| head -1"
 
 
@@ -1667,8 +1667,11 @@ def section_text(doc, title_fragment):
         if m and title_fragment in ln:
             level = len(m.group(1))
             body = []
+            in_fence = False
             for nxt in lines[i + 1:]:
-                nm = re.match(r"^(#{1,6}) ", nxt)
+                if re.match(r"^\s*```", nxt):
+                    in_fence = not in_fence
+                nm = None if in_fence else re.match(r"^(#{1,6}) ", nxt)
                 if nm and len(nm.group(1)) <= level:
                     break
                 body.append(nxt)
@@ -1731,7 +1734,7 @@ for needle, label in (("rev-parse --show-toplevel", "rev-parse --show-toplevel c
 
 # Consuming sites after site 1 use the recorded literal and are preceded by a re-check block
 anchor_pos = DOC_441.find(ANCHOR)
-t("(#441) site-1 prose anchor ('never the shell variable name') present",
+t("(#441) site-1 recording prose anchor present",
   anchor_pos != -1, "anchor sentence missing")
 stale_uses = re.findall(r"\$\{?PRIMARY_CHECKOUT\}?", DOC_441[anchor_pos:]) if anchor_pos != -1 else ["<no anchor>"]
 t("(#441) no $PRIMARY_CHECKOUT or ${PRIMARY_CHECKOUT} used after site 1",

@@ -212,7 +212,7 @@ def main() -> None:
     h.test_result("no receipt heredoc for cwd-drift", "cat > \"<RECEIPT_PATH>\" << 'EOF'" not in doc)
     n_fail = len(re.findall(r'primary-checkout-drift\.py" fail --compare-exit', doc))
     n_compare = len(re.findall(r'primary-checkout-drift\.py" compare', doc))
-    h.test_result("fail call count == compare barriers + snapshot + 2 multi-unit sites", n_fail == n_compare + 3, f"fail={n_fail} compare={n_compare}")
+    h.test_result("fail call count == compare barriers + snapshot + 2 site-1 resolver arms + 2 multi-unit drift sites + 3 primary re-check stop sites", n_fail == n_compare + 8, f"fail={n_fail} compare={n_compare}")
     # +1: the block section quotes the idiom once in prose
     h.test_result("each fail call gated on FLOW_DIR receipt", doc.count('${FLOW_DIR:+--receipt "<RECEIPT_PATH>"}') == n_fail + 1)
     h.test_result("overlap site calls fail with overlap Reason and files",
