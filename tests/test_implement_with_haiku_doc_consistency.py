@@ -12,6 +12,7 @@ Run with: python3 tests/test_implement_with_haiku_doc_consistency.py
 """
 
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -1460,6 +1461,106 @@ ledger_spec_lines = [
 t("no new step id or ledger row kind for spec-blind state",
   not ledger_spec_lines,
   f"ledger call lines naming spec-blind state: {ledger_spec_lines}")
+
+# ============================================================================
+# UNIT C (#464): layout-base wiring, persisted layout flag, hygiene-json measurement
+# ============================================================================
+print()
+print("[Unit C] layout-base wiring, hygiene measurement, ADR hedge")
+
+ADR_0019 = read(ADRS / "0019-content-driven-pause-checkpoints.md")
+
+# (a) every unit-progress.py layout-base invocation carries --step and a flow/scratch arg BEFORE the
+# subcommand, and never refers to an undefined $STEP.
+layout_base_calls = [
+    ln for ln in IMPLEMENT_WITH_HAIKU.splitlines()
+    if "unit-progress.py" in ln and "layout-base" in ln
+]
+bad_layout_base_calls = []
+for ln in layout_base_calls:
+    before_subcommand = ln[: ln.index("layout-base")]
+    has_step = "--step" in before_subcommand
+    has_progress_arg = (
+        "--flow-dir" in before_subcommand
+        or "--scratch" in before_subcommand
+        or "PROGRESS_ARG" in before_subcommand
+    )
+    uses_step_var = re.search(r"\$\{?STEP\}?\b", ln) is not None
+    if not (has_step and has_progress_arg) or uses_step_var:
+        bad_layout_base_calls.append(ln.strip())
+t("(a) every unit-progress.py layout-base call has --step and --flow-dir/--scratch before the subcommand",
+  len(layout_base_calls) >= 1 and not bad_layout_base_calls,
+  f"found {len(layout_base_calls)} layout-base call(s); bad: {bad_layout_base_calls}")
+
+# (b) hygiene measurement is one hygiene-json call; the printf JSON construction is gone.
+t("(b) the doc invokes test-cleanup-check.py hygiene-json",
+  'test-cleanup-check.py" hygiene-json' in IMPLEMENT_WITH_HAIKU,
+  "hygiene-json invocation missing from implement-with-haiku.md")
+t("(b) the doc no longer hand-builds test-hygiene.json with printf (no round2_hygiene_hits key)",
+  r'round2_hygiene_hits\"' not in IMPLEMENT_WITH_HAIKU,
+  "printf construction of round2_hygiene_hits still present")
+
+# (c) layout-names-given is persisted to a file in the same bash block as the layout-base call,
+# and no LAYOUT_NAMES_GIVEN shell variable is reset to a literal anywhere in the doc.
+t("(c) layout-names-given.txt is written in the same bash block as the layout-base call",
+  any("layout-base" in blk and "layout-names-given.txt" in blk
+      for blk, _ in extract_bash_blocks(IMPLEMENT_WITH_HAIKU)),
+  "no bash block both calls layout-base and writes layout-names-given.txt")
+t("(c) no LAYOUT_NAMES_GIVEN= shell reset remains in the doc",
+  "LAYOUT_NAMES_GIVEN=" not in IMPLEMENT_WITH_HAIKU,
+  "LAYOUT_NAMES_GIVEN= still assigned in implement-with-haiku.md")
+
+# (e) the measurement has its own 4.6b heading; 4.6a keeps its name (tests and Final check depend on it)
+t("(e) hygiene measurement has its own '### 4.6b Record hygiene measurement' heading",
+  "### 4.6b Record hygiene measurement" in IMPLEMENT_WITH_HAIKU
+  and "### 4.6a Record Round 4 evidence" in IMPLEMENT_WITH_HAIKU,
+  "4.6b heading missing or 4.6a heading renamed")
+
+# (d) the ADR no longer hedges the FLOW_DIR hygiene copy
+t("(d) ADR-0019 no longer contains 'if no allowlist forbids it'",
+  "if no allowlist forbids it" not in ADR_0019,
+  "ADR-0019 still hedges the test-hygiene FLOW_DIR copy")
+t("(d) ADR-0019 states test-hygiene-<STEP>.json is a sanctioned FLOW_DIR artifact",
+  "sanctioned FLOW_DIR artifact" in ADR_0019 and "hygiene-json" in ADR_0019,
+  "ADR-0019 does not state the sanctioned artifact plainly")
+
+# (f) end-to-end: hygiene-json on scratch dirs in the doc's file formats
+def run_hygiene_json(scratch_dir):
+    """Run hygiene-json against a scratch dir; return (exit code, parsed JSON or None, stderr)."""
+    out_path = Path(scratch_dir) / "test-hygiene.json"
+    proc = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "test-cleanup-check.py"),
+         "hygiene-json", "--scratch", scratch_dir, "--step", "implement", "--out", str(out_path)],
+        capture_output=True, text=True, timeout=60,
+    )
+    parsed = None
+    if proc.returncode == 0 and out_path.is_file():
+        parsed = json.loads(out_path.read_text())
+    return proc.returncode, parsed, proc.stderr
+
+with tempfile.TemporaryDirectory() as empty_scratch:
+    rc, parsed, err = run_hygiene_json(empty_scratch)
+    t("(f) hygiene-json with no round2 evidence exits 0 and writes parseable JSON",
+      rc == 0 and parsed is not None,
+      f"exit {rc}, stderr: {err.strip()}")
+    t("(f) hygiene-json with no round2 evidence yields null hits and layout_names_given false",
+      parsed is not None and parsed["round2_hygiene_hits"] is None
+      and parsed["round4_hygiene_hits"] is None and parsed["overlap_candidates"] is None
+      and parsed["layout_names_given"] is False and parsed["step"] == "implement",
+      f"parsed: {parsed}")
+
+with tempfile.TemporaryDirectory() as doc_scratch:
+    Path(doc_scratch, "round2-hygiene.txt").write_text(
+        "round2-hygiene: 2 hits\n"
+        "spec-blind line tests/test_x.py:3 test spec_check\n"
+        "segment-only: spec-blind path tests/test_y.py\n"
+    )
+    Path(doc_scratch, "layout-names-given.txt").write_text("true\n")
+    rc, parsed, err = run_hygiene_json(doc_scratch)
+    t("(f) hygiene-json reads the doc's round2-hygiene.txt header and layout-names-given.txt flag",
+      rc == 0 and parsed is not None and parsed["round2_hygiene_hits"] == 2
+      and parsed["round2_segment_only"] == 1 and parsed["layout_names_given"] is True,
+      f"exit {rc}, parsed: {parsed}, stderr: {err.strip()}")
 
 print()
 

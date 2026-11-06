@@ -368,7 +368,7 @@ wrote and never re-derive it from a fresh run.
 - **Register.** When a `DONE round2-apply` row exists, re-read `<SCRATCH_PATH>/disagreements.json`, through
   the path on the second line of `<SCRATCH_PATH>/round2-apply.txt`. Never re-derive the register from a
   fresh run. Terminal entries are kept as they are. Round 4's 4.0a resumes from the first non-terminal entry.
-- **Evidence files.** `round2-hygiene.md`, `round4-working-ids.txt` and `round4-candidates.md` are evidence that is never trusted on resume. The hygiene scan re-runs whenever Round 2 has been applied, and 4.1 always rebuilds the id file and then the candidates. Neither has a restore case, because neither writes the tree.
+- **Evidence files.** `round2-hygiene.txt`, `round4-working-ids.txt` and `round4-candidates.md` are evidence that is never trusted on resume. The hygiene scan re-runs whenever Round 2 has been applied, and 4.1 always rebuilds the id file and then the candidates. Neither has a restore case, because neither writes the tree.
 - **Take over.** Each `human-takeover` entry re-runs against the current tree. Green → `impl-fixed` (ruler
   `human`, reason "resolved by take over"). Still red → `awaiting-human`, and the human is asked again, once.
 - **Answers already saved.** An approved human answer saved for an entry is never asked again. The saved copy
@@ -841,7 +841,7 @@ On init failure, write the FAILED receipt (when `FLOW_DIR` is set) with
 - **Keep**: stage and commit uncommitted partial work as one commit `partial work kept for split-finer (attempt <ATTEMPT>)` (files the earlier attempt added are removed first with DISCARDED_ADDED_FILES validation).
 - **Reset**: restore each file changed since `START_SHA` from `START_SHA` via `git show` and `Write`, remove files added since `START_SHA`, commit if HEAD moved.
 - Record judgment and reason in units.json via `--partial-work` and `--partial-work-reason` flags; the receipt body and SPLIT_ATTEMPT line.
-- Call `init --supersede --anchor "$START_SHA" --base <post-commit HEAD>` (base differs from anchor only when keeping/resetting committed work).
+- Call `init --supersede --split-finer --anchor "$START_SHA" --base <post-commit HEAD>` (base differs from anchor only when keeping/resetting committed work). `--split-finer` makes `init` copy the existing `layout_base_sha` forward and never re-pin it; do not drop the flag on a split-finer re-run.
 
 **5. Handle `--only-units` without a record.** After fresh split, if `ONLY_UNITS` is non-empty, filter to include only units whose `id` is in the comma-separated list. All ownership and forbidden-file rules remain for the filtered set. Exit 1 with a loud error on unknown ids.
 
@@ -1614,13 +1614,22 @@ Extract the layout evidence from tests that existed before this run's implementa
 the pre-implementation base SHA stored in the unit record:
 
 ```bash
-LAYOUT_BASE=$(python3 "$HOME/.claude/scripts/unit-progress.py" layout-base --step "$STEP" --flow-dir "$FLOW_DIR" 2>/dev/null) || LAYOUT_BASE=""
-if [ -n "$LAYOUT_BASE" ]; then
-  LAYOUT_EVIDENCE=$(python3 "$HOME/.claude/scripts/test-cleanup-check.py" layout --base "$LAYOUT_BASE" --impl <IMPL_FILES> 2>/dev/null)
-  LAYOUT_NAMES_GIVEN="true"
+PROGRESS_ARG=""
+if [[ -n "${FLOW_DIR}" ]]; then
+  PROGRESS_ARG="--flow-dir \"${FLOW_DIR}\""
+else
+  PROGRESS_ARG="--scratch \"<SCRATCH_PATH>\""
+fi
+# Global flags (--step, --flow-dir or --scratch) come before the subcommand. Exit 3 means no usable
+# layout_base_sha; the reason is printed on stderr and the base-less fallback below runs.
+LAYOUT_BASE=$(python3 "$HOME/.claude/scripts/unit-progress.py" --step "<implement|fix>" ${PROGRESS_ARG} layout-base) || LAYOUT_BASE=""
+LAYOUT_EVIDENCE=""
+# The flag is persisted to a file so the measurement block (4.6b) can read it in a later Bash call.
+if [ -n "$LAYOUT_BASE" ] && LAYOUT_EVIDENCE=$(python3 "$HOME/.claude/scripts/test-cleanup-check.py" layout --base "$LAYOUT_BASE" --impl <IMPL_FILES>); then
+  printf '%s\n' true > "<SCRATCH_PATH>/layout-names-given.txt"
 else
   LAYOUT_EVIDENCE=$(python3 "$HOME/.claude/scripts/test-cleanup-check.py" layout --impl <IMPL_FILES> 2>/dev/null)
-  LAYOUT_NAMES_GIVEN="false"
+  printf '%s\n' false > "<SCRATCH_PATH>/layout-names-given.txt"
 fi
 ```
 
@@ -1837,16 +1846,18 @@ claimed counts into the summary uncorrected.**
 Scan the added test names for a configured set of hygiene tokens (spec-blind, spec, hardening, blackbox, review_fixes, followups, phase_N, wave_N, where N matches a digit or single letter). The scan detects only; it makes no rename, no `git mv`, no staging, no commit, no ledger row. Hits are fixed only at Round 4.5. Record the scan result:
 
 ```bash
-python3 "$HOME/.claude/scripts/test-cleanup-check.py" names --hygiene --base "$ROUND2_START_SHA" --head HEAD > "<SCRATCH_PATH>/round2-hygiene.txt" 2>&1
+python3 "$HOME/.claude/scripts/test-cleanup-check.py" names --hygiene --base "$ROUND2_START_SHA" --head HEAD > "<SCRATCH_PATH>/round2-names.raw" 2>&1
 HYGIENE_EXIT=$?
+# <SCRATCH_PATH>/round2-hygiene.txt is the one Round 2 hygiene file: a `round2-hygiene: <N> hits` (or
+# `unavailable (<exit>)`) header, then the raw hit lines. The hygiene-json subcommand reads it.
 if [ $HYGIENE_EXIT -eq 0 ]; then
-  printf '%s\n' "round2-hygiene: 0 hits" > "<SCRATCH_PATH>/round2-hygiene.md"
-  grep '^segment-only:' "<SCRATCH_PATH>/round2-hygiene.txt" >> "<SCRATCH_PATH>/round2-hygiene.md" || true
+  printf '%s\n' "round2-hygiene: 0 hits" > "<SCRATCH_PATH>/round2-hygiene.txt"
+  grep '^segment-only:' "<SCRATCH_PATH>/round2-names.raw" >> "<SCRATCH_PATH>/round2-hygiene.txt" || true
 elif [ $HYGIENE_EXIT -eq 1 ]; then
-  printf '%s\n' "round2-hygiene: $(grep -vc '^segment-only:' '<SCRATCH_PATH>/round2-hygiene.txt' || true) hits" > "<SCRATCH_PATH>/round2-hygiene.md"
-  cat "<SCRATCH_PATH>/round2-hygiene.txt" >> "<SCRATCH_PATH>/round2-hygiene.md"
+  printf '%s\n' "round2-hygiene: $(grep -vc '^segment-only:' '<SCRATCH_PATH>/round2-names.raw' || true) hits" > "<SCRATCH_PATH>/round2-hygiene.txt"
+  cat "<SCRATCH_PATH>/round2-names.raw" >> "<SCRATCH_PATH>/round2-hygiene.txt"
 else
-  printf '%s\n' "round2-hygiene: unavailable ($HYGIENE_EXIT)" > "<SCRATCH_PATH>/round2-hygiene.md"
+  printf '%s\n' "round2-hygiene: unavailable ($HYGIENE_EXIT)" > "<SCRATCH_PATH>/round2-hygiene.txt"
 fi
 ```
 
@@ -2353,73 +2364,23 @@ printf '%s DONE round4 %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round4.md" >> "<LEDGER_
 With blocking entries present the row is still `DONE`. The Final check is where the run fails loudly (see
 "Spec-blind gate" in the Final check).
 
-**Measurement: per-run hygiene counts.** Write the test hygiene JSON with metrics for this run. Parse counts from the evidence files:
+### 4.6b Record hygiene measurement
+
+Write the per-run test hygiene measurement with one call. `hygiene-json` reads the scratch evidence
+(`round2-hygiene.txt`, `round4-hygiene.txt`, `round4-candidates.md`, `round4.md` and `layout-names-given.txt`)
+and writes the JSON; it does the parsing, so no shell arithmetic is needed here:
 ```bash
-# Parse round2 hygiene
-R2_HITS=0
-R2_SEGMENT_ONLY=0
-if [ -f "<SCRATCH_PATH>/round2-hygiene.md" ]; then
-  R2_HITS=$(sed -n '1s/.*: //p' "<SCRATCH_PATH>/round2-hygiene.md" | grep -o '[0-9]*' | head -1)
-  if [ "$R2_HITS" = "unavailable" ]; then R2_HITS="null"; fi
-  R2_SEGMENT_ONLY=$(grep -c '^segment-only:' "<SCRATCH_PATH>/round2-hygiene.md" 2>/dev/null || echo 0)
-else
-  R2_HITS="null"
-  R2_SEGMENT_ONLY="null"
-fi
+python3 "$HOME/.claude/scripts/test-cleanup-check.py" hygiene-json --scratch "<SCRATCH_PATH>" --step "<implement|fix>" --out "<SCRATCH_PATH>/test-hygiene.json" || printf '%s\n' "test-hygiene: measurement not written (hygiene-json exit $?)" >&2
 
-# Parse round4 hygiene (if it exists; check gate skips it)
-R4_HITS="null"
-R4_SEGMENT_ONLY="null"
-if [ -f "<SCRATCH_PATH>/round4-hygiene.txt" ]; then
-  R4_HITS=$(grep -vc '^segment-only:' "<SCRATCH_PATH>/round4-hygiene.txt" 2>/dev/null || true)
-  R4_SEGMENT_ONLY=$(grep -c '^segment-only:' "<SCRATCH_PATH>/round4-hygiene.txt" 2>/dev/null || true)
-fi
-
-# Parse round4 candidates (if it exists)
-O_CANDIDATES="null"
-O_NONE="null"
-O_UNREPORTED="null"
-if [ -f "<SCRATCH_PATH>/round4-candidates.md" ]; then
-  SUMMARY=$(grep '^candidates:' "<SCRATCH_PATH>/round4-candidates.md")
-  if [ -n "$SUMMARY" ]; then
-    O_CANDIDATES=$(printf '%s' "$SUMMARY" | grep -o 'candidates: [0-9]*' | grep -o '[0-9]*')
-    O_NONE=$(printf '%s' "$SUMMARY" | grep -o 'none: [0-9]*' | grep -o '[0-9]*')
-    O_UNREPORTED=$(printf '%s' "$SUMMARY" | grep -o 'unreported: [0-9]*' | grep -o '[0-9]*')
-  fi
-fi
-
-# Parse round4 deletions and relocations from round4.md if it exists
-R4_DELETED=0
-R4_RELOCATED=0
-LAYOUT_NAMES_GIVEN="false"
-if [ -f "<SCRATCH_PATH>/round4.md" ]; then
-  ROUND4_LINE=$(sed -n '1p' "<SCRATCH_PATH>/round4.md" | sed 's/^round4: //')
-  R4_DELETED=$(printf '%s' "$ROUND4_LINE" | grep -o '[0-9]* deleted' | grep -o '[0-9]*' | head -1)
-  R4_RELOCATED=$(printf '%s' "$ROUND4_LINE" | grep -o '[0-9]* relocated' | grep -o '[0-9]*' | head -1)
-fi
-
-# Write the measurement JSON
-{
-  printf '%s\n' "{"
-  printf '%s\n' "  \"round2_hygiene_hits\": $R2_HITS,"
-  printf '%s\n' "  \"round2_segment_only\": $R2_SEGMENT_ONLY,"
-  printf '%s\n' "  \"round4_hygiene_hits\": $R4_HITS,"
-  printf '%s\n' "  \"round4_segment_only\": $R4_SEGMENT_ONLY,"
-  printf '%s\n' "  \"overlap_candidates\": $O_CANDIDATES,"
-  printf '%s\n' "  \"overlap_none\": $O_NONE,"
-  printf '%s\n' "  \"overlap_unreported\": $O_UNREPORTED,"
-  printf '%s\n' "  \"round4_deleted\": $R4_DELETED,"
-  printf '%s\n' "  \"round4_relocated\": $R4_RELOCATED,"
-  printf '%s\n' "  \"layout_names_given\": $LAYOUT_NAMES_GIVEN,"
-  printf '%s\n' "  \"step\": \"<implement|fix>\""
-  printf '%s\n' "}"
-} > "<SCRATCH_PATH>/test-hygiene.json"
-
-# Copy to FLOW_DIR if set and allowed
+# Copy to FLOW_DIR if set and allowed (best-effort; the scratch copy is the record of truth)
 if [ -n "$FLOW_DIR" ] && [ -d "$FLOW_DIR" ]; then
   cp "<SCRATCH_PATH>/test-hygiene.json" "$FLOW_DIR/test-hygiene-<STEP>.json" 2>/dev/null || true
 fi
 ```
+
+On a `--resume-after-round1` run that does not re-produce the Round 2 or Round 4 evidence files, the
+hygiene and overlap fields are written as `null` (`round4_deleted` and `round4_relocated` default to `0`
+when `round4.md` is absent), and `layout_names_given` is `false` when the flag file is absent.
 
 ---
 
