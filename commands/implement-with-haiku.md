@@ -1290,7 +1290,6 @@ if [[ -z "$RECHECK_FAIL" ]]; then
   FIRST_BLOCK=$(git worktree list --porcelain | grep -m1 -A1 '^worktree ')
   if [[ "$FIRST_BLOCK" == "worktree <PRIMARY_CHECKOUT>"$'\n'bare ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
 fi
-# primary-recheck: end
 if [[ -n "$RECHECK_FAIL" ]]; then
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 --cause no-usable-primary \
     --label "(primary re-check, unit drift check: ${RECHECK_FAIL})" \
@@ -1298,6 +1297,7 @@ if [[ -n "$RECHECK_FAIL" ]]; then
     --units "<n>" --max-turns "<n>"
   exit $?
 fi
+# primary-recheck: end
 git -C "<PRIMARY_CHECKOUT>" status --porcelain -- <owned-files>
 ```
 
@@ -1338,7 +1338,6 @@ if [[ -z "$RECHECK_FAIL" ]]; then
   FIRST_BLOCK=$(git worktree list --porcelain | grep -m1 -A1 '^worktree ')
   if [[ "$FIRST_BLOCK" == "worktree <PRIMARY_CHECKOUT>"$'\n'bare ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
 fi
-# primary-recheck: end
 if [[ -n "$RECHECK_FAIL" ]]; then
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 --cause no-usable-primary \
     --label "(primary re-check, lost-work check: ${RECHECK_FAIL})" \
@@ -1346,6 +1345,7 @@ if [[ -n "$RECHECK_FAIL" ]]; then
     --units "<n>" --max-turns "<n>"
   exit $?
 fi
+# primary-recheck: end
 git -C "<PRIMARY_CHECKOUT>" status --porcelain -- <owned-files>
 ```
 If the work is sitting there, this is cwd drift, not lost work —
@@ -2219,7 +2219,6 @@ if [[ -z "$RECHECK_FAIL" ]]; then
   FIRST_BLOCK=$(git worktree list --porcelain | grep -m1 -A1 '^worktree ')
   if [[ "$FIRST_BLOCK" == "worktree <PRIMARY_CHECKOUT>"$'\n'bare ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
 fi
-# primary-recheck: end
 if [[ -n "$RECHECK_FAIL" ]]; then
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 --cause no-usable-primary \
     --label "(primary re-check, round 2 drift check: ${RECHECK_FAIL})" \
@@ -2227,6 +2226,7 @@ if [[ -n "$RECHECK_FAIL" ]]; then
     --units "<n>" --max-turns "<n>"
   exit $?
 fi
+# primary-recheck: end
 git -C "<PRIMARY_CHECKOUT>" status --porcelain
 ```
 If the R2 worktree is empty but the primary checkout shows test files, this is cwd drift.
