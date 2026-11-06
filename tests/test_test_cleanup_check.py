@@ -1212,11 +1212,11 @@ def check_round2_gaps(h):
         rc, out, err = run(repo, ["names", "--hygiene", "--base", base, "--head", "WORKTREE"])
         h.test_result("names --hygiene ignores an edited existing test that has a hygiene token in its stem",
                       rc == 0, f"rc={rc} out={out!r} err={err!r}")
-        write_files(repo, {"tests/test_followups_new.py": BASE_PY})
+        write_files(repo, {"tests/test_new_followups.py": BASE_PY})
         rc, out, err = run(repo, ["names", "--hygiene", "--base", base, "--head", "WORKTREE"])
         h.test_result("names --hygiene flags an untracked added file with a hygiene token in its stem",
                       rc == 1, f"rc={rc} out={out!r} err={err!r}")
-        head = commit(repo, {"tests/test_followups_committed.py": BASE_PY}, "add committed hygiene file")
+        head = commit(repo, {"tests/test_committed_followups.py": BASE_PY}, "add committed hygiene file")
         rc, out, err = run(repo, ["names", "--hygiene", "--base", base, "--head", "HEAD"])
         h.test_result("names --hygiene flags a committed added file with a hygiene token in its stem",
                       rc == 1, f"rc={rc} out={out!r} err={err!r}")
