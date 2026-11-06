@@ -289,6 +289,86 @@ def main() -> None:
         code, out, err = run_progress_cmd(["tip"], scratch=str(scratch3))
         h.test_result("tip returns SHA", code == 0 and len(out.strip()) == 40, f"exit {code}, output: {out}")
 
+    print("\n[Test 13] layout_base_sha: first implement init pins START_SHA")
+    git = GitFixture(Path(tmp) / "git4")
+    sha4 = git.create_initial_commit("fourth")
+    units = create_unit_list("single", 1)
+    sizing = create_minimal_sizing_result()
+    sizing["min_units"] = 1
+    flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "single", "single_reason": "test"})
+    scratch4 = Path(tmp) / "scratch4"
+    scratch4.mkdir()
+    code, out, err = run_progress_cmd(["init", "--anchor", sha4, "--base", sha4], stdin_data=flow_input, scratch=str(scratch4))
+    h.test_result("init succeeds for layout_base test", code == 0, f"exit {code}: {err}")
+
+    units_file = scratch4 / "units" / "implement" / "units.json"
+    if units_file.exists():
+        data = json.loads(units_file.read_text())
+        h.test_result("layout_base_sha is pinned to START_SHA on first init",
+                      "layout_base_sha" in data and data.get("layout_base_sha") == sha4,
+                      f"data: {data}")
+
+    print("\n[Test 14] layout_base_sha: --supersede keeps the original value")
+    # Create another commit on the git repo
+    (git.repo_root / "file5.txt").write_text("fifth\n")
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "file5.txt"],
+                   cwd=git.repo_root, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "fifth"],
+                   cwd=git.repo_root, capture_output=True, text=True, check=True)
+    sha4_b = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git.repo_root,
+                           capture_output=True, text=True, check=True).stdout.strip()
+    units = create_unit_list("single", 1)
+    sizing = create_minimal_sizing_result()
+    sizing["min_units"] = 1
+    flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "single", "single_reason": "test"})
+    code, out, err = run_progress_cmd(["init", "--supersede", "--anchor", sha4_b, "--base", sha4_b],
+                                      stdin_data=flow_input, scratch=str(scratch4), cwd=str(git.repo_root))
+    h.test_result("supersede init succeeds", code == 0, f"exit {code}: {err}")
+
+    units_file = scratch4 / "units" / "implement" / "units.json"
+    if units_file.exists():
+        data = json.loads(units_file.read_text())
+        h.test_result("layout_base_sha is preserved after --supersede",
+                      "layout_base_sha" in data and data.get("layout_base_sha") == sha4,
+                      f"data: {data}")
+
+    print("\n[Test 15] layout_base_sha: --supersede --no-layout-base keeps inherited value")
+    units = create_unit_list("single", 1)
+    sizing = create_minimal_sizing_result()
+    sizing["min_units"] = 1
+    flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "single", "single_reason": "test"})
+    code, out, err = run_progress_cmd(["init", "--supersede", "--no-layout-base", "--anchor", sha4_b, "--base", sha4_b],
+                                      stdin_data=flow_input, scratch=str(scratch4), cwd=str(git.repo_root))
+    h.test_result("supersede with --no-layout-base succeeds", code == 0, f"exit {code}: {err}")
+
+    units_file = scratch4 / "units" / "implement" / "units.json"
+    if units_file.exists():
+        data = json.loads(units_file.read_text())
+        h.test_result("layout_base_sha is still preserved with --no-layout-base",
+                      "layout_base_sha" in data and data.get("layout_base_sha") == sha4,
+                      f"data: {data}")
+
+    print("\n[Test 16] layout_base_sha: scoped init inherits from main record")
+    units = create_unit_list("parallel", 1)
+    sizing = create_minimal_sizing_result()
+    sizing["min_units"] = 1
+    flow_input = json.dumps({"units": units, "sizing": sizing, "basis": "parallel", "single_reason": None})
+    code, out, err = run_progress_cmd(["--scope", "scoped-a3", "init", "--anchor", sha4_b, "--base", sha4_b],
+                                      stdin_data=flow_input, scratch=str(scratch4), cwd=str(git.repo_root))
+    h.test_result("scoped init succeeds", code == 0, f"exit {code}: {err}")
+
+    scoped_units_file = scratch4 / "units" / "implement" / "scoped-a3" / "units.json"
+    if scoped_units_file.exists():
+        data = json.loads(scoped_units_file.read_text())
+        h.test_result("scoped layout_base_sha inherits from main record",
+                      "layout_base_sha" in data and data.get("layout_base_sha") == sha4,
+                      f"scoped data: {data}")
+
+    print("\n[Test 17] layout-base read-only subcommand")
+    code, out, err = run_progress_cmd(["layout-base"], scratch=str(scratch4))
+    h.test_result("layout-base reads main record and prints value", code == 0 and out.strip() == sha4,
+                  f"exit {code}, output: {out!r}, expected: {sha4}")
+
     _hardening_cases(h)
     h.summarize_and_exit()
 
