@@ -1193,7 +1193,56 @@ def next_test():
                       and data.get("layout_names_given") is False,
                       f"rc={rc} data={data!r} err={err!r}")
 
+    check_round2_gaps(h)
+
     h.summarize_and_exit()
+
+
+def check_round2_gaps(h):
+    """Cases the earlier groups do not reach: an edited existing test is not an added test for
+    names --hygiene or working-ids; an untracked added file with a hygiene token in its stem is a
+    hit in the working tree; hygiene-json reads a 'true' layout-names file from the scratch dir by
+    default. Every case drives the CLI against a throwaway repo."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "edit"
+        root.mkdir()
+        repo, base = make_repo(root, {"tests/test_hardening_old.py": BASE_PY})
+        write_files(repo, {"tests/test_hardening_old.py": BASE_PY + "\n# edited in place\n"})
+        rc, out, err = run(repo, ["names", "--hygiene", "--base", base, "--head", "WORKTREE"])
+        h.test_result("names --hygiene ignores an edited existing test that has a hygiene token in its stem",
+                      rc == 0, f"rc={rc} out={out!r} err={err!r}")
+        write_files(repo, {"tests/test_followups_new.py": BASE_PY})
+        rc, out, err = run(repo, ["names", "--hygiene", "--base", base, "--head", "WORKTREE"])
+        h.test_result("names --hygiene flags an untracked added file with a hygiene token in its stem",
+                      rc == 1, f"rc={rc} out={out!r} err={err!r}")
+        head = commit(repo, {"tests/test_followups_committed.py": BASE_PY}, "add committed hygiene file")
+        rc, out, err = run(repo, ["names", "--hygiene", "--base", base, "--head", "HEAD"])
+        h.test_result("names --hygiene flags a committed added file with a hygiene token in its stem",
+                      rc == 1, f"rc={rc} out={out!r} err={err!r}")
+
+        root = Path(tmp) / "wids"
+        root.mkdir()
+        repo, base = make_repo(root, {"tests/test_a.py": BASE_PY})
+        edited_a = edited(BASE_PY, "assert result == expected", "assert result == 4")
+        head = commit(repo, {"tests/test_a.py": edited_a + "\n\ndef test_brand_new():\n    assert 1 == 1\n"}, "head")
+        rc, out, err = run(repo, ["working-ids", "--base", base, "--head", head])
+        ids = set(out.split())
+        h.test_result("working-ids lists only the new test when an existing test in the same file is edited",
+                      rc == 0 and ids == {"tests/test_a.py::test_brand_new"},
+                      f"rc={rc} ids={sorted(ids)!r} err={err!r}")
+
+        root = Path(tmp) / "hyg"
+        root.mkdir()
+        scratch = root / "scratch"
+        scratch.mkdir()
+        (scratch / "layout-names-given.txt").write_text("true\n")
+        out_path = root / "measure.json"
+        rc, out, err = run(repo, ["hygiene-json", "--scratch", str(scratch), "--step", "implement",
+                                  "--out", str(out_path)])
+        data = json.loads(out_path.read_text()) if out_path.exists() else {}
+        h.test_result("hygiene-json records layout_names_given true from the default scratch file",
+                      rc == 0 and data.get("layout_names_given") is True,
+                      f"rc={rc} data={data!r} err={err!r}")
 
 
 if __name__ == "__main__":

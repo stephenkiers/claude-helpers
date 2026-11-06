@@ -9,6 +9,7 @@ the new anchor; a scoped init with no main record does not pin.
 Run with: python3 tests/test_unit_progress_layout_base.py
 """
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -146,7 +147,32 @@ def main():
         h.test_result("scoped init with no main record: layout_base_sha stays null",
                       data.get("layout_base_sha") is None, f"layout_base_sha={data.get('layout_base_sha')!r}")
 
+    check_layout_base_flow_dir(h)
+
     h.summarize_and_exit()
+
+
+def check_layout_base_flow_dir(h):
+    """layout-base also works when the run is addressed by --flow-dir (the global flags come before
+    the subcommand, as the caller passes them): a fresh init pins the anchor, and the value prints."""
+    with tempfile.TemporaryDirectory() as tmp:
+        # A flow dir must sit under $HOME/.claude/flows, so run under a temp HOME.
+        home = Path(tmp) / "home"
+        flow = home / ".claude" / "flows" / "repo" / "1-layout-base-abc123"
+        flow.mkdir(parents=True)
+        (flow / "log.md").write_text("")
+        env = {**os.environ, "HOME": str(home)}
+        init_cmd = [sys.executable, str(PROGRESS), "--step", "implement", "--flow-dir", str(flow),
+                    "init", "--anchor", ANCHOR, "--base", ANCHOR]
+        init_res = subprocess.run(init_cmd, capture_output=True, text=True, input=init_payload(), env=env)
+        show_cmd = [sys.executable, str(PROGRESS), "--step", "implement", "--flow-dir", str(flow), "layout-base"]
+        show_res = subprocess.run(show_cmd, capture_output=True, text=True, env=env)
+        h.test_result("layout-base with --flow-dir prints the anchor pinned by a fresh init",
+                      init_res.returncode == 0 and show_res.returncode == 0
+                      and show_res.stdout.strip() == ANCHOR,
+                      f"init rc={init_res.returncode} err={init_res.stderr.strip()!r} "
+                      f"layout-base rc={show_res.returncode} out={show_res.stdout!r} "
+                      f"err={show_res.stderr.strip()!r}")
 
 
 if __name__ == "__main__":
