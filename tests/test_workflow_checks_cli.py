@@ -15,6 +15,7 @@ Run with: python3 tests/test_workflow_checks_cli.py
 import sys
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -352,6 +353,32 @@ if __name__ == "__main__":
             vn.returncode == 2 and jn.get("status") == "error" and jn.get("command") is None
             and jn.get("timeout_secs") is None,
             f"rc={vn.returncode} out={jn!r}",
+        )
+
+    print()
+    print("[Section 17] checks CLI surface: run/receipt subcommands are gone, invalid --mode is a usage error (#462 Part 3)")
+    for removed in ("run", "receipt"):
+        rr = _checks_cli(removed, "--help")
+        test_result(
+            f"checks {removed} is an unknown subcommand (argparse usage error, exit 2)",
+            rr.returncode == 2,
+            f"rc={rr.returncode} err={rr.stderr[-200:]!r}",
+        )
+    rh = _checks_cli("--help")
+    listed = re.search(r"\{([^}]+)\}", rh.stdout + rh.stderr)
+    names = listed.group(1).split(",") if listed else []
+    test_result(
+        "checks --help lists validate but neither run nor receipt",
+        "validate" in names and "run" not in names and "receipt" not in names,
+        f"subcommands={names!r}",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _fixture_work_tree(Path(tmp), {"check": "true"})
+        rm = _checks_cli("validate", "--worktree", str(work), "--mode", "invalid-mode")
+        test_result(
+            "checks validate --mode invalid-mode is rejected as a usage error (exit 2)",
+            rm.returncode == 2,
+            f"rc={rm.returncode} err={rm.stderr[-200:]!r}",
         )
 
     print()
