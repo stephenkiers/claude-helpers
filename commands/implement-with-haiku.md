@@ -1843,7 +1843,7 @@ if [ $HYGIENE_EXIT -eq 0 ]; then
   printf '%s\n' "round2-hygiene: 0 hits" > "<SCRATCH_PATH>/round2-hygiene.md"
   grep '^segment-only:' "<SCRATCH_PATH>/round2-hygiene.txt" >> "<SCRATCH_PATH>/round2-hygiene.md" || true
 elif [ $HYGIENE_EXIT -eq 1 ]; then
-  printf '%s\n' "round2-hygiene: $(grep -c '^[^s]' '<SCRATCH_PATH>/round2-hygiene.txt' || echo 0) hits" > "<SCRATCH_PATH>/round2-hygiene.md"
+  printf '%s\n' "round2-hygiene: $(grep -vc '^segment-only:' '<SCRATCH_PATH>/round2-hygiene.txt' || echo 0) hits" > "<SCRATCH_PATH>/round2-hygiene.md"
   cat "<SCRATCH_PATH>/round2-hygiene.txt" >> "<SCRATCH_PATH>/round2-hygiene.md"
 else
   printf '%s\n' "round2-hygiene: unavailable ($HYGIENE_EXIT)" > "<SCRATCH_PATH>/round2-hygiene.md"
@@ -2371,7 +2371,7 @@ fi
 R4_HITS="null"
 R4_SEGMENT_ONLY="null"
 if [ -f "<SCRATCH_PATH>/round4-hygiene.txt" ]; then
-  R4_HITS=$(grep -c '^[^s]' "<SCRATCH_PATH>/round4-hygiene.txt" 2>/dev/null || echo 0)
+  R4_HITS=$(grep -vc '^segment-only:' "<SCRATCH_PATH>/round4-hygiene.txt" 2>/dev/null || echo 0)
   R4_SEGMENT_ONLY=$(grep -c '^segment-only:' "<SCRATCH_PATH>/round4-hygiene.txt" 2>/dev/null || echo 0)
 fi
 
