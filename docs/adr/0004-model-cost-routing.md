@@ -138,3 +138,62 @@ When `/expert-flow` spawns the implement, fix, and review steps, they run on pur
 **Model conventions:** Aliases like `sonnet` are used in agent-frontmatter `model:` fields for `flow-*` agents only (a convenience, resolving to `claude-sonnet-5-5` at spawn time); dated model ids are unchanged elsewhere. A test reconciles both conventions by asserting that every `agents/*.md` `model:` field is either an alias in `{sonnet}` (for `flow-*` only), a dated id from a documented constant set (`claude-haiku-4-5-20251001`, etc.), or absent (defaulting to the session model). The resolved id for the `sonnet` alias observed in the first flow run is `claude-sonnet-5-5` (probe result, Step 2.1).
 
 **Task-time model override (probe result, Step 2.1):** Spawning a Task with `model: sonnet` overrides an agent whose file pins `claude-haiku-4-5-20251001`; the subagent ran on `claude-sonnet-5-5` (transcript `message.model`). This is how the #315 Sonnet escalation works (a manual override at hard-stop time) and is already depended on by the `/expert-review --model` override. The escalation is not automatic; the human confirms it at the hard-stop menu. **Probe sessions (excluded from /usage-report):** 04a8f48c, 6f4a40a1, 9edf70ee, d4642c82, d95030c8, ecc74372, ff4dabbe.
+
+### Amendment: flow-plan step agent (2026-11-03)
+
+When `/expert-flow` spawns the plan step, it runs on the `flow-plan` restricted agent (see ADR-0008
+2026-11-03 amendment). The agent frontmatter pins `model: sonnet`. This governs the plan-step
+orchestrator shell; judgment-step tiers (contributors, Carl, synthesis, auditor) are determined per
+ADR-0020's effort levels and `--models` flag in `/expert-plan`. This restores the documented
+`/expert-plan` panel default tier.
+
+**Plan-side consequence of #358's panel re-tiering (2026-10-26 amendment):** The amendment above
+documented that restricted flow-* agents carry their own model pins in frontmatter, and their
+contributors inherit the agent's model. As a precedent, `flow-review` (Sonnet) re-tiers the review
+panel from the session model to Sonnet. `flow-plan` (Sonnet) re-tiers the planning panel from the
+session model to Sonnet. The existing re-tiering decision is restated here without change: when a
+flow-* agent pins a specific model, all judgment work it spawns (including sub-panels) inherits that
+model, not the session model.
+
+**Task-time model override (cite probe #358, Step 2.1, decision unchanged):** When a Task-time `model`
+override is passed to a flow-plan invocation (e.g., during a manual escalation to Opus for a single
+plan run), it beats the agent file's pin per the already-documented probe result.
+
+**Why the dated model pins stay on expert-scout, plan-implementer, and spike-researcher:** The three
+mechanical roles pinned to `claude-haiku-4-5-20251001` (`expert-scout` Q&A and Code Rot Cody,
+`plan-implementer` for implement-with-haiku, `spike-researcher` for /expert-spike) serve distinct
+contexts: the review and spike fan-outs. An alias would re-tier them outside the flow, so the pins
+stay dated and fixed. Refresh of all three is deliberate and separate from the flow-* agent aliases.
+
+### Per-step model table (from commands/expert-flow.md Steps table)
+
+This table identifies which agent and model runs each step of an `/expert-flow` execution:
+
+| Step | Command | Agent | Model |
+|---|---|---|---|
+| worktree | `/track-and-start --worktree-only` | general-purpose | session (inherited) |
+| plan | `/expert-plan --flow <FLOW_DIR>` | flow-plan | sonnet |
+| track | `/track-and-start --plan-file <PLAN_PATH>` | general-purpose | session (inherited) |
+| implement | `/implement-with-haiku <PLAN_PATH>` | flow-implement | sonnet (coordinator); haiku (plan-implementer units) |
+| review | `/expert-review --force` | flow-review | sonnet |
+| fix | `/implement-with-haiku <ACTION_PLAN>` | flow-implement | sonnet (coordinator); haiku (plan-implementer units) |
+| verify | check command | general-purpose | session (inherited) |
+| assess | orchestrator stage | flow-assessor | sonnet |
+| ship | `/shipit` | flow-ship | haiku |
+| merge | `/merge-and-cleanup` | flow-merge | haiku |
+
+Per-step `message.model` attribution confirms which model a step's work runs on. The table collects
+observations from the merged PR for this change; individual runs may differ (session model, explicit
+overrides).
+
+**Plan's own switch-over:** The plan step's model routing changes on the merge date of this PR. Until
+merge, out-of-flow `/expert-plan` remains on the session model. Inside a flow, plan-step sessions
+started on or after the merge date run on `flow-plan` (Sonnet). Sessions started before merge, if
+resumed after merge, keep their original scope and model: the flow state and receipts on disk do not
+change retroactively.
+
+**General-purpose row cost measurement:** `plan-implementer` cost tracking recorded at #353 is
+pre-#358 and unrelated to this amendment. Per-step model-route measurements are deferred. Cost
+measurement pending — recorded on #353 after merge. Note that one flow is an n=1 illustrative
+observation confounded by ticket size, effort tier and caching, and that a later alias remap
+invalidates it.

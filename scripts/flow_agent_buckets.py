@@ -2,7 +2,7 @@
 """
 Telemetry bucketing for flow step agents.
 
-Groups flow-implement and flow-review agent rows together with pre-cutover
+Groups flow-implement, flow-plan and flow-review agent rows together with pre-cutover
 general-purpose agent rows that fall inside a flow session.
 """
 
@@ -15,8 +15,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import telemetry_schema
 
-# Flow step agents: the set of agents that run as restricted Haiku or coordinator agents in /expert-flow steps.
-FLOW_STEP_AGENTS = {"flow-implement", "flow-review", "flow-ship", "flow-merge"}
+# Flow step agents: the set of agents that run as restricted Sonnet or Haiku coordinator agents in /expert-flow steps.
+FLOW_STEP_AGENTS = {"flow-implement", "flow-plan", "flow-review", "flow-ship", "flow-merge"}
 
 # Cut-over date: when flow-implement and flow-review agents replaced general-purpose for flow steps.
 # The current value, 2026-10-26, is the date of the #358 probes (ADR-0008 amendment), NOT the merge
@@ -24,6 +24,8 @@ FLOW_STEP_AGENTS = {"flow-implement", "flow-review", "flow-ship", "flow-merge"}
 # general-purpose flow agent rows are bucketed as pre-cutover. If the actual merge date matters to
 # you, edit this one constant before merging #358; after merge, never change it (changing it
 # retroactively invalidates historical bucketing and trends).
+# Note: general-purpose plan-step rows recorded between the cutover date (2026-10-26) and the
+# flow-plan merge date fall in neither bucket, since the cutover predates flow-plan's introduction.
 FLOW_AGENT_CUTOVER_DATE = "2026-10-26"
 
 # Session IDs from the Step 2 hermetic probes in the 2026-10-26 #358 ticket (7 distinct sessions:
@@ -68,11 +70,12 @@ def bucket_flow_agent_rows(
 
     A flow session is one that contains either:
     - A command.begin event with command="expert-flow", OR
-    - Any agent.begin event with agent_type in FLOW_STEP_AGENTS (flow-implement, flow-review, flow-ship, flow-merge)
+    - Any agent.begin event with agent_type in FLOW_STEP_AGENTS (flow-implement, flow-plan, flow-review, flow-ship, flow-merge)
 
     For each flow session, this function counts:
-    - agent.begin events with agent_type in FLOW_STEP_AGENTS
+    - agent.begin events with agent_type in FLOW_STEP_AGENTS (including flow-plan)
     - agent.begin events with agent_type=general-purpose recorded BEFORE cutover_date
+      (Note: general-purpose plan-step rows recorded after cutover_date are not bucketed)
 
     Probe session IDs (from Step 2 hermetic probes) are completely excluded from all bucketing.
 

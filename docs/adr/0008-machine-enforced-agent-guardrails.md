@@ -247,13 +247,13 @@ incident class in the lifecycle).
 ## Amendment: Restrict the standing exception to implement, fix, and review (2026-10-26)
 
 The standing exception narrowed: **implement, fix and review are restricted** (`flow-implement`,
-`flow-review`); **worktree, plan, track, verify, ship, merge, the retro grader and the auto-rebase
-worker remain general-purpose, pending #360** (the fidelity-audit scout is already a restricted
-`expert-scout`).
+`flow-review`); **worktree, track, verify, the retro grader and the auto-rebase worker remain
+general-purpose** (ADR-0008 2026-11-03 amendment); **plan runs flow-plan** (the fidelity-audit scout
+is already a restricted `expert-scout`).
 
 The implement and fix steps run `flow-implement.md` (model pinned to `sonnet`, no `Edit`, Bash guard);
 the review step runs `flow-review.md` (model pinned to `sonnet`, `Edit` kept for red-lined
-`claude-action-plan.md`). All other steps spawn `general-purpose` agents as before.
+`claude-action-plan.md`). Worktree, track, verify, the retro grader and the auto-rebase worker spawn `general-purpose` agents as before (see amendment 2026-11-03).
 
 ### Control matrix for restricted steps
 
@@ -378,17 +378,19 @@ This supersedes the 2.2, 2.3 and 2.4 results above where they differ.
 Open: interactive-session permission behaviour, and behaviour under a recorded parent permission mode, are still unprobed (needs a human session; watch for prompts during
 a real `/expert-flow` run). "Machine-enforced" is evidenced for the hook-denied paths and the allowed Skill path.
 
+**Settings-level hooks are primary.** The `PreToolUse` hooks registered at settings level (`~/.claude/settings.json`) are the primary enforcement mechanism. Frontmatter hooks in agent files are belt-and-braces for redundancy and are not required for enforcement; they fire when loaded but settings-level hooks are always authoritative.
+
 ## Amendment 2026-10-30: Issue comments read by general-purpose steps
 
 With the `/expert-flow` helper for reading GitHub issue comments (ticket #401), premise (b) of the standing exception ("not reading arbitrary diff content as untrusted data") no longer holds for general-purpose steps that read issue comments:
 
-**In-flow plan step** (`/expert-plan`) receives the widest input of any step: trusted **and** unverified comments (from the helper without `--trusted-only`). It runs as a full-capability `general-purpose` agent with `Write` and unrestricted Bash. The plan step's orchestrator writes unverified comment text directly into the `## Issue comments` section of `context.md` and into scout batches before any contributor sees it.
+**In-flow plan step** (superseded 2026-11-03: see § "The `flow-plan` step agent" below for current behavior). Historical: plan received widest input — trusted and unverified comments — and ran as a full-capacity `general-purpose` agent with `Write` and unrestricted Bash.
 
 **In-flow implement and fix steps** (`/implement-with-haiku`) read trusted comments on the linked issue (`--trusted-only`, unverified excluded), and raise each new trusted comment through the "new comment since plan" Ask. They run as `general-purpose` agents.
 
 **In-flow ship step** (`/shipit`) reads trusted comments on the linked issue (`--trusted-only`, unverified excluded), and raises new trusted comments through the same Ask before the PR is created. It runs as a `general-purpose` agent.
 
-**Restricted steps** receive trusted comments only, governed by the 2026-10-26 restrictions, not this exception: the in-flow review step (`flow-review`, `/expert-review` Ask; trusted only) and the orchestrator's pre-merge check (`/expert-flow`; trusted only, same Ask). Neither reads unverified comments.
+**Restricted steps** (implement, fix, review, and now plan; see ADR-0008 2026-11-03 amendment) receive trusted comments only, governed by the 2026-10-26 restrictions and flow-plan's residuals, not this exception: the in-flow plan step (`flow-plan`, `/expert-plan` Ask; trusted only), the in-flow review step (`flow-review`, `/expert-review` Ask; trusted only) and the orchestrator's pre-merge check (`/expert-flow`; trusted only, same Ask). None reads unverified comments.
 
 **Deprecated planners do not consume comments.** `/expert-plan-deprecated` and `/expert-plan-deprecated-v2` do not call the issue-comments helper and do not read issue comments at all (title, body and labels only). They are not in flow and carry no comment wiring.
 
@@ -396,13 +398,13 @@ With the `/expert-flow` helper for reading GitHub issue comments (ticket #401), 
 
 **Mitigations** (what they do and do not do):
 - Trust tier boundaries (OWNER/COLLABORATOR vs. unverified)
-- `--trusted-only` everywhere except the in-flow plan step
+- `--trusted-only` everywhere; plan now restricted (see 2026-11-03 amendment)
 - Comment text is fenced where it is shown to the planner: `render_markdown` wraps the comments block in a per-render nonce fence (`<<<COMMENT-{nonce}` ... `<<<COMMENT-{nonce}>>>>`, regenerated until the nonce appears in no body) and quotes every unverified body line. This is a presentation convention, not a machine-enforced boundary; scout batch files are plain JSON and are not fenced.
 - Haiku scouts on long unverified threads, fail closed: an unverified comment reaches the planner only by an explicit, valid `include` verdict for its id. A missing, malformed, or unknown verdict drops it. Scouts limit volume; they do not sanitise the text of the comments they include. Threads under the filter threshold reach the plan orchestrator unfiltered.
 
-Unverified comment text deliberately reaches planning, the one step that is still unrestricted and full-capability. That is the accepted placement (per ticket decision W1), not a reduction of the attack surface; the boundary enforcement that closes it is pending (#359/#360, restricting the remaining general-purpose steps).
+Note (2026-10-30): Unverified comment text reached planning (then unrestricted), accepted placement per W1. With plan now restricted (2026-11-03 amendment), the boundary is narrowed; see § "Issue-comments boundary: narrowed, not closed" below.
 
-**Accepted residual risks** (the consumers that read comments are exactly: the in-flow plan step, implement, fix, ship, the review Ask, the pre-merge check, and `/expert-is-it-done`):
+**Accepted residual risks** (2026-10-30, pre-plan-restriction): Obsolete; see 2026-11-03 amendment § "Issue-comments boundary: narrowed, not closed" for updated analysis.
 - Unverified text reaches the in-flow plan step, unfiltered below the scout threshold and by scout-included ids above it. Scouts are not a sanitiser.
 - No fail-closed carve-out when comments are unavailable (Q2 = B exactly): an `--auto-merge` or `--fleet` run can merge with `comments_status: unavailable`, visibly marked in the receipt.
 - Org-owned repos where the flow's user shows as MEMBER: the watermark and Implementation Plan dedupe switch off (W2 consequence), and post-plan steps see none of that user's comments. Inside a flow the plan-fetch lower bound still applies.
@@ -504,8 +506,9 @@ stand except where the bypass list above says otherwise.
 ## Amendment: flow-ship and flow-merge restricted agents with Bash push guard (2026-10-30)
 
 The standing exception further narrowed: **implement, fix, review, ship and merge are restricted**
-(`flow-implement`, `flow-review`, `flow-ship`, `flow-merge`); **worktree, plan, track, verify, the
-retro grader and the auto-rebase worker remain general-purpose, pending #360**.
+(`flow-implement`, `flow-review`, `flow-ship`, `flow-merge`); **worktree, track, verify, the retro
+grader and the auto-rebase worker remain general-purpose** (ADR-0008 2026-11-03 amendment); **plan
+runs flow-plan**.
 
 `flow-ship` and `flow-merge` run on Haiku (mechanical work; see ADR-0004 2026-10-30 amendment) with
 no `Edit` tool, `Skill` allowlist (same closure as implement/fix), and an agent-specific **Bash
@@ -525,8 +528,8 @@ only (see "Bash guard for push validation" below).
    (full-match anchored: `$(jq -r '.commands.check // .commands.test // empty' ...)`). This enforces that
    the agent cannot invoke arbitrary commands by name.
 
-3. **Agent name validation** — a non-empty agent name outside the known five (`flow-implement`,
-   `flow-review`, `flow-ship`, `flow-merge`, `flow-healer`) is denied with exit 2.
+3. **Agent name validation** — a non-empty agent name outside the known seven (`flow-plan`,
+   `flow-implement`, `flow-review`, `flow-ship`, `flow-merge`, `flow-healer`, `flow-assessor`) is denied with exit 2.
 
 4. **Push-form matching** — exact literal-string matching only (no pattern/prefix matching). Three forms
    are sanctioned:
@@ -605,3 +608,77 @@ force-push. Every confirmation that the authorised command (`/shipit`, `/stack-s
 human goes through the Ask block (no auto-confirm via `--yes` or other flags). In a flow, `/shipit`
 drops `--yes` when invoking `/stack-sync`, so the confirmation relays through the Ask block and the
 human decides.
+
+## Amendment (2026-11-03): flow-plan step agent and narrowed general-purpose scope (#360 partial)
+
+The standing exception (2026-10-13) was narrowed (2026-10-26) to implement, fix, and review as
+restricted, with the rest staying general-purpose pending #360. This amendment further narrows the
+general-purpose scope to five specific steps with documented residuals, and adds the first restricted
+`flow-plan` agent.
+
+### Narrowed general-purpose scope
+
+Worktree, track, verify, the retro grader and the auto-rebase worker remain `general-purpose` Task
+subagents with full capability and no machine-enforced guardrails. Each carries a explicit residual:
+
+- **worktree:** runs before a ticket worktree exists and needs git and filesystem setup.
+- **track:** orchestrator-written, publishes the issue on purpose.
+- **verify:** orchestrator-written, runs the project's arbitrary check command.
+- **retro grader:** reads flow artifacts only and does no publishing; prompt-only enforcement.
+- **auto-rebase worker:** runs `/expert-rebase`, one of the four force-push-authorized commands. A general-purpose agent gets no Bash guard (auto mode passes non-`flow-*` agents), so its "never a push" rule is enforced by the prompt only.
+
+The default is to stay as-is and revisit on a breach. **The plan step is no longer general-purpose:**
+it runs `flow-plan`, a restricted agent detailed below.
+
+### The `flow-plan` step agent
+
+**Model and tools:** Sonnet alias (ADR-0004 amendment below), no `Edit`, `Skill` allowlist
+(`{expert-plan}` only), `Agent` allowlist (`{expert-reviewer, expert-scout}` only, no
+general-purpose fallback). `ScheduleWakeup` for status-only barriers while waiting on spawned agents.
+
+**Bash guard:** best-effort publish-deny profile (`flow-bash-guard.py --agent auto` mode). Denies git
+push, gh pr/issue create|edit|comment|close|merge, non-GET gh api, and interpreter verb-pair forms
+(python3 -c/e, node --eval, perl -E with publishing verbs). Allows everything else including
+`bash ~/.claude/scripts/slugify.sh`. Hook wiring for this Skill-invoked agent shape is unprobed,
+including headless/fleet firing; see ADR-0023 amendment below for the hard-stop at spawn-time if files
+are missing.
+
+**Residuals:** `Write` is kept (#389) and prompt-scoped only on the step with the widest untrusted
+input (issue comments, trusted and unverified). Can rewrite `~/.claude/scripts/flow-*-guard.py`
+through their symlinks into the main worktree, or rewrite `~/.claude/settings.json`, and switch hooks
+off for later flows. `python3 -c` with an obfuscated verb and Write-then-run bypasses the publish-deny
+profile. Nested expert-reviewer/expert-scout children hold `Write` under `bypassPermissions` and get
+no hook. Hooks fail open on non-2 exits and timeouts (#430). Hook firing for this Skill-invoked agent
+shape, including headless and fleet runs, is unprobed.
+
+### Issue-comments boundary: narrowed, not closed
+
+The 2026-10-30 amendment (Issue comments read by general-purpose steps) stated that unverified comment
+text deliberately reaches planning, "the one step that is still unrestricted and full-capability. That
+is the accepted placement (per ticket decision W1), not a reduction of the attack surface." With
+flow-plan now restricted, the boundary has narrowed: plan is no longer unrestricted and full-capability
+at the point where unverified comments land. The boundary is narrowed, not closed. The mitigations
+(trust tiers, fenced rendering, scout filters) stay in force. Unverified text still reaches planning
+below the scout threshold and by scout-included ids above it; scouts are not a sanitiser. The
+constraint on comment availability remains: no fail-closed carve-out exists when comments are unavailable
+(Q2 = B), an `--auto-merge` or `--fleet` run can merge with `comments_status: unavailable`, and it is
+visibly marked in the receipt.
+
+### Related updates
+
+The three "pending #360" sentences throughout this ADR are updated with pointers to this amendment:
+
+1. The 2026-10-26 amendment (line ~247): "Worktree, plan, track, verify, ship, merge, the retro
+   grader and the auto-rebase worker remain general-purpose, pending #360" → "Worktree, track, verify,
+   the retro grader and the auto-rebase worker remain general-purpose (narrow-general-purpose
+   Amendment 2026-11-03); plan runs flow-plan."
+
+2. The 2026-10-30 amendment on issue comments (line ~381): "Restricted steps" paragraph, first sentence
+   → "Restricted steps (implement, fix, review, and now plan; see ADR-0008 2026-11-03 amendment) receive
+   trusted comments only, governed by the 2026-10-26 restrictions and flow-plan's residuals, not this
+   exception."
+
+3. The 2026-10-30 amendment on Bash guard (line ~512): "Worktree, plan, track, verify, ship, merge, the
+   retro grader and the auto-rebase worker remain general-purpose, pending #360" → "Worktree, track,
+   verify, the retro grader and the auto-rebase worker remain general-purpose (ADR-0008 2026-11-03
+   amendment); plan runs flow-plan."

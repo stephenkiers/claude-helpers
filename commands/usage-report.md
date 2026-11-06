@@ -28,8 +28,9 @@ alter, recompute, or summarize the numbers inside them).
 
 ## 2. Flow step agents bucket
 
-The report includes a "Flow step agents" line showing agent activity from `/expert-flow` runs. It groups:
-- agent.begin events with `agent_type` in `{flow-implement, flow-review}` (the new agent types for flow steps)
+The report includes a "Flow step agents" line showing agent activity from `/expert-flow` runs, including
+`flow-plan`, `flow-implement`, `flow-review`, `flow-ship`, and `flow-merge`. It groups:
+- agent.begin events with `agent_type` in `{flow-plan, flow-implement, flow-review, flow-ship, flow-merge}` (the restricted agent types for flow steps)
 - agent.begin events with `agent_type=general-purpose` recorded **before** the cut-over date that occur in a
   flow session
 

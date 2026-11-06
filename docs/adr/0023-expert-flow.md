@@ -43,7 +43,7 @@ The orchestrator does no engineering work. Its `allowed-tools` grant read-only `
 `AskUserQuestion`, plus the fixed-argv `deps ensure` and `checks` CLI entries added by the 2026-11-01 amendment. No `Edit`, no write-capable git (one human-gated exception, the Rebase option in
 the gated Rebase amendment below), no `gh` mutation. Its `Write` grant is not
 path-scoped; the intended scope is files under the flow directory and the one marker file (a
-prompt-level rule, see Consequences). **Implement, fix, review, ship and merge steps run restricted agents** (`flow-implement`, `flow-review`, `flow-ship`, `flow-merge`; hook wiring for `flow-ship`/`flow-merge` unprobed, including headless/fleet firing; see ADR-0008 2026-10-26 and 2026-10-30 amendments): they carry `tools:` restrictions and machine-enforced controls including model pins, tool omissions (no `Edit` on implement), Bash/Skill/push guards, and step-contract enforcement. The #318 answer (ask-block-confirmed force-push for step agents) is recorded in the ADR-0008 2026-10-30 amendment. **Other steps** (worktree, plan, track, verify, the retro grader and auto-rebase worker) spawn `general-purpose` Task subagents and run with full capability (pending #360). A step that fails produces a
+prompt-level rule, see Consequences). **Implement, fix, review, plan, ship and merge steps run restricted agents** (`flow-implement`, `flow-review`, `flow-plan`, `flow-ship`, `flow-merge`; hook wiring for `flow-ship`/`flow-merge` unprobed, including headless/fleet firing; see ADR-0008 2026-10-26, 2026-10-30, and 2026-11-03 amendments): they carry `tools:` restrictions and machine-enforced controls including model pins, tool omissions (no `Edit` on implement), Bash/Skill/push guards, and step-contract enforcement. The #318 answer (ask-block-confirmed force-push for step agents) is recorded in the ADR-0008 2026-10-30 amendment. **Other steps** (worktree, track, verify, the retro grader and auto-rebase worker) spawn `general-purpose` Task subagents and run with full capability (ADR-0008 2026-11-03 amendment). A step that fails produces a
 hard stop with three options — Retry (capped at two attempts per step), Take over, Abort — and
 nothing else, except that base-stale verify failures also offer a fourth, human-gated option, Rebase
 (see the gated Rebase amendment below), and single-unit implement/fix shortfalls offer a fourth option, `Retry with sonnet`, for manual escalation (live; the automatic escalation path is dormant per the 2026-10-16 and 2026-10-25 amendments). `/expert-rebase` is suggested in the stop message when a step's receipt suggests it,
@@ -864,7 +864,7 @@ The 2026-10-26 amendment required one full check per step; this amendment revise
 
 ## Amendment (2026-10-26): Restricted step agents for implement, fix, and review (#358)
 
-This amendment replaces the 2026-10-13 standing exception. The section 1 of this ADR is amended so that **implement, fix and review steps run restricted agents** (`flow-implement`, `flow-review`): they carry `tools:` restrictions and machine-enforced controls including model pins, tool omissions, Bash/Skill guards, and step-contract enforcement. **Worktree, plan, track, verify, ship, merge, the retro grader and the auto-rebase worker remain general-purpose**, pending #360. Machine-enforced controls are registered at settings level in `~/.claude/settings.json` via `/setup-local` or `./install.sh`; frontmatter hooks in agent files are belt-and-braces and unverified headless (see ADR-0008 2026-10-26 amendment for the control matrix and probe results).
+This amendment replaces the 2026-10-13 standing exception. The section 1 of this ADR is amended so that **implement, fix and review steps run restricted agents** (`flow-implement`, `flow-review`): they carry `tools:` restrictions and machine-enforced controls including model pins, tool omissions, Bash/Skill guards, and step-contract enforcement. **Worktree, track, verify, the retro grader and the auto-rebase worker remain general-purpose** (ADR-0008 2026-11-03 amendment); **plan runs flow-plan** (restricted, added in that amendment). Machine-enforced controls are registered at settings level in `~/.claude/settings.json` via `/setup-local` or `./install.sh`; frontmatter hooks in agent files are belt-and-braces and unverified headless (see ADR-0008 2026-10-26 amendment for the control matrix and probe results).
 
 ### Panel-tier note on the review step
 
@@ -913,7 +913,16 @@ Batches are bounded at 8 items; overflow splits into further batches.
 
 The assessor runs on **Sonnet**, because this is judgment work (ADR-0004).
 
-**Agent file note:** `agents/flow-assessor.md` predates the #358-#360 step-agent conventions and should be conformed when next touched (adding any convention table entries or preflight procedures that land after this amendment).
+**Agent file note:** `agents/flow-assessor.md` predates the #358-#360 step-agent conventions and should be conformed when next touched (adding any convention table entries or preflight procedures that land after this amendment). A dated note (2026-11-03): conforming both flow-assessor and flow-healer to the defence-block/contract-line/Step-identity convention is deferred. The convention test lists both by name with a dated reason pointing at this ADR. Flow-assessor is registered as pass-through in the Bash guard.
+
+### Plan step hard-stop on missing agent files (amendment 2026-11-03, #446)
+
+When a restricted agent step runs, a missing agent file, the three hook scripts
+(`flow-agent-guard.py`, `flow-skill-guard.py`, `flow-bash-guard.py`), or `prompts/flow-step-contract.md`
+in `~/.claude/` is a hard stop at spawn time, before the attempt is counted. The stop message names
+the missing file(s) and instructs the human to run `/setup-local`. There is no general-purpose
+fallback. The check gates (`commands.check` detection, step invocation, run-start preflight)
+run from the orchestrator before spawning any restricted agent, per ADR-0023 §1.
 
 ### 4. Verify-first is mandatory
 

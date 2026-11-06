@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PreToolUse hook for flow-implement, flow-review, flow-ship, and flow-merge agents:
+PreToolUse hook for flow-implement, flow-plan, flow-review, flow-ship, and flow-merge agents:
 best-effort Bash command guard with per-agent rules.
 
 Threat model: prevent accidental shell wrappers and publishing commands.
@@ -14,7 +14,7 @@ This script refuses:
     reached through a transparent prefix (command, exec, nohup, time, timeout N, nice -n N,
     VAR=value, =name) or inside a python/node/perl/ruby -c/-e program
   - Commands it cannot follow: unterminated quotes, unclosed $( or backticks, nesting deeper
-    than 64 groups
+    than 64 groups (always blocked, all agents)
 
 Splitting is quote-aware: separators inside '...' and "..." are literal, while $(...),
 `...`, (...) and {...} are recursed into, so a publishing verb inside a group is still seen.
@@ -24,12 +24,30 @@ tracking.
 
 Per-agent behavior:
   - flow-implement: full wrapper and publishing-verb checks (existing behavior)
+  - flow-plan: best-effort publish-deny with quote-blind scanning (see docstring entry below)
   - flow-review: pass-through (allow all Bash commands)
   - flow-ship: restricted wrappers, allowed python3/eval forms, restricted git push forms,
     gh stack sync allowed, gh pr merge (any flags) denied
   - flow-merge: restricted wrappers, allowed python3/eval forms, allowed git push forms,
     gh stack sync allowed, gh pr merge --admin denied, gh pr merge --squash allowed only
     when no merge-queue config exists
+
+flow-plan (best-effort publish-deny):
+  Denies publishing verbs and interpreter verb pairs only. When the quote-aware parser cannot
+  follow the command (unterminated quotes, unclosed $( or backticks), a quote-blind scan for
+  publishing verbs is performed. Nesting deeper than MAX_NESTING is always denied (all agents).
+  Heredoc and comment constructs trigger the quote-blind fallback. Known bypasses: python3 -c
+  and eval with arbitrary code bypass this rule (same as flow-implement). Write-then-run scripts
+  also bypass it (the agent writes a script file, then Bash executes it separately, outside
+  this guard).
+
+flow-assessor:
+  Pass-through (allow all Bash commands); its tool-level Bash restrictions already limit
+  it to scoped git and ls commands (#380; ADR-0023 2026-10-29 amendment).
+
+flow-healer:
+  Pass-through (allow all Bash commands); its tool-level Bash restrictions already limit
+  it to scoped git commands (#380; ADR-0023 2026-10-29 amendment).
 
 Exit codes:
   - 0: allow (command is safe)
@@ -46,7 +64,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 
 # Known flow agents that are governed by this guard.
-KNOWN_FLOW_AGENTS = ("flow-implement", "flow-review", "flow-ship", "flow-merge", "flow-healer")
+KNOWN_FLOW_AGENTS = ("flow-implement", "flow-plan", "flow-review", "flow-ship", "flow-merge", "flow-healer", "flow-assessor")
 
 # Escalation hint for denied push/merge commands: tells the agent to surface via Ask block.
 ESCALATION_HINT = "If this command is legitimate, do not retry a variant: surface it to the human through the Ask block (prompts/flow-reference.md) instead."
@@ -795,6 +813,115 @@ def is_publishing_verb(tokens: List[str]) -> bool:
     return False
 
 
+def scan_command_for_publishing_verbs_blind(command: str) -> bool:
+    """Quote-blind scan for publishing verbs in a command string.
+
+    Used when the quote-aware parser fails and flow-plan needs a fallback check.
+    Looks for bare publishing verb words (git, gh) followed by recognized subcommands,
+    without quote tracking. Conservative: will have false positives but aims to catch
+    most publishing attempts that made it through the quote-aware parser.
+
+    Returns True if a publishing verb is detected, False otherwise.
+    """
+    text = command.lower()
+
+    # Look for the words "git" and "gh" and check if they're followed by publishing verbs
+    publishing_verb_words = {
+        "git push",
+        "git remote",
+        "gh pr create",
+        "gh pr merge",
+        "gh pr edit",
+        "gh pr comment",
+        "gh pr close",
+        "gh pr review",
+        "gh issue create",
+        "gh issue edit",
+        "gh issue comment",
+        "gh issue close",
+        "gh release create",
+        "gh repo create",
+        "gh repo delete",
+        "gh gist create",
+        "gh workflow run",
+    }
+
+    for verb_pair in publishing_verb_words:
+        # Simple substring search (conservative)
+        if verb_pair in text:
+            return True
+
+    return False
+
+
+def is_non_get_gh_api(tokens: List[str]) -> bool:
+    """Check if tokens match gh api with a non-GET HTTP method.
+
+    Detects: gh api -X POST|PUT|PATCH|DELETE, gh api --method POST|PUT|PATCH|DELETE,
+    or gh api with -f/-F/--field/--input body flags (implicit non-GET).
+
+    Returns True if a non-GET gh api call is detected, False otherwise.
+    """
+    if not tokens or len(tokens) < 2:
+        return False
+
+    cmd_basename = os.path.basename(tokens[0].strip('\'"')).lower()
+    if cmd_basename != "gh":
+        return False
+
+    # Check if second token is "api"
+    if tokens[1].lower() != "api":
+        return False
+
+    # Scan remaining tokens for -X/-method flags and body flags
+    i = 2
+    while i < len(tokens):
+        tok = tokens[i]
+
+        # -X flag with method as next token or combined
+        if tok == "-X":
+            if i + 1 < len(tokens):
+                method = tokens[i + 1].upper()
+                if method != "GET":
+                    return True
+            i += 2
+            continue
+
+        if tok.startswith("-X"):
+            method = tok[2:].upper()
+            if method != "GET":
+                return True
+            i += 1
+            continue
+
+        # --method flag with method as next token or combined
+        if tok == "--method":
+            if i + 1 < len(tokens):
+                method = tokens[i + 1].upper()
+                if method != "GET":
+                    return True
+            i += 2
+            continue
+
+        if tok.startswith("--method="):
+            method = tok.split("=", 1)[1].upper()
+            if method != "GET":
+                return True
+            i += 1
+            continue
+
+        # Body flags (-f, -F, --field, --input) imply non-GET
+        if tok in ("-f", "-F", "--field", "--input"):
+            return True
+
+        if tok.startswith(("-f=", "-F=", "--field=", "--input=")):
+            return True
+
+        i += 1
+
+    return False
+
+
 def _program_words(tokens):
     """Split the tokens of an interpreter program into bare words."""
     words = []
@@ -1005,18 +1132,19 @@ def check_command_for_agent(command: str, agent: str) -> Tuple[bool, str, str]:
 
     Per-agent rules:
     - flow-implement: full checks (wrappers and publishing verbs)
+    - flow-plan: best-effort publish-deny (publishing verbs and interpreter pairs only)
     - flow-review: pass through (allow all)
     - flow-healer: pass through (its tools list already restricts Bash to scoped git)
+    - flow-assessor: pass through (its tools list already restricts Bash to scoped git and ls)
     - flow-ship: restricted wrappers, allowed git push forms, all gh pr merge denied
     - flow-merge: restricted wrappers, allowed git push forms, gh pr merge --admin denied,
       gh pr merge --squash allowed only if no merge-queue config exists
 
     Returns: (is_blocked: bool, reason: str if blocked, rule_id: str)
     """
-    if agent in ("flow-review", "flow-healer"):
-        # flow-review: pass through. flow-healer: pass through too; its Bash is already limited
-        # by its tools list to git diff/status/rev-parse/add/commit/checkout HEAD -- (no push,
-        # no gh), so this guard adds nothing (#380; ADR-0023 2026-10-29 amendment).
+    if agent in ("flow-review", "flow-healer", "flow-assessor"):
+        # flow-review, flow-healer, flow-assessor: pass through. Their Bash is already limited
+        # by their tool-level restrictions (#380; ADR-0023 2026-10-29 amendment).
         return False, "", ""
 
     # Fail closed on unknown flow-* agents; allow non-flow agents (e.g., general-purpose)
@@ -1035,6 +1163,15 @@ def check_command_for_agent(command: str, agent: str) -> Tuple[bool, str, str]:
     try:
         segments = split_segments(command)
     except UnparseableCommand as exc:
+        # flow-plan: best-effort publish-deny with quote-blind fallback
+        if agent == "flow-plan":
+            # Nesting limit is always denied (all agents)
+            if "nesting too deep" in str(exc):
+                return True, "nesting too deep", "parse-error"
+            # For other unparseable errors, do a quote-blind scan for publishing verbs
+            if scan_command_for_publishing_verbs_blind(command):
+                return True, "publishing command detected (quote-blind scan)", "publishing-verb"
+            return False, "", ""
         return True, f"Unparseable command: {exc}", "parse-error"
     cwd = None
     try:
@@ -1048,8 +1185,15 @@ def check_command_for_agent(command: str, agent: str) -> Tuple[bool, str, str]:
 
         tokens = tokenize_segment(segment)
         if tokens is None:
-            # Parse error (e.g., unbalanced quotes) -> block
-            return True, f"Unparseable command: {segment}", "parse-error"
+            # Parse error (e.g., unbalanced quotes)
+            if agent == "flow-plan":
+                # flow-plan: quote-blind scan for publishing verbs as fallback
+                if scan_command_for_publishing_verbs_blind(segment):
+                    return True, "publishing command detected (quote-blind scan)", "publishing-verb"
+                return False, "", ""
+            else:
+                # All other agents fail closed on unparseable
+                return True, f"Unparseable command: {segment}", "parse-error"
 
         # Transparent prefixes (command, exec, nohup, time, timeout, nice, VAR=value) are
         # stripped so the rules below see the real command.
@@ -1065,6 +1209,17 @@ def check_command_for_agent(command: str, agent: str) -> Tuple[bool, str, str]:
 
             if is_interpreter_verb_pair(tokens):
                 return True, "interpreter -c/-e program runs a publishing command (git push, gh pr create, etc.)", "publishing-verb"
+
+        elif agent == "flow-plan":
+            # flow-plan: best-effort publish-deny (publishing verbs, interpreter pairs, and non-GET gh api)
+            if is_publishing_verb(tokens):
+                return True, "publishing commands (git push, gh pr create, etc.) are not allowed", "publishing-verb"
+
+            if is_interpreter_verb_pair(tokens):
+                return True, "interpreter -c/-e program runs a publishing command (git push, gh pr create, etc.)", "publishing-verb"
+
+            if is_non_get_gh_api(tokens):
+                return True, "non-GET gh api (e.g., -X POST|PUT|PATCH|DELETE or -f/--field/--input) is not allowed", "publishing-verb"
 
         elif agent in ("flow-ship", "flow-merge"):
             # flow-ship and flow-merge: restricted rules
@@ -1349,7 +1504,7 @@ def main():
     try:
         # Parse CLI argument
         if len(sys.argv) < 3 or sys.argv[1] != "--agent":
-            print("Usage: flow-bash-guard.py --agent <flow-implement|flow-review|flow-ship|flow-merge|flow-healer|auto>", file=sys.stderr)
+            print("Usage: flow-bash-guard.py --agent <flow-implement|flow-plan|flow-review|flow-ship|flow-merge|flow-healer|flow-assessor|auto>", file=sys.stderr)
             sys.exit(2)
 
         agent = sys.argv[2]
@@ -1369,12 +1524,12 @@ def main():
         if agent == "auto":
             agent_type = payload.get("agent_type")
 
-            # If agent_type is missing or not flow-*, allow
+            # If agent_type is missing or does not start with "flow-", allow (not governed by this guard)
             if not agent_type or not agent_type.startswith("flow-"):
                 print(f"Auto mode: agent_type '{agent_type}' is not a flow agent, allowing", file=sys.stderr)
                 sys.exit(0)
 
-            # If agent_type starts with flow- but not in known set, fail closed
+            # If agent_type starts with "flow-" but not in known set, fail closed
             if agent_type not in KNOWN_FLOW_AGENTS:
                 print(f"Auto mode: agent_type '{agent_type}' is unknown, denying", file=sys.stderr)
                 sys.exit(2)
@@ -1387,8 +1542,8 @@ def main():
                 print(f"Explicit agent '{agent}' is unknown, denying", file=sys.stderr)
                 sys.exit(2)
 
-        # flow-review and flow-healer have no Bash restrictions here; pass through before payload checks
-        if agent in ("flow-review", "flow-healer"):
+        # flow-review, flow-healer, and flow-assessor have no Bash restrictions here; pass through
+        if agent in ("flow-review", "flow-healer", "flow-assessor"):
             sys.exit(0)
 
         tool_name = payload.get("tool_name")

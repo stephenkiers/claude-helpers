@@ -1125,7 +1125,7 @@ def cmd_diagnose(args):
     # Flow step agents bucket (with probe sessions excluded)
     flow_agent_total = flow_bucket["flow_step_agent_count"] + flow_bucket["pre_cutover_general_purpose_in_flow_count"]
     if flow_agent_total > 0:
-        print(f"Flow step agents (cutover date {flow_bucket['cutover_date']}): {flow_bucket['flow_step_agent_count']} flow-implement/flow-review + {flow_bucket['pre_cutover_general_purpose_in_flow_count']} pre-cutover general-purpose in flow sessions = {flow_agent_total}")
+        print(f"Flow step agents (cutover date {flow_bucket['cutover_date']}): {flow_bucket['flow_step_agent_count']} flow step agents + {flow_bucket['pre_cutover_general_purpose_in_flow_count']} pre-cutover general-purpose in flow sessions = {flow_agent_total}")
     if flow_bucket["excluded_probe_sessions"] > 0:
         print(f"Excluded probe sessions: {flow_bucket['excluded_probe_sessions']} (Step 2 hermetic probes)")
 

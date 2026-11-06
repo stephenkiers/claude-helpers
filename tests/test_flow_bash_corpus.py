@@ -65,14 +65,29 @@ def skipped(doc, line, cmd, rule):
 # SANCTIONED: commands that actually appear in the agent's closure docs (reachable at runtime)
 # and must not be denied. Corpus test ensures the guard doesn't reject these.
 # (Different from ALLOWED in test_flow_ship_merge_guard.py which tests edge cases.)
-SANCTIONED = [
-    "git push --force-with-lease --force-if-includes origin HEAD",
-    "git -C /tmp/wt push --force-with-lease",
-    "git push -u origin feature/x",
-    "git push --force-with-lease=feature/x:" + "a" * 40 + " origin " + "b" * 40 + ":refs/heads/feature/x",
-    "gh stack sync",
-    'eval "$CHECK_CMD"',
-]
+# flow-plan doesn't invoke /shipit or /merge-and-cleanup, so it has no push commands.
+SANCTIONED = {
+    "flow-plan": [
+        'eval "$CHECK_CMD"',  # from /expert-plan (for check delegation)
+        "gh stack sync",      # from /expert-plan potential invocations
+    ],
+    "flow-ship": [
+        "git push --force-with-lease --force-if-includes origin HEAD",
+        "git -C /tmp/wt push --force-with-lease",
+        "git push -u origin feature/x",
+        "git push --force-with-lease=feature/x:" + "a" * 40 + " origin " + "b" * 40 + ":refs/heads/feature/x",
+        "gh stack sync",
+        'eval "$CHECK_CMD"',
+    ],
+    "flow-merge": [
+        "git push --force-with-lease --force-if-includes origin HEAD",
+        "git -C /tmp/wt push --force-with-lease",
+        "git push -u origin feature/x",
+        "git push --force-with-lease=feature/x:" + "a" * 40 + " origin " + "b" * 40 + ":refs/heads/feature/x",
+        "gh stack sync",
+        'eval "$CHECK_CMD"',
+    ],
+}
 
 
 def main():
@@ -118,7 +133,10 @@ def main():
                       f"skipped={skipped_count} (max={MAX_SKIPPED})")
         h.test_result(f"{agent}: no unexpected denials in closure docs",
                       not unexpected, "; ".join(unexpected))
-        for cmd in SANCTIONED:
+
+        # Test sanctioned commands for this agent
+        sanctioned_for_agent = SANCTIONED.get(agent, [])
+        for cmd in sanctioned_for_agent:
             blocked, reason, rule = guard.check_command_for_agent(cmd, agent)
             h.test_result(f"{agent}: allows {cmd[:60]}", not blocked, f"{rule}: {reason}")
     h.summarize_and_exit()

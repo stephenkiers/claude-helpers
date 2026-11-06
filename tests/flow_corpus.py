@@ -1,5 +1,5 @@
 """
-Corpus helper for the flow-ship / flow-merge Bash guard (#359, plan Step 9).
+Corpus helper for the flow-* agent Bash guards (#359, #360, plan Steps 9-10).
 
 Extracts the shell command lines each restricted agent can actually run: every fenced bash
 block and inline `git push` span in the agent's Skill closure (entry command plus the
@@ -14,6 +14,7 @@ import re
 from _test_harness import REPO_ROOT
 
 CLOSURE_DOCS = {
+    "flow-plan": ["commands/expert-plan.md", "prompts/flow-reference.md"],
     "flow-ship": ["commands/shipit.md", "commands/stack-sync.md", "prompts/worktree-reference.md"],
     "flow-merge": ["commands/merge-and-cleanup.md", "commands/queued-merge.md",
                    "commands/cleanup.md", "commands/stack-sync.md",
