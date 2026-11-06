@@ -937,6 +937,24 @@ def _added_lines(diff: str) -> List[Tuple[str, int, str]]:
     return out
 
 
+def _added_tests(path: str, head: str, added_ns: List[int]) -> List[Tuple[int, str]]:
+    """(start index, name) of each test definition in `path` at `head` whose span holds an added line."""
+    lang = _lang(path)
+    if lang is None:
+        return []
+    lines_list = _lines(_read_at(head, path))
+    added0 = {n - 1 for n in added_ns}
+    found: List[Tuple[int, str]] = []
+    for start, name, is_test in _find_starts(lang, lines_list):
+        if not is_test:
+            continue
+        span = _span_at(lang, lines_list, start)
+        first, last = (span[0], span[2]) if span is not None else (start, start)
+        if any(first <= k <= last for k in added0):
+            found.append((start, name))
+    return found
+
+
 def cmd_names(args: argparse.Namespace) -> int:
     _require_ref(args.base, allow_working=False)
     _require_ref(args.head, allow_working=True)
@@ -950,14 +968,16 @@ def cmd_names(args: argparse.Namespace) -> int:
         if args.head == "HEAD":
             diff_args.append("HEAD")
 
-        # Check added test file paths
+        # Check added test file paths (once per file) and the names of tests that gained lines
+        added_by_path: Dict[str, List[int]] = {}
         for path, n, text in _added_lines(_git_ok(diff_args)):
+            added_by_path.setdefault(path, []).append(n)
+        for path, ns in added_by_path.items():
             if _norm(path) in allow:
                 continue
             lang = _lang(path)
             if lang is None:
                 continue
-            # Check file path (stem) for hygiene tokens
             stem = os.path.splitext(os.path.basename(path))[0]
             hit, segment_only = _hygiene_token_match(stem)
             if hit:
@@ -966,11 +986,7 @@ def cmd_names(args: argparse.Namespace) -> int:
             elif segment_only:
                 segment_only_hits.append(f"segment-only: spec-blind path {path}")
 
-            # Check for added test definitions and their names
-            lines_list = _lines(_read_at(args.head, path))
-            for start, name, is_test in _find_starts(lang, lines_list):
-                if not is_test:
-                    continue
+            for start, name in _added_tests(path, args.head, ns):
                 hit, segment_only = _hygiene_token_match(name)
                 if hit:
                     print(f"spec-blind line {path}:{start + 1} test {name}")
@@ -1016,20 +1032,28 @@ def cmd_working_ids(args: argparse.Namespace) -> int:
     ids: List[str] = []
     diff_args = ["diff", "--unified=0", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", args.base, args.head]
 
+    added_by_path: Dict[str, List[int]] = {}
     for path, n, text in _added_lines(_git_ok(diff_args)):
-        lang = _lang(path)
-        if lang is None:
-            continue
-        lines_list = _lines(_read_at(args.head, path))
-        for start, name, is_test in _find_starts(lang, lines_list):
-            if is_test:
-                ids.append(f"{path}::{name}")
+        added_by_path.setdefault(path, []).append(n)
+    for path, ns in added_by_path.items():
+        for _, name in _added_tests(path, args.head, ns):
+            ids.append(f"{path}::{name}")
 
     # Sort and deduplicate
     for test_id in sorted(set(ids)):
         print(test_id)
 
     return 0
+
+
+def _is_test_path(path: str) -> bool:
+    """True for a path that names a test file (by directory or by basename convention)."""
+    parts = path.lower().replace("\\", "/").split("/")
+    base = parts[-1]
+    if any(seg in ("tests", "test", "__tests__", "spec") for seg in parts[:-1]):
+        return True
+    return (base.startswith("test_") or base.startswith("test.") or "_test." in base
+            or ".test." in base or ".spec." in base or "_spec." in base)
 
 
 def cmd_layout(args: argparse.Namespace) -> int:
@@ -1054,10 +1078,10 @@ def cmd_layout(args: argparse.Namespace) -> int:
         for path in out.strip().split("\n"):
             if not path:
                 continue
-            if _lang(path) is not None:
+            if _lang(path) is not None and _is_test_path(path):
                 stem = os.path.splitext(os.path.basename(path))[0]
                 stem_normalized = stem.lower().replace("-", "_")
-                if stem_normalized in impl_stems:
+                if any(impl_stem in stem_normalized for impl_stem in impl_stems):
                     test_files.append(path)
                     print(path)
 
@@ -1079,7 +1103,7 @@ def cmd_layout(args: argparse.Namespace) -> int:
         # List sibling test files (up to 3 per directory)
         test_dirs: Dict[str, List[str]] = {}
         for path in out.strip().split("\n"):
-            if not path or _lang(path) is None:
+            if not path or _lang(path) is None or not _is_test_path(path):
                 continue
             dir_path = os.path.dirname(path)
             if dir_path not in test_dirs:
@@ -1095,7 +1119,7 @@ def cmd_layout(args: argparse.Namespace) -> int:
     else:
         # List paths only from working tree
         for path in _git_ok(["ls-files"]).strip().split("\n"):
-            if path and _lang(path) is not None:
+            if path and _lang(path) is not None and _is_test_path(path):
                 print(path)
 
     if truncated:
@@ -1104,103 +1128,60 @@ def cmd_layout(args: argparse.Namespace) -> int:
     return 0
 
 
+_OVERLAP_LINE_RE = re.compile(r"^(?P<id>[^|\s][^|]*?)\s*\|\s*overlaps:\s*(?P<survivor>[^|]+?)\s*(?:\|.*)?$")
+
+
 def cmd_overlaps(args: argparse.Namespace) -> int:
-    """Parse overlap classifications from report files and produce markdown output."""
+    """Parse `<id> | overlaps: <id|none>` lines from the reports and overwrite --out with the result."""
     try:
-        # Read added ids
-        added_ids_text = _read_text(args.added_ids)
-        added_ids = set(ln.strip() for ln in added_ids_text.split("\n") if ln.strip())
+        added_ids = [ln.strip() for ln in _read_text(args.added_ids).split("\n") if ln.strip()]
     except OSError:
         _fail(f"cannot read {args.added_ids}")
 
-    candidates = 0
+    candidate_rows: List[str] = []
     nones = 0
-    unreported_lines: List[str] = []
-    reported_ids: Set[str] = set()
+    reported: Set[str] = set()
+    unreported: Set[str] = set()
 
-    # Parse report files
     for report_path in args.reports:
         try:
             report_text = _read_text(report_path)
         except OSError:
-            continue
-
-        for line in report_text.split("\n"):
-            line = line.strip()
-            if not line:
+            continue  # a missing report is zero lines
+        for raw in report_text.split("\n"):
+            line = raw.strip().lstrip("-* ").strip("`").strip()
+            if "overlaps" not in line:
                 continue
-            # Strip list markers and backticks
-            line = line.lstrip("-* ").strip("`")
-
-            # Try to parse "id | overlaps: id or none"
-            if "overlaps:" not in line:
+            m = _OVERLAP_LINE_RE.match(line)
+            if m is None:
+                first = line.split()[0].strip("`") if line.split() else ""
+                if first:
+                    unreported.add(first)
                 continue
-
-            parts = line.split("overlaps:")
-            if len(parts) != 2:
-                unreported_lines.append(line)
+            new_id = m.group("id").strip().strip("`").strip()
+            survivor = m.group("survivor").strip().strip("`").strip()
+            if not new_id or not survivor:
+                unreported.add(new_id or line)
                 continue
-
-            new_id = parts[0].strip().strip("`").strip()
-            survivor_part = parts[1].strip().strip("`").strip()
-
-            if not new_id:
-                unreported_lines.append(line)
-                continue
-
-            reported_ids.add(new_id)
-
-            if survivor_part.lower() == "none":
+            reported.add(new_id)
+            if survivor.lower() == "none":
                 nones += 1
             else:
-                candidates += 1
+                candidate_rows.append(f"- {new_id} | overlaps: {survivor} | class-1 candidate")
 
-    # Find unreported ids
-    for test_id in added_ids:
-        if test_id not in reported_ids:
-            unreported_lines.append(test_id)
+    unreported -= reported
+    unreported.update(i for i in added_ids if i not in reported)
 
-    # Write output
+    out_lines = candidate_rows + [f"- {i}" for i in sorted(unreported)]
+    summary = f"candidates: {len(candidate_rows)}  none: {nones}  unreported: {len(unreported)}"
+    out_lines.append(summary)
     try:
-        output_lines: List[str] = []
-        for line in unreported_lines:
-            output_lines.append(f"- {line}")
-
-        # Find overlaps and add them
-        for report_path in args.reports:
-            try:
-                report_text = _read_text(report_path)
-            except OSError:
-                continue
-
-            for line in report_text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                line = line.lstrip("-* ").strip("`")
-                if "overlaps:" not in line or line.count("|") < 1:
-                    continue
-
-                parts = line.split("overlaps:")
-                if len(parts) == 2:
-                    survivor_part = parts[1].strip().strip("`").strip()
-                    if survivor_part.lower() != "none":
-                        # Extract new_id and survivor
-                        new_id = parts[0].strip().strip("|").strip().strip("`").strip()
-                        survivor = survivor_part.split("|")[0].strip().strip("`").strip()
-                        if new_id and survivor:
-                            output_lines.insert(0, f"- {new_id} | overlaps: {survivor} | class-1 candidate")
-
-        summary = f"candidates: {candidates}  none: {nones}  unreported: {len(unreported_lines)}"
-        output_lines.append(summary)
-
         with open(args.out, "w") as f:
-            f.write("\n".join(output_lines) + "\n")
-
-        print(summary)
-        return 0
+            f.write("\n".join(out_lines) + "\n")
     except OSError as e:
         _fail(str(e))
+    print(summary)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
