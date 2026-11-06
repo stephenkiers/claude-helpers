@@ -1125,7 +1125,12 @@ def next_test():
     with tempfile.TemporaryDirectory() as tmp:
         repo, base = make_repo(tmp, {"README.md": "# r\n"})
         (repo / "added.txt").write_text("t::a\n")
-        outside = Path(tmp) / "outside.md"
+        # the system temp dir is allowed (the run's scratch lives there); a path elsewhere is not
+        in_tmp = Path(tmp) / "scratch-out.md"
+        rc, out, err = run(repo, ["overlaps", "--added-ids", "added.txt", "--out", str(in_tmp)])
+        h.test_result("overlaps accepts an absolute --out under the system temp dir",
+                      rc == 0 and in_tmp.exists(), f"rc={rc} err={err!r}")
+        outside = Path("/nonexistent-root-464/outside.md")
         rc, out, err = run(repo, ["overlaps", "--added-ids", "added.txt", "--out", str(outside)])
         h.test_result("overlaps refuses an absolute --out outside the repo",
                       rc == 1 and not outside.exists() and "escapes" in err,

@@ -146,6 +146,7 @@ import ast
 import difflib
 import json
 import os
+import tempfile
 import re
 import subprocess
 import sys
@@ -300,6 +301,8 @@ def _confine_output(path: str) -> None:
     flow_dir = os.environ.get("FLOW_DIR", "")
     if flow_dir:
         roots.append(os.path.realpath(flow_dir))
+    # the run's scratch directory comes from mktemp -d, i.e. under the system temp dir
+    roots.append(os.path.realpath(tempfile.gettempdir()))
     if not any(full.startswith(root + os.sep) for root in roots):
         _fail(f"path escapes the repo root: {path!r}")
 
