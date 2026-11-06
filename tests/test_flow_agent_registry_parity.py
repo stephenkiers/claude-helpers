@@ -11,7 +11,6 @@ Covers:
 Run with: python3 tests/test_flow_agent_registry_parity.py
 """
 
-import ast
 import json
 import re
 import subprocess
@@ -21,13 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import Harness, REPO_ROOT
-
-try:
-    import yaml
-    HAS_YAML = True
-except ImportError:
-    HAS_YAML = False
-
+from _agent_frontmatter import parse_markdown_frontmatter
 
 def run_guard_script(script_path, agent, payload_dict):
     """Run a guard script with JSON payload and return (exit_code, stderr)."""
@@ -44,46 +37,6 @@ def run_guard_script(script_path, agent, payload_dict):
         return 2, "Timeout"
     except Exception as e:
         return 2, str(e)
-
-
-def parse_markdown_frontmatter(text):
-    """Extract YAML frontmatter from markdown as a dict.
-
-    Uses PyYAML if available (for strict parsing), falls back to ast.literal_eval where possible.
-    """
-    match = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
-    if not match:
-        return {}
-
-    fm_text = match.group(1)
-    result = {}
-
-    # Try PyYAML first if available
-    if HAS_YAML:
-        try:
-            result = yaml.safe_load(fm_text) or {}
-            return result
-        except yaml.YAMLError:
-            pass
-
-    # Fallback: parse line by line with type inference
-    for line in fm_text.split('\n'):
-        if ':' not in line or line.strip().startswith('#'):
-            continue
-        key, value = line.split(':', 1)
-        key = key.strip()
-        value = value.strip()
-
-        # Try to infer the type: if it looks like a list, try to parse it
-        if value.startswith('[') or value.startswith('{'):
-            try:
-                result[key] = ast.literal_eval(value)
-            except (ValueError, SyntaxError):
-                result[key] = value
-        else:
-            result[key] = value
-
-    return result
 
 
 def parse_expert_flow_steps_table():

@@ -15,7 +15,6 @@ Run with: python3 tests/test_flow_plan_guard_blackbox.py
 """
 
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import Harness, REPO_ROOT
+from _agent_frontmatter import parse_markdown_frontmatter
 
 
 def run_guard_script(script_path, agent, payload_dict, timeout=35):
@@ -44,34 +44,6 @@ def run_guard_script(script_path, agent, payload_dict, timeout=35):
         return None, "Timeout after {} seconds".format(timeout), ""
     except Exception as e:
         return None, "Subprocess error: {}".format(str(e)), ""
-
-
-def parse_markdown_frontmatter(text):
-    """Extract YAML-like frontmatter from markdown.
-
-    Returns a dict of key-value pairs from the frontmatter block.
-    """
-    match = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
-    if not match:
-        return {}
-
-    fm_text = match.group(1)
-    result = {}
-
-    for line in fm_text.split('\n'):
-        if ':' not in line or line.strip().startswith('#'):
-            continue
-        key, value = line.split(':', 1)
-        key = key.strip()
-        value = value.strip()
-
-        # Parse tools as comma-separated list
-        if key in ('tools', 'allowed-tools'):
-            result[key] = [v.strip() for v in value.split(',')]
-        else:
-            result[key] = value
-
-    return result
 
 
 def main():

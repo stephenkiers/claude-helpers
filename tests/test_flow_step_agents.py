@@ -18,59 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import Harness, REPO_ROOT
-
-try:
-    import yaml
-    HAS_YAML = True
-except ImportError:
-    HAS_YAML = False
-
-
-def parse_markdown_frontmatter(text):
-    """Extract YAML frontmatter from markdown as a dict.
-
-    Uses PyYAML if available (for strict parsing), falls back to regex-based parsing.
-    """
-    match = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
-    if not match:
-        return {}
-
-    fm_text = match.group(1)
-
-    # Try PyYAML first if available
-    result = {}
-    if HAS_YAML:
-        try:
-            result = yaml.safe_load(fm_text) or {}
-        except yaml.YAMLError:
-            # Fall through to regex parser
-            pass
-
-    # If YAML parsing failed or wasn't available, use fallback parser
-    if not result:
-        for line in fm_text.split('\n'):
-            if ':' not in line or line.strip().startswith('#'):
-                continue
-            key, value = line.split(':', 1)
-            key = key.strip()
-            value = value.strip()
-            # Handle comma-separated lists (for tools, etc.)
-            if key in ('tools', 'allowed-tools'):
-                # Split on comma, preserving Bash(...) entries
-                result[key] = [v.strip() for v in value.split(',')]
-            else:
-                result[key] = value
-    else:
-        # Post-process YAML result to ensure tools/allowed-tools are lists
-        for key in ('tools', 'allowed-tools'):
-            if key in result:
-                val = result[key]
-                if isinstance(val, str):
-                    # Convert comma-separated string to list
-                    result[key] = [v.strip() for v in val.split(',')]
-
-    return result
-
+from _agent_frontmatter import parse_markdown_frontmatter
 
 def parse_expert_flow_steps_table():
     """Extract the Steps table from expert-flow.md and return step->agent mapping.
