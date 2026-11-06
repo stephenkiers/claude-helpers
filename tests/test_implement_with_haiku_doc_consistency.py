@@ -1319,7 +1319,9 @@ R4_3 = doc_section(TEST_CLEANUP_REFERENCE, "### 4.3 Classify", "### 4.4 Delete")
 R4_4 = doc_section(TEST_CLEANUP_REFERENCE, "### 4.4 Delete", "### 4.5 Relocate")
 R4_5 = doc_section(TEST_CLEANUP_REFERENCE, "### 4.5 Relocate", "### 4.6 Verify")
 R4_6_start = TEST_CLEANUP_REFERENCE.find("### 4.6 Verify")
-R4_6 = TEST_CLEANUP_REFERENCE[R4_6_start:] if R4_6_start != -1 else ""
+_r46_tail = TEST_CLEANUP_REFERENCE[R4_6_start:] if R4_6_start != -1 else ""
+_r46_next = [i for i in (_r46_tail.find("\n## "), _r46_tail.find("\n### ", 1)) if i != -1]
+R4_6 = _r46_tail[:min(_r46_next)] if _r46_next else _r46_tail
 RESUME = doc_section(IMPLEMENT_WITH_HAIKU, "### Spec-blind state on resume", "## Step 1:")
 
 # Assert that 4.3-4.6 headings exist in the reference doc and are absent from the command doc
@@ -1334,7 +1336,8 @@ t("4.3 Classify heading exists in reference doc",
 t("4.3-4.6 sections are absent from command doc",
   "### 4.3 Classify" not in IMPLEMENT_WITH_HAIKU
   and "### 4.4 Delete" not in IMPLEMENT_WITH_HAIKU
-  and "### 4.5 Relocate" not in IMPLEMENT_WITH_HAIKU,
+  and "### 4.5 Relocate" not in IMPLEMENT_WITH_HAIKU
+  and "### 4.6 Verify" not in IMPLEMENT_WITH_HAIKU,
   "4.3-4.6 still present in command doc instead of pointer")
 
 t("command doc references the reference doc under Round 4",
@@ -1433,9 +1436,10 @@ t("4.6 commit body lists deletions and merged ids",
   "merged" in R4_6 and "reason" in R4_6.lower(),
   "4.6 commit body does not list deletions and merged ids")
 
+_p46a = IMPLEMENT_WITH_HAIKU.find("### 4.6a Record Round 4 evidence")
+_pfinal = IMPLEMENT_WITH_HAIKU.find("## Final check")
 t("4.6a precedes the Final check",
-  IMPLEMENT_WITH_HAIKU.find("### 4.6a Record Round 4 evidence")
-  < IMPLEMENT_WITH_HAIKU.find("## Final check") > 0,
+  _p46a != -1 and _pfinal != -1 and _p46a < _pfinal,
   "4.6a is not before the Final check")
 
 t("Final summary has the new spec-blind sections",
