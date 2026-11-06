@@ -382,3 +382,16 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
   - Project authors declaring `check_minimum` must document their selector's inputs. This repo's selector and its test enforce this invariant for this codebase.
 
 **Consequences:** Verify, implement and fix steps get cache hits across unchanged code at different bases. The minimum and full digests are separate, so a single repo can use both modes without evicting each other's caches. Off-queue and queue merges both run the full check (ADR-0021), so the full key (missing the base) correctly ignores base movement. The caching contract is a residual risk: a selector that ignores the exports and reads outside the tree will silently produce stale results on a hit. This is why `resolve-check` is the only entry point for the resolver, and why selector authors must document their invariants.
+
+### Amendment 12: Removal of `checks run` and `checks receipt` (2026-11-05, #462)
+
+**Problem:** `checks run` and `checks receipt` (the check-receipt chain) were added under Amendment 11 but had no caller on the merge path. The merge gate and the `/expert-flow` verify step read the per-key record cache through `checks validate` and `resolve_check_detail`, never the `run` CLI or the `check-receipt.json` artifact. Keeping an unreachable write surface and a second receipt schema doubled the parser and cache paths the gate must trust.
+
+**Decision:** Remove both subcommands and the receipt chain.
+- Removed: the `checks run` and `checks receipt` CLI subcommands and their handlers in `scripts/workflow/cli.py`.
+- Removed: `check-receipt.json` (schema 2) and `check-attestation.json`, their schema constants, and the functions `write_check_receipt`, `record_check_attestation`, `parse_receipt`, `check_receipt_fresh`, `receipt_base_current`, `run_checks_recorded` and `_resolve_sha` in `scripts/workflow/checks.py`.
+- Kept: `checks validate` and its per-key record cache under `.claude/check-records/` (`FullKey` and `MinimumKey`, the `CHECK_BASE` and `CHECK_CHANGED_FILES` exports, and the eviction rule). `resolve_check_detail` remains the resolver, and `resolve_check_command` remains as a wrapper because a test still calls it. `resolve-check`, `ensure-check` and `record-check-answer` are unchanged.
+
+**Supersedes:** Amendment 11's `checks run` contract (the bullet beginning "`checks run` keeps its CLI contract") and its receipt paragraph (the bullet beginning "**Receipts go through the same boundary**"). The `checks validate` contract, the record cache and the caching contract stay in force.
+
+**Consequences:** `checks run` and `checks receipt` are no longer subcommands and fail as unknown commands. Any external caller of those commands must move to `checks validate`. No receipt file is written or read; the merge gate reads per-key records only.

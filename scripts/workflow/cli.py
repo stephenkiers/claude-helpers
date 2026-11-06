@@ -42,8 +42,7 @@ from pathlib import Path
 from typing import Callable, Any, Tuple
 
 from . import cleanup, merge, shipit, checks, deps, track, verify_queue, issue_comments, heal
-from .cache import read_repo_cache
-from .models import MODES, RepoCacheData
+from .models import MODES
 from .providers import GithubProvider, LocalProvider
 from .providers.base import Provider, ProviderError
 from . import worktrees
@@ -294,35 +293,6 @@ def main() -> None:
 
     checks_parser = subparsers.add_parser("checks", help="Run checks")
     checks_subparsers = checks_parser.add_subparsers(dest="checks_action")
-
-    checks_run_parser = checks_subparsers.add_parser("run", help="Run checks")
-    checks_run_parser.add_argument(
-        "cache",
-        help="Repo cache JSON path or '-' to read from stdin"
-    )
-    checks_run_parser.add_argument(
-        "--allow-no-checks",
-        action="store_true",
-        help="Convert exit code 2 (no checks ran) to 0"
-    )
-    checks_run_parser.add_argument(
-        "--timeout",
-        type=int,
-        help="Timeout per check in seconds (default: SHIPIT_CHECK_TIMEOUT_SECS, then the cache's checkTimeoutSecs, then 300)"
-    )
-    checks_run_parser.add_argument(
-        "--base",
-        help="Base ref for the attested run (e.g. origin/main); required to record attestation"
-    )
-
-    checks_receipt_parser = checks_subparsers.add_parser(
-        "receipt", help="Write or verify the check receipt that lets merge skip re-running /shipit's checks"
-    )
-    checks_receipt_sub = checks_receipt_parser.add_subparsers(dest="receipt_action")
-    receipt_write_parser = checks_receipt_sub.add_parser("write", help="Record that checks passed at HEAD (reads attestation)")
-    receipt_write_parser.add_argument("--worktree", default=".", help="Worktree directory (default: cwd)")
-    receipt_verify_parser = checks_receipt_sub.add_parser("verify", help="Exit 0 if the receipt is still fresh")
-    receipt_verify_parser.add_argument("--worktree", default=".", help="Worktree directory (default: cwd)")
 
     checks_resolve_check_parser = checks_subparsers.add_parser(
         "resolve-check",
@@ -752,74 +722,7 @@ def main() -> None:
             worktree_parser.print_help()
             sys.exit(1)
     elif args.command == "checks":
-        if args.checks_action == "run":
-            cache_input = args.cache
-            if cache_input == "-":
-                cache_input = sys.stdin.read()
-            try:
-                cache_data = json.loads(cache_input)
-                repo_cache = RepoCacheData.from_dict(cache_data)
-                timeout = args.timeout
-                if timeout is None:
-                    # Same precedence and ignore rule as checks.resolve_check_timeout: an invalid
-                    # env value falls through to the cache value, then the default.
-                    env_value = checks.env_timeout_secs()
-                    timeout = env_value or repo_cache.check_timeout_secs or checks.DEFAULT_CHECK_TIMEOUT_SECS
-
-                # Record attestation before running checks
-                worktree = Path.cwd()
-                if args.base:
-                    att_ok, att_err = checks.record_check_attestation(
-                        worktree, repo_cache.commands, args.base
-                    )
-
-                # Full mode through the per-key record cache: a hit on the unchanged tree runs nothing.
-                result, err = checks.run_checks_recorded(
-                    worktree,
-                    repo_cache.commands,
-                    timeout,
-                )
-
-                # Update attestation with results
-                if args.base:
-                    att_ok, att_err = checks.record_check_attestation(
-                        worktree, repo_cache.commands, args.base, result
-                    )
-
-                print(json.dumps(result.to_dict()))
-                exit_code = 0
-                if err:
-                    exit_code = 2
-                elif not result.all_passed:
-                    exit_code = 1
-                elif result.status == "no_checks_ran":
-                    exit_code = 2
-                if args.allow_no_checks and exit_code == 2:
-                    exit_code = 0
-                if exit_code != 0:
-                    sys.exit(exit_code)
-            except json.JSONDecodeError as e:
-                output = {"success": False, "error": f"Invalid cache JSON: {e}"}
-                print(json.dumps(output))
-                sys.exit(1)
-        elif args.checks_action == "receipt":
-            wt = Path(args.worktree).resolve()
-            receipt_cache, cache_err = read_repo_cache(wt / ".claude" / "repo-cache.json")
-            if cache_err or not receipt_cache:
-                print(json.dumps({"fresh": False, "reason": "no readable repo-cache.json"}))
-                sys.exit(1)
-            if args.receipt_action == "write":
-                ok, werr = checks.write_check_receipt(wt, receipt_cache.commands)
-                print(json.dumps({"written": ok, "error": str(werr) if werr else None}))
-                sys.exit(0 if ok else 1)
-            elif args.receipt_action == "verify":
-                fresh, reason = checks.check_receipt_fresh(wt, receipt_cache.commands, fetch=True)
-                print(json.dumps({"fresh": fresh, "reason": reason}))
-                sys.exit(0 if fresh else 1)
-            else:
-                checks_receipt_parser.print_help()
-                sys.exit(1)
-        elif args.checks_action == "resolve-check":
+        if args.checks_action == "resolve-check":
             try:
                 worktree_path = Path(args.worktree)
                 main_worktree_path = Path(args.main_worktree) if args.main_worktree else None
