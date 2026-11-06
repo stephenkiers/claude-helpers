@@ -112,7 +112,7 @@ def main():
         modules, unmapped = selector.map_files_to_tests(["scripts/workflow/checks.py"])
         test_result(
             "a changed module also selects tests that reference it under another name (grep mapping)",
-            "test_check_receipt.py" in modules and "test_workflow_merge.py" in modules,
+            "test_seed_worktree_cache.py" in modules and "test_workflow_merge.py" in modules,
             f"modules={modules}",
         )
 
@@ -125,6 +125,54 @@ def main():
     finally:
         os.chdir(prev_cwd)
 
+    print("[Section 1b] map_files_to_tests: a deleted or renamed tests/ file is unmapped (is_file guard)")
+    prev_cwd = os.getcwd()
+    os.chdir(REPO)
+    try:
+        modules, unmapped = selector.map_files_to_tests(["tests/test_deleted_462_renamed.py"])
+        test_result(
+            "a tests/test_*.py path that no longer exists is unmapped (full suite), not selected",
+            modules == [] and unmapped == ["tests/test_deleted_462_renamed.py"],
+            f"modules={modules} unmapped={unmapped}",
+        )
+
+        modules, unmapped = selector.map_files_to_tests(["tests/test_workflow_checks_cli.py"])
+        test_result(
+            "an existing tests/test_*.py path still maps to itself (the is_file guard does not over-reject)",
+            modules == ["test_workflow_checks_cli.py"] and unmapped == [],
+            f"modules={modules} unmapped={unmapped}",
+        )
+    finally:
+        os.chdir(prev_cwd)
+
+    print("[Section 1c] _reference_patterns: table-driven mapping of a file to the texts that name it")
+    reference_cases = [
+        # (file_path, text, should_match)
+        ("scripts/workflow/checks.py", "from workflow.checks import x", True),
+        ("scripts/workflow/checks.py", "import workflow.checks", True),
+        ("scripts/workflow/checks.py", "from workflow import checks", True),
+        ("scripts/workflow/checks.py", "from scripts.workflow import merge, checks", True),
+        ("scripts/workflow/checks.py", "# see scripts/workflow/checks.py", True),
+        ("scripts/workflow/checks.py", "from workflow import checksum", False),
+        ("scripts/workflow/checks.py", "from workflow.checkspec import x", False),
+        ("scripts/workflow/checks.py", "checks is a word alone", False),
+        ("scripts/foo.py", "import foo", True),
+        ("scripts/foo.py", "from foo import bar", True),
+        ("scripts/foo.py", "x = 'see foo.py'", True),
+        ("scripts/foo.py", "x = 'scripts/foo.py'", True),
+        ("scripts/foo.py", "barfoo.py", False),
+        ("scripts/foo.py", "x = myfoo.py", False),
+        ("scripts/foo.py", "import foobar", False),
+        ("scripts/foo.py", "foo_bar = 1", False),
+    ]
+    for file_path, text, should_match in reference_cases:
+        hit = any(p.search(text) for p in selector._reference_patterns(file_path))
+        test_result(
+            f"_reference_patterns({file_path!r}) {'matches' if should_match else 'does not match'} {text!r}",
+            hit == should_match,
+            f"hit={hit}",
+        )
+
     print("[Section 2] get_check_base_and_files: CHECK_CHANGED_FILES, CHECK_BASE and computed precedence")
     real_resolve = selector.resolve_check_base
     real_canonical = selector.canonical_changed_files
@@ -134,20 +182,20 @@ def main():
 
         with tempfile.TemporaryDirectory() as tmp:
             env_file = Path(tmp) / "check-env.txt"
-            env_file.write_text("EXPORTED-BASE\nscripts/a.py\0tests/test_b.py\0")
+            env_file.write_text("feedbeef12\nscripts/a.py\0tests/test_b.py\0")
             with _with_env(CHECK_CHANGED_FILES=str(env_file), CHECK_BASE="ignored-when-file-set"):
                 base, files = selector.get_check_base_and_files()
         test_result(
             "CHECK_CHANGED_FILES: base is the first line and files are the NUL-separated remainder",
-            base == "EXPORTED-BASE" and files == ["scripts/a.py", "tests/test_b.py"],
+            base == "feedbeef12" and files == ["scripts/a.py", "tests/test_b.py"],
             f"base={base!r} files={files!r}",
         )
 
-        with _with_env(CHECK_CHANGED_FILES=None, CHECK_BASE="exported-base-only"):
+        with _with_env(CHECK_CHANGED_FILES=None, CHECK_BASE="cafe0123"):
             base, files = selector.get_check_base_and_files()
         test_result(
             "CHECK_BASE alone is honoured (not replaced by a recomputed merge-base)",
-            base == "exported-base-only" and files == ["from-exported-base-only"],
+            base == "cafe0123" and files == ["from-cafe0123"],
             f"base={base!r} files={files!r}",
         )
 
@@ -171,6 +219,96 @@ def main():
     finally:
         selector.resolve_check_base = real_resolve
         selector.canonical_changed_files = real_canonical
+
+    print("[Section 2b] CHECK_BASE validation and CHECK_CHANGED_FILES parse failures")
+    import contextlib
+    import io
+
+    real_resolve = selector.resolve_check_base
+    real_canonical = selector.canonical_changed_files
+    try:
+        selector.resolve_check_base = lambda worktree: "computed-base"
+        selector.canonical_changed_files = lambda worktree, base: [f"from-{base}"]
+
+        for bad_base in ["--output=/tmp/pwned-462", "-rf", "origin/main", "not-a-sha!"]:
+            with _with_env(CHECK_CHANGED_FILES=None, CHECK_BASE=bad_base):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    base, files = selector.get_check_base_and_files()
+            test_result(
+                f"CHECK_BASE {bad_base!r} is not a hex SHA: ignored, the base is computed",
+                base == "computed-base" and files == ["from-computed-base"] and "not a hex SHA" in err.getvalue(),
+                f"base={base!r} files={files!r} stderr={err.getvalue()!r}",
+            )
+
+        with _with_env(CHECK_CHANGED_FILES=None, CHECK_BASE="abcdef1234"):
+            base, files = selector.get_check_base_and_files()
+        test_result(
+            "CHECK_BASE that is a hex SHA is accepted",
+            base == "abcdef1234" and files == ["from-abcdef1234"],
+            f"base={base!r} files={files!r}",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / "check-env.txt"
+            env_file.write_text("--output=/tmp/pwned-462\nscripts/a.py\0")
+            with _with_env(CHECK_CHANGED_FILES=str(env_file), CHECK_BASE=None):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    base, files = selector.get_check_base_and_files()
+        test_result(
+            "an exported CHECK_CHANGED_FILES with a non-SHA base is rejected and the set is computed",
+            base == "computed-base" and files == ["from-computed-base"] and "not a hex SHA" in err.getvalue(),
+            f"base={base!r} files={files!r} stderr={err.getvalue()!r}",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / "check-env.txt"
+            env_file.write_text("scripts/a.py\0tests/test_b.py\0")  # no base line: not the writer's format
+            with _with_env(CHECK_CHANGED_FILES=str(env_file), CHECK_BASE=None):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    base, files = selector.get_check_base_and_files()
+        test_result(
+            "a CHECK_CHANGED_FILES with no base line is a parse failure: noted on stderr, set computed",
+            base == "computed-base" and files == ["from-computed-base"] and "unreadable" in err.getvalue(),
+            f"base={base!r} files={files!r} stderr={err.getvalue()!r}",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / "check-env.txt"
+            env_file.write_bytes(b"abcdef12\n\xff\xfe\0")  # not valid UTF-8
+            with _with_env(CHECK_CHANGED_FILES=str(env_file), CHECK_BASE=None):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    base, files = selector.get_check_base_and_files()
+        test_result(
+            "an undecodable CHECK_CHANGED_FILES is noted on stderr and the set is computed",
+            base == "computed-base" and "unreadable" in err.getvalue(),
+            f"base={base!r} stderr={err.getvalue()!r}",
+        )
+    finally:
+        selector.resolve_check_base = real_resolve
+        selector.canonical_changed_files = real_canonical
+
+    parsed = selector._parse_changed_files("abcdef12\nscripts/a.py\0\0tests/test_b.py\0")
+    test_result(
+        "_parse_changed_files: base is the first line, empty entries are dropped",
+        parsed == ("abcdef12", ["scripts/a.py", "tests/test_b.py"]),
+        f"parsed={parsed!r}",
+    )
+    parsed = selector._parse_changed_files("\n")
+    test_result(
+        "_parse_changed_files: an unresolved ('') base with no files parses to ('', [])",
+        parsed == ("", []),
+        f"parsed={parsed!r}",
+    )
+    try:
+        selector._parse_changed_files("no-newline")
+        raised = False
+    except ValueError:
+        raised = True
+    test_result("_parse_changed_files: content with no newline raises ValueError", raised, "")
 
     print("[Section 3] main(): lint, typecheck, then mapped tests or the full suite")
 
@@ -385,6 +523,36 @@ def main():
             f"selector=({sel_base!r}, {sel_files!r}) canonical=({canon_base!r}, {canon_files!r})",
         )
 
+    print("[Section 4] --dry-run for an unmapped path, and the split no-tests messages")
+    dry_calls_unmapped = []
+
+    def _fail_if_run_unmapped(argv, **kwargs):
+        dry_calls_unmapped.append(list(argv))
+        raise AssertionError(f"--dry-run must not run gates: {argv}")
+
+    buf = io.StringIO()
+    with mock.patch.object(selector, "get_check_base_and_files",
+                           return_value=("b", ["scripts/no-such-module-462.py"])), \
+            mock.patch.object(selector.subprocess, "run", side_effect=_fail_if_run_unmapped), \
+            contextlib.redirect_stdout(buf):
+        rc_dry_unmapped = selector.main(["--dry-run"])
+    dry_plan_unmapped = json.loads(buf.getvalue())
+    test_result(
+        "--dry-run for an unmapped path prints full_suite true with the reason, exits 0, and runs no gate",
+        rc_dry_unmapped == 0 and dry_calls_unmapped == [] and dry_plan_unmapped["full_suite"] is True
+        and "unmappable" in dry_plan_unmapped["fallback_reason"],
+        f"rc={rc_dry_unmapped} calls={dry_calls_unmapped} plan={dry_plan_unmapped}",
+    )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc_none, calls_none = _run_main([])
+    test_result(
+        "no changed files prints the 'No changed files' message, not the mapping message",
+        rc_none == 0 and "No changed files, skipping tests" in buf.getvalue()
+        and "select no test modules" not in buf.getvalue(),
+        f"rc={rc_none} out={buf.getvalue()!r}",
+    )
     print()
     h.summarize_and_exit()
 

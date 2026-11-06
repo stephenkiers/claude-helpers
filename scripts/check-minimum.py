@@ -5,8 +5,20 @@ Minimum check selector for this repo: lint + typecheck + tests for changed files
 Maps changed file paths to test files (matching tests/ names by module/path).
 Falls back to the full test suite when the base is unresolved or a changed path is unmappable.
 
+Selector naming convention (how a changed file finds its tests):
+- scripts/<name>.py selects tests/test_<name>*.py, plus every tests/test_*.py that names the file by
+  path, file name or import (grep mapping). The file must exist for the grep to run.
+- scripts/workflow/<name>.py selects tests/test_workflow_<name>*.py, plus the same grep mapping.
+- tests/test_*.py that exists selects itself. A deleted or renamed tests/ file is unmapped.
+- Anything else (helpers and fixtures under tests/, non-Python files, unknown scripts) is unmapped,
+  which runs the full suite.
+
 Imports the same canonical_changed_files, resolve_check_base functions as validate().
-Reads CHECK_BASE and CHECK_CHANGED_FILES (exported by validate) when set.
+Reads CHECK_BASE and CHECK_CHANGED_FILES (exported by validate) when set. CHECK_BASE must be a hex
+SHA; any other value is ignored and the base is computed. CHECK_CHANGED_FILES is the file written by
+the checks.py writer (_export_check_env); its format is documented at parse_check_changed_files there:
+the first line is the base SHA ('' when unresolved), and the rest is the changed-file list,
+NUL-separated. _parse_changed_files below mirrors that parser (this script is standalone).
 
 Sandboxed invariant: the selection (build_plan, reached through --dry-run) reads nothing outside
 the working tree except the base and the changed-file list it is given. It does not read HOME,
@@ -32,28 +44,57 @@ sys.path.insert(0, str(REPO_ROOT))
 from scripts.workflow.checks import resolve_check_base, canonical_changed_files  # noqa: E402
 
 
+_SHA_RE = re.compile(r"[0-9a-fA-F]{4,64}")
+
+
+def _is_acceptable_base(base: str) -> bool:
+    """A base is '' (unresolved) or a hex SHA. Anything else, such as a leading '-', never reaches git."""
+    return base == "" or _SHA_RE.fullmatch(base) is not None
+
+
+def _parse_changed_files(content: str) -> tuple:
+    """
+    Parse a CHECK_CHANGED_FILES file. Mirrors parse_check_changed_files in scripts/workflow/checks.py,
+    the writer (_export_check_env). Format: the first line is the base SHA ('' when unresolved); the rest
+    is the changed-file list, NUL-separated, with empty entries dropped. Raises ValueError with no newline.
+    """
+    head, sep, rest = content.partition("\n")
+    if not sep:
+        raise ValueError("CHECK_CHANGED_FILES has no base line")
+    return head, [entry for entry in rest.split("\0") if entry]
+
+
+def _read_exported_changed_files(path: Path) -> Optional[tuple]:
+    """Return (base, files) from an exported CHECK_CHANGED_FILES file, or None if it is absent or unreadable."""
+    if not path.exists():
+        return None
+    try:
+        return _parse_changed_files(path.read_text())
+    except (OSError, ValueError) as exc:
+        print(f"[minimum] CHECK_CHANGED_FILES is unreadable ({exc}); computing the changed set", file=sys.stderr)
+        return None
+
+
 def get_check_base_and_files() -> tuple:
     """Get base and changed files from env or compute them."""
     worktree = Path.cwd()
 
     # Check for override env vars
-    check_base = os.environ.get("CHECK_BASE")
     check_files_env = os.environ.get("CHECK_CHANGED_FILES")
 
     if check_files_env:
-        try:
-            check_files_path = Path(check_files_env)
-            if check_files_path.exists():
-                content = check_files_path.read_text()
-                lines = content.split("\n")
-                check_base = lines[0] if lines else ""
-                files = content[len(check_base)+1:].split("\0") if len(lines) > 1 else []
-                files = [f for f in files if f]
-                return check_base, files
-        except Exception:
-            pass
+        exported = _read_exported_changed_files(Path(check_files_env))
+        if exported is not None:
+            if _is_acceptable_base(exported[0]):
+                return exported
+            print(f"[minimum] CHECK_CHANGED_FILES base {exported[0]!r} is not a hex SHA; computing the changed set",
+                  file=sys.stderr)
 
-    # Compute from scratch; an exported CHECK_BASE takes precedence over the computed merge-base
+    # An exported CHECK_BASE takes precedence over the computed merge-base
+    check_base = os.environ.get("CHECK_BASE")
+    if check_base and not _is_acceptable_base(check_base):
+        print(f"[minimum] CHECK_BASE {check_base!r} is not a hex SHA; ignoring it", file=sys.stderr)
+        check_base = None
     base = check_base or resolve_check_base(worktree)
     computed = canonical_changed_files(worktree, base)
     if computed is None:
@@ -116,7 +157,11 @@ def map_files_to_tests(files: list) -> tuple:
                 unmapped.append(file_path)
         elif file_path.startswith("tests/"):
             test_name = Path(file_path).name
-            if "/" not in file_path[len("tests/"):] and test_name.endswith(".py") and test_name.startswith("test_"):
+            is_top_level_test = (
+                "/" not in file_path[len("tests/"):] and test_name.endswith(".py") and test_name.startswith("test_")
+            )
+            # A deleted or renamed test file no longer exists, so it cannot be selected; it is unmapped
+            if is_top_level_test and (REPO_ROOT / file_path).is_file():
                 test_files.add(test_name)
             else:
                 # A helper, runner or fixture under tests/ can affect any suite
@@ -201,8 +246,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     test_modules = plan["tests"]
     if not test_modules:
-        # No tests mapped
-        print("[minimum] No test files mapped, skipping tests")
+        # Two cases reach here: nothing changed, or changed files that select no test module
+        if not plan["changed_files"]:
+            print("[minimum] No changed files, skipping tests")
+        else:
+            print("[minimum] Changed files select no test modules, skipping tests")
         return 0
 
     print(f"[minimum] Running {len(test_modules)} test modules: {', '.join(test_modules)}")

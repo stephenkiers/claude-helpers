@@ -538,6 +538,18 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
         # of whatever directory it runs in. `cwd` is accepted for signature compatibility only.
         effective_cwd = Path(plan.target_worktree)
 
+        # The full check gate runs before the lock is taken, and before every path, 'just merge' (Path 1)
+        # included: a merge recipe must not merge a tree the check gate would refuse. The check can run for
+        # minutes, so holding the lock across it would leave it behind if the check or process is
+        # interrupted. Nothing has merged yet at this point, so a refusal needs no cleanup.
+        check_success, gate_applied, check_detail = _run_merge_gate_checks(Path(plan.target_worktree))
+        if not check_success:
+            if check_detail:
+                result.error = Unknown(f"Merge gate check failed: {check_detail}")
+            else:
+                result.error = Unknown("Merge gate check failed")
+            return result, result.error
+
         lock_file = merge_lock_path(plan.target_worktree)
 
         try:
@@ -562,17 +574,6 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
 
         merge_gate_used = ""
         merge_succeeded = False
-
-        # The full check gate runs before every path, 'just merge' (Path 1) included: a merge recipe
-        # must not merge a tree the check gate would refuse. Nothing has merged yet at this point.
-        check_success, gate_applied, check_detail = _run_merge_gate_checks(Path(plan.target_worktree))
-        if not check_success:
-            if check_detail:
-                result.error = Unknown(f"Merge gate check failed: {check_detail}")
-            else:
-                result.error = Unknown("Merge gate check failed")
-            lock_file.unlink(missing_ok=True)  # gate runs before any merge: nothing merged
-            return result, result.error
 
         if _check_just_merge(plan.target_worktree):
             success, detail = _run_just_merge(plan.target_worktree)
@@ -847,21 +848,55 @@ def _resolved_check_label(target_worktree: Path) -> str:
     return f"resolved check ({source})" if source else "resolved check"
 
 
+def _main_worktree_of(target_worktree: Path) -> Optional[Path]:
+    """
+    The main worktree of the repo target_worktree belongs to: the first entry of the worktree list.
+
+    Returns None when the list cannot be read (for example, the path is not inside a git repo).
+    """
+    try:
+        porcelain = git.get_worktree_list_porcelain(cwd=target_worktree)
+    except Exception:
+        return None
+    for line in porcelain.splitlines():
+        if line.startswith("worktree "):
+            return Path(line[len("worktree "):])
+    return None
+
+
+def _has_cached_commands(worktrees: List[Optional[Path]]) -> bool:
+    """True when any given worktree's repo-cache.json names at least one non-empty command."""
+    for worktree in worktrees:
+        if worktree is None:
+            continue
+        cache_file = worktree / ".claude" / "repo-cache.json"
+        if not cache_file.exists():
+            continue
+        cache_data, err = read_repo_cache(cache_file)
+        if err or cache_data is None:
+            continue
+        if any(command for command in cache_data.commands.values()):
+            return True
+    return False
+
+
 def _run_merge_gate_checks(target_worktree: Path) -> Tuple[bool, bool, Optional[str]]:
     """
     Run the full check gate before a merge (the only merge gate; a minimum check never satisfies it).
 
     The command resolves through resolve_check_detail (project.yaml, repo-cache, package.json, then
     the justfile check recipe), so a repo without a repo-cache is still gated (#387). A malformed
-    repo-cache.json fails closed. The gate runs through checks.validate(mode="full"). A stored full
-    record for this tree is reused only when _base_ancestor_fresh holds; otherwise the check is
-    forced to run again.
+    repo-cache.json fails closed. The gate runs through checks.validate(mode="full") with the main
+    worktree, and under the timeout resolve_check_timeout reports for it, so the command and timeout
+    the gate reports are the ones that ran. A stored full record for this tree is reused only when
+    _base_ancestor_fresh holds; otherwise the check is forced to run again.
 
-    Returns (True, False, None) if no full check resolves (gate not applied; the caller warns).
+    Returns (True, False, None) if no full check resolves and no repo-cache command exists (no gate).
+    Returns (False, True, message) if no full check resolves but cached commands exist (fail closed).
     Returns (True, True, None) if the full check passes.
     Returns (False, True, diagnostic_message) if the gate fails or cannot run.
     """
-    from .checks import resolve_check_detail, validate
+    from .checks import ConfigKind, resolve_check_detail, resolve_check_timeout, validate
 
     cache_file = target_worktree / ".claude" / "repo-cache.json"
     if cache_file.exists():
@@ -869,12 +904,21 @@ def _run_merge_gate_checks(target_worktree: Path) -> Tuple[bool, bool, Optional[
         if err:
             return False, True, str(err)
 
+    main_worktree = _main_worktree_of(target_worktree)
     try:
-        resolution = resolve_check_detail(target_worktree, None, mode="full")
+        resolution = resolve_check_detail(target_worktree, main_worktree, mode="full")
         if resolution.command is None:
+            if _has_cached_commands([target_worktree, main_worktree]):
+                return False, True, "no full check resolved, but cached commands exist"
             return True, False, None
+        source_kind: ConfigKind = "project.yaml" if resolution.source == "project.yaml" else "repo-cache"
+        timeout_secs, _timeout_source = resolve_check_timeout(
+            target_worktree, main_worktree, resolution.source_file, source_kind, resolution.source_scope,
+        )
         reuse = _base_ancestor_fresh(target_worktree)
-        result = validate(target_worktree, mode="full", force=not reuse, timeout=_get_merge_apply_timeout())
+        result = validate(
+            target_worktree, mode="full", force=not reuse, timeout=timeout_secs, main_worktree=main_worktree,
+        )
     except Exception as e:
         return False, True, f"check gate could not run: {e}"
 

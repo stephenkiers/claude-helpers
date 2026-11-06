@@ -283,11 +283,10 @@ def main():
     h.test_result("ChangedFilesSource includes 'not-computed'",
                   "not-computed" in get_args(ChangedFilesSource))
 
-    from workflow.checks import validate_error_result
-    from workflow.models import ValidateErrorResult
+    from workflow.checks import ValidateErrorReport, validate_error_result
     error_result = validate_error_result("boom", "minimum")
-    h.test_result("validate_error_result carries exactly the ValidateErrorResult keys",
-                  set(error_result.keys()) == set(get_type_hints(ValidateErrorResult).keys()),
+    h.test_result("validate_error_result carries exactly the ValidateErrorReport keys",
+                  set(error_result.keys()) == set(get_type_hints(ValidateErrorReport).keys()),
                   f"keys={sorted(error_result.keys())}")
     h.test_result("validate_error_result keeps the requested mode and the message",
                   error_result["mode_requested"] == "minimum" and error_result["error"] == "boom")

@@ -29,7 +29,7 @@ from _test_harness import Harness
 # Keys validate() adds on top of CheckResults.to_dict() (#462 Part A key-set pin).
 EXTRA_KEYS = frozenset({
     "schema_version", "mode_requested", "mode_executed", "fell_back_to_full",
-    "cache", "satisfied_by", "changed_files_source",
+    "cache", "satisfied_by", "changed_files_source", "command", "timeout_secs",
 })
 TO_DICT_KEYS = frozenset({"results", "all_passed", "failed_at", "planned", "executed", "skipped", "status"})
 
@@ -858,7 +858,8 @@ if __name__ == "__main__":
     import time
     from typing import get_type_hints
     from workflow import checks as checks_mod, git as git_mod
-    from workflow.models import ValidateErrorResult, ValidateResult
+    from workflow.models import ValidateResult
+    from workflow.checks import ValidateErrorReport
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -999,8 +1000,8 @@ if __name__ == "__main__":
 
     err = validate(Path(tempfile.gettempdir()), mode="bogus")
     test_result(
-        "validate error result: carries every ValidateResult key plus error (typed ValidateErrorResult)",
-        set(err) == set(get_type_hints(ValidateErrorResult))
+        "validate error result: carries every ValidateResult key plus error (typed ValidateErrorReport)",
+        set(err) == set(get_type_hints(ValidateErrorReport))
         and set(get_type_hints(ValidateResult)) < set(err) and err.get("status") == "error"
         and isinstance(err.get("error"), str),
         f"keys={sorted(err)}",

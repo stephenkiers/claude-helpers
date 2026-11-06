@@ -364,9 +364,10 @@ if __name__ == "__main__":
                                 f"validate calls={mock_validate.call_args_list}"
                             )
                             test_result(
-                                "apply_merge: repo-cache with only commands.test merges with 'gh pr merge (no gate)'",
-                                result.success is True and result.merge_gate_used == "gh pr merge (no gate)",
-                                f"gate={result.merge_gate_used!r}"
+                                "apply_merge: repo-cache with only commands.test fails closed, no merge (#462 3a)",
+                                result.success is False and not mock_merge.called
+                                and "no full check resolved, but cached commands exist" in str(result.error),
+                                f"success={result.success} merge_called={mock_merge.called} error={result.error!r}"
                             )
 
         print()
@@ -422,6 +423,81 @@ if __name__ == "__main__":
             )
         finally:
             shutil.rmtree(wt, ignore_errors=True)
+
+        print()
+        print("[Section 11a] merge gate fails closed when cached commands exist but no full check resolves (#462 3a)")
+        # merge gate fails closed when cached commands exist but no full check resolves (#462 3a)")
+
+        # 11a-1: a repo-cache with only commands.test is refused by the gate itself.
+        wt = _gate_repo("gate-test-only-", cache_text=json.dumps({"commands": {"test": "pytest"}}))
+        try:
+            with mock.patch("workflow.checks.validate") as mock_validate:
+                gate = _run_merge_gate_checks(wt)
+            test_result(
+                "gate: repo-cache with only commands.test fails closed with the exact message",
+                gate == (False, True, "no full check resolved, but cached commands exist") and not mock_validate.called,
+                f"gate={gate!r}"
+            )
+        finally:
+            shutil.rmtree(wt, ignore_errors=True)
+
+        # 11a-2: a repo-cache with only null commands is not cached commands: no gate, no refusal.
+        wt = _gate_repo("gate-null-only-", cache_text=json.dumps({"commands": {"test": None, "lint": None}}))
+        try:
+            with mock.patch("workflow.checks.validate") as mock_validate:
+                gate = _run_merge_gate_checks(wt)
+            test_result(
+                "gate: repo-cache with only null commands still reports no gate",
+                gate == (True, False, None) and not mock_validate.called,
+                f"gate={gate!r}"
+            )
+        finally:
+            shutil.rmtree(wt, ignore_errors=True)
+
+        # 11a-3: the gate timeout is the one resolve_check_timeout reports (repo-cache checkTimeoutSecs),
+        # not the MERGE_APPLY_TIMEOUT_SECS env value.
+        wt = _gate_repo("gate-timeout-", cache_text=json.dumps({"commands": {"check": "true"}, "checkTimeoutSecs": 123}))
+        try:
+            saved_env = os.environ.get("MERGE_APPLY_TIMEOUT_SECS")
+            os.environ["MERGE_APPLY_TIMEOUT_SECS"] = "999"
+            try:
+                with mock.patch("workflow.merge._base_ancestor_fresh", return_value=False):
+                    with mock.patch(
+                        "workflow.checks.validate",
+                        side_effect=lambda *_a, **_k: {"status": "passed", "all_passed": True, "failed_at": None},
+                    ) as mock_validate:
+                        gate = _run_merge_gate_checks(wt)
+            finally:
+                if saved_env is None:
+                    os.environ.pop("MERGE_APPLY_TIMEOUT_SECS", None)
+                else:
+                    os.environ["MERGE_APPLY_TIMEOUT_SECS"] = saved_env
+            kwargs = mock_validate.call_args.kwargs if mock_validate.called else {}
+            test_result(
+                "gate: validate runs under the resolve_check_timeout value, not the merge env timeout",
+                gate == (True, True, None) and kwargs.get("timeout") == 123 and "main_worktree" in kwargs,
+                f"gate={gate!r} kwargs={kwargs!r}"
+            )
+        finally:
+            shutil.rmtree(wt, ignore_errors=True)
+
+        # 11a-4: a KeyboardInterrupt during the gate propagates and leaves no merge lock behind.
+        wt_int = Path(tempfile.mkdtemp(prefix="gate-interrupt-"))
+        try:
+            plan_int = MergePlan(pr_number=53, head_ref="feature", target_worktree=str(wt_int), blocking_failures=[])
+            interrupted = False
+            with mock.patch("workflow.merge._run_merge_gate_checks", side_effect=KeyboardInterrupt):
+                try:
+                    apply_merge(json.dumps(plan_int.to_dict()))
+                except KeyboardInterrupt:
+                    interrupted = True
+            test_result(
+                "apply_merge: KeyboardInterrupt during the gate propagates and leaves no merge lock",
+                interrupted and not merge_lock_path(str(wt_int)).exists(),
+                f"interrupted={interrupted} lock_exists={merge_lock_path(str(wt_int)).exists()}"
+            )
+        finally:
+            shutil.rmtree(wt_int, ignore_errors=True)
 
         # 11b-3: nothing resolvable -> no gate, merge proceeds with the NO GATE marker.
         wt = _gate_repo("gate-none-")

@@ -58,11 +58,14 @@ GIT_TIMEOUT_SECS: Final = 60
 # here (tree and changed set), so storing a record never changes the tree that keys it, wherever the
 # repo does or does not ignore the directory.
 RECORDS_REL_DIR: Final = Path(".claude") / "check-records"
-# Glob magic is required: a literal exclude of an ignored path makes `git add` exit 1
-# ("paths are ignored by one of your .gitignore files") even though the path is excluded.
+# Exclude magic for `git diff` (changed set). It must NOT be used on `git add`: when the repo ignores
+# .claude/, `git add` with any pathspec that reaches it exits 1 ("paths are ignored by one of your
+# .gitignore files"), even with glob magic. The tree is built with a plain `git add -A` and the records
+# are removed from the temp index afterwards, using RECORDS_PATHSPEC (no exclude magic).
 # The trailing /** is needed because glob `*` does not cross a `/`, so files inside the
-# directory (including force-added ones) would otherwise still match the tree.
+# directory (including force-added ones) would otherwise still match.
 RECORDS_EXCLUDE_PATHSPEC: Final = ":(exclude,glob).claude/check-record*/**"
+RECORDS_PATHSPEC: Final = ":(glob).claude/check-record*/**"
 # Most records kept per worktree; the oldest are removed after a write beyond this.
 MAX_CHECK_RECORDS: Final = 200
 # A temp file in the records directory older than this is crash residue, not a concurrent write.
@@ -1209,10 +1212,19 @@ def worktree_tree(worktree: Path) -> Optional[str]:
                 timeout=GIT_TIMEOUT_SECS,
             )
 
-            # Stage all changes, except the check-record cache itself: records must never change the
-            # tree they are keyed by, whether or not the repo ignores .claude/check-records.
+            # Stage all changes. Records are then removed from the temp index, so they never change the
+            # tree they are keyed by. The removal is not an exclude on `git add`: that exits 1 whenever the
+            # repo ignores .claude/, which would silently disable the cache for those repos.
             subprocess.run(
-                ["git", "add", "-A", "--", ".", RECORDS_EXCLUDE_PATHSPEC],
+                ["git", "add", "-A", "--", "."],
+                cwd=worktree,
+                env=env,
+                capture_output=True,
+                check=True,
+                timeout=GIT_TIMEOUT_SECS,
+            )
+            subprocess.run(
+                ["git", "rm", "-r", "--cached", "-q", "--ignore-unmatch", "--", RECORDS_PATHSPEC],
                 cwd=worktree,
                 env=env,
                 capture_output=True,
@@ -1508,6 +1520,35 @@ def _export_check_env(base: Optional[str], changed: List[str]) -> Tuple[Dict[str
     return env, scratch
 
 
+def parse_check_changed_files(content: str) -> Tuple[str, List[str]]:
+    """
+    Parse a CHECK_CHANGED_FILES scratch file, the format _export_check_env writes. Returns (base, files).
+
+    Format: the first line is the merge-base SHA ('' when unresolved). Everything after the first newline
+    is the changed-file list, NUL-separated. Empty entries are dropped. Raises ValueError when there is no
+    newline, i.e. the content is not in this format.
+    """
+    head, sep, rest = content.partition("\n")
+    if not sep:
+        raise ValueError("CHECK_CHANGED_FILES has no base line")
+    return head, [entry for entry in rest.split("\0") if entry]
+
+
+class ValidateReport(ValidateResult, total=True):
+    """
+    The validate result plus the command that ran and the timeout it ran under. Both are the values the
+    run used (not a re-resolution), so a caller that exports the same command sees what was checked.
+    """
+    command: Optional[str]
+    timeout_secs: Optional[int]
+
+
+class ValidateErrorReport(ValidateErrorResult, total=True):
+    """A validate error result with the same command and timeout keys; both are None because nothing ran."""
+    command: Optional[str]
+    timeout_secs: Optional[int]
+
+
 def _result_fields(results: CheckResults) -> CheckResultsDict:
     """CheckResults.to_dict() as the typed base of a validate result, one explicit key at a time."""
     d = results.to_dict()
@@ -1522,12 +1563,12 @@ def _result_fields(results: CheckResults) -> CheckResultsDict:
     )
 
 
-def validate_error_result(message: str, requested: Mode) -> ValidateErrorResult:
-    """A validate error result carrying every ValidateResult key plus `error`."""
+def validate_error_result(message: str, requested: Mode) -> ValidateErrorReport:
+    """A validate error result carrying every ValidateResult key plus `error`, with command and timeout None."""
     base = _result_fields(CheckResults())
     base["status"] = "error"
     base["all_passed"] = False
-    return ValidateErrorResult(
+    return ValidateErrorReport(
         **base,
         schema_version=1,
         mode_requested=requested,
@@ -1537,6 +1578,8 @@ def validate_error_result(message: str, requested: Mode) -> ValidateErrorResult:
         satisfied_by=None,
         changed_files_source="not-computed",
         error=message,
+        command=None,
+        timeout_secs=None,
     )
 
 
@@ -1651,13 +1694,16 @@ def validate(
     force: bool = False,
     main_worktree: Optional[Path] = None,
     timeout: Optional[int] = None,
-) -> ValidateResult:
+) -> ValidateReport:
     """
     Validate checks idempotently with per-key record caching (ADR-0013 Amendment 11).
 
     Returns the CheckResults dict plus: schema_version, mode_requested, mode_executed,
-    fell_back_to_full, cache ("hit" | "miss" | "forced"), satisfied_by (record stem or None), and
-    changed_files_source ("computed" | "base-unresolved" | "tree-unavailable").
+    fell_back_to_full, cache ("hit" | "miss" | "forced"), satisfied_by (record stem or None),
+    changed_files_source ("computed" | "base-unresolved" | "tree-unavailable"), and command and
+    timeout_secs (the resolved command and the timeout this run used; None on an error result).
+    A timeout passed by the caller overrides resolution; otherwise it resolves exactly as
+    resolve_check_timeout reports it for this worktree and main_worktree.
 
     A hit runs nothing. A miss runs the resolved command with CHECK_BASE and CHECK_CHANGED_FILES
     exported, and writes a record only after a pass with the tree unchanged across the run. A failed
@@ -1739,7 +1785,7 @@ def validate(
     if run.cache_action == "hit":
         result_dict["status"] = "passed"
         result_dict["all_passed"] = True
-    return ValidateResult(
+    return ValidateReport(
         **result_dict,
         schema_version=1,
         mode_requested=requested,
@@ -1748,4 +1794,6 @@ def validate(
         cache=run.cache_action,
         satisfied_by=satisfied_by,
         changed_files_source=changed_source,
+        command=check_command,
+        timeout_secs=timeout,
     )

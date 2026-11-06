@@ -2467,8 +2467,10 @@ CHECK_CMD=$(jq -r '.command // empty' <SCRATCH_PATH>/resolve-check.json)
 TIMEOUT=$(jq -r '.timeout_secs // empty' <SCRATCH_PATH>/resolve-check.json)
 CHECK_SHA=$(cd <WORKTREE> && git rev-parse HEAD)
 printf '%s\n' "$CHECK_SHA" > <SCRATCH_PATH>/check-sha.txt
-cd <WORKTREE> && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks validate --mode minimum --worktree <WORKTREE> > <SCRATCH_PATH>/full-check.json
+cd <WORKTREE> && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks validate --mode minimum --worktree <WORKTREE> --main-worktree <MAIN_WORKTREE> > <SCRATCH_PATH>/full-check.json
 ```
+`--main-worktree` makes validate read the same command and timeout sources that `resolve-check` read, so the
+`command` and `timeout_secs` it reports in `full-check.json` are the ones that ran.
 Never wrap this in `timeout` or `gtimeout` (see Gate step 1). The block's first check, before anything is
 written or launched, requires a clean tree: the porcelain status of `<WORKTREE>` must print nothing. Any
 output exits `2` without starting the run, which is the not-run outcome `check-not-run: worktree not clean`

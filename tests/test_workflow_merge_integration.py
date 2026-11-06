@@ -308,18 +308,17 @@ if __name__ == "__main__":
                 f"gate={gate4!r} calls={calls}"
             )
 
-        # A minimum record never satisfies the full gate.
+        # A minimum record never satisfies the full gate. Merge origin/main into the feature worktree first, so
+        # the base-ancestor precondition holds: a stored record that satisfied the full key would then be reused.
         fixture._run_git(["remote", "set-url", "origin", str(origin)], cwd=fixture.repo_root)
         fixture._run_git(["push", "origin", "main"], cwd=fixture.repo_root)
+        # Both sides wrote test.txt; -X theirs takes origin/main's version. Only the ancestry matters here.
+        fixture._run_git(["merge", "--no-edit", "-X", "theirs", "origin/main"], cwd=wt_path)
         records_dir = wt_path / ".claude" / "check-records"
         before_min = set(records_dir.glob("*.json")) if records_dir.exists() else set()
         min_calls: list = []
-        # resolve_check_base expects a "ref: " prefix that `git symbolic-ref` does not print, so it
-        # returns None in a real repo. Pin it to the real merge-base so the minimum record is written.
-        merge_base = fixture._run_git(["merge-base", "HEAD", "origin/main"], cwd=wt_path)
         with _mock.patch("workflow.checks.run_checks", side_effect=_fake_run_checks(min_calls)):
-            with _mock.patch("workflow.checks.resolve_check_base", return_value=merge_base):
-                min_result = validate(wt_path, mode="minimum", force=True)
+            min_result = validate(wt_path, mode="minimum", force=True)
         new_records = sorted(set(records_dir.glob("*.json")) - before_min)
         test_result(
             "gate: a stored minimum record exists after a minimum validate",
@@ -327,6 +326,7 @@ if __name__ == "__main__":
             f"result={min_result!r} new={new_records}"
         )
 
+        min_record = None
         if len(new_records) == 1:
             min_record = CheckRecord.from_dict(json.loads(new_records[0].read_text()))
             full_key = FullKey(tree=min_record.key.tree, full_digest=min_record.key.full_digest)
@@ -336,9 +336,34 @@ if __name__ == "__main__":
                 f"key={min_record.key!r}"
             )
 
+        # The gate's lookup for a full request covers only the full key, so a minimum record is never a candidate
+        # by default. Widen the candidates to the minimum record's key so that satisfies is what must keep it out:
+        # with the real satisfies the gate runs the full check (gate5 below); with satisfies mutated to accept any
+        # record, the gate reuses the minimum record and skips the full check, which is the failure gate5 guards.
+        from workflow import checks as checks_mod
+        real_candidates = checks_mod._satisfying_keys
+
+        def _widened_candidates(requested):
+            keys = list(real_candidates(requested))
+            if isinstance(requested, FullKey) and min_record is not None:
+                keys.append(min_record.key)
+            return keys
+
+        mut_calls: list = []
+        with _mock.patch("workflow.checks._satisfying_keys", side_effect=_widened_candidates):
+            with _mock.patch("workflow.checks.satisfies", return_value=True):
+                with _mock.patch("workflow.checks.run_checks", side_effect=_fake_run_checks(mut_calls)):
+                    mut_gate = _run_merge_gate_checks(wt_path)
+        test_result(
+            "mutation probe: satisfies mutated to accept any record makes the gate skip the full check (gate5 would fail)",
+            mut_gate == (True, True, None) and len(mut_calls) == 0,
+            f"gate={mut_gate!r} calls={mut_calls}"
+        )
+
         full_calls: list = []
-        with _mock.patch("workflow.checks.run_checks", side_effect=_fake_run_checks(full_calls)):
-            gate5 = _run_merge_gate_checks(wt_path)
+        with _mock.patch("workflow.checks._satisfying_keys", side_effect=_widened_candidates):
+            with _mock.patch("workflow.checks.run_checks", side_effect=_fake_run_checks(full_calls)):
+                gate5 = _run_merge_gate_checks(wt_path)
         test_result(
             "gate: a stored minimum record does not satisfy the merge gate (full check runs)",
             gate5 == (True, True, None) and len(full_calls) == 1,

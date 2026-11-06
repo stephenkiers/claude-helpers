@@ -17,7 +17,7 @@ Usage:
   python3 -m scripts.workflow.cli worktree detect-parent [--cwd <dir>]
   python3 -m scripts.workflow.cli checks resolve-check --worktree <dir> [--main-worktree <dir>]
   python3 -m scripts.workflow.cli checks ensure-check --worktree <dir> --main-worktree <dir>
-  python3 -m scripts.workflow.cli checks validate [--mode minimum|full] [--worktree <dir>] [--force]
+  python3 -m scripts.workflow.cli checks validate [--mode minimum|full] [--worktree <dir>] [--main-worktree <dir>] [--force]
   python3 -m scripts.workflow.cli checks record-check-answer --main-worktree <dir> (--command <cmd> | --opt-out <reason>)
   python3 -m scripts.workflow.cli deps ensure --worktree <dir> --main-worktree <dir> [--base <ref>] [--approve-manifest] [--ignore-approvals]
   python3 -m scripts.workflow.cli heal probe --worktree <dir> --main-worktree <dir> [--base <ref>] --flow-dir <dir> --issue <num>
@@ -366,6 +366,11 @@ def main() -> None:
         "--force",
         action="store_true",
         help="Force re-run, ignoring cache"
+    )
+    checks_validate_parser.add_argument(
+        "--main-worktree",
+        default=None,
+        help="Main worktree path (command and timeout sources; default: none)"
     )
 
     deps_parser = subparsers.add_parser("deps", help="Dependency install precondition")
@@ -782,10 +787,12 @@ def main() -> None:
         elif args.checks_action == "validate":
             try:
                 worktree = Path(args.worktree).resolve()
+                main_worktree_arg = Path(args.main_worktree) if args.main_worktree else None
                 validate_result: Any = checks.validate(
                     worktree=worktree,
                     mode=args.mode,
-                    force=args.force
+                    force=args.force,
+                    main_worktree=main_worktree_arg,
                 )
                 print(json.dumps(validate_result))
                 # Exit 0 if passed, 1 if failed, 2 for a config or usage error (status "error")

@@ -328,5 +328,31 @@ if __name__ == "__main__":
             f"rc={r_fb.returncode} out={out_fb!r} err={r_fb.stderr[-300:]!r}",
         )
 
+    print("[Section 16d] checks validate --main-worktree: the reported command and timeout are the ones that ran (#462 Part 3a)")
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "main_root").mkdir()
+        (Path(tmp) / "wt_root").mkdir()
+        main = _fixture_work_tree(Path(tmp) / "main_root", {"check": "true"})
+        (main / ".claude" / "repo-cache.json").write_text(
+            json.dumps({"version": 1, "commands": {"check": "true"}, "checkTimeoutSecs": 123}) + "\n"
+        )
+        work = _fixture_work_tree(Path(tmp) / "wt_root", {})
+        vm = _checks_cli("validate", "--worktree", str(work), "--main-worktree", str(main), "--mode", "full")
+        jm = _parse_json(vm.stdout)
+        test_result(
+            "checks validate --main-worktree: a passing run reports the main command and the main timeout",
+            vm.returncode == 0 and jm.get("status") == "passed" and jm.get("command") == "true"
+            and jm.get("timeout_secs") == 123,
+            f"rc={vm.returncode} out={jm!r} err={vm.stderr[-300:]!r}",
+        )
+        vn = _checks_cli("validate", "--worktree", str(work), "--mode", "full")
+        jn = _parse_json(vn.stdout)
+        test_result(
+            "checks validate without --main-worktree: no command resolves, so the error result reports command None",
+            vn.returncode == 2 and jn.get("status") == "error" and jn.get("command") is None
+            and jn.get("timeout_secs") is None,
+            f"rc={vn.returncode} out={jn!r}",
+        )
+
     print()
     h.summarize_and_exit()
