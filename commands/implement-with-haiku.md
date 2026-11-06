@@ -1139,7 +1139,9 @@ any build tool, in any project.
 
 `WT_PARENT` is deliberately derived from the first porcelain entry of `git worktree list`, not from the
 drift barrier's primary checkout (`PRIMARY_CHECKOUT`, resolved by `primary-checkout-drift.py primary`).
-Unit placement is governed by ADR-0010 and is not changed by the primary-checkout drift fix.
+Unit placement is not changed by the primary-checkout drift fix. In a bare layout the first entry is the bare
+directory, so this placement diverges from ADR-0010's expectation; that divergence is tracked by the
+detect-parent follow-up in ADR-0008 (2026-11-05 amendment), not fixed here.
 
 ```bash
 BRANCH=$(git branch --show-current)

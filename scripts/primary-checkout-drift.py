@@ -75,19 +75,22 @@ Subcommands:
       exit, timeout, unparseable output, any exception)
 
 Exit codes and streams:
-  subcommand  exit 0              exit 1                exit 2                          exit 3
-  snapshot    snapshot written    -                     ERROR lines on stdout:          -
-                                                       probe-failed, baseline-unavailable
-  compare     clean               drift: FAIL lines and ERROR lines on stdout:          -
-                                  ERROR primary-checkout-drift   baseline-unavailable,
-                                                       probe-failed, planned-set-unavailable
-  fail        -                   always 1 (barrier)    -                               -
-  primary     one path on stdout  -                     ERROR resolver-failed on STDERR NOTE: no usable primary
-                                                                                        checkout on STDERR
+  subcommand  exit 0            exit 1                exit 2                            exit 3
+  snapshot    snapshot written  -                     ERROR lines on stdout:            -
+                                                      probe-failed, baseline-unavailable
+  compare     clean             drift: FAIL lines     ERROR lines on stdout:            -
+                                and ERROR lines       baseline-unavailable,
+                                                      probe-failed, planned-set-unavailable
+  fail        -                 always 1 (barrier)    -                                 -
+  primary     one path on stdout  -                   ERROR resolver-failed on STDERR   NOTE: no usable
+                                                                                        primary checkout
+                                                                                        on STDERR
 
 Note: `primary` deliberately puts its errors on STDERR as `ERROR resolver-failed ...`, while the
 other subcommands put ERROR lines on stdout. Exit 3 means only "no candidate", never a failure.
-Exit codes: 0 clean, 1 drift, 2 error (missing evidence, probe failures, etc.), 3 no primary candidate (primary only)
+The snapshot's failure line is `ERROR probe-failed` on stdout (the step's grep depends on that exact prefix).
+Exit codes: 0 clean, 1 drift, 2 error (missing evidence, probe failures, etc.), 3 no primary candidate (primary only).
+The rules and exit codes are recorded in docs/adr/0008-machine-enforced-agent-guardrails.md (2026-11-05 amendment).
 
 The detector never fetches or refreshes any ref; it is report-only and read-only. The benign fast-forward path
 only helps where the primary's branch has a tracked upstream. Commits in the primary are primarily prevented
@@ -697,17 +700,19 @@ def cmd_fail(args: argparse.Namespace) -> int:
     else:
         # Exit 2: --reason (e.g. head-probe-failed) wins; otherwise --cause picks the Reason
         cause = args.cause or "baseline-unavailable"
+        suffix = f" {args.label}" if args.label else ""
         if args.reason:
             reason = args.reason
             if args.reason.startswith("primary-checkout-drift: head-probe-failed"):
-                print("FAILED: primary-checkout-drift head probe failed", file=sys.stderr)
+                print(f"FAILED: primary-checkout-drift head probe failed{suffix}", file=sys.stderr)
             else:
-                print("FAILED: primary-checkout-drift baseline unavailable", file=sys.stderr)
-        elif cause == "baseline-unavailable":
-            print("FAILED: primary-checkout-drift baseline unavailable", file=sys.stderr)
+                print(f"FAILED: primary-checkout-drift baseline unavailable{suffix}", file=sys.stderr)
+        elif args.cause is None:
+            # No --cause: keep today's exact stderr text (default path)
+            print(f"FAILED: primary-checkout-drift baseline unavailable{suffix}", file=sys.stderr)
             reason = f"{REASON_PREFIX} {cause}"
         else:
-            print(f"FAILED: primary-checkout-drift {cause}", file=sys.stderr)
+            print(f"FAILED: primary-checkout-drift {cause}{suffix}", file=sys.stderr)
             reason = f"{REASON_PREFIX} {cause}"
     if not reason.startswith(REASON_PREFIX):
         print(f"fail: --reason must start with '{REASON_PREFIX}'", file=sys.stderr)

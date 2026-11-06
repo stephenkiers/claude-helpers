@@ -753,18 +753,22 @@ edited. This amendment restates the definition and items 1, 4 and 5 for bare lay
 - the first entry of `git worktree list` when that entry is not bare;
 - otherwise, the worktree checked out on `refs/heads/<default>`, trying candidates in order: the
   `origin/HEAD` short name, then `main`, then `master`;
-- otherwise there is no primary, and the run stops.
+- otherwise there is no primary, and the run stops. A candidate worktree that is prunable fails closed
+  (there is no usable checkout to return).
 
-`primary-checkout-drift.py primary` is the single resolver for this rule. The snapshot and compare
-paths take their checkout from it and do not derive one themselves.
+`primary-checkout-drift.py primary` implements this rule for the drift barrier. The snapshot and compare
+paths take their checkout from it and do not derive one themselves. Other first-entry sites in the repo
+are not yet on this rule; see the follow-ups below.
 
 **Item 1 (snapshot).** The baseline snapshot covers only the single resolved primary checkout. In a bare
 layout that is the default-branch worktree (for example `<repo>/worktrees/main`), not the bare entry and
 not every sibling worktree.
 
-**Item 4 (fail condition).** Unchanged. The run fails only on the planned file set (all units' owned files
-plus the ticket branch's changes since START_SHA) and warns on other new dirt. The skip when the primary
-checkout's realpath equals the orchestrator cwd (`primary-is-orchestrator-cwd`) stays.
+**Item 4 (fail condition).** Unchanged for dirt. The run fails on dirt only on the planned file set (all
+units' owned files plus the ticket branch's changes since START_SHA) and warns on other new dirt. The
+exception is HEAD movement: a primary whose HEAD moved fails (`FAIL head-moved`) whatever files changed.
+The skip when the primary checkout's realpath equals the orchestrator cwd (`primary-is-orchestrator-cwd`)
+stays.
 
 **Item 5 (fail closed).** The guarantee is unchanged, and there is no skip outcome. A bare layout with no
 default-branch worktree is a hard stop with reason `no-usable-primary`; it is never a silent pass. Every
@@ -775,6 +779,11 @@ Reason of `primary-checkout-drift: <cause>`, where `<cause>` is one of:
 - `no-usable-primary`: site 1 when `primary` exits 3, and a failed `<PRIMARY_CHECKOUT>` re-check at a later
   consuming site.
 - `resolver-failed`: site 1 when `primary` exits anything other than 0 or 3.
+
+Only the `--compare-exit 2` barrier failures carry `<cause>` (through `--cause`). A drift failure
+(`--compare-exit 1`) keeps its drift reason: `primary-checkout-drift: overlap <unit-id>`,
+`primary-checkout-drift: unit <unit-id>`, or the compare's FAIL-path reason. A re-check failure in the
+drift procedure goes into the label only.
 
 **Literal recorded at site 1.** The orchestrator records the resolved primary path once, at site 1. Later
 consuming sites use that literal and do not resolve again. Each use is guarded by a re-check:
@@ -787,7 +796,8 @@ drift reason and its evidence, and is reported in the label only.
 from edits by a sibling flow or the human when an agent is given, or guesses, that path. It does not cover
 the #293 `--git-dir` vector: `git rev-parse --git-dir` in a bare layout resolves to
 `<repo>/.bare/worktrees/<name>`, which is outside the watched worktree. That vector is NOT covered here;
-its follow-up is #TBD (.bare write question).
+its follow-up is #TBD (.bare write question). A sibling worktree other than the default branch is also
+outside the watch; the re-check guards the literal's identity, not the contents of other worktrees.
 
 **`/expert-fleet` interaction.** Now that the barrier really runs in bare layouts, a sibling flow under
 `/expert-fleet` that fast-forwards `worktrees/main` while a run is mid-implement makes the barrier report
@@ -795,16 +805,21 @@ its follow-up is #TBD (.bare write question).
 
 **Layout and placement.** The hand-built `.bare` layout (`<repo>/.bare` plus `<repo>/worktrees/*`) is a
 supported repo state per `docs/workflow-cli-invariants.md` (Phase 1 test coverage lists bare worktree setup).
-Unit placement is unchanged by ADR-0010: units still land at `<repo>/<branch>-haiku-<id>` via the first
-porcelain entry. The resolver governs the primary checkout only, never unit placement.
+This amendment does not change unit placement: units still land at `<repo>/<branch>-haiku-<id>` via the
+first porcelain entry. In a bare layout that entry is the bare directory, so placement there diverges from
+ADR-0010's expectation; that divergence is tracked by the detect-parent follow-up below, not resolved here.
+The resolver governs the primary checkout only, never unit placement.
 
 **Known edge.** For a first-entry path containing a space, the old `cut -d' ' -f2` pipeline truncated the
 path at the first space, while the resolver keeps it whole. Unit placement is unchanged, so that truncation
 is not fixed by this amendment.
 
 **Follow-ups.**
-- #TBD: the first-entry sites in `commands/cleanup.md` and `commands/verify-queue.md`.
+- #TBD: the first-entry sites in `commands/cleanup.md`, `commands/verify-queue.md`,
+  `prompts/worktree-reference.md`, `commands/track-and-start.md`, `scripts/setup-pr-worktree.sh`,
+  `scripts/find-stray-haiku-worktree.sh` and `scripts/in-flight-snapshot.py`.
 - #TBD: `scripts/workflow/worktrees.py:63` (`detect_main_worktree`) and the ADR-0010 detect-parent logic,
   which use the same first-entry rule.
 - #356: relocate the resolver into `scripts/workflow/worktrees.py` before a second consumer is wired.
-- #TBD (.bare write question): whether agents may write under `<repo>/.bare`, the #293 vector above.
+- #TBD (.bare write question): whether agents may write under `<repo>/.bare`, the 2026-10-19 incident
+  (ticket 293) vector above.
