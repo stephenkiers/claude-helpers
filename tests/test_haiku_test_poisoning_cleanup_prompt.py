@@ -19,7 +19,9 @@ REFERENCE_FILE = REPO_ROOT / "prompts" / "test-cleanup-reference.md"
 COMMANDS_DIR = REPO_ROOT / "commands"
 
 # The prompt-level check below is a doc-order guard only. The real control on Phase 2's destructive git
-# is scripts/test-cleanup-git-guard.py, a hook that is inert outside an active Phase 2.
+# is scripts/test-cleanup-git-guard.py, a hook that is inert outside an active Phase 2. Verbs the
+# prompt does not spell out (git mv, restore, checkout, stash) are listed on purpose: the check
+# keeps them out of any pre-Phase-2 text, and passes vacuously while none appear.
 DESTRUCTIVE_VERBS = [
     "git rm", "git mv", "git commit", "git revert", "git switch -c",
     "git restore", "git reset", "git clean", "git checkout", "git stash",
