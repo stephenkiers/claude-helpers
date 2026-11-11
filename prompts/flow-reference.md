@@ -540,7 +540,7 @@ Each state's meaning:
   resume the command rewrites the file with the rest of the summary and the final trailer for its
   shape (`OK` or `FAILED`), **keeping** every `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` line it holds — `flow-verify-receipt.py` uses them to find reused and unanswered question files, and counts asked questions from this attempt's files on disk.
 
-**Forbidden trailer shapes** (the orchestrator rejects these): `Decision: AWAITING`; `MERGED: no`
+**Forbidden trailer shapes** (the orchestrator rejects these): any `Decision:` value other than exactly `OK` or `FAILED` (`DONE`, `SUCCESS`, `COMPLETE`, `PASS` and the like are rejected as `malformed receipt`; `DONE` is the implement ledger's row word, never a receipt decision); `Decision: AWAITING`; `MERGED: no`
 (omit the line instead); `MERGED: yes` with any `Decision` other than `OK`; `<!-- step-end -->` without a `Decision:` line; any receipt
 without an `ATTEMPT:` line; a line beginning `Deviation:` (any `Decision`).
 
