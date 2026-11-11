@@ -126,9 +126,10 @@ def main():
         h.test_result("empty flows_root exits with 0", returncode == 0, f"got {returncode}")
         try:
             data = json.loads(stdout)
-            h.test_result("empty output is valid JSON", True)
+            h.test_result("empty output is valid JSON dict", isinstance(data, dict))
+            h.test_result("empty output has counts key", "counts" in data)
         except json.JSONDecodeError as e:
-            h.test_result("empty output is valid JSON", False, str(e))
+            h.test_result("empty output JSON parses", False, str(e))
 
     # Test 4: JSON report counts
     print("\n[Test 4] JSON report counts")
@@ -147,10 +148,13 @@ def main():
         h.test_result("json output exits with 0", returncode == 0, f"got {returncode}")
         try:
             data = json.loads(stdout)
-            h.test_result("JSON report is valid", True)
             h.test_result("JSON report is dict", isinstance(data, dict))
+            h.test_result("JSON has counts key", "counts" in data)
+            counts = data.get("counts", {})
+            h.test_result("flows_in_window == 3", counts.get("flows_in_window") == 3,
+                         f"got {counts.get('flows_in_window')}")
         except json.JSONDecodeError as e:
-            h.test_result("JSON report is valid", False, str(e))
+            h.test_result("JSON report parses", False, str(e))
 
     # Test 5: Healthy awaiting excluded
     print("\n[Test 5] Healthy awaiting excluded")
@@ -171,6 +175,13 @@ def main():
         returncode, stdout, stderr = _run_script(["--format", "json"], flows_root)
         h.test_result("script runs with mixed awaiting states", returncode == 0,
                      f"got {returncode}, stderr: {stderr}")
+        try:
+            data = json.loads(stdout)
+            flows_count = data.get("counts", {}).get("flows_in_window")
+            h.test_result("flows_in_window == 3 (healthy awaiting included)", flows_count == 3,
+                         f"got {flows_count}")
+        except json.JSONDecodeError as e:
+            h.test_result("Test 5 JSON parses", False, str(e))
 
     # Test 6: No free text from receipts
     print("\n[Test 6] No free text from receipts")
@@ -202,7 +213,8 @@ def main():
 
         try:
             returncode, stdout, stderr = _run_script(["--format", "json"], flows_root)
-            h.test_result("script doesn't crash on unreadable receipt", True)
+            h.test_result("script doesn't crash on unreadable receipt", returncode == 0,
+                         f"got returncode {returncode}")
         except Exception as e:
             h.test_result("script doesn't crash on unreadable receipt", False, str(e))
         finally:
@@ -233,7 +245,14 @@ def main():
                         started_iso="2026-11-04T23:59:59Z")
 
         returncode, stdout, stderr = _run_script(["--format", "json", "--since", "2026-11-05"], flows_root)
-        h.test_result("since midnight filter works", returncode == 0, f"got {returncode}")
+        h.test_result("since midnight filter exits 0", returncode == 0, f"got {returncode}")
+        try:
+            data = json.loads(stdout)
+            flows_count = data.get("counts", {}).get("flows_in_window")
+            h.test_result("midnight flow is included (flows_in_window == 1)", flows_count == 1,
+                         f"got flows_in_window={flows_count}")
+        except json.JSONDecodeError as e:
+            h.test_result("midnight test JSON parses", False, str(e))
 
     # Test 10: Since boundary - day before excluded
     print("\n[Test 10] Since boundary - day before excluded")
@@ -246,7 +265,37 @@ def main():
                         started_iso="2026-11-05T12:00:00Z")
 
         returncode, stdout, stderr = _run_script(["--format", "json", "--since", "2026-11-05"], flows_root)
-        h.test_result("since boundary excludes day before", returncode == 0, f"got {returncode}")
+        h.test_result("since boundary excludes day before exits 0", returncode == 0, f"got {returncode}")
+        try:
+            data = json.loads(stdout)
+            flows_count = data.get("counts", {}).get("flows_in_window")
+            outside_count = data.get("counts", {}).get("outside_window")
+            h.test_result("day-before flow is excluded (flows_in_window == 1)", flows_count == 1,
+                         f"got flows_in_window={flows_count}")
+            h.test_result("outside_window count is 1", outside_count == 1,
+                         f"got outside_window={outside_count}")
+        except json.JSONDecodeError as e:
+            h.test_result("day-before test JSON parses", False, str(e))
+
+    # Test 10a: Since boundary - exact T00:00:00Z on boundary is included
+    print("\n[Test 10a] Since boundary - exact T00:00:00Z is included")
+    with tempfile.TemporaryDirectory() as tmp:
+        flows_root = Path(tmp) / "flows"
+        flows_root.mkdir()
+        _create_flow_dir(flows_root, "owner_repo", 1, "exact-boundary", "done",
+                        started_iso="2026-11-05T00:00:00Z")
+        _create_flow_dir(flows_root, "owner_repo", 2, "just-before", "done",
+                        started_iso="2026-11-04T23:59:59Z")
+
+        returncode, stdout, stderr = _run_script(["--format", "json", "--since", "2026-11-05"], flows_root)
+        h.test_result("exact boundary test exits 0", returncode == 0, f"got {returncode}")
+        try:
+            data = json.loads(stdout)
+            flows_count = data.get("counts", {}).get("flows_in_window")
+            h.test_result("exact T00:00:00Z is included (flows_in_window == 1)", flows_count == 1,
+                         f"got flows_in_window={flows_count}")
+        except json.JSONDecodeError as e:
+            h.test_result("exact boundary test JSON parses", False, str(e))
 
     # Test 11: Multiple repos
     print("\n[Test 11] Multiple repos")
@@ -260,7 +309,14 @@ def main():
         _create_flow_dir(flows_root, "owner_repo3", 3, "issue-3", "awaiting")
 
         returncode, stdout, stderr = _run_script(["--format", "json"], flows_root)
-        h.test_result("script handles multiple repos", returncode == 0, f"got {returncode}")
+        h.test_result("script handles multiple repos exits 0", returncode == 0, f"got {returncode}")
+        try:
+            data = json.loads(stdout)
+            flows_count = data.get("counts", {}).get("flows_in_window")
+            h.test_result("flows_in_window == 3 across repos", flows_count == 3,
+                         f"got {flows_count}")
+        except json.JSONDecodeError as e:
+            h.test_result("Test 11 JSON parses", False, str(e))
 
     # Test 12: Bad stop_reason does not crash
     print("\n[Test 12] Bad stop_reason")
@@ -274,7 +330,8 @@ def main():
         state_path.write_text(json.dumps(state))
 
         returncode, stdout, stderr = _run_script(["--format", "json"], flows_root)
-        h.test_result("script handles malformed stop_reason", True)
+        h.test_result("script handles malformed stop_reason exits 0", returncode == 0,
+                     f"got {returncode}")
 
     # Test 13: Markdown output format
     print("\n[Test 13] Markdown output format")
@@ -285,7 +342,8 @@ def main():
 
         returncode, stdout, stderr = _run_script(["--format", "md"], flows_root)
         h.test_result("markdown format exits with 0", returncode == 0, f"got {returncode}")
-        h.test_result("markdown output is not empty", len(stdout) > 0, "stdout is empty")
+        h.test_result("markdown output >= 100 bytes", len(stdout) >= 100,
+                     f"got {len(stdout)} bytes")
         try:
             json.loads(stdout)
             h.test_result("markdown output is not JSON", False)
@@ -304,6 +362,8 @@ def main():
         returncode, stdout = result.returncode, result.stdout
 
         h.test_result("default format exits with 0", returncode == 0, f"got {returncode}")
+        h.test_result("default output >= 100 bytes", len(stdout) >= 100,
+                     f"got {len(stdout)} bytes")
         try:
             json.loads(stdout)
             h.test_result("default format is markdown", False)

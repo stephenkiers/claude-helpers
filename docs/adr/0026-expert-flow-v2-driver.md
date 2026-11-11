@@ -48,7 +48,7 @@ them are no longer the source of truth for a v2 flow.
 
 It **keeps ADR-0023 byte-compatible** for everything else:
 
-- the relay files (`questions/<STEP>-NN.json`, `answers/<STEP>-NN.json`) and `flow-render-questions.py`, reused with additive parameterization. Scripts `scripts/flow_log.py` (flow-log reads) and `scripts/flow-render-questions.py` (context rendering) are extended additively to accept a `--driver v2` mode or flow-root override; the v1 scripts stay pinned to `~/.claude/flows/` and to the v1 relay format (Decision 7);
+- the relay files (`questions/<STEP>-NN.json`, `answers/<STEP>-NN.json`) and `flow-render-questions.py`, reused with additive parameterization. Scripts `scripts/flow_log.py` (flow-log reads) and `scripts/flow-render-questions.py` (context rendering) are eligible for additive parameterization (a planned exception, per Decision 7 human ruling); the v1 scripts stay pinned to `~/.claude/flows/` and to the v1 relay format;
 - the receipt trailer (`Decision: OK | FAILED`, `ATTEMPT: <k>`, and the `KEY: value` lines), verified
   against on-disk artifacts by `flow-verify-receipt.py`;
 - the marker lifecycle (`<worktree>/.claude/flow-run`);
@@ -300,5 +300,5 @@ written).
 
 ## Amendments
 
-None yet. Layer 3 amends ADR-0025 so that its auto-merge rejection covers `commands/expert-flow-v2.md`. ADR-0023 contains a pointer to this ADR's Layer 5 supersession step. Layer 5
+None yet. Layer 3 amends ADR-0025 so that its auto-merge rejection covers `commands/expert-flow-v2.md`. The pointer to this ADR's Layer 5 supersession step will land at Layer 5 in ADR-0023. Layer 5
 finalizes this ADR (Decision 11, D3), amends ADR-0008 and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.

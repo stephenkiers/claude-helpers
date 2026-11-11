@@ -168,7 +168,7 @@ From the plan's "Overlapping-issue dispositions" (Q2 and seq 1: fold the overlap
 | #408 | Layer 3 |
 | #407 | Layer 2 (driver-side preflight) |
 | #406 and #430 | Not ported. v2 uses the existing hooks unchanged, so they stay open against the shared guards under the seq 1 hook freeze |
-| #446 | Split. The hook defect itself (`flow-assessor` missing from `KNOWN_FLOW_AGENTS` in `flow-bash-guard.py`) is the same class as #406 and #430 and stays unfixed under the hook freeze. v2's Layer 3 assess stage runs every check that needs Bash in driver Python, and `flow-assessor` is spawned only for read-and-judge work. If Layer 3 finds the assessor still needs Bash, #446 is recorded as unaddressed alongside #406 and #430 |
+| #446 | Split. The hook defect (#446, hook half — `flow-assessor` missing from `KNOWN_FLOW_AGENTS`) has been fixed independently (commit f33a8bff, 2026-11-05). v2's Layer 3 assess stage runs every check that needs Bash in driver Python, and `flow-assessor` is spawned only for read-and-judge work |
 | #304 | Layer 3 |
 | #472-#475 | Layers 1 and 2 use the primary resolver and never the first-entry main-worktree rule |
 | #476 | Layer 3 merge path: the driver verifies PR state after the merge step returns (Q4) |
@@ -208,7 +208,7 @@ Headings marked `###` are amendment-tagged subsection headings. The subsection `
 | 24 | Amendment (2026-11-05): verify, implement and fix check gates run the minimum check (#387) | Verify, implement and fix gates run `checks validate --mode minimum` | Layer 3 | port, pinned by test |
 | 25 | Amendment (2026-10-26): Restricted step agents for implement, fix, and review (#358) | `flow-implement` and `flow-review` restricted; prompt-scoped `Write` only for receipts and markers | Layer 3 | port, pinned by test (agent definitions unchanged under the hook freeze) |
 | 26 | Amendment (2026-10-27): assess outstanding items before ship (#383, slice 1) | Assess stage: `attempts.assess`, `failures.assess`, `stop_source.assess`, `outstanding_format: 2`, 8-item batches, Sonnet assessor, drop reasons of at least 15 characters; slice 2 (automatic finishing) out of scope | Layer 3 | port, pinned by test |
-| 27 | ### Plan step hard-stop on missing agent files (amendment 2026-11-03, #446) | Plan step hard-stops when its agent files are missing; the `flow-assessor` Bash-guard defect is split (see Overlapping-issue dispositions, #446) | Layer 2 | port, pinned by test; the hook defect stays unfixed under the hook freeze |
+| 27 | ### Plan step hard-stop on missing agent files (amendment 2026-11-03, #446) | Plan step hard-stops when its agent files are missing; the `flow-assessor` Bash-guard defect is split (see Overlapping-issue dispositions, #446) | Layer 2 | port, pinned by test; the hook defect has been fixed independently (commit f33a8bff, 2026-11-05) |
 | 28 | Amendment (2026-10-29): human-attested Accept and continue at the hard stop (#365) | Human-only Accept and continue; default-deny allowlist in `scripts/flow-accept.py`; `accepted (...)` log event | Layer 3 | port, pinned by test |
 | 29 | Amendment (2026-10-29): implement/fix receipts name their ledger run (#346) | `RUN_KEY` and `RECEIPT_CONTRACT` in implement and fix receipts | Layer 1 | port, pinned by test |
 | 30 | Amendment (2026-10-29): bounded self-heal for check failures and Fix now (#380) | `flow-healer` (one heal per flow, `lint` or deterministic `test` only); Fix now re-spawn; healed run forces the merge gate; `healed` in `state.json` | Layer 3 | port, pinned by test |
