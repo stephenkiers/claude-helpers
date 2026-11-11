@@ -73,7 +73,7 @@ def parse_amendments(adr_text):
         })
     # Ensure fences are closed at the end of the file
     if in_fence:
-        pass  # Unclosed fence detected; headings after it were already skipped
+        raise ValueError("Unclosed fence detected in ADR text: ``` fence was not closed before end of file")
     return amendments
 
 
@@ -277,6 +277,20 @@ def test_fixture_non_amendment_and_fenced_headings_ignored():
     return True, ""
 
 
+def test_fixture_unclosed_fence_raises_error():
+    """An ADR text with an unclosed ``` fence raises ValueError."""
+    adr_unclosed = "## Amendment (2026-12-01, #999): test heading\n```\n## Fenced heading\n"
+    try:
+        parsed = parse_amendments(adr_unclosed)
+        return False, f"expected ValueError for unclosed fence, got {len(parsed)} amendments"
+    except ValueError as exc:
+        if "Unclosed fence" in str(exc):
+            return True, ""
+        return False, f"ValueError raised but message missing 'Unclosed fence': {exc}"
+    except Exception as exc:
+        return False, f"expected ValueError, got {type(exc).__name__}: {exc}"
+
+
 def test_fixture_missing_inventory_dir_fails():
     """A missing inventory directory reports every amendment as uncovered (no crash)."""
     with tempfile.TemporaryDirectory() as td:
@@ -322,6 +336,7 @@ if __name__ == "__main__":
     _check(h, "level-3 amendment heading is checked", test_fixture_level3_amendment_heading_counts)
     _check(h, "non-amendment and fenced headings are ignored",
            test_fixture_non_amendment_and_fenced_headings_ignored)
+    _check(h, "unclosed fence raises ValueError", test_fixture_unclosed_fence_raises_error)
     _check(h, "missing inventory dir leaves the heading uncovered", test_fixture_missing_inventory_dir_fails)
     print()
 

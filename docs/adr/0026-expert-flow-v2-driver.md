@@ -31,7 +31,8 @@ Three facts constrain the design, all recorded in ADR-0023 or measured since:
 The v1 behaviour has to be preserved, not re-invented. The inventory (`docs/v2-inventory/`, #477 Layer 0)
 records every v1 rule the driver must reproduce, drop or change, keyed to ADR-0023 amendment dates. The
 drift test (Layer 0) fails when a new ADR-0023 amendment is not reflected in that inventory. Under the
-v1 freeze (Decision 8), that is how drift is caught during the build. The baseline stop-population number is under re-measurement (population excludes healthy awaiting-state flows) and will be restated in Layer 5.
+v1 freeze (Decision 8), that is how drift is caught during the build. The corrected baseline stop-population
+excludes healthy `awaiting` flows; orchestrator-classified stops are 8 of 44 stops (18%), which is 8 of 212 flows in the window (4% of flows); the earlier figure was 8 of 66 (12%) over a population that wrongly included healthy awaiting flows (see `docs/metrics/expert-flow-v1-baseline.md`).
 
 ## Decision
 

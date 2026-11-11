@@ -319,6 +319,33 @@ def test_since_includes_flow_started_on_the_date():
     return True, ""
 
 
+def test_since_boundary_midnight_included():
+    """A flow started at exactly midnight (00:00:00) of the --since date is included."""
+    at_midnight = ("9109-midnight-jj00", dated("done", "merge", SINCE + "T00:00:00Z", {}, 9109, "Quux midnight"))
+    with tempfile.TemporaryDirectory() as td:
+        root = build_root(td, [at_midnight])
+        rc, out = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "json"])
+    if rc != 0:
+        return False, f"exit {rc}"
+    flows_in_window = json_ints(json.loads(out), ["flows_in_window"])
+    if 1 not in flows_in_window:
+        return False, f"flows_in_window {flows_in_window}, expected 1 (midnight flow on --since date excluded?)"
+    return True, ""
+
+
+def test_since_boundary_day_before_excluded():
+    """A flow started on the day before the --since date is excluded."""
+    day_before = ("9110-before-kk11", dated("done", "merge", "2026-10-31T23:59:59Z", {}, 9110, "Quux before"))
+    with tempfile.TemporaryDirectory() as td:
+        root = build_root(td, [day_before])
+        rc, out = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "json"])
+    if rc != 0:
+        return False, f"exit {rc}"
+    flows_in_window = json_ints(json.loads(out), ["flows_in_window"])
+    if 0 not in flows_in_window:
+        return False, f"flows_in_window {flows_in_window}, expected 0 (day-before flow included?)"
+    return True, ""
+
 
 # ── Section 3: edge cases ────────────────────────────────────────────────────
 
@@ -558,6 +585,8 @@ if __name__ == "__main__":
     _run(h, "mixed fixture counts (md)", test_mixed_fixture_counts_md)
     _run(h, "a flow started before --since is excluded", test_since_excludes_flow_started_before_date)
     _run(h, "a flow started on the --since date is included", test_since_includes_flow_started_on_the_date)
+    _run(h, "a flow started at midnight of --since date is included", test_since_boundary_midnight_included)
+    _run(h, "a flow started the day before --since is excluded", test_since_boundary_day_before_excluded)
     print()
 
     print("[Section 3] edge cases")

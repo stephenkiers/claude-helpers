@@ -98,6 +98,10 @@ Each row is a stop the rule table could not classify. The human labels each grou
 | ambiguous | unmatched reason: receipt decision missing | 1 |
 | ambiguous | unmatched reason: receipt outstanding lines | 1 |
 
+## Hand-labelled sample
+
+Status: NOT YET PERFORMED. The hand-labelled sample of stops (review item 5) has not been completed and is an open item for the human.
+
 ## Reconciliation
 
 The ticket's figure ("0 of 47 reached merge") and the local read ("14 of 84 at merge or done") are compared against this run. This run reports 96 of 212 flows reached merge or done under the definition above. The difference from the two figures is a definition difference (the window, the population, or the end state), not a data error: this run covers every flow started since the window start rather than only finished runs or runs with a telemetry row, and it counts a flow that is at the merge step as reached. The current-step read also undercounts flows that reached merge and were later moved back.
