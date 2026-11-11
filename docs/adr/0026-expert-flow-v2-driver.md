@@ -1,7 +1,7 @@
 # ADR-0026: /expert-flow v2 — a deterministic Python driver with a disk-only step boundary
 
 **Status:** Proposed (2026-11-10). Lands with the docs-and-measurement Layer 0 under #477 (parent #456).
-It is finalized to Accepted at Layer 5, after the D6 exit bar is met (see Decision 9).
+It is finalized to Accepted at Layer 5, after the D6 exit bar is met (see Decision 11).
 
 ## Context
 
@@ -54,7 +54,7 @@ It **keeps ADR-0023 byte-compatible** for everything else:
 - the verifier trust boundary, including `flow-verify-receipt.py` and the fidelity audit;
 - the binding human ledger (`human.jsonl`, written only by `scripts/flow-ledger.py`);
 - the five bounded exceptions, with **no widening and no sixth**: (1) the automatic base-stale Rebase,
-  (2) the single-unit implement/fix Sonnet escalation, (3) the bounded self-heal of check failures and
+  (2) the manual "Retry with sonnet" for single-unit implement/fix shortfalls (automatic escalation is dormant and dropped), (3) the bounded self-heal of check failures and
   Fix now, (4) the fleet heal, and (5) the one-shot Unknown-skill auto-retry. The bounded environment
   chore (the dependency precondition, ADR-0023 2026-11-01 amendment) is also kept as it stands.
 

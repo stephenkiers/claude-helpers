@@ -305,6 +305,20 @@ def test_since_excludes_flow_started_before_date():
         return False, f"reached values {reached}, expected 1 and not 2 (pre-since done flow included?)"
     return True, ""
 
+def test_since_includes_flow_started_on_the_date():
+    """A flow started on the --since date itself counts as started (the boundary is inclusive)."""
+    on_date = ("9108-edge-ii99", dated("done", "merge", SINCE + "T09:00:00Z", {}, 9108, "Quux widget edge"))
+    with tempfile.TemporaryDirectory() as td:
+        root = build_root(td, [on_date])
+        rc, out = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "json"])
+    if rc != 0:
+        return False, f"exit {rc}"
+    started = json_ints(json.loads(out), ["reached", "merge", "done"])
+    if 1 not in started:
+        return False, f"started values {started}, expected 1 (on-date done flow excluded?)"
+    return True, ""
+
+
 
 # ── Section 3: edge cases ────────────────────────────────────────────────────
 
@@ -402,6 +416,7 @@ if __name__ == "__main__":
     _run(h, "mixed fixture counts (json)", test_mixed_fixture_counts_json)
     _run(h, "mixed fixture counts (md)", test_mixed_fixture_counts_md)
     _run(h, "a flow started before --since is excluded", test_since_excludes_flow_started_before_date)
+    _run(h, "a flow started on the --since date is included", test_since_includes_flow_started_on_the_date)
     print()
 
     print("[Section 3] edge cases")

@@ -76,6 +76,7 @@ Order matters. Rule 1b (heal in progress) runs before rules 4 and 5, so a heal i
 | 2219-2255 | Ask split into forms, per-form persistence; every item must have a disposition before ship and merge | 2026-10-27 #383 | Layer 3 (Step 10) | port, pinned by test |
 | 2256-2262 | Fixed is derived by re-running `--outstanding-set`, never self-reported | 2026-10-27 #383 | Layer 3 (Step 10) | port, pinned by test |
 | 1200-1307 | Fidelity audit orchestration: the verifier owns counts, the audit owns judgment only | 2026-10-19 #318 | Layer 2 (Step 9) | port, pinned by test |
+| 1219-1221 | `fidelity audit failed: ledger unavailable` stop (unrecognised run-key source, or a failed locate) | 2026-10-19 #318 | Layer 2 (Step 9) | dropped: v2 re-renders the ledger snapshot from the run key instead of stopping (plan Layer 2 ledger bullet); a Layer 2 test pins the re-render |
 | 1328-1355 | Human ledger: per-step snapshot at spawn, fenced records only to allowed workers, `Addressed:` carry-forward, unaddressed-direction stop, ship-time close-out only | 2026-10-14 #287; 2026-10-30 #288 | Layer 2 (Step 9) | port, pinned by test |
 | 1356-1372 | Relaying a question (common rules) | 2026-10-14 more human in the loop | Layer 3 (Step 10) | port, pinned by test |
 | 1372-1447 | Report-kind questions (plan checkpoint, review checkpoint) | 2026-10-15 plan checkpoint; 2026-11-02 #421 | Layer 3 (Step 10) | port, pinned by test |
@@ -103,7 +104,7 @@ Order matters. Rule 1b (heal in progress) runs before rules 4 and 5, so a heal i
 |---|---|---|---|---|
 | 136-210 | Fleet mode section, including the foreground-`wait` rule at 200-207 (`fleet.py wait`, `--timeout 540`, Bash timeout 600000, no end-of-turn idle) | ADR base text (fleet mode) | Layer 4 (Step 11) | port, pinned by test (WAIT mode from `flags.fleet`) |
 | 211-293 | Setup and argument parsing | ADR base text | Layer 2 (Step 9) | port, pinned by test |
-| 282-293 | Project detection and repo key (primary resolver, never first-entry main worktree) | #472-#475 | Layer 2 (Step 9) | port with change: primary resolver only |
+| 282-293 | Project detection and repo key (primary resolver, never first-entry main worktree) | #472-#475 | Layer 2 (Step 9) | port, pinned by test (primary resolver only) |
 | 294-410 | No-argument run | 2026-10-15 bare `/expert-flow` in the ticket worktree (#302) | Layer 2 (Step 9) | port, pinned by test |
 | 411-449 | Where the orchestrator runs | 2026-10-15 #302; worktree-first | Layer 2 (Step 9) | port, pinned by test |
 | 450-470 | Newest-flow lookup (shared) | ADR base text | Layer 2 (Step 9) | port, pinned by test (v1 scans stay blind to v2 dirs, Q3) |
@@ -116,7 +117,7 @@ Order matters. Rule 1b (heal in progress) runs before rules 4 and 5, so a heal i
 | 844-852 | Telemetry begin | ADR base text | Layer 2 (Step 9) | port, pinned by test |
 | 2329-2388 | Epic mode (experimental): sub-issues sequentially; child flows inherit `--gates` | ADR base text | Layer 4 (Step 11) | port, pinned by test |
 | 2389-2437 | Every exit path (commands per exit) | ADR base text | Layer 2 (Step 9) | port, pinned by test |
-| 2452-2476 | What this command deliberately does not do (no `--stack`, no stored `--auto-merge`, no auto-remediation beyond the bounded exceptions) | ADR base text | Layer 0 | port, pinned by test (negative constraints) |
+| 2452-2476 | What this command deliberately does not do (no `--stack`, no stored `--auto-merge`, no auto-remediation beyond the bounded exceptions) | ADR base text | Layer 2 (Step 9) | port, pinned by test (negative constraints) |
 | 47 | Bounded remediation exceptions: Rebase (base-stale), Unknown-skill retry, Retry with sonnet (manual), check heal and Fix now, fleet heal | 2026-10-29 #380; 2026-11-02 #425; 2026-11-04 | Layers 3 and 4 | port, pinned by test (five exceptions, none wider) |
 
 ### 1.7 Model-only primitives
@@ -125,10 +126,10 @@ The six primitives are model-only behaviour that a deterministic driver must rep
 
 | v1 lines | Primitive | Target layer | Disposition |
 |---|---|---|---|
-| 39, 58 | `Task`: spawn a step agent | Layer 0 (Step 4 verb set: SPAWN) | port, pinned by test |
-| 39 | `SendMessage`: resume a step agent | Layer 0 (Step 4: RESUME) | port, pinned by test |
-| 58, 202-207 | End-turn wait: an end-of-turn idle is not a wait (headless sessions abort background agents about ten minutes after an idle turn) | Layer 0 (Step 4: WAIT) | port, pinned by test |
-| 58 | `ScheduleWakeup` (1800 seconds per step, fallback heartbeat) | Layer 0 (Step 4: WAIT) | dropped: a fleet run never schedules it; interactive WAIT replaces it |
+| 39, 58 | `Task`: spawn a step agent | Step 7 (verb set: SPAWN) | port, pinned by test |
+| 39 | `SendMessage`: resume a step agent | Step 7 (verb set: RESUME) | port, pinned by test |
+| 58, 202-207 | End-turn wait: an end-of-turn idle is not a wait (headless sessions abort background agents about ten minutes after an idle turn) | Step 7 (verb set: WAIT) | port, pinned by test |
+| 58 | `ScheduleWakeup` (1800 seconds per step, fallback heartbeat) | Step 7 (verb set: WAIT) | dropped: the end-turn wait row above replaces it in v2 (no heartbeat, ADR-0026 Decision 3); v1 line 58 keeps it only as a fallback |
 | 200-207 | Fleet `wait` (foreground `fleet.py wait --timeout 540`) | Layer 4 (Step 11) | port, pinned by test |
 | 1356-1565 | `AskUserQuestion` (relay, step gate, merge gate, hard stop) | Layers 2 and 3 | port, pinned by test (fleet mode parks instead of asking) |
 
@@ -141,12 +142,12 @@ directly).
 | Field | Read by | Lines | Meaning that must hold on a v2 flow |
 |---|---|---|---|
 | `issue` | `fleet.py` (state lookup per ticket); `heal.py` (`str(state.get("issue")) != str(issue)` guard) | `fleet.py:263-265`; `heal.py:502` | Matches the ticket number; a mismatch means the flow is not this ticket's |
-| `updated` | `fleet.py` (newest-state selection) | `fleet.py:265` | Set on every write; the newest `updated` wins. v1's newest-scan and `fleet.py:259`'s glob cannot see v2 dirs (Q3) |
+| `updated` | `fleet.py` (newest-state selection) | `fleet.py:265` | Set on every write; the newest `updated` wins. v1's newest-scan and `fleet.py:261`'s glob cannot see v2 dirs (Q3) |
 | `step` | `fleet.py` (`plan` paused check, stop key, derived state); `heal.py` (step, stop key) | `fleet.py:147`, `:283`, `:464`, `:584`; `heal.py:505`, `:566`, `:570` | Name of the current step; drives the stop key and the heal step |
 | `status` | `fleet.py` (`done`, `failed`, `paused`, `awaiting`, `running`); `heal.py` (`status` in stop key) | `fleet.py:459`, `:577-591`; `heal.py:506`; `stop_key_for` | Same vocabulary as v1: `running`, `awaiting`, `paused`, `failed`, `done`, `abandoned` |
 | `live` | `fleet.py` (plan-stall check: `live is None`) | `fleet.py:283` | `null` when no step agent is live; a non-null value means a session is live. The driver clears it through a logged `driver clear-live` (Q5) |
 | `attempts.plan` | `fleet.py` (plan-stall check: `attempts.plan == 0`) | `fleet.py:284` | Counts plan attempts from disk |
-| `stop_reason[step]` | `fleet.py` (stop key text); `heal.py` (`reasons`, `stop_key_for`) | `fleet.py:149-151`, `:577`; `heal.py:524`, `:146` | Reason string for the current step's stop. Empty when absent; the stop key hashes it |
+| `stop_reason[step]` | `fleet.py` (stop key text); `heal.py` (`reasons`, `stop_key_for`) | `fleet.py:149-151`; `heal.py:524`, `:146` | Reason string for the current step's stop. Empty when absent; the stop key hashes it |
 | `stop_source` | `heal.py` (`_str_map(state.get("stop_source"), _STOP_SOURCES)`) | `heal.py:523` | Source of the stop; restricted to the known source vocabulary in `heal.py` |
 | `failures` | `heal.py` (`failures` map, bounds deps and heal attempts) | `heal.py:512` | Per-step failure count; the heal refuses past its bound |
 | `pr` | `fleet.py` (`held` state when merge is paused with a PR); fleet row output | `fleet.py:584`, `:653-654` | PR URL once ship has run; `held` requires `status: paused` at `merge` |

@@ -1,6 +1,6 @@
 # v2 inventory: the v1 `/expert-flow` behaviour, rule by rule
 
-This directory is the Layer 0 inventory for the `/expert-flow` v2 driver rewrite (plan Step 1, ticket
+This directory is the Step 1 inventory for the `/expert-flow` v2 driver rewrite (plan Step 1, ticket
 #477). It lists every v1 rule the v2 Python driver must reproduce, drop, or change, so that a one-off rule
 that lives only in prose (an ADR-0023 amendment, a line in `commands/expert-flow.md`) is not lost in the
 rewrite.

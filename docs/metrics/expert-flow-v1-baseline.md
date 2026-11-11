@@ -13,6 +13,7 @@ This is the Layer 0 measurement that ADR-0026's v2 exit bar (D6) and the Layer 5
 - Stop record: each non-empty `stop_reason` entry in state.json, whatever the flow's status; plus, for a flow whose status is `awaiting` or `failed`, its current step when no `stop_reason` entry exists for that step.
 - Stop reason source: the state.json `stop_reason` entry, or else the `Reason:` line of the current step's receipt when that receipt says `Decision: FAILED`.
 - Classification: the RULES table, first match wins. Unmatched reasons, and stop statuses with no reason recorded anywhere, are ambiguous.
+- Caveats: the count is stop entries recorded. A step that failed once and later passed may still carry its entry, because v1 does not clear `stop_reason` on every path. Retry and redo archives are named `NN-<step>.aJ.md`, so the live-receipt glob never picks one up. The orchestrator class includes stops that #446 and #476 may cause; the human declined to tag them, so the per-class report is published as is.
 - Not counted as stops: `paused` (a human choice at a gate), `abandoned`, and `running` flows with no stop_reason entry.
 
 ## Counts
