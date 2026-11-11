@@ -219,7 +219,7 @@ separate from the reviewer-context cascade.
 
 **Lifecycle**
 - `/setup-local` — symlink this repo's helpers into `~/.claude/`
-- `/setup-repo` — clone a remote into the preferred layout (default `~/Repositories/<repo>/worktrees/<default-branch>`, configurable via `CLAUDE_REPOS_ROOT` or `~/.claude/preferences.yaml`) so the worktree workflow (`/track-and-start`, `/shipit`, `/cleanup`) finds the worktree parent where it expects it. Takes a full URL or `owner/name` (never assumes the org)
+- `/setup-repo` — clone a remote into the preferred layout (default `~/Repositories/<repo>/worktrees/<default-branch>`, configurable via `CLAUDE_REPOS_ROOT` or `~/.claude/preferences.yaml`) so the worktree workflow (`/track-and-start`, `/shipit`, `/cleanup`) finds the worktree parent where it expects it. Takes a full URL or `owner/name` (never assumes the org); after the clone, optionally sets up direnv (`worktrees/.envrc` loading `<default-branch>/.env`, never overwriting an existing file)
 - `/track`, `/track-and-start` — create a GitHub issue (or local plan) and optionally branch + worktree
 - `/implement-with-haiku` — parallel Haiku implementers (diff handoff; orchestrator applies + commits); sizes units with `MIN_UNITS` as a lower bound only (per-unit ceilings of 8 steps / 12 files / 16 findings are provisional; enforcement is deferred pending calibration per #325), sequential mode for coupled work, and persisted unit record under `FLOW_DIR/units/<STEP>/` with ceilings recorded via `UNIT_CEILINGS:`; runs in one pass by default, `--pause` opts in to the round 1 checkpoint
   → orchestrator-owned integration gate (anti-cheat + bounded fix loop) → round-sized, concurrent
