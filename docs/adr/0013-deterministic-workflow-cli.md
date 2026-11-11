@@ -399,3 +399,17 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 ### Amendment 13: gate modes for `checks validate` (2026-11-05, #462)
 
 **Decision (no code change).** `checks validate --mode minimum` is the gate that PR-level steps and force-push gates run (`/shipit`, `/stack-sync`, and the flow verify/implement/fix steps). `checks validate --mode full` is the gate the merge path runs (ADR-0021), and it is the authoritative one. A minimum record never satisfies the merge gate. This is the human ruling on #462 (Needs-you #2, option A) and refines the ADR-0012 2026-11-05 amendment and ADR-0023 2026-11-05 amendment (#462). Amendment 12's removal of `checks run` and `checks receipt` stands. The exit-code and timeout paragraphs of earlier amendments that name `checks run` are superseded by Amendment 12; `docs/workflow-cli-invariants.md` now describes `checks validate`.
+
+### Amendment 12: `commands.cleanup` teardown hook (2026-11-11)
+
+**Problem:** A worktree can own resources outside the tree (containers, temporary databases) that only the project knows how to stop. `cleanup apply` removed the worktree without giving the project a chance to tear them down, which orphaned them. Decision 3 and Amendment 10 allow the CLI no such subprocess.
+
+**Decision:** `cleanup apply` runs `commands.cleanup` once, after validation and the HEAD recheck and immediately before the worktree is removed.
+
+- **Read:** `commands.cleanup` from the main worktree's `.claude/project.yaml` only, through the shared `checks._load_project_yaml` and `checks._command_from_mapping`. The main worktree is resolved inside the hook path (the parent of the resolved git common dir), not from the caller's cwd. A branch's own copy is never read, because the work being cleaned up could have written it; when the target is the main worktree no hook runs. Scripts the hook invokes live in the branch being cleaned, which is an accepted residual of running a main-declared command.
+- **Execution:** `shell=True`, deliberately, so documented usage such as `npm run sandbox:down` and `&&` chains works. This differs from `commands.install` (Amendment 10), which is `shlex`-split, `shell=False` and behind a manifest-approval gate. The trust boundary here is main's `project.yaml`, a human-owned per-machine file. The working directory is the target worktree, stdin is closed, the parent environment is inherited, and the hook runs in its own session with a 300s timeout after which the whole process group is killed.
+- **Failure:** a non-zero exit, timeout, launch failure, or an unreadable or non-string declaration keeps the worktree and branch and exits with an error. Errors go in `CleanupResult.hook_failures`, apart from `validation_failures`. An unparseable `project.yaml` blocks only when a text probe finds a `cleanup:` line. The output tail (last 5 lines, 200 characters each) is echoed and may contain secrets.
+- **Retry:** the hook must be idempotent; a failed run is retried by re-running `/cleanup`. A hook that can never succeed is escaped by editing main's `project.yaml`.
+
+**Consequences:** This is the CLI's only shell-string execution, and it is limited to this one key from this one file. A new one needs its own amendment.
+

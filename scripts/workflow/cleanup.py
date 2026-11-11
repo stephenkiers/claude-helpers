@@ -8,10 +8,14 @@ Ports the deterministic cleanup logic from /cleanup into a plan/apply pattern:
 
 import json
 import os
+import re
+import signal
+import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
+from . import checks
 from . import git
 from . import check_diagnostics as diagnostics
 from . import validation
@@ -20,6 +24,9 @@ from .safety import Unknown, fail_closed
 from .models import RepoCacheData
 from .merge import merge_lock_path
 from .validation import ValidationVerdict
+
+CLEANUP_HOOK_TIMEOUT_SECS = 300
+_CLEANUP_KEY_PROBE = re.compile(r"^\s*cleanup\s*:", re.MULTILINE)
 
 DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS = 300
 CHECK_TIMEOUT_MESSAGE_PREFIX = "Check command timed out"
@@ -105,6 +112,7 @@ class CleanupResult:
         validation_reason: Human-readable reason for validation verdict.
         queue_tested_steps: List of queue proof steps (populated only when verdict is SKIPPED).
         validation_failures: Errors encountered during validation or worktree cleanup.
+        hook_failures: Errors from the commands.cleanup teardown hook (reported separately).
         notes: Non-fatal observations (e.g., dirty-tree retry). Separate from failures.
         tree: For SKIPPED verdict, the commit SHA that was queue-proven (populated by queue_proof).
         error: Set when validation returns without completing due to an error (lock contention,
@@ -117,6 +125,8 @@ class CleanupResult:
     validation_reason: str = ""
     queue_tested_steps: List[str] = field(default_factory=list)
     validation_failures: List[str] = field(default_factory=list)
+    # Errors from the commands.cleanup teardown hook, kept apart from validation_failures.
+    hook_failures: List[str] = field(default_factory=list)
     # Non-fatal observations about how the cleanup reached success (e.g. a safe
     # worktree removal that had to be retried with --force). Kept separate from
     # validation_failures so a recovered step is not reported as a failure.
@@ -450,6 +460,13 @@ def apply_cleanup(
             result.error = Unknown(f"Freshness re-validation before mutation failed: {e}")
             return result, result.error
 
+        # Teardown hook (commands.cleanup): runs while the worktree still exists, so a project can
+        # stop what it started there (containers, temp databases). A failing hook blocks removal.
+        hook_error = _run_cleanup_hook(target_worktree, result)
+        if hook_error:
+            result.error = hook_error
+            return result, hook_error
+
         # Now proceed with worktree removal and branch deletion (after validation lock is released)
         _remove_worktree_and_branch(plan, result, cwd=cwd)
 
@@ -459,6 +476,133 @@ def apply_cleanup(
         return CleanupResult(success=False, error=Unknown(f"Invalid plan JSON: {e}")), None
     except Exception as e:
         return CleanupResult(success=False, error=Unknown(f"apply_cleanup failed: {e}")), None
+
+
+def _main_worktree_of(target_worktree: Path) -> Optional[Path]:
+    """The main worktree: the resolved parent of the common .git directory, or None if unknown."""
+    common = git.abs_git_common_dir(target_worktree)
+    if common is None:
+        return None
+    return common.resolve().parent
+
+
+def _main_cleanup_command(main_worktree: Path) -> Tuple[Optional[str], Optional[str]]:
+    """
+    commands.cleanup from the MAIN worktree's project.yaml only (a branch's own copy can be
+    written by the work being cleaned up, so it is never trusted).
+
+    Returns (command, error). This is the one place that decides whether a problem reading the
+    file blocks cleanup. An absent file or key gives (None, None). A file that cannot be read or
+    parsed (including PyYAML missing) blocks only when a cheap text probe finds a `cleanup:` line,
+    so an unrelated broken project.yaml never blocks a project with no hook. A present key whose
+    value is not a non-empty string blocks.
+    """
+    path = main_worktree / ".claude" / "project.yaml"
+    if not path.exists():
+        return None, None
+    data, note = checks._load_project_yaml(path)
+    if data is None:
+        try:
+            text = path.read_text()
+        except (OSError, ValueError):
+            text = ""
+        if _CLEANUP_KEY_PROBE.search(text):
+            return None, (
+                "commands.cleanup unreadable: main project.yaml may declare commands.cleanup "
+                f"but cannot be parsed: {note}"
+            )
+        return None, None
+    commands = data.get("commands")
+    if not isinstance(commands, dict) or commands.get("cleanup") is None:
+        return None, None
+    cmd = checks._command_from_mapping(data, "cleanup")
+    if cmd is None:
+        return None, "commands.cleanup unreadable: value must be a non-empty string"
+    return cmd, None
+
+
+def _failure_tail(stdout: Optional[str], stderr: Optional[str]) -> str:
+    """Last 5 lines of stdout then stderr combined, each truncated to 200 chars."""
+    lines = ((stdout or "").strip().splitlines() + (stderr or "").strip().splitlines())[-5:]
+    return "\n".join(line[:200] for line in lines)
+
+
+def _worktree_status(target_worktree: Path) -> str:
+    try:
+        return git.run_git_command(["status", "--porcelain"], cwd=target_worktree)
+    except Exception:
+        return ""
+
+
+def _run_cleanup_hook(
+    target_worktree: Path,
+    result: CleanupResult,
+) -> Optional[Unknown]:
+    """
+    Run commands.cleanup from the target worktree before it is removed.
+
+    The main worktree is resolved here rather than taken from the caller's cwd; if it is the
+    target itself there is no separate trusted copy, so no hook runs.
+
+    Trust note: the hook command comes from main's project.yaml, but any script it invokes lives
+    in the branch being cleaned up, which the work under cleanup could have changed.
+
+    The hook runs with shell=True (documented usage such as `npm run sandbox:down` and `&&`
+    chains), stdin closed, in its own session so a timeout kills the whole process group, and
+    inherits the parent environment. Its output tail is echoed on failure and may contain secrets;
+    hooks should not print secrets.
+
+    Mutates `result` in place: appends to `result.notes` and, on any hook error,
+    `result.hook_failures` (kept apart from validation_failures). Returns an Unknown if the hook
+    cannot be read, fails, or times out, so the caller leaves the worktree and branch in place.
+    Returns None on success or no hook.
+    """
+    def _fail(msg: str, suffix: str) -> Unknown:
+        result.hook_failures.append(msg)
+        return Unknown(f"{msg}\n{suffix}")
+
+    main_worktree = _main_worktree_of(target_worktree)
+    if main_worktree is None:
+        # Git cannot name the main checkout, so there is no trusted project.yaml to read.
+        result.notes.append("commands.cleanup skipped: cannot resolve the main worktree")
+        return None
+    if main_worktree == target_worktree.resolve():
+        result.notes.append("commands.cleanup skipped: target is the main worktree")
+        return None
+    cmd, read_err = _main_cleanup_command(main_worktree)
+    if read_err:
+        return _fail(read_err, "Worktree kept; fix main's project.yaml and re-run /cleanup.")
+    if cmd is None:
+        return None
+    status_before = _worktree_status(target_worktree)
+    retry = "Worktree kept; fix the teardown and re-run /cleanup."
+    try:
+        proc = subprocess.Popen(
+            cmd, shell=True, cwd=str(target_worktree), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
+        )
+    except OSError as e:
+        return _fail(f"commands.cleanup could not run: {cmd}\n{str(e)[:200]}", retry)
+    try:
+        stdout, stderr = proc.communicate(timeout=CLEANUP_HOOK_TIMEOUT_SECS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        proc.communicate()
+        return _fail(f"commands.cleanup timed out after {CLEANUP_HOOK_TIMEOUT_SECS}s: {cmd}", retry)
+    if proc.returncode != 0:
+        tail = _failure_tail(stdout, stderr)
+        return _fail(f"commands.cleanup failed (exit {proc.returncode}): {cmd}"
+                     + ("\n" + tail if tail else ""), retry)
+    result.notes.append(f"commands.cleanup ran: {cmd}")
+    status_after = _worktree_status(target_worktree)
+    if status_after and status_after != status_before:
+        result.notes.append(
+            "commands.cleanup modified the worktree; removal may need --force")
+    return None
 
 
 def _extract_check_commands(cache_data: RepoCacheData) -> List[str]:

@@ -18,6 +18,9 @@ commands:
   test: bun run test
   build: bun run build
   check: bun run check                        # runs lint + typecheck together
+  # cleanup: bun run sandbox:down
+  #   # Teardown hook: runs from the main worktree's project.yaml before the worktree is removed;
+  #   # a non-zero exit blocks removal.
 
 docStyle: jsdoc
 typeChecker: tsc

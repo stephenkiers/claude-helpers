@@ -44,6 +44,9 @@ commands:
   test: pytest
   build: null          # not applicable for this project
   check: null          # composite check (replaces lint+typecheck if set)
+  # cleanup: docker compose down
+  #   # Teardown hook: runs from the main worktree's project.yaml before the worktree is removed;
+  #   # a non-zero exit blocks removal.
   # check_minimum: just check-minimum
   #   # Minimum check for PR-level steps: a fast, selected subset of the full check.
   #   # WARNING: A selector that reads from anything other than the tree, CHECK_BASE, and

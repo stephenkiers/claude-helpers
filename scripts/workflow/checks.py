@@ -45,7 +45,7 @@ except ImportError:  # non-POSIX: the config lock degrades to no lock
 
 
 CHECK_ORDER = ("format", "check", "lint", "typecheck", "vet", "test", "build")
-NON_CHECK_COMMANDS = frozenset({"install", "check_minimum"})
+NON_CHECK_COMMANDS = frozenset({"install", "check_minimum", "cleanup"})
 SUPERSEDED_BY_CHECK = ("lint", "typecheck")
 TIMEOUT_ERROR_PREFIX = "timed out after"
 DEFAULT_CHECK_TIMEOUT_SECS: Final = 300
