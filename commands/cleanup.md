@@ -25,6 +25,27 @@ Remove a worktree and optionally delete the branch.
   without blocking cleanup.
 - Combine as many operations as possible into single bash commands to reduce prompts.
 
+### Project teardown hook (`commands.cleanup`)
+
+A project can declare a teardown command in the **main** worktree's `.claude/project.yaml`:
+
+```yaml
+commands:
+  cleanup: npm run sandbox:down   # stop containers, drop temp databases, etc.
+```
+
+`cleanup apply` runs it with the target worktree as the working directory, after validation and
+immediately before the worktree is removed (so the command can still read the worktree's own `.env`).
+It is not a check: it never runs as part of validation. Only the main worktree's copy of
+`project.yaml` is read, since a branch can edit its own copy.
+
+- Exit 0: cleanup continues, and the result notes record that the hook ran.
+- Non-zero exit, timeout (300s), or an unreadable or non-string value: **the worktree and branch are
+  kept**, the failure and the last lines of output are reported, and `/cleanup` exits with an error.
+  Fix the teardown and re-run `/cleanup`; removing the worktree first would orphan whatever the hook
+  was meant to stop.
+- Absent: no change in behavior.
+
 ### Handling uncommitted changes
 
 Not all uncommitted changes are equal. Auto-restore **generated/tooling files** that aren't

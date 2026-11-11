@@ -8,6 +8,7 @@ Ports the deterministic cleanup logic from /cleanup into a plan/apply pattern:
 
 import json
 import os
+import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
@@ -20,6 +21,13 @@ from .safety import Unknown, fail_closed
 from .models import RepoCacheData
 from .merge import merge_lock_path
 from .validation import ValidationVerdict
+
+try:
+    import yaml  # type: ignore[import-untyped]
+except ImportError:
+    yaml = None  # type: ignore[assignment]
+
+CLEANUP_HOOK_TIMEOUT_SECS = 300
 
 DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS = 300
 CHECK_TIMEOUT_MESSAGE_PREFIX = "Check command timed out"
@@ -450,6 +458,13 @@ def apply_cleanup(
             result.error = Unknown(f"Freshness re-validation before mutation failed: {e}")
             return result, result.error
 
+        # Teardown hook (commands.cleanup): runs while the worktree still exists, so a project can
+        # stop what it started there (containers, temp databases). A failing hook blocks removal.
+        hook_error = _run_cleanup_hook(main_worktree_path, target_worktree, result)
+        if hook_error:
+            result.error = hook_error
+            return result, hook_error
+
         # Now proceed with worktree removal and branch deletion (after validation lock is released)
         _remove_worktree_and_branch(plan, result, cwd=cwd)
 
@@ -459,6 +474,71 @@ def apply_cleanup(
         return CleanupResult(success=False, error=Unknown(f"Invalid plan JSON: {e}")), None
     except Exception as e:
         return CleanupResult(success=False, error=Unknown(f"apply_cleanup failed: {e}")), None
+
+
+def _main_cleanup_command(main_worktree: Path) -> Tuple[Optional[str], Optional[str]]:
+    """
+    commands.cleanup from the MAIN worktree's project.yaml only (a branch's own copy can be
+    written by the work being cleaned up, so it is never trusted).
+
+    Returns (command, error). An absent file or key gives (None, None).
+    """
+    path = main_worktree / ".claude" / "project.yaml"
+    if not path.exists():
+        return None, None
+    if yaml is None:
+        return None, "PyYAML is not installed, so main project.yaml cannot be read for commands.cleanup"
+    try:
+        data = yaml.safe_load(path.read_text())
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        return None, f"main project.yaml is unreadable: {e}"
+    commands = data.get("commands") if isinstance(data, dict) else None
+    if not isinstance(commands, dict) or commands.get("cleanup") is None:
+        return None, None
+    cmd = commands["cleanup"]
+    if not isinstance(cmd, str) or not cmd.strip():
+        return None, "commands.cleanup must be a non-empty string"
+    return cmd.strip(), None
+
+
+def _run_cleanup_hook(
+    main_worktree: Path,
+    target_worktree: Path,
+    result: CleanupResult,
+) -> Optional[Unknown]:
+    """
+    Run commands.cleanup from the target worktree before it is removed.
+
+    Returns an Unknown (and records a failure) if the hook cannot be read, fails, or times out;
+    the caller then leaves the worktree and branch in place. Returns None on success or no hook.
+    """
+    cmd, read_err = _main_cleanup_command(main_worktree)
+    if read_err:
+        result.validation_failures.append(read_err)
+        return Unknown(f"{read_err} — worktree kept")
+    if cmd is None:
+        return None
+    try:
+        proc = subprocess.run(
+            cmd, shell=True, cwd=str(target_worktree),
+            capture_output=True, text=True, timeout=CLEANUP_HOOK_TIMEOUT_SECS,
+        )
+    except subprocess.TimeoutExpired:
+        msg = f"commands.cleanup timed out after {CLEANUP_HOOK_TIMEOUT_SECS}s: {cmd}"
+        result.validation_failures.append(msg)
+        return Unknown(f"{msg} — worktree kept")
+    except OSError as e:
+        msg = f"commands.cleanup could not run: {e}"
+        result.validation_failures.append(msg)
+        return Unknown(f"{msg} — worktree kept")
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
+        msg = f"commands.cleanup failed (exit {proc.returncode}): {cmd}" + (
+            "\n" + "\n".join(tail) if tail else "")
+        result.validation_failures.append(msg)
+        return Unknown(f"{msg}\nWorktree kept; fix the teardown and re-run /cleanup.")
+    result.notes.append(f"commands.cleanup ran: {cmd}")
+    return None
 
 
 def _extract_check_commands(cache_data: RepoCacheData) -> List[str]:
