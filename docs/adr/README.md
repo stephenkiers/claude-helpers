@@ -95,6 +95,10 @@ to North Star Nick).
   human via `fleet-ask.json` parks; records the merge-gate split (code + prose enforcement) and known gaps; amended with
   landing preparation (POC base 8e97cbf ported onto main with re-pointed cross-references, two follow-up issues, and
   ADR-0023/ADR-0019 pointers)
+- [ADR-0026: /expert-flow v2 — a deterministic Python driver with a disk-only step boundary](0026-expert-flow-v2-driver.md) — Status Proposed;
+  extends ADR-0013 and supersedes ADR-0023 for the loop, state write protocol and resume cascade, keeping its relay, receipt, ledger
+  and five-exception contracts; a closed verb set with a disk-only boundary, single-writer state under a non-blocking flock, and
+  driver-side ship and merge checks; v2 flows under `flows-v2` and v1 never adopted; lands with the #477 Layer 0 under parent #456
 
 ## Format
 
