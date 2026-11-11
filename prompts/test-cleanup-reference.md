@@ -2,7 +2,7 @@
 
 ## Caller contract
 
-This document is read by `/implement-with-haiku` at Round 4 time and by `/expert-test-cleanup` (#463).
+This document is read by `/implement-with-haiku` at Round 4 time and by the one-shot prompt `prompts/haiku-test-poisoning-cleanup.md` (#463), which names its sections and gates by name. No `/expert-test-cleanup` command exists.
 
 **Inputs the caller supplies:**
 - `ROUND2_START_SHA` — the SHA before Round 2 was applied (used to compute the working set and to feed to `names --hygiene`)

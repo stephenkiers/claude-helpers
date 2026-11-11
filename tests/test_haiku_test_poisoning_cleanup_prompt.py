@@ -10,6 +10,7 @@ Plan: Haiku test-poisoning cleanup prompt (#463, rescoped)
 Run with: python3 tests/test_haiku_test_poisoning_cleanup_prompt.py
 """
 
+import json
 import re
 from _test_harness import REPO_ROOT, Harness
 
@@ -17,17 +18,36 @@ PROMPT_FILE = REPO_ROOT / "prompts" / "haiku-test-poisoning-cleanup.md"
 REFERENCE_FILE = REPO_ROOT / "prompts" / "test-cleanup-reference.md"
 COMMANDS_DIR = REPO_ROOT / "commands"
 
-DESTRUCTIVE_VERBS = ["git rm", "git mv", "git commit", "git revert", "git switch -c"]
+# The prompt-level check below is a doc-order guard only. The real control on Phase 2's destructive git
+# is scripts/test-cleanup-git-guard.py, a hook that is inert outside an active Phase 2.
+DESTRUCTIVE_VERBS = [
+    "git rm", "git mv", "git commit", "git revert", "git switch -c",
+    "git restore", "git reset", "git clean", "git checkout", "git stash",
+]
 
-REPORT_FIELDS = [
+# Keys every report must carry. Compared against the keys of the prompt's fenced JSON schema block.
+REPORT_FIELDS = {
     "schema_version", "generated_at", "repo", "root", "remote_url", "branch", "head_sha",
     "reference", "path", "sha256", "granularity", "id_source", "framework", "name",
     "convention", "suggested_test_command", "summary", "total_tests", "total_files",
     "by_disposition", "judgment_candidates", "not_analysed", "tests", "id", "file",
     "disposition", "class", "reason", "survivor", "proof", "target", "expected", "id_map",
     "from", "to", "count_delta", "target_rise", "judgment_candidate", "set_id", "evidence",
-    "sets", "members", "judgment", "suggested_survivor", "notes", "report_sha256",
-]
+    "sets", "members", "judgment", "suggested_survivor", "notes",
+}
+
+
+def json_keys(node):
+    """Collect every object key in a parsed JSON value."""
+    keys = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            keys.add(key)
+            keys |= json_keys(value)
+    elif isinstance(node, list):
+        for value in node:
+            keys |= json_keys(value)
+    return keys
 
 DISPOSITIONS = ["keep", "delete", "clean up", "refactor"]
 
@@ -72,7 +92,11 @@ def section_text(text, start_prefix, end_prefix):
 if __name__ == "__main__":
     h = Harness("HAIKU TEST-POISONING CLEANUP PROMPT DOCUMENTATION TEST SUITE")
 
-    prompt_text = PROMPT_FILE.read_text(encoding="utf-8") if PROMPT_FILE.exists() else ""
+    if not PROMPT_FILE.exists():
+        # Without the prompt every later check would pass or fail vacuously; report once and stop.
+        h.test_result("(a) prompts/haiku-test-poisoning-cleanup.md exists", False, "File not found")
+        h.summarize_and_exit()
+    prompt_text = PROMPT_FILE.read_text(encoding="utf-8")
     reference_text = REFERENCE_FILE.read_text(encoding="utf-8") if REFERENCE_FILE.exists() else ""
 
     # ============================================================================
@@ -179,19 +203,24 @@ if __name__ == "__main__":
     print()
 
     # ============================================================================
-    # (f) Every Step 2 report field name, and all three dispositions
+    # (f) Every report field name in the schema block, and all four dispositions
     # ============================================================================
     print("[Section f] Report schema field names")
 
-    missing_fields = [
-        field for field in REPORT_FIELDS
-        if f'"{field}"' not in prompt_text and f"`{field}`" not in prompt_text
-    ]
+    schema_blocks = re.findall(r"```json\n(.*?)\n```", prompt_text, re.DOTALL)
+    schema_keys = set()
+    for block in schema_blocks:
+        try:
+            schema_keys |= json_keys(json.loads(block))
+        except ValueError:
+            pass
+    missing_fields = sorted(REPORT_FIELDS - schema_keys)
     h.test_result(
-        "(f) every JSON report field name appears in the prompt",
-        not missing_fields,
-        f"missing: {missing_fields}",
+        "(f) the fenced JSON schema block parses and carries every report field",
+        bool(schema_keys) and not missing_fields,
+        f"missing from the schema block: {missing_fields}" if schema_keys else "no parsable json block",
     )
+
     missing_dispositions = [d for d in DISPOSITIONS if f'"{d}"' not in prompt_text]
     h.test_result(
         "(f) all four dispositions appear literally as JSON values",
@@ -294,7 +323,7 @@ if __name__ == "__main__":
     print("[Section l] Cited gate names exist in the reference")
 
     quoted_gates = re.findall(r'"\(([a-g])\) ([^"]+)"', prompt_text)
-    quoted_gate_names = ["({}) {}".format(letter, name) for letter, name in quoted_gates]
+    quoted_gate_names = list(dict.fromkeys("({}) {}".format(letter, name) for letter, name in quoted_gates))
     for gate in CITED_GATES:
         h.test_result(
             f"(l) prompt cites gate: {gate}",
