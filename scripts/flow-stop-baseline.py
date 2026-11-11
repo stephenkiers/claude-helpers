@@ -44,7 +44,7 @@ STOP_STATUSES: Tuple[str, ...] = ("awaiting", "failed")
 # Explicit rule table, first match wins. Each row: (regex matched against the stop reason, class, label).
 # The regexes are case-insensitive. Anything that matches no row is ambiguous and listed for a human.
 RULES: List[Tuple[str, str, str]] = [
-    (r"^fidelity audit failed: ledger unavailable", ORCHESTRATOR, "fidelity audit: ledger unavailable"),
+    (r"ledger unavailable", ORCHESTRATOR, "fidelity audit: ledger unavailable"),
     (r"^anti-tamper gate", ORCHESTRATOR, "anti-tamper gate"),
     (r"^gate-not-converged", ORCHESTRATOR, "gate not converged"),
     (r"^unit-record-mismatch", ORCHESTRATOR, "unit record mismatch"),
