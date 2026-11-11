@@ -39,12 +39,23 @@ immediately before the worktree is removed (so the command can still read the wo
 It is not a check: it never runs as part of validation. Only the main worktree's copy of
 `project.yaml` is read, since a branch can edit its own copy.
 
-- Exit 0: cleanup continues, and the result notes record that the hook ran.
-- Non-zero exit, timeout (300s), or an unreadable or non-string value: **the worktree and branch are
-  kept**, the failure and the last lines of output are reported, and `/cleanup` exits with an error.
-  Fix the teardown and re-run `/cleanup`; removing the worktree first would orphan whatever the hook
-  was meant to stop.
+- Exit 0: cleanup continues, and the result notes record that the hook ran. If the hook left the
+  target worktree dirty, a note says so and removal may need `--force`; this is a note, not a block.
+- Non-zero exit, timeout (300s), could not run, or an unreadable or non-string value: **the worktree
+  and branch are kept**, the failure and the last 5 lines of output (stdout, then stderr; each line
+  cut to 200 characters) are reported, and `/cleanup` exits with an error. Removing the worktree
+  first would orphan whatever the hook was meant to stop.
+- Hook errors are reported separately from validation failures (`hook_failures` in the apply result,
+  printed with a `HOOK:` prefix by `render-validation`).
+- An unparseable `project.yaml` (or missing PyYAML) blocks cleanup only if a text probe finds a
+  `cleanup:` line; otherwise cleanup proceeds as if there were no hook.
 - Absent: no change in behavior.
+
+The hook runs through the shell (`&&` chains work), with stdin closed, in its own process group
+(killed whole on timeout), inheriting the parent environment. Scripts it invokes live in the branch
+being cleaned up. The hook must be idempotent: a failed run is retried by re-running `/cleanup`. A
+hook that can never succeed is escaped by editing main's `project.yaml`. Hook output is echoed on
+failure and may contain secrets, so do not print secrets in the hook.
 
 ### Handling uncommitted changes
 

@@ -195,6 +195,12 @@ The CLI never executes a command derived from prose. `deps ensure` runs only a f
 
 **Example:** If a fork wants to prioritize different checks or detect additional toolchains, it edits `checks.py` and commits its own version.
 
+## Cleanup Teardown Hook (ADR-0013 Amendment 12)
+
+**Invariant:** `cleanup apply` may run one project-declared teardown command, `commands.cleanup`, read only from the main worktree's `.claude/project.yaml` (never the target worktree's own copy), immediately before the worktree is removed. The main worktree is resolved explicitly, and when it is the target itself no hook runs.
+
+**Implementation:** `scripts/workflow/cleanup.py` `_run_cleanup_hook`: `shell=True` by design (documented usage such as `npm run sandbox:down` and `&&` chains; unlike `commands.install`, which is `shlex`-split, `shell=False` and approval-gated), `cwd` the target worktree, stdin closed, its own session with the process group killed on the 300s timeout, parent environment inherited. A non-zero exit, timeout, launch failure or unreadable declaration blocks removal and is recorded in `CleanupResult.hook_failures`, separate from `validation_failures`.
+
 ## Issue Comments Subcommand
 
 **Invariant:** The `issue-comments` subcommand has no side effects in the `fetch` phase, fixed behavior governed by code constants, and mandatory `--cwd` for provider repo pinning.

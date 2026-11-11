@@ -18,6 +18,9 @@ commands:
   test: cargo test
   build: cargo build --release
   check: cargo check
+  # cleanup: docker compose down
+  #   # Teardown hook: runs from the main worktree's project.yaml before the worktree is removed;
+  #   # a non-zero exit blocks removal.
 
 docStyle: rustdoc
 typeChecker: none                             # rustc enforces types at compile time

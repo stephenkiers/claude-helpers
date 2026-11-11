@@ -18,6 +18,9 @@ commands:
   test: pytest
   build: docker build -t acme-api .
   check: null
+  # cleanup: just sandbox-down
+  #   # Teardown hook: runs from the main worktree's project.yaml before the worktree is removed;
+  #   # a non-zero exit blocks removal.
 
 docStyle: google
 typeChecker: mypy

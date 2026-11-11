@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from workflow.cleanup import apply_cleanup, CleanupPlan
 from workflow import validation, git
+from workflow import cleanup as cleanup_mod
 from workflow.checks import build_check_order
 from _test_harness import Harness
 from _git_fixture import GitFixture
@@ -85,7 +86,8 @@ if __name__ == "__main__":
         t("apply reports an error", err is not None and "exit 3" in str(err) and "boom" in str(err), str(err))
         t("worktree still exists", wt.exists())
         t("branch still exists", fx.branch_exists("feature/test"))
-        t("failure recorded", any("commands.cleanup failed" in f for f in result.validation_failures))
+        t("failure recorded", any("commands.cleanup failed" in f for f in result.hook_failures))
+        t("hook error is not a validation failure", result.validation_failures == [])
     finally:
         fx.cleanup()
 
@@ -123,6 +125,50 @@ if __name__ == "__main__":
     try:
         t("non-string hook is an error and keeps the worktree",
           err is not None and wt.exists(), str(err))
+    finally:
+        fx.cleanup()
+
+    print("[Section 7] failure tail combines stdout then stderr, truncated")
+    long_line = "x" * 300
+    result, err, fx, wt = _run(
+        'commands:\n  cleanup: "echo out-line; echo ' + long_line + ' >&2; exit 2"\n')
+    try:
+        msg = result.hook_failures[0] if result.hook_failures else ""
+        t("stdout precedes stderr in the tail", msg.find("out-line") != -1
+          and msg.find("out-line") < msg.find("xxx"), msg)
+        tail = msg.split("\n", 1)[1] if "\n" in msg else ""
+        t("tail line truncated to 200 chars", "x" * 200 in tail and "x" * 201 not in tail)
+    finally:
+        fx.cleanup()
+
+    print("[Section 8] timeout kills the process group and keeps the worktree")
+    cleanup_mod.CLEANUP_HOOK_TIMEOUT_SECS = 1
+    result, err, fx, wt = _run('commands:\n  cleanup: "sleep 30 & sleep 30"\n')
+    cleanup_mod.CLEANUP_HOOK_TIMEOUT_SECS = 300
+    try:
+        t("timeout is a hook failure", any("timed out" in f for f in result.hook_failures), str(err))
+        t("worktree kept", wt.exists())
+    finally:
+        fx.cleanup()
+
+    print("[Section 9] unparseable project.yaml blocks only when it may declare cleanup")
+    result, err, fx, wt = _run("commands: [unclosed\nother: {\n")
+    try:
+        t("broken yaml without a cleanup key does not block", result.success is True, f"err={err}")
+    finally:
+        fx.cleanup()
+    result, err, fx, wt = _run("commands: [unclosed\n  cleanup: x\n")
+    try:
+        t("broken yaml with a cleanup line blocks", err is not None and wt.exists()
+          and any("cannot be parsed" in f for f in result.hook_failures), str(err))
+    finally:
+        fx.cleanup()
+
+    print("[Section 10] a hook that dirties the worktree is noted")
+    result, err, fx, wt = _run('commands:\n  cleanup: "echo hi > scratch-from-hook.txt"\n')
+    try:
+        t("dirty worktree note recorded",
+          any("modified the worktree" in n for n in result.notes), str(result.notes))
     finally:
         fx.cleanup()
 

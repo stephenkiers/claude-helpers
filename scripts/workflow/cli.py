@@ -537,6 +537,10 @@ def main() -> None:
                     # Indent each line of the failure
                     for line in failure.split("\n"):
                         print(f"  {line}")
+                # Teardown-hook errors are reported separately from validation failures.
+                for failure in data.get("hook_failures", []):
+                    for i, line in enumerate(failure.split("\n")):
+                        print(f"  HOOK: {line}" if i == 0 else f"  {line}")
             except json.JSONDecodeError:
                 print("VALIDATION=fail — verdict unreadable (fail-closed)")
             except Exception as e:
