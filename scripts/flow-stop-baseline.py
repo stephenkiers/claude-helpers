@@ -28,7 +28,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple, TypedDict
 
 ORCHESTRATOR = "orchestrator"
 STEP_AGENT = "step-agent"
@@ -36,10 +36,44 @@ ENVIRONMENT = "environment"
 AMBIGUOUS = "ambiguous"
 CLASS_ORDER: Tuple[str, ...] = (ORCHESTRATOR, STEP_AGENT, ENVIRONMENT, AMBIGUOUS)
 
+# Closed vocabularies for type safety.
+StopClass = Literal["orchestrator", "step-agent", "environment", "ambiguous"]
+StopSource = Literal["state", "receipt", "none"]
+
+
+class StopsDict(TypedDict):
+    """The stops aggregate in the report."""
+
+    total: int
+    by_class: Dict[str, int]
+    by_source: Dict[str, int]
+
+
+class TokenCostDict(TypedDict):
+    """The token_cost field in the report."""
+
+    status: str
+    reason: str
+
+
+class ReportDict(TypedDict):
+    """The aggregate report structure."""
+
+    definition: List[str]
+    since: Optional[str]
+    counts: Dict[str, int]
+    by_status: Dict[str, int]
+    by_step: Dict[str, int]
+    stops: StopsDict
+    stop_table: List[Dict[str, Any]]
+    ambiguous: List[Dict[str, Any]]
+    token_cost: TokenCostDict
+
 # "Reached merge or done" is measured by the step a flow is on now (state.json "step").
 MERGE_OR_DONE_STEPS: Tuple[str, ...] = ("merge", "done")
-# Statuses that mean the flow stopped or is waiting on a human, so a stop record is expected.
-STOP_STATUSES: Tuple[str, ...] = ("awaiting", "failed")
+# Statuses that mean the flow stopped (not healthy). Only these trigger a fallback check for receipt reason.
+# Note: "awaiting" is a healthy state (flow is waiting on a human answer) and is not counted as a stop.
+STOP_STATUSES: Tuple[str, ...] = ("failed",)
 
 # Explicit rule table, first match wins. Each row: (regex matched against the stop reason, class, label).
 # The regexes are case-insensitive. Anything that matches no row is ambiguous and listed for a human.
@@ -61,7 +95,8 @@ RULES: List[Tuple[str, str, str]] = [
     (r"^fidelity audit failed", STEP_AGENT, "fidelity audit failed (other)"),
 ]
 
-# Leading generic words of an unmatched reason, used as its grouping key. Free text is never echoed.
+# Shape extraction from unmatched reasons: leading words (up to 3) used as grouping key only.
+# Free text (the full reason) is never echoed in output; only the shape (leading words) is used to group ambiguous rows.
 _SHAPE_RE = re.compile(r"[a-z][a-z-]*(?: [a-z][a-z-]*){0,2}")
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _DECISION_FAILED_RE = re.compile(r"^Decision: FAILED\s*$", re.MULTILINE)
@@ -75,9 +110,10 @@ TOKEN_COST_REASON = (
 DEFINITION_LINES: List[str] = [
     "Window: flows whose state.json `started` date is on or after --since (all dated and undated flows when --since is absent).",
     "Reached merge or done: the flow's current `step` is `merge` or `done`. This is a point-in-time read, so a flow that reached merge and was later moved back is not counted.",
-    "Stop record: each non-empty `stop_reason` entry in state.json, whatever the flow's status; plus, for a flow whose status is `awaiting` or `failed`, its current step when no `stop_reason` entry exists for that step.",
+    "Stop record: each non-empty `stop_reason` entry in state.json, whatever the flow's status; plus, for a flow whose status is `failed`, its current step when no `stop_reason` entry exists for that step (awaiting status is excluded: a flow awaiting a human answer is healthy).",
     "Stop reason source: the state.json `stop_reason` entry, or else the `Reason:` line of the current step's receipt when that receipt says `Decision: FAILED`.",
     "Classification: the RULES table, first match wins. Unmatched reasons, and stop statuses with no reason recorded anywhere, are ambiguous.",
+    "Ambiguous reasons fold silently to a shape grouping (leading words): a full reason 'foo bar baz qux' and 'foo bar' (with different tails) both fold into 'foo bar'. When a receipt is unreadable or a `Reason:` line is missing from a FAILED receipt, the stop is recorded as 'no reason' (source=none). These folds are counted in the ambiguous rows with their shape.",
     "Not counted as stops: `paused` (a human choice at a gate), `abandoned`, and `running` flows with no stop_reason entry.",
 ]
 
@@ -86,25 +122,25 @@ DEFINITION_LINES: List[str] = [
 class Stop:
     """One recorded stop. The reason text is not kept, only its class, label and where it came from."""
 
-    stop_class: str
+    stop_class: StopClass
     label: str
-    source: str  # "state", "receipt" or "none"
+    source: StopSource
 
 
-def classify_stop_reason(reason: str) -> Tuple[str, str]:
+def classify_stop_reason(reason: str) -> Tuple[StopClass, str]:
     """Return (class, label) for a non-empty stop reason. A reason that matches no rule is ambiguous."""
     text = reason.strip()
     for pattern, stop_class, label in RULES:
         if re.search(pattern, text, re.IGNORECASE):
-            return stop_class, label
+            return stop_class, label  # type: ignore[return-value]
     match = _SHAPE_RE.match(text.lower())
     shape = match.group(0) if match else "(other)"
-    return AMBIGUOUS, "unmatched reason: " + shape
+    return AMBIGUOUS, "unmatched reason: " + shape  # type: ignore[return-value]
 
 
-def classify_without_reason(step: str, status: str) -> Tuple[str, str]:
+def classify_without_reason(step: str, status: str) -> Tuple[StopClass, str]:
     """Return (class, label) for a stop status with no reason recorded anywhere. Always ambiguous."""
-    return AMBIGUOUS, "no reason recorded (" + step + "/" + status + ")"
+    return AMBIGUOUS, "no reason recorded (" + step + "/" + status + ")"  # type: ignore[return-value]
 
 
 def _read_text(path: Path) -> Optional[str]:
@@ -128,13 +164,25 @@ def read_state(flow_dir: Path) -> Optional[Dict[str, Any]]:
 
 
 def receipt_reason(flow_dir: Path, step: str) -> Optional[str]:
-    """The Reason line of the step's latest receipt, when that receipt records Decision: FAILED."""
+    """The Reason line of the step's latest receipt, when that receipt records Decision: FAILED.
+
+    Matches receipts by pattern \\d+-<step>\\.md, taking the highest prefix number (the latest attempt).
+    """
     steps_dir = flow_dir / "steps"
     if not steps_dir.is_dir():
         return None
-    receipts = sorted(steps_dir.glob("*-" + step + ".md"))
+    # Build a regex that matches files like 01-plan.md, 02-plan.aJ.md (archive), etc.
+    # Only the main receipt (no .aJ suffix) is considered; archives are skipped.
+    step_escaped = re.escape(step)
+    pattern = re.compile(r"^(\d+)-" + step_escaped + r"\.md$")
+    receipts = []
+    for entry in steps_dir.iterdir():
+        if entry.is_file() and pattern.match(entry.name):
+            receipts.append(entry)
     if not receipts:
         return None
+    # Take the highest prefix number (latest attempt).
+    receipts.sort(key=lambda p: int(pattern.match(p.name).group(1)))  # type: ignore[union-attr]
     text = _read_text(receipts[-1])
     if text is None or _DECISION_FAILED_RE.search(text) is None:
         return None
@@ -188,7 +236,7 @@ def _bump(counter: Dict[str, int], key: str) -> None:
     counter[key] = counter.get(key, 0) + 1
 
 
-def build_report(flows_root: Path, since: Optional[str]) -> Dict[str, Any]:
+def build_report(flows_root: Path, since: Optional[str]) -> ReportDict:
     """Aggregate counts, stop classes and ambiguous rows over flows_root/*/*/state.json. Read-only."""
     counts: Dict[str, int] = {
         "flows_in_window": 0,
@@ -267,10 +315,10 @@ def _counts_map_rows(mapping: Dict[str, int]) -> List[List[str]]:
     return [[key, str(mapping[key])] for key in sorted(mapping)]
 
 
-def render_md(report: Dict[str, Any]) -> str:
+def render_md(report: ReportDict) -> str:
     """The aggregate report as markdown. Contains counts and generic labels only."""
     counts: Dict[str, int] = report["counts"]
-    stops: Dict[str, Any] = report["stops"]
+    stops: StopsDict = report["stops"]
     since = report["since"]
     window = ("started on or after " + since) if since else "all flows with a readable state.json"
     lines: List[str] = [

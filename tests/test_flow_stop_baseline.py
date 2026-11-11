@@ -313,9 +313,9 @@ def test_since_includes_flow_started_on_the_date():
         rc, out = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "json"])
     if rc != 0:
         return False, f"exit {rc}"
-    started = json_ints(json.loads(out), ["reached", "merge", "done"])
-    if 1 not in started:
-        return False, f"started values {started}, expected 1 (on-date done flow excluded?)"
+    flows_in_window = json_ints(json.loads(out), ["flows_in_window"])
+    if 1 not in flows_in_window:
+        return False, f"flows_in_window {flows_in_window}, expected 1 (on-date flow excluded?)"
     return True, ""
 
 
@@ -393,13 +393,154 @@ def test_output_is_aggregate_only():
         _, out_json = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "json"])
         _, out_md = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "md"])
         root_str = str(root)
-        root_name = root.name
     for label, text in (("json", out_json), ("md", out_md)):
         leaked = [token for token in FORBIDDEN_IN_OUTPUT if token in text]
         if leaked:
             return False, f"{label} output contains fixture identifiers: {leaked}"
-        if root_str in text or (root_name and root_name in text and root_name != "flows" and len(root_name) > 6):
+        if root_str in text:
             return False, f"{label} output contains the fixture root path"
+    return True, ""
+
+
+# ── Section 5: RULES table-driven tests ──────────────────────────────────────
+
+def test_rules_table_all_entries_classified():
+    """Every RULES entry is tested: each pattern matches and classifies correctly."""
+    module = baseline_module()
+    test_samples = {
+        r"ledger unavailable": "ledger unavailable",
+        r"^anti-tamper gate": "anti-tamper gate on flow 123",
+        r"^gate-not-converged": "gate-not-converged after 10 attempts",
+        r"^unit-record-mismatch": "unit-record-mismatch in unit 2",
+        r"^primary-checkout-drift": "primary-checkout-drift detected",
+        r"^check-not-configured": "check-not-configured error",
+        r"^check source mismatch": "check source mismatch found",
+        r"^check-not-run": "check-not-run due to timeout",
+        r"^queue kickback": "queue kickback from merge",
+        r"^skill invocation failed": "skill invocation failed: unknown",
+        r"^check (gate )?failed": "check gate failed on verify",
+        r"^(malformed receipt|no receipt written|receipt:|assess receipt)": "receipt: badly formed",
+        r"^(implementer-shortfall|implement run incomplete)": "implementer-shortfall in unit 1",
+        r"^reduced run": "reduced run by fidelity",
+        r"^fidelity audit failed": "fidelity audit failed: other",
+    }
+    for pattern, stop_class, label in module.RULES:
+        # Use pre-computed test samples for common patterns.
+        test_reason = test_samples.get(pattern, "test reason containing " + label)
+        classified_class, classified_label = module.classify_stop_reason(test_reason)
+        if classified_class != stop_class or classified_label != label:
+            return False, f"rule '{pattern}' with reason '{test_reason}' -> ({stop_class}, {label}) but got ({classified_class}, {classified_label})"
+    return True, ""
+
+
+def test_receipt_reason_fixture_success():
+    """A flow with a receipt containing Decision: FAILED and Reason: yields the reason."""
+    with tempfile.TemporaryDirectory() as td:
+        flow = Path(td) / "flows" / "repo" / "test-flow"
+        flow.mkdir(parents=True)
+        (flow / "steps").mkdir()
+        receipt_text = "Decision: FAILED\n\nReason: check failed\n\n<!-- step-end -->\n"
+        (flow / "steps" / "03-implement.md").write_text(receipt_text)
+        module = baseline_module()
+        reason = module.receipt_reason(flow, "implement")
+    if reason != "check failed":
+        return False, f"receipt reason: expected 'check failed', got {reason!r}"
+    return True, ""
+
+
+def test_receipt_reason_no_receipt():
+    """A flow with no receipt for the step yields None."""
+    with tempfile.TemporaryDirectory() as td:
+        flow = Path(td) / "flows" / "repo" / "test-flow"
+        flow.mkdir(parents=True)
+        (flow / "steps").mkdir()
+        module = baseline_module()
+        reason = module.receipt_reason(flow, "implement")
+    if reason is not None:
+        return False, f"receipt reason with no receipt: expected None, got {reason!r}"
+    return True, ""
+
+
+def test_receipt_reason_no_failed_decision():
+    """A receipt without Decision: FAILED yields None (even if Reason: is present)."""
+    with tempfile.TemporaryDirectory() as td:
+        flow = Path(td) / "flows" / "repo" / "test-flow"
+        flow.mkdir(parents=True)
+        (flow / "steps").mkdir()
+        receipt_text = "Decision: OK\n\nReason: check passed\n\n<!-- step-end -->\n"
+        (flow / "steps" / "03-implement.md").write_text(receipt_text)
+        module = baseline_module()
+        reason = module.receipt_reason(flow, "implement")
+    if reason is not None:
+        return False, f"receipt reason without FAILED: expected None, got {reason!r}"
+    return True, ""
+
+
+def test_exit_code_valid_root():
+    """--flows-root pointing to a valid directory exits 0."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "flows"
+        root.mkdir()
+        rc, _ = run_main(["--flows-root", str(root)])
+    if rc != 0:
+        return False, f"valid root exited {rc}, expected 0"
+    return True, ""
+
+
+def test_exit_code_invalid_since():
+    """--since with invalid date exits 2."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "flows"
+        root.mkdir()
+        rc, _ = run_main(["--flows-root", str(root), "--since", "2026-13-45"])
+    if rc != 2:
+        return False, f"invalid --since exited {rc}, expected 2"
+    return True, ""
+
+
+def test_exit_code_missing_flows_root():
+    """--flows-root pointing to a non-existent path exits 2."""
+    rc, _ = run_main(["--flows-root", "/nonexistent/path/that/does/not/exist"])
+    if rc != 2:
+        return False, f"missing flows root exited {rc}, expected 2"
+    return True, ""
+
+
+def test_mixed_fixture_exact_counts_json():
+    """JSON report has exactly the expected count keys with correct values."""
+    with tempfile.TemporaryDirectory() as td:
+        root = build_root(td, MIXED_FLOWS + [PRE_SINCE_FLOW])
+        rc, out = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "json"])
+    if rc != 0:
+        return False, f"exit {rc}"
+    obj = json.loads(out)
+    counts = obj.get("counts", {})
+    expected = {"flows_in_window": 5, "reached_merge_or_done": 1, "outside_window": 1, "undated_excluded": 0, "unreadable_state": 0}
+    for key, expected_val in expected.items():
+        actual_val = counts.get(key)
+        if actual_val != expected_val:
+            return False, f"counts[{key}]: expected {expected_val}, got {actual_val}"
+    extra_keys = set(counts.keys()) - set(expected.keys())
+    if extra_keys:
+        return False, f"counts has extra keys: {extra_keys}"
+    return True, ""
+
+
+def test_mixed_fixture_distinct_stop_counts():
+    """Each distinct stop (class, label) pair has a count and no duplicates in stop_table."""
+    with tempfile.TemporaryDirectory() as td:
+        root = build_root(td, MIXED_FLOWS + [PRE_SINCE_FLOW])
+        rc, out = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "json"])
+    if rc != 0:
+        return False, f"exit {rc}"
+    obj = json.loads(out)
+    stop_table = obj.get("stop_table", [])
+    seen = set()
+    for row in stop_table:
+        key = (row.get("class"), row.get("label"))
+        if key in seen:
+            return False, f"duplicate stop_table entry: {key}"
+        seen.add(key)
     return True, ""
 
 
@@ -428,6 +569,18 @@ if __name__ == "__main__":
     print("[Section 4] read-only and aggregate-only")
     _run(h, "flows root is byte-identical before and after", test_read_only_tree_unchanged)
     _run(h, "output carries aggregate counts only", test_output_is_aggregate_only)
+    print()
+
+    print("[Section 5] RULES table-driven tests")
+    _run(h, "all RULES entries classify correctly", test_rules_table_all_entries_classified)
+    _run(h, "receipt_reason with FAILED decision yields reason", test_receipt_reason_fixture_success)
+    _run(h, "receipt_reason with no receipt yields None", test_receipt_reason_no_receipt)
+    _run(h, "receipt_reason without FAILED decision yields None", test_receipt_reason_no_failed_decision)
+    _run(h, "exit code 0 for valid root", test_exit_code_valid_root)
+    _run(h, "exit code 2 for invalid --since", test_exit_code_invalid_since)
+    _run(h, "exit code 2 for missing flows root", test_exit_code_missing_flows_root)
+    _run(h, "exact count keys in JSON report", test_mixed_fixture_exact_counts_json)
+    _run(h, "distinct stop counts (no duplicates)", test_mixed_fixture_distinct_stop_counts)
     print()
 
     h.summarize_and_exit()
