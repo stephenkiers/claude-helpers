@@ -36,6 +36,10 @@ MARKER_EXEMPTIONS = {
         "orchestrator, not a step author: it reads markers to re-ask pending questions and "
         "stubs the receipt on a re-run, where the old awaiting marker is stale by design"
     ),
+    "commands/expert-flow-v2.md": (
+        "skeleton stub, not a step author: the driver-written prompt tells the step to write the marker, "
+        "and the stub only waits on it"
+    ),
 }
 
 # The canonical "keep" sentence: a `keep`/`keeping` instruction that names a marker and

@@ -44,6 +44,7 @@ ROSTER = [
     "commands/merge-and-cleanup.md",
     "commands/cleanup.md",
     "commands/stack-sync.md",
+    "commands/expert-flow-v2.md",  # v2 skeleton: no AskUserQuestion site; ASK/PARK are driver-written file paths (S-D3)
 ]
 
 ASK_TOKEN = "AskUserQuestion"
