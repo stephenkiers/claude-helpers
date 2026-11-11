@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """
-Doc-content test for the optional direnv step in commands/setup-repo.md.
+Doc-content test for the optional direnv step in commands/setup-repo.md (#444).
 
-Plan: add-optional-direnv-setup-to-setup-repo. Asserts the decided wording and branches are
-visible in the doc: the question, the DEFAULT_BRANCH allowlist (Q1), the literal dotenv
-convention line (no dotenv_if_exists), `direnv allow` only on a file written in this run,
-the `.env` exclude and mode-600 handling, the no-clobber `.envrc` write, the hand-off
-`### direnv` block, the Error Handling rows, the frontmatter clause, and the shell conventions.
-
-The doc is read at run time by this file. Checks are substring or regex checks over that text;
-they confirm the decided branches are written down, not that the bash behaves.
+Every check reads the doc text. A check named "documents ..." confirms the decided wording,
+branch or construct is written down in the doc; it does not run the bash or observe behaviour.
+Where a check names a construct (a case pattern, a guard, a printf line), the regex or substring
+targets that construct, so the name and the assertion describe the same thing.
 
 Run with: python3 tests/test_setup_repo_direnv_doc.py
 """
@@ -23,17 +19,24 @@ SETUP_REPO_DOC = REPO_ROOT / "commands" / "setup-repo.md"
 QUESTION = "Use direnv for environment variables in this project?"
 ALLOWLIST_CHARS = "A-Za-z0-9._/-"
 DOTENV_FORMAT = 'if [[ -f "%s/.env" ]]; then dotenv "%s/.env"; fi'
+# The full printf in 5d: source_up_if_exists first, the unchanged dotenv line, and DEFAULT_BRANCH fed twice.
+GENERATED_PRINTF = (
+    "printf 'source_up_if_exists\\n" + DOTENV_FORMAT + "\\n' \"$DEFAULT_BRANCH\" \"$DEFAULT_BRANCH\""
+)
 SKIPPED_UNSAFE = "skipped (unsafe branch name"
-INACTIVE_LINE = "inactive until direnv is installed and hooked"
+INACTIVE_LINE = "direnv: .envrc written but inactive until direnv is installed and hooked"
+LOADS_LINE = "direnv: set up — worktrees/.envrc loads <branch>/.env"
+UNKNOWN_LINE = "direnv: unknown — check worktrees/.envrc and the exclude entry by hand"
 
 DIRENV_STEP = r"5\.\s*Optional: direnv"
 HANDOFF_STEP = r"6\.\s*Confirm and hand off"
 
+BRANCH_CASE_COMMENT = re.compile(r"^[ \t]*# Branch allowlist \(#444\):.*$", re.M)
 BARE_POSITIONAL = re.compile(r"\$[0-9](?!\w)")
 UNQUOTED_HEREDOC = re.compile(r"<<-?\s*[A-Za-z_]")
 
 
-def _section_after(text, heading):
+def _markdown_section(text, heading):
     """Body of the markdown section whose heading line matches `heading` (a regex), up to the
     next heading at the same or a higher level. Empty string when the heading is absent."""
     m = re.search(r"^(#+)\s*" + heading + r".*$", text, re.M)
@@ -68,166 +71,201 @@ def _frontmatter(text):
     return text[4:end] if end != -1 else ""
 
 
-def _allow_near_written_run(section):
-    """True when some 'direnv allow' mention sits within three lines of 'written in this run'
-    (or 'written this run')."""
-    lines = section.splitlines()
-    for i, line in enumerate(lines):
-        if "direnv allow" not in line:
+def _branch_case_snippets(section):
+    """Each branch-allowlist snippet: from its '# Branch allowlist (#444)' comment line through the
+    second `esac` after it, which closes the pair of `case` statements in that block."""
+    snippets = []
+    for m in BRANCH_CASE_COMMENT.finditer(section):
+        esacs = list(re.finditer(r"^[ \t]*esac$", section[m.end():], re.M))
+        if len(esacs) < 2:
+            snippets.append("")
             continue
-        window = "\n".join(lines[max(0, i - 3): i + 4])
-        if re.search(r"written (in this|this) run", window, re.I):
-            return True
-    return False
+        snippets.append(section[m.start(): m.end() + esacs[1].end()])
+    return snippets
+
+
+def _error_row(section, first_cell):
+    """The Error Handling table row whose first cell contains `first_cell`, or empty string."""
+    for line in section.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if cells and first_cell in cells[0]:
+            return line
+    return ""
 
 
 def main():
     h = Harness("SETUP-REPO DIRENV DOC TEST SUITE")
 
     exists = SETUP_REPO_DOC.is_file()
-    h.test_result("commands/setup-repo.md exists", exists, str(SETUP_REPO_DOC))
+    h.test_result("setup-repo doc file exists", exists, str(SETUP_REPO_DOC))
     text = SETUP_REPO_DOC.read_text() if exists else ""
     direnv = _direnv_step(text)
     handoff = _handoff(text)
-    direnv_block = _section_after(text, r"direnv\s*$")
-    error_handling = _section_after(text, r"Error Handling")
-    notes = _section_after(text, r"Notes")
+    # The hand-off template: the '### direnv' line sits inside a code fence in the doc, and this
+    # section runs from that line to the Error Handling heading.
+    direnv_template = _markdown_section(text, r"direnv\s*$")
+    error_handling = _markdown_section(text, r"Error Handling")
+    notes = _markdown_section(text, r"Notes")
     frontmatter = _frontmatter(text)
 
     print()
-    print("[Section 1] Placement, numbering and order")
+    print("[Section 1] Placement and numbering")
 
     h.test_result(
-        "direnv step is titled '5. Optional: direnv'",
+        "doc documents the direnv step titled '5. Optional: direnv'",
         re.search(DIRENV_STEP, text) is not None,
         "step 5 title not found",
     )
     h.test_result(
-        "hand-off is renumbered to '6. Confirm and hand off'",
+        "doc documents the hand-off renumbered to '6. Confirm and hand off'",
         re.search(HANDOFF_STEP, text) is not None,
         "step 6 hand-off title not found",
     )
     h.test_result(
-        "old hand-off numbering '5. Confirm and hand off' is gone",
+        "doc no longer numbers the hand-off '5. Confirm and hand off'",
         re.search(r"5\.\s*Confirm and hand off", text) is None,
         "hand-off still numbered 5",
     )
     gitignore_note = re.search(r"^\W*4a\b", text, re.M)
     h.test_result(
-        "step 4a (project.yaml gitignore note) is present before the direnv step",
+        "doc documents step 4a (project.yaml gitignore note) before the direnv step",
         gitignore_note is not None and bool(direnv) and gitignore_note.start() < text.find(direnv),
         "4a missing or not before step 5",
-    )
-    h.test_result(
-        "direnv step sits before the hand-off step",
-        bool(direnv) and bool(handoff),
-        "direnv step or hand-off step missing, or out of order",
     )
 
     print()
     print("[Section 2] The question and its choices")
 
     h.test_result(
-        "question text is exactly 'Use direnv for environment variables in this project?'",
+        "doc documents the question text exactly",
         QUESTION in text,
         "question not found",
     )
     h.test_result(
-        "the question is asked inside the direnv step via AskUserQuestion",
+        "doc documents asking the question with AskUserQuestion inside the direnv step",
         QUESTION in direnv and "AskUserQuestion" in direnv,
         "question or AskUserQuestion missing from the direnv step",
     )
     no_idx = text.find("No: skip direnv setup")
     yes_match = re.search(r"Yes:\s*create", text)
     h.test_result(
-        "'No: skip direnv setup' option is present and listed before the Yes option",
+        "doc documents 'No: skip direnv setup' listed before the Yes option",
         no_idx != -1 and yes_match is not None and no_idx < yes_match.start(),
         "No option missing or not first",
     )
     h.test_result(
-        "No answer prints the exact line 'direnv: skipped'",
-        "direnv: skipped" in text,
-        "'direnv: skipped' not found",
+        "doc documents the No answer as the hand-off line `direnv: skipped`",
+        "`direnv: skipped`" in direnv,
+        "`direnv: skipped` not found in the direnv step",
     )
     h.test_result(
-        "brew install prompt uses the decided wording 'direnv is not installed. Run `brew install direnv`?'",
+        "doc documents the brew install prompt wording 'direnv is not installed. Run `brew install direnv`?'",
         "direnv is not installed. Run `brew install direnv`?" in direnv,
         "install prompt wording not found in the direnv step",
     )
     h.test_result(
-        "brew-missing path prints the direnv install link",
+        "doc documents printing the direnv install link when brew is missing",
         "https://direnv.net/docs/installation.html" in direnv,
         "install link not found in the direnv step",
     )
 
     print()
-    print("[Section 3] Q1: DEFAULT_BRANCH allowlist validation")
+    print("[Section 3] DEFAULT_BRANCH allowlist validation")
 
     h.test_result(
-        "allowlist character set 'A-Za-z0-9._/-' is named in the direnv step",
+        "doc documents the allowlist character set 'A-Za-z0-9._/-' in the direnv step",
         ALLOWLIST_CHARS in direnv,
         "allowlist character set not found",
     )
     h.test_result(
-        "the direnv step rejects '..' in the branch name",
-        ".." in direnv and bool(re.search(r"(?i)reject|unsafe|not allow|must not", direnv)),
-        "'..' rejection not described in the direnv step",
+        "doc documents the first allowlist case pattern rejecting empty, leading '-' and '..'",
+        re.search(r'""\|-\*\|\*\.\.\*\) BRANCH_OK=0', direnv) is not None,
+        "case pattern \"\"|-*|*..*) BRANCH_OK=0 not found",
     )
     h.test_result(
-        "the direnv step rejects a branch name starting with '-'",
-        bool(re.search(r"(?i)(starting|start) with\s*`?-", direnv)),
-        "leading '-' rejection not described in the direnv step",
+        "doc documents the second allowlist case pattern rejecting any character outside the allowlist",
+        re.search(r"\*\[!A-Za-z0-9\._/-\]\*\) BRANCH_OK=0", direnv) is not None,
+        "case pattern *[!A-Za-z0-9._/-]*) BRANCH_OK=0 not found",
     )
     h.test_result(
-        "unsafe-name skip prints 'direnv: skipped (unsafe branch name ...'",
-        SKIPPED_UNSAFE in text,
-        f"'{SKIPPED_UNSAFE}' not found",
+        "doc documents the unsafe-name skip line 'direnv: skipped (unsafe branch name ...'",
+        SKIPPED_UNSAFE in direnv,
+        f"'{SKIPPED_UNSAFE}' not found in the direnv step",
     )
     h.test_result(
-        "the validation is applied to DEFAULT_BRANCH",
-        "DEFAULT_BRANCH" in direnv,
-        "DEFAULT_BRANCH not referenced in the direnv step",
+        "doc documents step 5a validating DEFAULT_BRANCH via a case on \"$DEFAULT_BRANCH\"",
+        re.search(r'case "\$DEFAULT_BRANCH" in', direnv) is not None,
+        "case on $DEFAULT_BRANCH not found in the direnv step",
+    )
+    snippets = _branch_case_snippets(direnv)
+    h.test_result(
+        "doc documents the 5a and 5c-5e branch-allowlist case snippets as textually identical",
+        len(snippets) == 2 and snippets[0] != "" and snippets[0] == snippets[1],
+        f"expected two identical snippets, found {len(snippets)} "
+        f"(identical: {len(snippets) == 2 and snippets[0] == snippets[1]})",
+    )
+    h.test_result(
+        "doc documents the 5a result key as DIRENV_PRECHECK",
+        direnv.count("printf 'DIRENV_PRECHECK=%s\\n'") == 1,
+        "printf 'DIRENV_PRECHECK=%s' not found exactly once",
     )
 
     print()
     print("[Section 4] .env: excluded from git, then created")
 
     h.test_result(
-        "tracked-.env probe uses 'ls-files --error-unmatch'",
-        "ls-files --error-unmatch" in direnv,
-        "ls-files --error-unmatch not found",
+        "doc documents the tracked-.env probe as 'ls-files --error-unmatch -- .env'",
+        "ls-files --error-unmatch -- .env" in direnv,
+        "tracked-.env probe not found",
     )
     h.test_result(
-        "already-ignored probe uses 'check-ignore -q'",
-        "check-ignore -q" in direnv,
-        "check-ignore -q not found",
+        "doc documents the already-ignored probe as 'check-ignore -q -- .env'",
+        "check-ignore -q -- .env" in direnv,
+        "already-ignored probe not found",
     )
     h.test_result(
-        "exclude entry goes through 'info/exclude' resolved by 'rev-parse --git-path'",
-        "info/exclude" in direnv and "rev-parse --git-path" in direnv,
-        "info/exclude or rev-parse --git-path missing",
+        "doc documents the exclude file resolved through 'rev-parse --git-path info/exclude'",
+        "rev-parse --git-path info/exclude" in direnv,
+        "rev-parse --git-path info/exclude not found",
     )
     h.test_result(
-        "exclude append is guarded by 'grep -qxF' so it is not duplicated",
-        "grep -qxF" in direnv,
-        "grep -qxF not found",
+        "doc documents the exclude entry as the clone-anchored '/.env' line",
+        re.search(r"printf '/\.env\\n' >> \"\$EXCLUDE\"", direnv) is not None,
+        "printf '/.env' append to $EXCLUDE not found",
     )
     h.test_result(
-        "created .env gets mode 600 (umask 077 or chmod 600)",
-        bool(re.search(r"umask 077|chmod 600", direnv)),
-        "mode 600 handling not found",
+        "doc documents the exclude append guarded by grep -qxF on the same '/.env' string",
+        re.search(r"grep -qxF '/\.env'", direnv) is not None,
+        "grep -qxF '/.env' guard not found",
+    )
+    h.test_result(
+        "doc documents .env created under umask 077 (mode 600)",
+        re.search(r'umask 077; : > "\$\{DEST\}/\.env"', direnv) is not None,
+        "umask 077 .env creation not found",
+    )
+    h.test_result(
+        "doc documents .env created only when untracked, ignored, and absent (no file or symlink)",
+        re.search(r'\[ ! -e "\$\{DEST\}/\.env" \] && \[ ! -L "\$\{DEST\}/\.env" \]', direnv) is not None,
+        "absent-and-not-symlink guard on .env not found",
     )
 
     print()
-    print("[Section 5] worktrees/.envrc: generated line, no-clobber, shadowing")
+    print("[Section 5] worktrees/.envrc: generated lines, no-clobber, shadowing")
 
     h.test_result(
-        "generated dotenv line uses the decided quoted convention",
+        "doc documents the generated dotenv line in the quoted DOTENV_FORMAT",
         DOTENV_FORMAT in direnv,
         f"'{DOTENV_FORMAT}' not found in the direnv step",
     )
     h.test_result(
-        "no dotenv line hardcodes 'main/.env' (branch comes from DEFAULT_BRANCH)",
+        "doc documents the generated .envrc as source_up_if_exists, then the dotenv line, both fed DEFAULT_BRANCH",
+        GENERATED_PRINTF in direnv,
+        "generated printf with source_up_if_exists first and DEFAULT_BRANCH twice not found",
+    )
+    h.test_result(
+        "doc documents no dotenv or printf line hardcoding main/.env (branch comes from DEFAULT_BRANCH)",
         not any(
             "main/.env" in line
             for line in text.splitlines()
@@ -236,7 +274,7 @@ def main():
         "a dotenv or printf line hardcodes main/.env",
     )
     h.test_result(
-        "generated dotenv line is not dotenv_if_exists",
+        "doc documents the generated dotenv line as not dotenv_if_exists",
         not any(
             "dotenv_if_exists" in line and ("printf" in line or ">" in line)
             for line in text.splitlines()
@@ -244,28 +282,22 @@ def main():
         "dotenv_if_exists appears in a line that writes the .envrc",
     )
     h.test_result(
-        "the printf format is followed by DEFAULT_BRANCH arguments",
-        DOTENV_FORMAT in direnv
-        and "DEFAULT_BRANCH" in direnv[direnv.find(DOTENV_FORMAT): direnv.find(DOTENV_FORMAT) + 300],
-        "DEFAULT_BRANCH not passed to the dotenv printf",
+        "doc documents the .envrc write under set -o noclobber, redirected to \"$ENVRC\"",
+        re.search(r'set -o noclobber; printf [^\n]*> "\$ENVRC" \)', direnv) is not None,
+        "noclobber .envrc write not found",
     )
     h.test_result(
-        "the .envrc write is no-clobber (noclobber)",
-        "noclobber" in direnv,
-        "noclobber not found",
+        "doc documents the .envrc existence guard covering symlinks ([ -L \"$ENVRC\" ])",
+        '[ -L "$ENVRC" ]' in direnv,
+        "[ -L \"$ENVRC\" ] guard not found",
     )
     h.test_result(
-        "the .envrc existence guard covers symlinks ('[ -L')",
-        "[ -L" in direnv,
-        "[ -L guard not found",
-    )
-    h.test_result(
-        "the doc states an existing .envrc is never overwritten",
+        "doc documents the never-overwrite rule for an existing .envrc",
         bool(re.search(r"(?i)never overwrite", direnv)),
         "'never overwrite' wording not found",
     )
     h.test_result(
-        "the .envrc body is not written with an unquoted heredoc",
+        "doc documents the .envrc body is not written with an unquoted heredoc",
         not any(
             UNQUOTED_HEREDOC.search(line)
             for line in text.splitlines()
@@ -275,113 +307,162 @@ def main():
         "unquoted heredoc found on a line touching .envrc or in the direnv step",
     )
     h.test_result(
-        "shadowing probe checks the clone's own '${DEST}/.envrc'",
-        "${DEST}/.envrc" in direnv,
-        "${DEST}/.envrc probe not found",
+        "doc documents the shadow probe on the clone's own ${DEST}/.envrc",
+        re.search(r'\[ -e "\$\{DEST\}/\.envrc" \]', direnv) is not None,
+        "${DEST}/.envrc shadow probe not found",
     )
     h.test_result(
-        "shadowing is reported with 'shadows worktrees/.envrc' and the source_up_if_exists fix",
-        "shadows worktrees/.envrc" in text and "source_up_if_exists" in text,
-        "shadowing wording or source_up_if_exists fix missing",
+        "doc documents the shadowing hand-off line 'shadows worktrees/.envrc; add source_up_if_exists to it'",
+        "shadows worktrees/.envrc; add source_up_if_exists to it" in direnv_template,
+        "shadowing hand-off line not found in the hand-off template",
+    )
+    h.test_result(
+        "doc documents that DIRENV_VALIDATED has exactly one producer, the 5c-5e printf",
+        direnv.count("printf 'DIRENV_VALIDATED=%s") == 1
+        and direnv.find("printf 'DIRENV_VALIDATED=%s") > direnv.find("5c to 5e."),
+        "DIRENV_VALIDATED is not printed exactly once, inside 5c to 5e",
+    )
+    h.test_result(
+        "doc documents DIRENV_AVAILABLE derived by command -v direnv inside 5c to 5e",
+        re.search(r"DIRENV_AVAILABLE=0\n\s*command -v direnv", direnv) is not None,
+        "DIRENV_AVAILABLE=0 followed by command -v direnv not found",
+    )
+    h.test_result(
+        "doc documents that DIRENV_AVAILABLE is not carried from 5b",
+        "`DIRENV_AVAILABLE` is not carried" in direnv,
+        "'`DIRENV_AVAILABLE` is not carried' note not found",
+    )
+    h.test_result(
+        "doc documents the DIRENV_DONE=1 sentinel as the last line the 5c-5e block prints",
+        "DIRENV_DONE=1\\n'" in direnv,
+        "DIRENV_DONE=1 sentinel printf not found",
+    )
+    h.test_result(
+        "doc documents DIRENV_ALLOW as a printed key of the 5c-5e block",
+        "DIRENV_ALLOW=%s" in direnv,
+        "DIRENV_ALLOW=%s not printed by the 5c-5e block",
     )
 
     print()
-    print("[Section 6] direnv allow gating (W1)")
+    print("[Section 6] direnv allow gating")
 
     h.test_result(
-        "the doc contains a 'direnv allow' step",
-        "direnv allow" in direnv,
-        "'direnv allow' not found in the direnv step",
+        "doc documents direnv allow only inside the ENVRC_STATE = written guard, withheld when TRACKED=1",
+        re.search(
+            r'if \[ "\$ENVRC_STATE" = written \] && \[ "\$DIRENV_AVAILABLE" = 1 \]; then\s+'
+            r'if \[ "\$TRACKED" -eq 1 \]; then\s+ALLOW_STATE=withheld-tracked-env\s+'
+            r'elif direnv allow "\$ENVRC" >/dev/null 2>&1; then',
+            direnv,
+        ) is not None,
+        "direnv allow is not guarded by ENVRC_STATE = written, or is not withheld when TRACKED=1",
     )
     h.test_result(
-        "'direnv allow' is stated to run only on a file written in this run",
-        _allow_near_written_run(direnv),
-        "no 'direnv allow' mention sits next to 'written in this run'",
+        "doc documents exactly one direnv allow call, on \"$ENVRC\"",
+        direnv.count('direnv allow "$ENVRC"') == 1,
+        "direnv allow \"$ENVRC\" does not appear exactly once",
     )
     h.test_result(
-        "a kept existing .envrc prints 'kept existing' and asks for review before the allow command",
-        "kept existing" in direnv and bool(re.search(r"(?i)review", direnv)),
-        "'kept existing' with review note not found",
+        "doc documents ALLOW_STATE=ok and ALLOW_STATE=failed for a successful and a failed allow",
+        "ALLOW_STATE=ok" in direnv and "ALLOW_STATE=failed" in direnv,
+        "ALLOW_STATE=ok or ALLOW_STATE=failed not set in the direnv step",
     )
     h.test_result(
-        "a failed direnv allow is reported as 'direnv allow failed' in the hand-off",
-        "direnv allow failed" in text,
-        "'direnv allow failed' not found",
+        "doc documents the kept-existing hand-off line with review before the allow command",
+        "direnv: kept existing worktrees/.envrc — review it, then run: direnv allow" in direnv_template,
+        "kept-existing hand-off line not found in the hand-off template",
     )
 
     print()
-    print("[Section 7] Hand-off direnv block")
+    print("[Section 7] Hand-off direnv template")
 
     h.test_result(
-        "hand-off has a '### direnv' block after the 'Confirm and hand off' step",
+        "doc documents a '### direnv' line after the 'Confirm and hand off' step",
         bool(re.search(r"^###\s+direnv\s*$", handoff, re.M)),
-        "'### direnv' heading not found after the hand-off step",
+        "'### direnv' line not found after the hand-off step",
     )
     h.test_result(
-        "hand-off block states 'direnv: set up' with the loads line",
-        "direnv: set up" in direnv_block and "loads" in direnv_block,
-        "'direnv: set up ... loads' line not in the direnv block",
+        "doc documents the set-up hand-off line 'direnv: set up — worktrees/.envrc loads <branch>/.env'",
+        LOADS_LINE in direnv_template,
+        "set-up hand-off line not found in the hand-off template",
     )
     h.test_result(
-        "hand-off block states 'direnv: kept existing worktrees/.envrc'",
-        "direnv: kept existing worktrees/.envrc" in direnv_block,
-        "'direnv: kept existing worktrees/.envrc' line not in the direnv block",
+        "doc documents the inactive hand-off line for a written .envrc without direnv",
+        INACTIVE_LINE in direnv_template,
+        "inactive-until-installed hand-off line not found in the hand-off template",
     )
     h.test_result(
-        "hand-off block states the inactive line for a written .envrc without direnv",
-        "direnv: .envrc written" in direnv_block and INACTIVE_LINE in direnv_block,
-        "inactive-until-installed line not in the direnv block",
+        "doc documents the withheld hand-off line for DIRENV_ALLOW=withheld-tracked-env",
+        "DIRENV_ALLOW=withheld-tracked-env" in direnv_template
+        and "direnv: .envrc written, but direnv allow withheld — .env is tracked by this repo; "
+        "review the tracked .env first" in direnv_template,
+        "withheld-tracked-env hand-off line or its review-first wording not found",
     )
     h.test_result(
-        "hand-off block states 'direnv: .envrc written, but direnv allow failed'",
-        "direnv: .envrc written, but direnv allow failed" in direnv_block,
-        "allow-failed line not in the direnv block",
+        "doc documents the allow-failed hand-off line 'direnv: .envrc written, but direnv allow failed'",
+        "direnv: .envrc written, but direnv allow failed — run: direnv allow" in direnv_template,
+        "allow-failed hand-off line not found in the hand-off template",
     )
     h.test_result(
-        "secrets follow-up says 'mode 600' for an untracked .env",
-        "mode 600" in direnv_block,
-        "'mode 600' secrets line not in the direnv block",
+        "doc documents the unknown fallback line, gated on DIRENV_DONE=1 and DIRENV_ENVRC",
+        UNKNOWN_LINE in direnv_template
+        and "both `DIRENV_DONE=1` and `DIRENV_ENVRC`" in direnv_template,
+        "unknown fallback line or the DIRENV_DONE=1 trust rule not found",
     )
     h.test_result(
-        "secrets follow-up warns when .env is tracked ('keep secrets out of it')",
-        "is tracked by this repo; keep secrets out of it" in direnv_block,
-        "tracked-.env warning not in the direnv block",
+        "doc documents the secrets follow-up '(git-ignored, mode 600)' for an untracked .env",
+        "(git-ignored, mode 600)" in direnv_template,
+        "'(git-ignored, mode 600)' secrets line not found in the hand-off template",
     )
     h.test_result(
-        "hook check looks for 'direnv hook zsh' in ~/.zshrc and ~/.zshenv, and never edits",
-        "direnv hook zsh" in direnv_block
-        and "~/.zshrc" in direnv_block
-        and "~/.zshenv" in direnv_block
-        and bool(re.search(r"(?i)never edit", direnv_block)),
-        "hook check, both startup files, or the never-edit rule missing",
+        "doc documents the secrets follow-up warning when .env is tracked",
+        ".env is tracked by this repo; keep secrets out of it" in direnv_template,
+        "tracked-.env warning not found in the hand-off template",
     )
     h.test_result(
-        "ADR-0014 line names COMPOSE_PROJECT_NAME and merge-queue config as hand-added blocks",
-        "ADR-0014" in direnv_block
-        and "COMPOSE_PROJECT_NAME" in direnv_block
-        and "merge-queue" in direnv_block,
-        "ADR-0014 pointer or the named project blocks missing",
+        "doc documents the read-only hook check: 'direnv hook zsh' grepped in ~/.zshrc and ~/.zshenv, never edited",
+        'for f in "$HOME/.zshrc" "$HOME/.zshenv"; do' in direnv_template
+        and "grep -q 'direnv hook zsh' \"$f\"" in direnv_template
+        and "never edit" in direnv_template,
+        "hook-check loop over both startup files, its grep, or the never-edit rule not found",
+    )
+    h.test_result(
+        "doc documents the ADR-0014 pointer naming COMPOSE_PROJECT_NAME and the worktree-reference.md section",
+        "Compose COMPOSE_PROJECT_NAME: see ADR-0014" in direnv_template
+        and "~/.claude/prompts/worktree-reference.md (Docker Compose Project Isolation)" in direnv_template,
+        "ADR-0014 pointer or worktree-reference.md pointer not found",
+    )
+    h.test_result(
+        "doc documents the ADR-0021 pointer for the merge-queue config reading the main worktree's .envrc",
+        "The merge-queue config reads the main worktree's .envrc: see ADR-0021" in direnv_template,
+        "ADR-0021 merge-queue pointer not found",
     )
 
     print()
     print("[Section 8] Error Handling rows and Notes")
 
     h.test_result(
-        "Error Handling section exists",
+        "doc documents an Error Handling section",
         error_handling != "",
         "no 'Error Handling' heading found",
     )
-    missing_rows = [
-        kw for kw in ("unsafe", "brew", "symlink", "shadow", "tracked", "direnv allow")
-        if kw not in error_handling
+    row_checks = [
+        ("Unsafe `DEFAULT_BRANCH`", "direnv: skipped (unsafe branch name", "unsafe branch"),
+        ("`brew` missing", "https://direnv.net/docs/installation.html", "brew missing"),
+        ("exists or is a symlink", "never follow the symlink", "symlink"),
+        ("Clone has its own `.envrc`", "source_up_if_exists", "shadowing"),
+        ("`.env` is tracked by the clone", "DIRENV_ALLOW=withheld-tracked-env", "tracked .env"),
+        ("`direnv allow` fails", "direnv allow <path>", "allow failure"),
+        ("Block result missing `DIRENV_DONE=1`", "direnv: unknown", "missing sentinel"),
     ]
+    for first_cell, must_contain, label in row_checks:
+        row = _error_row(error_handling, first_cell)
+        h.test_result(
+            f"doc documents an Error Handling row for {label} containing '{must_contain}'",
+            must_contain in row,
+            f"row with first cell '{first_cell}' missing or lacks '{must_contain}'",
+        )
     h.test_result(
-        "Error Handling covers unsafe branch, brew, symlink, shadowing, tracked .env and allow failure",
-        bool(error_handling) and not missing_rows,
-        f"missing keywords: {missing_rows}" if missing_rows else "",
-    )
-    h.test_result(
-        "Notes mention the worktrees/.envrc location beside the default-branch directory",
+        "doc documents the Notes mention of the worktrees/.envrc location beside the default-branch directory",
         "worktrees/.envrc" in notes,
         "Notes section does not mention worktrees/.envrc",
     )
@@ -390,14 +471,19 @@ def main():
     print("[Section 9] Frontmatter description")
 
     h.test_result(
-        "frontmatter exists",
+        "doc has leading YAML frontmatter",
         frontmatter != "",
         "no leading YAML frontmatter block",
     )
     h.test_result(
-        "frontmatter description has one clause on the optional direnv step",
-        bool(re.search(r"(?i)direnv", frontmatter)),
-        "'direnv' not in the frontmatter",
+        "doc documents the optional direnv setup in the frontmatter description",
+        "optional direnv setup" in frontmatter,
+        "'optional direnv setup' not in the frontmatter",
+    )
+    h.test_result(
+        "doc documents in the frontmatter that an existing .envrc is never overwritten",
+        "an existing `.envrc` is never overwritten" in frontmatter,
+        "never-overwrite clause not in the frontmatter",
     )
 
     print()
@@ -409,7 +495,7 @@ def main():
         if BARE_POSITIONAL.search(line)
     ]
     h.test_result(
-        "no bare positional $0-$9 token anywhere in commands/setup-repo.md",
+        "doc contains no bare positional $0-$9 token in commands/setup-repo.md",
         not bare,
         "\n      " + "\n      ".join(bare) if bare else "",
     )
