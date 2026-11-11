@@ -100,7 +100,15 @@ Each row is a stop the rule table could not classify. The human labels each grou
 
 ## Hand-labelled sample
 
-Status: NOT YET PERFORMED. The hand-labelled sample of stops (review item 5) has not been completed and is an open item for the human.
+Status: performed 2026-11-10 over the six stops that were ambiguous in the local flow state on that date (one more than the table above, which was generated earlier). A model drafted the labels from each flow's recorded reason and log; the human confirmed them as drafted. Aggregate only; no project names, flow ids or paths.
+
+| Proposed class | Stops | What they were |
+|---|---|---|
+| step-agent | 5 | A step receipt broke the receipt contract: fix receipt missing the OUTSTANDING line (1), plan artifacts missing from the plan receipt (1), a malformed fix receipt followed by a reduced run (1), a fix receipt with the Decision outside the header on a reduced run (1), an OK implement receipt missing the split-basis fields (1) |
+| environment | 1 | The PR merged, then post-merge cleanup failed (main regression gate and worktree removal) |
+| orchestrator | 0 | None of the six |
+
+Result: 0 of 6 ambiguous stops were orchestrator-owned, so the ambiguous rows do not change the orchestrator-owned count. Two of the six read as "no reason recorded" only because the script reads `stop_reason` and receipts, not the `failures` field or `log.md`, where the reason exists; this is a classifier gap, not a data gap. The table above is not regenerated here.
 
 ## Reconciliation
 
