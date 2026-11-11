@@ -61,8 +61,8 @@ reasoning in ADR-0026.
   the per-flow lock and logs any mismatch.
 - **Q1 (shape): A.** Parallel v2 that replaces v1 after dogfood. In-place extraction and the hybrid were rejected.
 - **Q2 (overlapping issues): B, plus direction seq 1.** Every overlapping issue folds into the matching v2 layer.
-  v1 is left alone. No work against v1 happens during the v2 build, including bug-fix PRs for #446 and #476. The human
-  can override later. The human declined to tag #446 and #476 stops out of the baseline.
+  v1 is left alone. No work against v1 happens during the v2 build, including bug-fix PRs for #476. The human
+  can override later. The human declined to tag #476 stops out of the baseline. #446's hook half has been fixed independently.
 - **Q3 (adoption and root): A.** v2 never continues a v1-started flow. v2 flows live under `~/.claude/flows-v2/<repo>/`.
   v2 reads v1 flows read-only. v1 finishes its existing flows and is removed once none remain.
 - **Q4 (boundary): A, plus the driver-side check (seq 1).** The boundary is disk-only, with no model-copied tokens.
@@ -73,9 +73,8 @@ reasoning in ADR-0026.
 - **Q5 option C (not chosen, recorded as rejected):** a resident driver that launches each step with `claude -p` and
   holds the lock for the whole step. See ADR-0026.
 
-**Human ledger direction, seq 1 (binding):** no work against v1 during the v2 build, including bug-fix PRs for #446
-and #476 (Q2); the driver-side PR/merge-state check before ship and merge (Q4); and the fleet-mode automatic clear-live
-on per-ticket lock release for spawned or resumed records (Q5). Each applies to the layers below as written.
+**Human ledger direction, seq 1 (binding):** no work against v1 during the v2 build, including bug-fix PRs for #476 (Q2); the driver-side PR/merge-state check before ship and merge (Q4); and the fleet-mode automatic clear-live
+on per-ticket lock release for spawned or resumed records (Q5). Each applies to the layers below as written. #446's hook half has been fixed independently.
 
 ## Layer list
 
@@ -84,7 +83,7 @@ walking skeleton sits between Layer 0 and Layer 1.
 
 | # | Sub-issue | Depends on | Lands |
 |---|---|---|---|
-| 0 | Docs and measurement (this PR, #477) | none | this PR |
+| 0 | Docs and measurement (this PR, #477) — **closed** | none | this PR |
 | S | Walking skeleton of the driver/stub boundary | #477 merged, and the Layer 0 findings in this plan | its own PR |
 | 1 | Layer 1: state, receipts, resume | S | its own PR |
 | 2 | Layer 2: step loop, recovery, ledger, stub, `--list/--abandon/--retro` | 1 | its own PR |
@@ -129,6 +128,8 @@ walking skeleton sits between Layer 0 and Layer 1.
 
 **Depends on:** S (the skeleton findings must be cited).
 
+**Build method:** test-first. A Sonnet spec-blind test author writes failing tests from this plan in its own worktree; Haiku units implement until green; then an adversary round and #463 `/expert-test-cleanup` as the closing step.
+
 **Scope:**
 
 - `state.py`: `driver_format: 2` at creation; a non-blocking `LOCK_NB` `flock` on `FLOW_DIR/.driver.lock` for the whole
@@ -154,8 +155,7 @@ walking skeleton sits between Layer 0 and Layer 1.
 
 - Two concurrent mutating invocations: the second fails fast. A concurrent reader during a write never sees a torn file.
 - Writes against v1 state or skeleton state are refused. v1 flows show in `list`, read-only.
-- Fleet field contract: every field `fleet.py` and `heal.py` read keeps its meaning on a v2 flow (`issue`, `updated`,
-  `step`, `status`, `live`, `attempts.plan`, `stop_reason[step]`, `pr`, `worktree`).
+- Fleet field contract: every field `fleet.py` and `heal.py` read keeps its meaning on a v2 flow, catalogued in `docs/v2-inventory/rules.md` section 2. The complete list includes `issue`, `updated`, `step`, `status`, `live`, `attempts.plan`, `stop_reason[step]`, `stop_source`, `failures`, `pr`, `worktree`, and `healed`.
 - Deleting an archive makes the attempt reconcile log a mismatch.
 - A stale-ATTEMPT receipt is rejected.
 - One test per named resume rule, plus the 1b-before-4/5 ordering.
@@ -170,6 +170,8 @@ walking skeleton sits between Layer 0 and Layer 1.
 ### Sub-issue 2: Layer 2, step loop, recovery, ledger, stub, `--list/--abandon/--retro`
 
 **Depends on:** 1.
+
+**Build method:** test-first. A Sonnet spec-blind test author writes failing tests from this plan in its own worktree; Haiku units implement until green; then an adversary round and #463 `/expert-test-cleanup` as the closing step.
 
 **Scope:**
 
@@ -237,6 +239,8 @@ walking skeleton sits between Layer 0 and Layer 1.
 
 **Depends on:** 2.
 
+**Build method:** test-first. A Sonnet spec-blind test author writes failing tests from this plan in its own worktree; Haiku units implement until green; then an adversary round and #463 `/expert-test-cleanup` as the closing step.
+
 **Scope:**
 
 - **Pinned first.** Tests for the `--auto-merge` refusal and for the healed-run forced ask come before any other work in this
@@ -249,8 +253,7 @@ walking skeleton sits between Layer 0 and Layer 1.
   `scripts/review-ruling.py`. `/expert-review` itself is not edited.
 - **`assess.py`.** Every assess check that needs Bash (range and anchor verification, git reads, the already-done check) runs in
   driver Python. `flow-assessor` is spawned only for read-and-judge work on the driver's precomputed results. The script gate
-  blocks ship until every outstanding item has a disposition. If the assessor still needs Bash, #446 is recorded as unaddressed
-  alongside #406 and #430.
+  blocks ship until every outstanding item has a disposition.
 - **`gates.py`.** `--gates` step gates (Continue, Redo with notes, Pause, Abort), redo capped at two, and the human merge gate.
   A merge directive is emitted only from this module, after the gate. Never under `--auto-merge` on a healed run.
 - **Post-merge verification (#476).** After the merge step's receipt lands, re-read PR state with
@@ -280,6 +283,8 @@ walking skeleton sits between Layer 0 and Layer 1.
 ### Sub-issue 4: Layer 4, epic and fleet
 
 **Depends on:** 3.
+
+**Build method:** test-first. A Sonnet spec-blind test author writes failing tests from this plan in its own worktree; Haiku units implement until green; then an adversary round and #463 `/expert-test-cleanup` as the closing step.
 
 **Scope:**
 
@@ -353,15 +358,15 @@ These are the criteria the #477 PR is gated on. Steps 1 to 5 of the plan, and th
   nothing under the fixture root (byte-identical hash before and after).
 - The pseudonym check passes, and the baseline document carries aggregate counts only, with no repository names or paths.
 - `git diff --stat main` shows no v1 file and no existing test changed beyond additive entries.
+- Layer 0 is closed after this PR merges. Its SPEC_BLIND violation (synthetic flow dirs as test fixtures) must not recur in later layers.
 
 ## Risks
 
-- **v1 defects stay live for the whole build (#446, #476, and the rest).** The human chose a full freeze (seq 1) with the trade in
-  front of them. Mitigation: the human can override per issue. v2 avoids #476 from Layer 3 on, through post-merge verification, and
-  avoids #446 by running its Bash-needing checks in Python. v1 keeps both defects for the whole build.
-- **The baseline includes stops caused by #446 and #476, which makes the v2 bar easier to beat.** The human declined to tag them.
-  Mitigation: the per-class report from Step 3 is published as is, and Layer 5 reads the orchestrator class, where those two issues
-  mostly do not land. This is an accepted residual.
+- **v1 defects stay live for the whole build (#476 and the rest).** The human chose a full freeze (seq 1) with the trade in
+  front of them. Mitigation: the human can override per issue. v2 avoids #476 from Layer 3 on, through post-merge verification. #446's hook half has been fixed independently.
+- **The baseline includes stops caused by #476, which makes the v2 bar easier to beat.** The human declined to tag them.
+  Mitigation: the per-class report from Step 3 is published as is, and Layer 5 reads the orchestrator class, where #476
+  mostly does not land. This is an accepted residual.
 - **The rewrite's premise may not hold.** If orchestrator-owned stops are a small share, a five-layer rewrite may be out of
   proportion. Mitigation: the baseline runs before any code, and the human re-confirms scope before the skeleton starts.
 - **An intermediate layer merges a PR without the human gate.** Mitigation: Layer 2 ends in STOP before merge (pinned by test) and
@@ -403,10 +408,10 @@ These are the criteria the #477 PR is gated on. Steps 1 to 5 of the plan, and th
 
 ## Open Items
 
-- **The dissent on Q2.** A reviewer pushed back in round 2. A blanket freeze on all v1 work, including the #446 and #476 bug fixes, is a
-  policy the ticket did not ask for, and it leaves known defects live for the whole build. The smaller alternative was to freeze new v1
-  features only. The human chose the full freeze (seq 1) with that trade in front of them. The dissent is carried here and as a risk. The
-  human can override at any time.
+- **The dissent on Q2.** A reviewer pushed back in round 2. A blanket freeze on all v1 work, including the #476 bug fix, is a
+  policy the ticket did not ask for, and it leaves a known defect live for the whole build. The smaller alternative was to freeze new v1
+  features only. The human chose the full freeze (seq 1) with that trade in front of them. #446's hook half has been fixed independently.
+  The dissent is carried here and as a risk. The human can override at any time.
 - **The Q5 option C question.** A resident driver that launches each step with `claude -p` would make liveness a real mutex with no
   human clear-live. It turns the driver into a resident process and bypasses the agent hook allowlists, so it was not chosen. ADR-0026
   records it as a rejected alternative. Revisit only if Layer 4 shows that fleet lock release cannot prove liveness.
@@ -420,5 +425,4 @@ These are the criteria the #477 PR is gated on. Steps 1 to 5 of the plan, and th
 - **Filing the sub-issues** (Step 6) is a human or `/track` action after this PR merges. The bodies are the layer sections above.
 - **W1's per-step allowlist** (which steps honour pre-written answers) is settled by Layer 2 tests. Until a step is proven, a failed RESUME
   for that step is a STOP.
-- **#406 and #430 (shared guards)** remain open and are not addressed by v2. Fixing them is v1 or shared work under the seq 1 freeze. The same
-  holds for the hook half of #446.
+- **#406 and #430 (shared guards)** remain open and are not addressed by v2. Fixing them is v1 or shared work under the seq 1 freeze.

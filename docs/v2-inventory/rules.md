@@ -152,6 +152,7 @@ directly).
 | `failures` | `heal.py` (`failures` map, bounds deps and heal attempts) | `heal.py:512` | Per-step failure count; the heal refuses past its bound |
 | `pr` | `fleet.py` (`held` state when merge is paused with a PR); fleet row output | `fleet.py:584`, `:653-654` | PR URL once ship has run; `held` requires `status: paused` at `merge` |
 | `worktree` | `fleet.py` (worktree for heal and row output); `heal.py` (worktree for the heal) | `fleet.py:474`, `:653-654`; `heal.py:546` | Absolute worktree path of the ticket |
+| `healed` | `fleet.py` (healed-run forced ask check); `heal.py` (indirectly through merging decisions) | `fleet.py:651-654` (row output, healed-run context) | Boolean or present when the flow has had a successful check heal; forces the merge gate to ask |
 
 Also read by `heal.py` through the flow dir and not through `state.json`: `steps/<NN>-verify.heal.md`
 `HEAL:` records and `fleet-ask.json` (`status: open`, `step`, `header`). `fleet-ask.json` bytes are

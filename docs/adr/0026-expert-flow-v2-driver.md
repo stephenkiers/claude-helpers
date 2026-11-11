@@ -31,7 +31,7 @@ Three facts constrain the design, all recorded in ADR-0023 or measured since:
 The v1 behaviour has to be preserved, not re-invented. The inventory (`docs/v2-inventory/`, #477 Layer 0)
 records every v1 rule the driver must reproduce, drop or change, keyed to ADR-0023 amendment dates. The
 drift test (Layer 0) fails when a new ADR-0023 amendment is not reflected in that inventory. Under the
-v1 freeze (Decision 8), that is how drift is caught during the build.
+v1 freeze (Decision 8), that is how drift is caught during the build. The baseline stop-population number is under re-measurement (population excludes healthy awaiting-state flows) and will be restated in Layer 5.
 
 ## Decision
 
@@ -47,7 +47,7 @@ them are no longer the source of truth for a v2 flow.
 
 It **keeps ADR-0023 byte-compatible** for everything else:
 
-- the relay files (`questions/<STEP>-NN.json`, `answers/<STEP>-NN.json`) and `flow-render-questions.py`;
+- the relay files (`questions/<STEP>-NN.json`, `answers/<STEP>-NN.json`) and `flow-render-questions.py`, reused with additive parameterization. Scripts `scripts/flow_log.py` (flow-log reads) and `scripts/flow-render-questions.py` (context rendering) are extended additively to accept a `--driver v2` mode or flow-root override; the v1 scripts stay pinned to `~/.claude/flows/` and to the v1 relay format (Decision 7);
 - the receipt trailer (`Decision: OK | FAILED`, `ATTEMPT: <k>`, and the `KEY: value` lines), verified
   against on-disk artifacts by `flow-verify-receipt.py`;
 - the marker lifecycle (`<worktree>/.claude/flow-run`);
@@ -57,6 +57,8 @@ It **keeps ADR-0023 byte-compatible** for everything else:
   (2) the manual "Retry with sonnet" for single-unit implement/fix shortfalls (automatic escalation is dormant and dropped), (3) the bounded self-heal of check failures and
   Fix now, (4) the fleet heal, and (5) the one-shot Unknown-skill auto-retry. The bounded environment
   chore (the dependency precondition, ADR-0023 2026-11-01 amendment) is also kept as it stands.
+
+**Human ruling (seq 1):** additive parameterization of `flow_log.py` and `flow-render-questions.py` pinned to `~/.claude/flows/` is not work against v1 and does not break the ledger seq 1 freeze.
 
 Where ADR-0023 and this ADR disagree about the loop, the state write protocol or the resume cascade, this
 ADR wins for v2 flows. v1 is not changed by it (Decision 8).
@@ -85,7 +87,8 @@ The verb set is closed: **SPAWN**, **RESUME**, **WAIT**, **ASK**, **PARK**, **ST
 - An unknown verb is a **STOP**. The stub never guesses.
 
 The driver writes each directive to a file before it prints the `NEXT:` line. That file is an audit log
-only. The stub reads it and never echoes anything back.
+only. The stub reads it and never echoes anything back. Directive files are keyed by `(step, attempt)` and
+overwritten on each invocation; a log cap on retained directive history or replay limits is an open Layer 5 question.
 
 **No model-copied tokens.** There is no ack, no generation counter, no stub-carried nonce, no directive
 sequence the stub returns, and no correlation token in answer files that the stub supplies (Q4 A). The
@@ -141,8 +144,7 @@ Commands are either read-only or mutating, and the split is structural, not a co
 A byte-identical test covers a read-only command: the flow dir and `.git/refs` are unchanged after it runs.
 
 `fleet.py` reads v2 `state.json` directly (W2). It does not shell out to `driver status --json`. A
-field-contract test pins the fields it reads (`issue`, `updated`, `step`, `status`, `live`, `attempts.plan`,
-`stop_reason[step]`, `pr`, `worktree`), so the meaning of each is preserved on v2 flows.
+field-contract test pins the fields it reads, as catalogued in `docs/v2-inventory/rules.md` section 2 (the fleet state contract), so the meaning of each is preserved on v2 flows. The complete list includes `issue`, `updated`, `step`, `status`, `live`, `attempts.plan`, `stop_reason[step]`, `stop_source`, `failures`, `pr`, `worktree`, and `healed`.
 
 ### 7. Flows root; v1 is never adopted (Q3)
 
@@ -152,6 +154,8 @@ continues a v1-started flow. v2 may read v1 flows read-only (`--list`, `status`)
 
 Separating the roots keeps v1's newest-`updated` scan and `fleet.py`'s glob blind to v2 directories. This
 holds from the walking skeleton onward, so a skeleton flow can never be mistaken for a v1 flow.
+
+Scripts pinned to `~/.claude/flows/` in Decision 1 (`scripts/flow_log.py`, `scripts/flow-render-questions.py`) are extended additively to accept a flows-root parameter or `--driver v2` mode, so they work unchanged for v1 flows and as specified for v2 flows (ADR-0018 write-prefix amendment for v2). This additive parameterization is not work against v1 and does not break the ledger seq 1 freeze (human ruling, seq 1).
 
 Fleet mode (Layer 4) adds one additive switch to `scripts/fleet.py`, under `--driver v2` only. It changes the
 prompt string (`/expert-flow-v2`), the flows root (`flows-v2`), and the fleet run identity passed to the
@@ -232,12 +236,9 @@ test fails when ADR-0023 gains an amendment that the inventory does not cover, s
 Layer 0 attributes every recorded stop to an orchestrator, step agent or environment owner (D2), and v2 is judged
 on orchestrator-owned stops plus first-turn token cost. Rebuilt receipts are excluded from the count.
 
-**Freeze (seq 1).** During the v2 build, no work is done against v1. That includes bug-fix PRs. #446 and #476
-are v1 defects, and they stay open against v1 for the whole build. The human can override this. v2 avoids
-#476 only from Layer 3 on, through post-merge verification, and avoids #446 by design (Bash-needing assess checks
-run in driver Python). The hook defect itself, which is `flow-assessor` missing from `KNOWN_FLOW_AGENTS`, stays
-unfixed under the freeze. The hook files, the agent definitions and the v1 orchestrator are not edited during
-the build.
+**Freeze (seq 1).** During the v2 build, no work is done against v1. That includes bug-fix PRs. #476
+is a v1 defect and stays open against v1 for the whole build. The human can override this. v2 avoids
+#476 only from Layer 3 on, through post-merge verification. #446's hook half (the `flow-assessor` missing from `KNOWN_FLOW_AGENTS` defect) has been fixed independently. v2 avoids #446 by design, running Bash-needing assess checks in driver Python. The hook files, the agent definitions and the v1 orchestrator are not edited during the build.
 
 ### 12. Layer sequence
 
@@ -293,11 +294,10 @@ written).
   residual cost is wasted work, not a duplicate push or merge.
 - **Residual:** the fleet automatic clear-live depends on a released lock proving the step agent is gone. Layer 4
   verifies this. If it does not hold, the fallback is a park.
-- **Residual:** the `flow-assessor` hook defect (#446, hook half) and the shared-guard defects (#406, #430) stay
-  open and unaddressed by v2. v2 avoids them by design, not by fixing them.
+- **Residual:** the shared-guard defects (#406, #430) stay open and unaddressed by v2. v2 avoids them by design, not by fixing them. The `flow-assessor` hook defect (#446, hook half) has been fixed independently.
 - **Residual:** the N in the D6 bar is a human decision, made after the Layer 0 baseline.
 
 ## Amendments
 
-None yet. Layer 3 amends ADR-0025 so that its auto-merge rejection covers `commands/expert-flow-v2.md`. Layer 5
+None yet. Layer 3 amends ADR-0025 so that its auto-merge rejection covers `commands/expert-flow-v2.md`. ADR-0023 contains a pointer to this ADR's Layer 5 supersession step. Layer 5
 finalizes this ADR (Decision 11, D3), amends ADR-0008 and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.
