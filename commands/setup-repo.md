@@ -130,7 +130,7 @@ esac
 
 4a. **Before creating `.claude/project.yaml` in the new project**, add it to `.gitignore` first so it doesn't accidentally get tracked. If it's already tracked, run `git rm --cached .claude/project.yaml` before ignoring it. See `~/.claude/reviewers/README.md` for the full context.
 
-5. **Optional: direnv.** Runs only after a successful clone in this run, including a clone the user approved at step 2's "already set up, ask first" prompt. That approval is the only route to the kept-existing branch below, because a pre-existing `worktrees/.envrc` makes `worktrees/` non-empty. There is no re-run mode for existing repos. Every sub-step is non-fatal: a failure prints the command to run by hand, and the hand-off still runs. The generated `.envrc` holds only the dotenv convention line; project-specific blocks are added by hand (see ADR-0014).
+**5. Optional: direnv.** Runs only after a successful clone in this run, including a clone the user approved at step 2's "already set up, ask first" prompt. That approval is the only route to the kept-existing branch below, because a pre-existing `worktrees/.envrc` makes `worktrees/` non-empty. There is no re-run mode for existing repos. Every sub-step is non-fatal: a failure prints the command to run by hand, and the hand-off still runs. The generated `.envrc` holds only the dotenv convention line; project-specific blocks are added by hand (Compose: see ADR-0014; merge-queue: see ADR-0021).
 
    Ask via `AskUserQuestion` (plain-prompt fallback, as in the remote-resolution step): **"Use direnv for environment variables in this project?"** Options, No first, with consequence labels:
    - `No: skip direnv setup`
@@ -140,9 +140,10 @@ esac
 
    On Yes, run sub-steps 5a to 5e in order. Shell variables do not carry across fenced blocks, so `REPO_DIR`, `DEST` and `DEFAULT_BRANCH` are carried in from the earlier steps, and `DIRENV_AVAILABLE` is set from the install result in 5b.
 
-   **5a. Validate `DEFAULT_BRANCH` before anything is written.** Allowed: characters `A-Za-z0-9._/-` only, no `..`, not starting with `-`, not empty. Slashed names such as `release/x` pass. On failure, skip the rest of the step and set the summary to `direnv: skipped (unsafe branch name '<name>' — create worktrees/.envrc by hand if you want it)`. This check does not change step 3 or `DEST`.
+   **5a. Validate `DEFAULT_BRANCH` before anything is written.** Allowed: characters `A-Za-z0-9._/-` only, no `..`, not starting with `-`, not empty. Slashed names such as `release/x` pass. Reject everything else: the check is whole-string, so a value with a newline fails too. On failure, skip the rest of the step and set the summary to `direnv: skipped (unsafe branch name '<name>' — create worktrees/.envrc by hand if you want it)`. This check does not change step 3 or `DEST`.
 
    ```bash
+   set +e
    set -uo pipefail
 
    # 5a. Validate DEFAULT_BRANCH before anything is written (Q1 allowlist).
@@ -150,7 +151,9 @@ esac
    case "$DEFAULT_BRANCH" in
      ""|-*|*..*) BRANCH_OK=0 ;;
    esac
-   printf '%s' "$DEFAULT_BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$' || BRANCH_OK=0
+   case "$DEFAULT_BRANCH" in
+     *[!A-Za-z0-9._/-]*) BRANCH_OK=0 ;;
+   esac
    printf 'DIRENV_VALIDATED=%s\n' "$BRANCH_OK"
 
    # 5b. Detect direnv and brew (read-only).
@@ -167,81 +170,105 @@ esac
 
    On Yes, run `brew install direnv`. On success, set `DIRENV_AVAILABLE=1`. On failure or No, set `DIRENV_AVAILABLE=0`; after a failure, print `brew install direnv` to run by hand. A failed install never stops the step.
 
-   **5c to 5e. Keep `.env` out of git, create it, write `.envrc`, allow it.** Run only when 5a passed. The block has no `-e`: each probe is a condition, and each sub-step reports its own status.
+   **5c to 5e. Keep `.env` out of git, create it, write `.envrc`, allow it.** One block, run only when 5a passed. It repeats the allowlist check at its top, so it writes nothing when that check fails. It has no `-e`: each probe is a condition, and the block ends by printing the `DIRENV_*` lines the hand-off reads. Fill in the variables first: `REPO_DIR` (step 2), `DEST` (step 4), `DEFAULT_BRANCH` (step 3), and `DIRENV_AVAILABLE` (5b). If a variable is unset, the block stops before printing, and the hand-off treats the missing lines as unknown.
 
    ```bash
+   set +e
    set -uo pipefail
 
-   ENVRC="${REPO_DIR}/worktrees/.envrc"
+   # Fill in from earlier steps first: REPO_DIR (step 2), DEST (step 4), DEFAULT_BRANCH (step 3).
+   # DIRENV_AVAILABLE comes from 5b (1 or 0); a missing value reads as 0.
+   DIRENV_AVAILABLE="${DIRENV_AVAILABLE:-0}"
 
-   # 5c. Keep .env out of git. Tracked: leave it alone. Already ignored: no exclude line.
+   # Re-check the Q1 allowlist here, so this block does not depend on 5a having run.
+   BRANCH_OK=1
+   case "$DEFAULT_BRANCH" in
+     ""|-*|*..*) BRANCH_OK=0 ;;
+   esac
+   case "$DEFAULT_BRANCH" in
+     *[!A-Za-z0-9._/-]*) BRANCH_OK=0 ;;
+   esac
+
+   ENVRC="${REPO_DIR}/worktrees/.envrc"
    TRACKED=0
-   if git -C "$DEST" ls-files --error-unmatch -- .env >/dev/null 2>&1; then
-     TRACKED=1
-   elif git -C "$DEST" check-ignore -q -- .env; then
-     :  # already ignored by some source; no exclude line needed
-   elif EXCLUDE=$(git -C "$DEST" rev-parse --path-format=absolute --git-path info/exclude); then
-     mkdir -p "$(dirname "$EXCLUDE")"
-     touch "$EXCLUDE"
-     if ! grep -qxF .env "$EXCLUDE"; then
-       if [ -s "$EXCLUDE" ] && [ "$(tail -c1 "$EXCLUDE" | wc -l)" -eq 0 ]; then printf '\n' >> "$EXCLUDE"; fi
-       printf '.env\n' >> "$EXCLUDE"
+   IGNORED=0
+   ENV_CREATED=0
+   ENVRC_STATE=skipped
+   SHADOWED=0
+   ALLOW_STATE=not-run
+
+   if [ "$BRANCH_OK" -eq 1 ]; then
+     # 5c. Keep .env out of git. Tracked: leave it alone. Otherwise write the exclude entry before the file exists.
+     if git -C "$DEST" ls-files --error-unmatch -- .env >/dev/null 2>&1; then
+       TRACKED=1
+     elif ! git -C "$DEST" check-ignore -q -- .env; then
+       EXCLUDE=$(git -C "$DEST" rev-parse --git-path info/exclude 2>/dev/null) || EXCLUDE=""
+       case "$EXCLUDE" in
+         "") ;;
+         /*) ;;
+         *) EXCLUDE="${DEST}/${EXCLUDE}" ;;
+       esac
+       if [ -n "$EXCLUDE" ] && mkdir -p "$(dirname "$EXCLUDE")" && touch "$EXCLUDE"; then
+         if ! grep -qxF .env "$EXCLUDE"; then
+           if [ -s "$EXCLUDE" ] && [ "$(tail -c1 "$EXCLUDE" | wc -l)" -eq 0 ]; then printf '\n' >> "$EXCLUDE"; fi
+           printf '.env\n' >> "$EXCLUDE"
+         fi
+       fi
+     fi
+     # Measured, not assumed: .env counts as ignored only when git now reports it as ignored.
+     if [ "$TRACKED" -eq 0 ] && git -C "$DEST" check-ignore -q -- .env; then IGNORED=1; fi
+
+     # 5c (cont.). Create the empty .env, mode 600, only when it is untracked, ignored and absent.
+     if [ "$TRACKED" -eq 0 ] && [ "$IGNORED" -eq 1 ] && [ ! -e "${DEST}/.env" ] && [ ! -L "${DEST}/.env" ]; then
+       if ( set -o noclobber; umask 077; : > "${DEST}/.env" ) 2>/dev/null; then ENV_CREATED=1; fi
+     fi
+
+     # 5d. Write worktrees/.envrc. Never overwrite, never follow a symlink.
+     # The format is single-quoted and the branch was validated above, so nothing else expands.
+     if [ -e "$ENVRC" ] || [ -L "$ENVRC" ]; then
+       ENVRC_STATE=kept
+     elif ( set -o noclobber; printf 'if [[ -f "%s/.env" ]]; then dotenv "%s/.env"; fi\n' "$DEFAULT_BRANCH" "$DEFAULT_BRANCH" > "$ENVRC" ) 2>/dev/null; then
+       ENVRC_STATE=written
+     else
+       ENVRC_STATE=failed
+     fi
+
+     # 5d (cont.). A clone with its own .envrc shadows the parent file. Do not read, edit or allow it.
+     if [ -e "${DEST}/.envrc" ] || [ -L "${DEST}/.envrc" ]; then SHADOWED=1; fi
+
+     # 5e. direnv allow only on the file this run wrote, and only when direnv is available.
+     if [ "$ENVRC_STATE" = written ] && [ "$DIRENV_AVAILABLE" = 1 ]; then
+       if direnv allow "$ENVRC" >/dev/null 2>&1; then ALLOW_STATE=ok; else ALLOW_STATE=failed; fi
      fi
    fi
 
-   # 5c (cont.). Create the empty .env, mode 600, only when it is untracked and absent.
-   ENV_CREATED=0
-   if [ "$TRACKED" -eq 0 ] && [ ! -e "${DEST}/.env" ] && [ ! -L "${DEST}/.env" ]; then
-     if ( set -o noclobber; umask 077; : > "${DEST}/.env" ) 2>/dev/null; then ENV_CREATED=1; fi
-   fi
-
-   # 5d. Write worktrees/.envrc. Never overwrite, never follow a symlink.
-   # The format is single-quoted and the branch was validated in 5a, so nothing else expands.
-   if [ -e "$ENVRC" ] || [ -L "$ENVRC" ]; then
-     ENVRC_STATE=kept
-   elif ( set -o noclobber; printf 'if [[ -f "%s/.env" ]]; then dotenv "%s/.env"; fi\n' "$DEFAULT_BRANCH" "$DEFAULT_BRANCH" > "$ENVRC" ) 2>/dev/null; then
-     ENVRC_STATE=written
-   else
-     ENVRC_STATE=failed
-   fi
-
-   # 5d (cont.). Report a clone that has its own .envrc, which shadows the parent file. Do not read, edit or allow it.
-   SHADOWED=0
-   if [ -e "${DEST}/.envrc" ] || [ -L "${DEST}/.envrc" ]; then SHADOWED=1; fi
-
-   # 5e. direnv allow only on the file this run wrote, and only when direnv is available.
-   ALLOW_STATE=not-run
-   if [ "$ENVRC_STATE" = written ] && [ "$DIRENV_AVAILABLE" = 1 ]; then
-     if direnv allow "$ENVRC" >/dev/null 2>&1; then ALLOW_STATE=ok; else ALLOW_STATE=failed; fi
-   fi
-
-   printf 'DIRENV_TRACKED=%s\nDIRENV_ENV_CREATED=%s\nDIRENV_ENVRC=%s\nDIRENV_SHADOWED=%s\nDIRENV_ALLOW=%s\nDIRENV_AVAILABLE=%s\n' \
-     "$TRACKED" "$ENV_CREATED" "$ENVRC_STATE" "$SHADOWED" "$ALLOW_STATE" "$DIRENV_AVAILABLE"
+   printf 'DIRENV_VALIDATED=%s\nDIRENV_TRACKED=%s\nDIRENV_IGNORED=%s\nDIRENV_ENV_CREATED=%s\nDIRENV_ENVRC=%s\nDIRENV_SHADOWED=%s\nDIRENV_ALLOW=%s\nDIRENV_AVAILABLE=%s\n' \
+     "$BRANCH_OK" "$TRACKED" "$IGNORED" "$ENV_CREATED" "$ENVRC_STATE" "$SHADOWED" "$ALLOW_STATE" "$DIRENV_AVAILABLE"
    ```
 
-   Why `direnv allow` covers only the file this run wrote: its content comes only from the validated branch name. A kept or cloned `.envrc` is content nobody has reviewed, so it is never allowed automatically; print the command for the user instead. Never run `direnv allow` on `${DEST}` or on anything inside the clone.
+   Why `direnv allow` runs only on a file written in this run: its content comes only from the validated branch name. A kept existing `.envrc` or a cloned `.envrc` is content nobody has reviewed, so it is never allowed automatically. For a kept existing file, review it first: print `direnv allow <path>` for the user and never run it. Never run `direnv allow` on `${DEST}` or on anything inside the clone.
 
-6. **Confirm and hand off:**
+**6. Confirm and hand off:**
 
-   ```
-   ## Repo ready
+```
+## Repo ready
 
-   **<repo>** cloned to `~/Repositories/<repo>/worktrees/<default-branch>`
+**<repo>** cloned to `~/Repositories/<repo>/worktrees/<default-branch>`
 
-   ### Start working:
+### Start working:
 
-   cd ~/Repositories/<repo>/worktrees/<default-branch>
+cd ~/Repositories/<repo>/worktrees/<default-branch>
 
-   New worktrees for issues/tickets: use `/track-and-start` from inside it — they'll land in
-   `~/Repositories/<repo>/worktrees/<name>` as siblings.
+New worktrees for issues/tickets: use `/track-and-start` from inside it — they'll land in
+`~/Repositories/<repo>/worktrees/<name>` as siblings.
 
-   ### direnv
+### direnv
 
-   <one status line from the mapping below>
-   <follow-ups, only when the step did not skip>
-   ```
+<one status line from the mapping below>
+<follow-ups, only when the step did not skip>
+```
 
-   The `### direnv` section prints one status line for the outcome, then any shadowing line, then the follow-ups:
+The fence is at column 0 so the `### direnv` heading is a real heading. The `### direnv` section prints one status line for the outcome, then any shadowing line, then the follow-ups. If the step's `DIRENV_*` lines are missing (a variable was unset, or the block did not finish), print `direnv: unknown — check worktrees/.envrc and the exclude entry by hand`, with no follow-ups. A missing line is never read as success:
 
    - **No answer, or 5a failed:** `direnv: skipped` (No), or `direnv: skipped (unsafe branch name '<name>' — create worktrees/.envrc by hand if you want it)` (5a). No follow-ups.
    - **`DIRENV_ENVRC=kept`:** `direnv: kept existing worktrees/.envrc — review it, then run: direnv allow <absolute path to worktrees/.envrc>`. The command is never run for the user.
@@ -253,10 +280,11 @@ esac
 
    Follow-ups, only when the step did not skip, in this order:
 
-   1. **Secrets.** If `DIRENV_TRACKED=0`: `put secrets in <branch>/.env (git-ignored, mode 600)`. If `DIRENV_TRACKED=1`: `.env is tracked by this repo; keep secrets out of it`. Either way, do not say the values are isolated from checks: tools that load the main worktree's `.envrc` see them too.
+   1. **Secrets.** Use the measured values, never a fixed claim. If `DIRENV_TRACKED=1`: `.env is tracked by this repo; keep secrets out of it`. If `DIRENV_TRACKED=0` and `DIRENV_IGNORED=1`: `put secrets in <branch>/.env (git-ignored, mode 600)`. If `DIRENV_TRACKED=0` and `DIRENV_IGNORED=0`: `.env is not git-ignored and was not created; add .env to the clone's info/exclude by hand before putting secrets in it`. Either way, do not say the values are isolated from checks: tools that load the main worktree's `.envrc` see them too.
    2. **Hook check (read-only; never edit the file).**
 
       ```bash
+      set +e
       set -uo pipefail
       HOOK=not-found
       for f in "$HOME/.zshrc" "$HOME/.zshenv"; do
@@ -266,7 +294,7 @@ esac
       ```
 
       Report `hook found`, or the advisory `hook not found in ~/.zshrc or ~/.zshenv; if direnv is hooked elsewhere (another startup file or a plugin) ignore this, otherwise add eval "$(direnv hook zsh)"`.
-   3. **ADR-0014 line.** `Project-specific blocks (Compose COMPOSE_PROJECT_NAME, merge-queue config) are not generated; add them to worktrees/.envrc by hand (see ADR-0014).`
+   3. **ADR line.** `Project-specific blocks are not generated; add them to worktrees/.envrc by hand. Compose COMPOSE_PROJECT_NAME: see ADR-0014. The merge-queue config reads the main worktree's .envrc: see ADR-0021.`
 
 ## Error Handling
 
@@ -285,6 +313,7 @@ esac
 | `.envrc` cannot be written (write error) | Non-fatal; hand-off says to create it by hand with the convention line from 5d. |
 | Clone has its own `.envrc` | Write the parent `worktrees/.envrc` anyway; report the shadowing with the `source_up_if_exists` fix; never read, edit or allow the tracked file. |
 | `.env` is tracked by the clone | No exclude entry, no `.env` created; hand-off warns to keep secrets out of it. |
+| Exclude entry cannot be written, or `.env` is not git-ignored after it | No `.env` created; hand-off says `.env` is not git-ignored and to add it to `info/exclude` by hand before putting secrets in it. |
 | `direnv allow` fails | Non-fatal; hand-off prints the `direnv allow <path>` command to run by hand. |
 
 ## Notes
@@ -293,5 +322,6 @@ esac
   intentional and the standard for machine-local working copies.
 - After the clone, `git worktree add` run from the default-branch checkout uses `worktrees/` as the
   parent automatically, so no extra setup is needed for the rest of the toolchain to work.
-- The optional direnv `.envrc` lives in `worktrees/`, beside `<default-branch>/`, so direnv's walk-up
-  from every sibling worktree under `worktrees/` reaches it and the shared `<default-branch>/.env`.
+- The optional direnv file `worktrees/.envrc` lives beside `<default-branch>/`, so direnv's walk-up
+  from every sibling worktree under `worktrees/` reaches it and the shared `<default-branch>/.env`,
+  unless that worktree has its own `.envrc`, which shadows it (see the shadowing line in the hand-off).
