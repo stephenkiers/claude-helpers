@@ -571,6 +571,89 @@ def test_mixed_fixture_distinct_stop_counts():
     return True, ""
 
 
+def test_healthy_awaiting_flow_is_not_a_stop():
+    """A flow awaiting a human answer counts in the window but adds no stop."""
+    awaiting = dated("awaiting", "plan", "2026-11-03T09:00:00Z", {}, 9301, "Quux awaiting")
+    with tempfile.TemporaryDirectory() as td:
+        root = build_root(td, [("9301-await-a1", awaiting)])
+        rc, out = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "json"])
+    if rc != 0:
+        return False, f"exit {rc}"
+    obj = json.loads(out)
+    if obj["counts"]["flows_in_window"] != 1:
+        return False, f"flows_in_window: expected 1, got {obj['counts']['flows_in_window']}"
+    if obj["stops"]["total"] != 0 or obj["stop_table"] != []:
+        return False, f"awaiting flow produced stops: {obj['stops']}"
+    return True, ""
+
+
+def test_unreadable_receipt_is_survived():
+    """A flow whose receipt cannot be read is still counted and the run exits 0."""
+    paused = dated("paused", "plan", "2026-11-03T09:00:00Z", {"plan": "user request"}, 9302, "Quux paused")
+    with tempfile.TemporaryDirectory() as td:
+        root = build_root(td, [("9302-recv-b2", paused)])
+        receipt = root / REPO / "9302-recv-b2" / "steps" / "01-plan.md"
+        os.chmod(receipt, 0o000)
+        try:
+            rc, out = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "json"])
+        finally:
+            os.chmod(receipt, 0o644)
+    if rc != 0:
+        return False, f"exit {rc}"
+    flows = json.loads(out)["counts"]["flows_in_window"]
+    if flows != 1:
+        return False, f"flows_in_window: expected 1, got {flows}"
+    return True, ""
+
+
+def test_flows_across_several_repos_are_all_counted():
+    """Flow dirs under different repo directories of the flows root are all counted."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "flows"
+        root.mkdir()
+        for n, repo in enumerate(["repo-one", "repo-two", "repo-three"]):
+            state = dated("done", "merge", "2026-11-03T09:00:00Z", {}, 9310 + n, "Quux multi")
+            write_flow(root, "93%02d-multi-c%d" % (10 + n, n), state, repo=repo)
+        rc, out = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "json"])
+    if rc != 0:
+        return False, f"exit {rc}"
+    counts = json.loads(out)["counts"]
+    if counts["flows_in_window"] != 3 or counts["reached_merge_or_done"] != 3:
+        return False, f"expected 3 flows and 3 reached, got {counts}"
+    return True, ""
+
+
+def test_malformed_stop_reason_is_survived():
+    """A stop_reason that is not a mapping does not crash the run; the flow is still counted."""
+    paused = dated("paused", "plan", "2026-11-03T09:00:00Z", "not-a-dict", 9303, "Quux bad reason")
+    with tempfile.TemporaryDirectory() as td:
+        root = build_root(td, [("9303-badr-d4", paused)])
+        rc, out = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "json"])
+    if rc != 0:
+        return False, f"exit {rc}"
+    flows = json.loads(out)["counts"]["flows_in_window"]
+    if flows != 1:
+        return False, f"flows_in_window: expected 1, got {flows}"
+    return True, ""
+
+
+def test_default_format_is_markdown():
+    """Without --format the output is the markdown report, not JSON."""
+    with tempfile.TemporaryDirectory() as td:
+        root = build_root(td, MIXED_FLOWS)
+        rc_default, out_default = run_main(["--flows-root", str(root), "--since", SINCE])
+        rc_md, out_md = run_main(["--flows-root", str(root), "--since", SINCE, "--format", "md"])
+    if rc_default != 0 or rc_md != 0:
+        return False, f"exit codes {rc_default}, {rc_md}"
+    if out_default != out_md:
+        return False, "default output differs from --format md output"
+    try:
+        json.loads(out_default)
+    except ValueError:
+        return True, ""
+    return False, "default output parsed as JSON"
+
+
 if __name__ == "__main__":
     h = Harness("FLOW STOP BASELINE TEST SUITE")
 
@@ -610,6 +693,11 @@ if __name__ == "__main__":
     _run(h, "exit code 2 for missing flows root", test_exit_code_missing_flows_root)
     _run(h, "exact count keys in JSON report", test_mixed_fixture_exact_counts_json)
     _run(h, "distinct stop counts (no duplicates)", test_mixed_fixture_distinct_stop_counts)
+    _run(h, "a healthy awaiting flow adds no stop", test_healthy_awaiting_flow_is_not_a_stop)
+    _run(h, "an unreadable receipt is survived", test_unreadable_receipt_is_survived)
+    _run(h, "flows across several repos are all counted", test_flows_across_several_repos_are_all_counted)
+    _run(h, "a malformed stop_reason is survived", test_malformed_stop_reason_is_survived)
+    _run(h, "the default output format is markdown", test_default_format_is_markdown)
     print()
 
     h.summarize_and_exit()
