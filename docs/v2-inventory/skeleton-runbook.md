@@ -140,26 +140,32 @@ looks like an agent death. For R3, R4, and R5:
 
 Use Option 1; it is the command to use. Measured grant shape (see GRANT-SHAPE in
 `skeleton-findings.md`): quoted-`$HOME` patterns such as `Bash(python3 "$HOME/.claude/scripts/flow_driver/__main__.py":*)`
-were denied in this CLI, while `Bash(python3 *flow_driver/__main__.py *)` was allowed. The step agent's spawn-line
-command is a compound shell command (assignment, `echo`, command substitution, background loop), which an
-`echo >> ...spawns.jsonl` grant does not match, so the measured runs used an unrestricted `Bash` grant. Pass one
-`--allowedTools` flag per grant:
+were denied in this CLI, while `Bash(python3 *flow_driver/__main__.py *)` was allowed. Use the unquoted wildcard shapes
+below. Pass one `--allowedTools` flag per grant:
 
 ```
 --allowedTools 'Bash(python3 *flow_driver/__main__.py *)' \
+  --allowedTools 'Bash(python3 *fleet.py wait *)' \
   --allowedTools 'Bash' \
   --allowedTools 'Read' \
-  --allowedTools 'Write(~/.claude/flows-v2/*:*)' \
-  --allowedTools 'Task'
+  --allowedTools 'Write(~/.claude/flows-v2/*)' \
+  --allowedTools 'Task' \
+  --allowedTools 'SendMessage'
 ```
 
 Rationale per grant:
 - `Bash(python3 *flow_driver/__main__.py *)` — run driver commands (the shape verified to match)
-- `Bash` — unrestricted; needed because the spawn-line compound command and the wait loop do not match narrower
-  patterns (narrowing it is a Layer 1 task)
+- `Bash(python3 *fleet.py wait *)` — the foreground WAIT call (R4)
+- `Bash` — unrestricted. The step agent's spawn-line command is a compound shell command (assignment, `echo`,
+  command substitution, a background heartbeat loop), and neither the `echo >> ...spawns.jsonl` grant nor any
+  narrower pattern matches it, so a measurable run needs this broader grant. A driver-provided `record-spawn`
+  helper verb was considered and not added: the spawn line is the agent's own independent evidence (the agent
+  writes the `utc`, and SPAWN-XCHECK compares it with the harness transcript), so having the driver write it would
+  remove the cross-check. Narrowing `Bash` is a Layer 1 task.
 - `Read` — read flow files and directives
-- `Write(~/.claude/flows-v2/*:*)` — write state, directives, pending records, logs
+- `Write(~/.claude/flows-v2/*)` — write state, directives, pending records, logs
 - `Task` — spawn agents to run the prompts
+- `SendMessage` — RESUME of the spawned agent (it may need loading through `ToolSearch` first)
 
 **Option 2: Permission mode**
 

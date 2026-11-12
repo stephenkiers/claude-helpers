@@ -876,7 +876,14 @@ def _receipt_settled(text: str) -> bool:
         any(line.startswith("Decision:") for line in text.splitlines()) or "<!-- awaiting-answers:" in text)
 
 
-def wait(receipt: Path, timeout: float, interval: float = 5.0) -> str:
+def wait(receipt: Path, timeout: float, interval: float = 5.0, require_change: bool = False) -> str:
+    """Block until the receipt is settled, or time out.
+
+    A receipt already settled at call start settles immediately (FLEET-WAIT-STALE: a receipt written just before
+    the call must not idle the full timeout). Torn-read protection: the settled text must read back identical
+    after a short pause, so a half-flushed write is not taken. With require_change, only a receipt that differs
+    from the one at call start settles (the earlier behaviour).
+    """
     def read() -> str:
         try:
             return receipt.read_text()
@@ -884,10 +891,16 @@ def wait(receipt: Path, timeout: float, interval: float = 5.0) -> str:
             return ""
     start = read()
     deadline = time.monotonic() + timeout
+    if not require_change and _receipt_settled(start):
+        time.sleep(min(interval, 0.05))
+        if read() == start:
+            return "settled"
     while True:
         cur = read()
-        if cur != start and _receipt_settled(cur):
-            return "settled"
+        if (cur != start or not require_change) and _receipt_settled(cur):
+            time.sleep(min(interval, 0.05))
+            if read() == cur:
+                return "settled"
         if time.monotonic() >= deadline:
             return "timeout"
         time.sleep(interval)
@@ -918,9 +931,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     w = sub.add_parser("wait")
     w.add_argument("receipt")
     w.add_argument("--timeout", type=float, default=540)
+    w.add_argument("--require-change", action="store_true",
+                   help="settle only on a receipt that differs from the one at call start")
     a = p.parse_args(argv)
     if a.cmd == "wait":
-        print(wait(Path(a.receipt), a.timeout))
+        print(wait(Path(a.receipt), a.timeout, require_change=a.require_change))
         return 0
     if a.cmd == "init":
         return cmd_init(a)
