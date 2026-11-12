@@ -19,7 +19,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Dict, Iterator, NoReturn, Optional, Set, TextIO, Tuple, Any, Mapping, Final, Literal, Union
+from typing import List, Dict, Iterator, Optional, Set, TextIO, Tuple, Any, Mapping, Final, Literal, Union
 
 from .safety import Unknown, fail_closed
 from .cache import read_repo_cache
@@ -1446,11 +1446,6 @@ class RecordsUnsafe:
 RecordLookup = Union[Found, RecordUnparseable, MinimumOnly, DigestMismatch, NoRecord, RecordsUnsafe]
 
 
-def _never(x: NoReturn) -> NoReturn:
-    """Helper for exhaustive type checks (Python 3.8 has no assert_never)."""
-    raise AssertionError(f"Unhandled case: {x}")
-
-
 def classify_full_record(worktree: Path, expected: FullKey) -> RecordLookup:
     """
     Classify the record state for one expected full key. Strictly read-only: nothing is written, swept or
@@ -1811,18 +1806,30 @@ class ExpectedFullKey:
     covers the full-gate commands, the resolved full command and its source, and the run timeout. full_digest
     (the key's digest) is command_digest plus the toolchain/lockfile digest.
     """
-    tree: str
-    mode: Literal["full"]
     command_digest: str
     toolchain_digest: str
     key: FullKey
+
+    @property
+    def tree(self) -> str:
+        """The tree the key was built for (the key's own tree, so the two cannot disagree)."""
+        return self.key.tree
+
+
+# Per-process memo of tool version probes, keyed by (argv, worktree). Only definitive answers are kept; a
+# timeout is logged and not memoised, so a later call in the same process probes again.
+_TOOL_VERSION_MEMO: Dict[Tuple[Tuple[str, ...], str], Optional[str]] = {}
 
 
 def _tool_version(argv: List[str], worktree: Path) -> Optional[str]:
     """
     One tool's version line for the toolchain digest. "absent" when the tool is not on PATH. None on a
-    timeout, a non-zero exit, an empty answer or any other failure, which disables the cache for the run.
+    non-zero exit, an empty answer or any other failure, which disables the cache for the run. A probe that
+    times out returns None with a distinct warning. Answers are memoised per process and worktree.
     """
+    memo_key = (tuple(argv), str(worktree))
+    if memo_key in _TOOL_VERSION_MEMO:
+        return _TOOL_VERSION_MEMO[memo_key]
     try:
         proc = subprocess.run(
             argv,
@@ -1833,12 +1840,21 @@ def _tool_version(argv: List[str], worktree: Path) -> Optional[str]:
             timeout=TOOLCHAIN_PROBE_TIMEOUT_SECS,
         )
     except FileNotFoundError:
+        _TOOL_VERSION_MEMO[memo_key] = "absent"
         return "absent"
+    except subprocess.TimeoutExpired:
+        logging.warning(
+            "toolchain probe timed out after %ss: %s", TOOLCHAIN_PROBE_TIMEOUT_SECS, " ".join(argv)
+        )
+        return None
     except (OSError, subprocess.SubprocessError, ValueError):
+        _TOOL_VERSION_MEMO[memo_key] = None
         return None
     if proc.returncode != 0:
+        _TOOL_VERSION_MEMO[memo_key] = None
         return None
     version = proc.stdout.strip() or proc.stderr.strip()
+    _TOOL_VERSION_MEMO[memo_key] = version or None
     return version or None
 
 
@@ -1846,8 +1862,11 @@ def toolchain_digest(worktree: Path) -> Optional[str]:
     """
     sha256 over the toolchain and installed-dependency inputs of a check run: the manifest digest, the deps
     stamp's install fingerprint, `python3 --version`, and `node --version` when package.json exists at the
-    worktree root ("n/a" otherwise). Read-only. None when an input cannot be read: a probe timeout, an
-    unexpected error, or an unreadable deps stamp. A tool that is not installed is recorded as "absent".
+    worktree root ("n/a" otherwise). It runs `python3 --version` and `node --version` in the worktree; those
+    probes are memoised per process and worktree, and a probe timeout is logged. The digest does not cover
+    ruff, mypy, just or shellcheck, a documented limitation (ADR-0021). None when an input cannot be read: a
+    probe timeout, an unexpected error, or an unreadable deps stamp. A tool that is not installed is recorded
+    as "absent".
     """
     try:
         manifest = manifest_sha(worktree)
@@ -1910,8 +1929,6 @@ def expected_full_key(
     except ValueError:
         return None
     return ExpectedFullKey(
-        tree=tree,
-        mode="full",
         command_digest=command_digest,
         toolchain_digest=toolchain,
         key=key,
@@ -1980,7 +1997,7 @@ def validate(
     minimum_digest = _commands_digest(minimum_inputs)
 
     # Changed files: one canonical computation, hashed exactly as exported. An unresolved base means no hash.
-    tree = worktree_tree(worktree)
+    tree = expected.tree if expected is not None else worktree_tree(worktree)
     base, changed, files_hash, changed_source = _changed_set(worktree)
     if tree is None:
         changed_source = "tree-unavailable"

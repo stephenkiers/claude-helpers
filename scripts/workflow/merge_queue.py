@@ -100,7 +100,7 @@ class MergeQueueConfig:
     scratch_env_strip: List[str] = field(default_factory=lambda: list(SCRATCH_ENV_STRIPPED_VARS))
     scratch_env: Dict[str, str] = field(default_factory=dict)
     steps_dropped: int = 0  # Raw entries in "steps" that from_dict could not normalise (#491)
-    gate_reuse_disabled: Any = False  # Kill switch for queue-side gate reuse; any value but False disables it (#491)
+    gate_reuse_disabled: bool = False  # Kill switch for queue-side gate reuse; any value but False disables it (#491)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization, converting Step objects to dicts."""
@@ -357,6 +357,9 @@ def validate_config_data(data: Any, cwd: Optional[Path] = None) -> MergeQueueCon
 
     if "inherit_lock_fd" in data and not isinstance(data["inherit_lock_fd"], bool):
         raise ValueError("inherit_lock_fd must be a boolean")
+
+    if "gate_reuse_disabled" in data and not isinstance(data["gate_reuse_disabled"], bool):
+        raise ValueError("gate_reuse_disabled must be a boolean")
 
     if "allow_unverified" in data:
         if not isinstance(data["allow_unverified"], list):
@@ -959,9 +962,44 @@ class Runner:
 # Merge-Gate Trailer and Poison Scan (Step 5)
 # ============================================================================
 
-def build_trailer(tested_base: str, tested_head: str) -> str:
-    """Build a Merge-Gate trailer."""
-    return f"Merge-Gate: merge-queue tested-base={tested_base} tested-head={tested_head}"
+# The Merge-Gate line. The optional " gate=reused" marker (group 3) says a Phase 7 gate was satisfied by a cached
+# record rather than a run (#491). parse_trailer's 2-tuple is unchanged; the marker is read by trailer_gate_reused.
+_MERGE_GATE_RE = re.compile(
+    r"Merge-Gate: merge-queue tested-base=([0-9a-f]{40}) tested-head=([0-9a-f]{40})( gate=reused)?"
+)
+
+
+def build_trailer(tested_base: str, tested_head: str, reused: bool = False) -> str:
+    """Build a Merge-Gate trailer. reused=True appends the gate=reused marker."""
+    marker = " gate=reused" if reused else ""
+    return f"Merge-Gate: merge-queue tested-base={tested_base} tested-head={tested_head}{marker}"
+
+
+def _final_merge_gate_match(commit: str, cwd: Optional[Path] = None) -> Optional["re.Match[str]"]:
+    """
+    Match the final Merge-Gate line of a commit's trailer block; None when there is no such line or it does not match.
+
+    Runs git interpret-trailers --parse on the commit message via stdin. Matches only the final trailer block.
+    Text in the subject or earlier in the body does not count.
+    """
+    try:
+        # Get commit message via git show
+        commit_msg = Runner.run_git(["show", "-s", "--format=%B", commit], cwd=cwd, check=False)
+        # Pipe it to git interpret-trailers --parse
+        output = git.run_git_command_input(
+            ["interpret-trailers", "--parse"],
+            input_data=commit_msg,
+            cwd=cwd,
+            check=False
+        )
+    except Exception:
+        return None
+
+    lines = output.strip().split("\n")
+    for line in reversed(lines):
+        if line.startswith("Merge-Gate:"):
+            return _MERGE_GATE_RE.search(line)
+    return None
 
 
 def parse_trailer(commit: str, cwd: Optional[Path] = None) -> Tuple[Optional[str], Optional[str]]:
@@ -975,39 +1013,28 @@ def parse_trailer(commit: str, cwd: Optional[Path] = None) -> Tuple[Optional[str
 
     Returns (tested_base, tested_head) if valid, (None, None) otherwise.
     """
-    try:
-        # Get commit message via git show
-        commit_msg = Runner.run_git(["show", "-s", "--format=%B", commit], cwd=cwd, check=False)
-        # Pipe it to git interpret-trailers --parse
-        output = git.run_git_command_input(
-            ["interpret-trailers", "--parse"],
-            input_data=commit_msg,
-            cwd=cwd,
-            check=False
-        )
-    except Exception:
+    match = _final_merge_gate_match(commit, cwd=cwd)
+    if match is None:
         return None, None
-
-    lines = output.strip().split("\n")
-    for line in reversed(lines):
-        if line.startswith("Merge-Gate:"):
-            match = re.search(
-                r"Merge-Gate: merge-queue tested-base=([0-9a-f]{40}) tested-head=([0-9a-f]{40})",
-                line
-            )
-            if match:
-                base, head = match.groups()
-                # Decided #5: Verify tested-base is the immediate first parent, not just any ancestor
-                try:
-                    parent = Runner.run_git(["rev-parse", f"{commit}^1"], cwd=cwd).strip()
-                    if parent == base:
-                        return base, head
-                except Exception:
-                    # Could not get parent; fail closed
-                    pass
-            return None, None
-
+    base, head = match.group(1), match.group(2)
+    # Decided #5: Verify tested-base is the immediate first parent, not just any ancestor
+    try:
+        parent = Runner.run_git(["rev-parse", f"{commit}^1"], cwd=cwd).strip()
+        if parent == base:
+            return base, head
+    except Exception:
+        # Could not get parent; fail closed
+        pass
     return None, None
+
+
+def trailer_gate_reused(commit: str, cwd: Optional[Path] = None) -> bool:
+    """
+    True when the final Merge-Gate line carries the gate=reused marker. Validity of the trailer is
+    parse_trailer's call, so this reads the marker only.
+    """
+    match = _final_merge_gate_match(commit, cwd=cwd)
+    return match is not None and match.group(3) is not None
 
 
 def scan_base(
@@ -1103,6 +1130,16 @@ class VerifyBaseOutcome(Enum):
     INTERRUPTED = "interrupted"
 
 
+_GATE_REUSE_MISS_REASONS = frozenset(get_args(MissReason))
+
+
+def _is_gate_reuse_grammar(value: str) -> bool:
+    """True for "reused" or "miss:<reason>" with a reason from MissReason (#491)."""
+    if value == "reused":
+        return True
+    return value.startswith("miss:") and value[len("miss:"):] in _GATE_REUSE_MISS_REASONS
+
+
 @dataclass(frozen=True)
 class MergeResult:
     """Result of run_one()."""
@@ -1132,6 +1169,8 @@ class MergeResult:
 
     def validate_outcome_invariants(self) -> None:
         """Validate outcome-specific invariants; raises ValueError if violated."""
+        if self.gate_reuse is not None and not _is_gate_reuse_grammar(self.gate_reuse):
+            raise ValueError(f"gate_reuse must be 'reused' or 'miss:<reason>', got {self.gate_reuse!r}")
         if self.outcome == MergeOutcome.MERGED:
             # MERGED: must have tested_sha
             if not self.tested_sha:
@@ -1544,7 +1583,7 @@ def _preflight_check(
 
     # Check tree is clean
     try:
-        if not _is_tree_clean(cwd):
+        if not is_tree_clean(cwd):
             return MergeResult(
                 outcome=MergeOutcome.REFUSED,
                 pr=pr,
@@ -1645,7 +1684,7 @@ def _phase_validate_tree_and_rebase_state(
     Phase 1: Re-check tree is clean and no rebase/merge in progress.
     Returns KICKBACK if validation fails, else None.
     """
-    if not _is_tree_clean(cwd):
+    if not is_tree_clean(cwd):
         return _kickback(
             pr, branch, worktree, orig_head,
             "Worktree tree is not clean (re-check in lock)"
@@ -1959,7 +1998,8 @@ def _main_worktree_of(target_worktree: Path) -> Optional[Path]:
     """
     The main worktree of target_worktree's repo: the first `worktree` entry of the worktree list (#491).
 
-    Mirrors merge.py::_main_worktree_of. Returns None when the list cannot be read.
+    Mirrors merge.py::_main_worktree_of. Returns None when the list cannot be read. There is no shared primary
+    resolver yet; this first-entry rule is the one #472 and #473 are removing, so this site moves with them.
     """
     try:
         porcelain = git.get_worktree_list_porcelain(cwd=target_worktree)
@@ -1972,7 +2012,12 @@ def _main_worktree_of(target_worktree: Path) -> Optional[Path]:
 
 
 def _gate_reuse_fields(outcome: GateReuse, full_record_seen: Optional[bool], decided_at: str) -> Dict[str, Any]:
-    """The gate_reuse MergeResult fields for one decision (#491)."""
+    """
+    The gate_reuse MergeResult fields for one decision (#491).
+
+    "reused" means decided, not final: a kickback after Phase 7 keeps this value in the result (see #4 in the
+    ADR-0021 amendment). Only the gate's own outcome is final.
+    """
     if isinstance(outcome, Reuse):
         return {
             "gate_reuse": "reused",
@@ -2115,7 +2160,7 @@ def _phase_run_gate_and_assertions(
                 "HEAD moved during gate steps",
                 tested_sha=tested_sha
             ), tested_sha, gate_fields
-        if not _is_tree_clean(cwd):
+        if not is_tree_clean(cwd):
             return _kickback(
                 pr, branch, worktree, orig_head,
                 "Tree became dirty during gate steps",
@@ -2258,13 +2303,15 @@ def _phase_merge(
     base_sha: str,
     config: MergeQueueConfig,
     cwd: Path,
+    gate_reused: bool = False,
 ) -> MergeResult:
     """
     Phase 10: Merge the PR.
     Returns appropriate MergeResult (MERGED, PUSHED_NOT_MERGED, etc).
+    gate_reused is set when Phase 7 was satisfied by a cached record; it marks the trailer (#491).
     """
     try:
-        merge_outcome = _merge_pr(pr, tested_sha, base_sha, config, cwd=cwd)
+        merge_outcome = _merge_pr(pr, tested_sha, base_sha, config, cwd=cwd, gate_reused=gate_reused)
         if merge_outcome == MergePROutcome.SUCCESS:
             return MergeResult(
                 outcome=MergeOutcome.MERGED,
@@ -2406,7 +2453,10 @@ def _locked_flow(
 
         # Phase 10: Merge
         return _with_gate_fields(
-            _phase_merge(pr, branch, worktree, orig_head, tested_sha, base_sha, config, cwd),
+            _phase_merge(
+                pr, branch, worktree, orig_head, tested_sha, base_sha, config, cwd,
+                gate_reused=gate_fields.get("gate_reuse") == "reused",
+            ),
             gate_fields,
         )
 
@@ -2429,7 +2479,7 @@ def _locked_flow(
 # Helper Functions
 # ============================================================================
 
-def _is_tree_clean(cwd: Path) -> bool:
+def is_tree_clean(cwd: Path) -> bool:
     """Check if the tree is clean (no modifications)."""
     try:
         status = Runner.run_git(["status", "--porcelain"], cwd=cwd).strip()
@@ -2583,7 +2633,14 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig, lock_fd_to_
         return VerifyBaseOutcome.INFRA_ERROR
 
 
-def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig, cwd: Optional[Path] = None) -> MergePROutcome:
+def _merge_pr(
+    pr: int,
+    tested_sha: str,
+    base_sha: str,
+    config: MergeQueueConfig,
+    cwd: Optional[Path] = None,
+    gate_reused: bool = False,
+) -> MergePROutcome:
     """
     Merge the PR.
 
@@ -2592,6 +2649,7 @@ def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig,
 
     Poll budget: config.pr_merge_poll_secs seconds at ~1s intervals.
     This allows time for GitHub to compute mergeability and converge PR metadata.
+    gate_reused puts the gate=reused marker on the Merge-Gate trailer (#491).
     """
     # Poll for headRefOid match
     deadline = time.monotonic() + config.pr_merge_poll_secs
@@ -2616,7 +2674,7 @@ def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig,
 
     # Merge
     try:
-        trailer = build_trailer(base_sha, tested_sha)
+        trailer = build_trailer(base_sha, tested_sha, reused=gate_reused)
         # git interpret-trailers --parse only recognizes a trailer block that
         # follows a non-trailer paragraph and a blank line; a body consisting
         # only of the trailer line is silently dropped by parse_trailer later.
@@ -2931,7 +2989,9 @@ def _gate_reuse_status_lines(state_dir: Path, since: Optional[datetime]) -> List
 
 
 def _cmd_status(argv: List[str]) -> int:
-    """Show queue status."""
+    """
+    Show queue status. Exit 0 on success. --help exits 0; a usage error exits with argparse's code (2).
+    """
     parser = argparse.ArgumentParser(description="Show queue status")
     parser.add_argument(
         "--since",
@@ -2940,8 +3000,8 @@ def _cmd_status(argv: List[str]) -> int:
     )
     try:
         args = parser.parse_args(argv)
-    except SystemExit:
-        return 1
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else 1
 
     since: Optional[datetime] = None
     if args.since is not None:

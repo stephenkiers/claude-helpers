@@ -8,7 +8,7 @@ verifies, never an authority. decide_gate_reuse re-derives the expected key with
 guard wins, and any exception inside the decision is a miss, never a reuse.
 
 This module must not import merge_queue at load time, because merge_queue imports this module. The one
-runtime use of merge_queue (_is_tree_clean) is a lazy import inside the decision.
+runtime use of merge_queue (is_tree_clean) is a lazy import inside the decision.
 """
 
 from dataclasses import dataclass
@@ -24,12 +24,12 @@ from .checks import (
     NoRecord,
     RecordsUnsafe,
     RecordUnparseable,
-    _never,
     classify_full_record,
     expected_full_key,
     resolve_check_detail,
     worktree_tree,
 )
+from .models import _never
 
 if TYPE_CHECKING:
     from .merge_queue import MergeQueueConfig, Step
@@ -103,6 +103,9 @@ def decide_gate_reuse(
     the resolved full check, tracked-state refusal, clean tree, worktree tree equal to tested_sha^{tree}, a fresh
     origin/<base> equal to base_sha and an ancestor of tested_sha, the expected full key, then the record lookup.
     Any exception returns Miss("error"); there is no path that turns an error into Reuse.
+
+    Not pure: guard 7 runs `git fetch origin <base>`, bounded by config.mutation_timeout_secs, and guard 5 and the
+    toolchain probes run git and tool subprocesses in the worktree. A failed fetch is a Miss("error").
     """
     try:
         return _decide(config, worktree, main_worktree, tested_sha, base_sha)
@@ -119,12 +122,15 @@ def _decide(
 ) -> GateReuse:
     """The guarded decision body; decide_gate_reuse wraps it so that any exception is a miss."""
     # Lazy: merge_queue imports this module at load time.
-    from .merge_queue import _is_tree_clean
+    from .merge_queue import is_tree_clean
 
     # 1. Kill switch. Reuse stays enabled only for the exact boolean False (the default when the key is absent).
     # Any other value, including a malformed one such as "yes", is a forced miss.
     if config.gate_reuse_disabled is not False:
-        return Miss("disabled", "gate_reuse_disabled is set in merge-queue.json")
+        return Miss(
+            "disabled",
+            f"gate_reuse_disabled is set in merge-queue.json (value {config.gate_reuse_disabled!r})",
+        )
 
     # 2. Exactly one step, none dropped.
     step = queue_gate_step(config)
@@ -145,7 +151,7 @@ def _decide(
         return Miss("tracked-state", f"tracked at tested_sha: {', '.join(tracked[:3])}")
 
     # 5. The PR worktree is clean.
-    if not _is_tree_clean(worktree):
+    if not is_tree_clean(worktree):
         return Miss("dirty-tree", "worktree has uncommitted or untracked changes")
 
     # 6. The worktree's full working tree is exactly the tested tree.
@@ -159,7 +165,7 @@ def _decide(
         git.run_git_command(["fetch", "origin", config.base], cwd=worktree, timeout=config.mutation_timeout_secs)
         fresh_base = git.run_git_command(["rev-parse", f"origin/{config.base}"], cwd=worktree).strip()
     except Exception as e:
-        return Miss("stale-base", f"fetch of origin/{config.base} failed: {e}")
+        return Miss("error", f"fetch of origin/{config.base} failed: {type(e).__name__}: {e}")
     if fresh_base != base_sha or not git.is_ancestor(base_sha, tested_sha, cwd=worktree):
         return Miss("stale-base", "origin/base moved or is not an ancestor of tested_sha")
 
@@ -171,18 +177,26 @@ def _decide(
 
     # 9. The record lookup, mapped one-to-one.
     lookup = classify_full_record(worktree, expected.key)
+    # Lookup misses record the inputs that produced the key, so a permanent miss can be traced to its cause.
+    context = (
+        f"run timeout {step_timeout}s, command digest {expected.command_digest[:12]}, "
+        f"toolchain digest {expected.toolchain_digest[:12]}"
+    )
     if isinstance(lookup, Found):
         return Reuse(record_name=lookup.name, written_at=lookup.record.written_at, expected=expected)
     if isinstance(lookup, RecordUnparseable):
-        return Miss("record-unparseable", "the record at the expected name does not parse as a passing full record")
+        return Miss(
+            "record-unparseable",
+            f"the record at the expected name does not parse as a passing full record ({context})",
+        )
     if isinstance(lookup, MinimumOnly):
-        return Miss("minimum-record-only", "only a minimum-mode record exists for this tree and digest")
+        return Miss("minimum-record-only", f"only a minimum-mode record exists for this tree and digest ({context})")
     if isinstance(lookup, DigestMismatch):
-        return Miss("digest-mismatch", "a full record exists for this tree under a different digest")
+        return Miss("digest-mismatch", f"a full record exists for this tree under a different digest ({context})")
     if isinstance(lookup, NoRecord):
-        return Miss("no-record", "no full record exists for the expected key")
+        return Miss("no-record", f"no full record exists for the expected key ({context})")
     if isinstance(lookup, RecordsUnsafe):
-        return Miss("records-unsafe", "the records directory or a record file is a symlink")
+        return Miss("records-unsafe", f"the records directory or a record file is a symlink ({context})")
     _never(lookup)
 
 
