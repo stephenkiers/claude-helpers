@@ -743,7 +743,7 @@ def test_unexpected_exception_still_prints_stop_and_exits_nonzero(base: Path) ->
     expect("NEXT: STOP" in out or "driver could not record STOP" in err, f"no STOP recorded: {err!r}")
 
 
-def test_in_process_crash_writes_stop_directive_and_prints_next_stop(base: Path) -> None:
+def test_crash_records_stop_and_exits_1(base: Path) -> None:
     """When decide() crashes unexpectedly, advance() records STOP and exits with code 1."""
     root = base / ".claude" / "flows-v2"
     flow = flowdir.create_flow_dir(
@@ -906,6 +906,19 @@ def test_stub_doc_references_the_flow_reference_and_the_awaiting_marker(base: Pa
     expect("<!-- awaiting-answers:" in text, "the stub doc does not mention the awaiting-answers marker")
 
 
+def test_stub_doc_has_accept_rule_section(base: Path) -> None:
+    expect("\n## Accept rule\n" in read_stub_doc(), "the stub doc has no '## Accept rule' section")
+
+
+def test_runbook_start_flow_command_parses(base: Path) -> None:
+    runbook = (REPO_ROOT / "docs" / "v2-inventory" / "skeleton-runbook.md").read_text(encoding="utf-8")
+    expect("start --flow <flow dir> --repo OWNER/NAME --mode" in runbook, "runbook lacks the full start --flow command")
+    args = cli.build_parser().parse_args(
+        ["start", "--flow", "/x", "--repo", "OWNER/NAME", "--mode", "headless", "--wait-mode", "end-turn", "--step-minutes", "15"]
+    )
+    expect(args.flow == "/x" and args.step_minutes == 15, "the documented start --flow form did not parse")
+
+
 def test_stub_doc_has_no_ship_merge_push_pr_or_redo_ledger_calls(base: Path) -> None:
     text = read_stub_doc()
     for needle in ("git push", "gh pr", "/shipit", "/merge-and-cleanup", "flow-redo", "flow-ledger", "AskUserQuestion"):
@@ -947,7 +960,7 @@ SECTIONS: List[Tuple[str, List[Tuple[str, Callable[[Path], None]]]]] = [
         ("headless mode PARKs, and clear-live refuses a parked record", test_headless_park_and_clear_live_refuses_a_parked_record),
         ("clear-live removes a spawned record, logs it, and the next SPAWN has a new nonce and attempt", test_clear_live_then_spawn_gets_a_new_nonce_and_attempt),
         ("a corrupted state.json gives exit 0 and a STOP directive in directives/skeleton-stop.json", test_corrupt_state_gives_exit_zero_and_a_stop_directive),
-        ("a forced unexpected exception still prints NEXT: STOP in-process and exits 1", test_in_process_crash_writes_stop_directive_and_prints_next_stop),
+        ("a forced unexpected exception still prints NEXT: STOP in-process and exits 1", test_crash_records_stop_and_exits_1),
         ("a forced unexpected exception in the CLI exits non-zero", test_unexpected_exception_still_prints_stop_and_exits_nonzero),
         ("a driver-only kill loop (next repeated on a live record) produces zero extra SPAWNs and no new nonce", test_rerun_next_on_a_live_record_is_a_wait_with_no_new_nonce_and_no_extra_spawn),
     ]),
@@ -967,6 +980,8 @@ SECTIONS: List[Tuple[str, List[Tuple[str, Callable[[Path], None]]]]] = [
         ("the doc has no bare $0-$9 tokens and passes $ARGUMENTS", test_stub_doc_has_no_bare_positional_tokens_and_uses_arguments),
         ("the doc references prompts/flow-reference.md and the awaiting-answers marker", test_stub_doc_references_the_flow_reference_and_the_awaiting_marker),
         ("the doc has no ship, merge, push, PR, gh, redo or ledger step", test_stub_doc_has_no_ship_merge_push_pr_or_redo_ledger_calls),
+        ("the doc has an Accept rule section", test_stub_doc_has_accept_rule_section),
+        ("the runbook's documented start --flow command parses", test_runbook_start_flow_command_parses),
     ]),
 ]
 

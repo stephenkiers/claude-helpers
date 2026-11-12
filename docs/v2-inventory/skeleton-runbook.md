@@ -59,7 +59,7 @@ model version, date, mode.
 **For each of the four cells (R2.1, R2.2, R2.3, R2.4)**:
 1. Start an interactive session and let the agent begin
 2. At the configured kill point (K1 or K2), interrupt the session (Ctrl+C) or kill the process
-3. Record which session re-ran it (same session via `start --flow` or a new session)
+3. Record which session re-ran it (same session via `start --flow <flow dir> --repo OWNER/NAME --mode <mode> --wait-mode <wait-mode> --step-minutes <N>` or a new session)
 4. Check for `phantom-live`: if `next` emits WAIT with no receipt, run `clear-live` to recover
 5. Record whether `clear-live` was needed (phantom-live is present if yes)
 6. Verify the receipt's fate: did a late receipt from the killed attempt overwrite the per-step
@@ -114,11 +114,12 @@ ended the WAIT, `allowedTools` grant used or permission mode, model version, dat
 
 **Procedure**:
 1. Start a headless session (same permission setup as R3 and R4)
-2. Run the stub, supply the answer, and let it park (PARK verb, not ASK)
-3. Record the PARKed flow dir and the original session ID
-4. In a new session or the same one, call `start --flow <flow dir> --mode headless --wait-mode end-turn --step-minutes 15` to resume
-5. The stub will RESUME the agent
-6. Record the resuming session's ID
+2. Run the stub until it PARKs (PARK verb, not ASK)
+3. Record the flow dir and the original session ID
+4. Supply the answer
+5. Then call `start --flow <flow dir> --repo OWNER/NAME --mode headless --wait-mode end-turn --step-minutes 15` to resume
+6. The stub will RESUME the agent
+7. Record the resuming session's ID
 
 **Evidence to collect**: flow dir, original session ID, resuming session ID, RESUME provenance.
 
@@ -137,33 +138,41 @@ looks like an agent death. For R3, R4, and R5:
 
 **Option 1: Explicit `--allowedTools` set**
 
-Pass these `--allowedTools` flags (one per grant):
+Use Option 1; it is the command to use. Measured grant shape (see GRANT-SHAPE in
+`skeleton-findings.md`): quoted-`$HOME` patterns such as `Bash(python3 "$HOME/.claude/scripts/flow_driver/__main__.py":*)`
+were denied in this CLI, while `Bash(python3 *flow_driver/__main__.py *)` was allowed. The step agent's spawn-line
+command is a compound shell command (assignment, `echo`, command substitution, background loop), which an
+`echo >> ...spawns.jsonl` grant does not match, so the measured runs used an unrestricted `Bash` grant. Pass one
+`--allowedTools` flag per grant:
 
 ```
---allowedTools 'Bash(python3 "$HOME/.claude/scripts/flow_driver/__main__.py":*)' \
-  --allowedTools 'Bash(python3 "$HOME/.claude/scripts/fleet.py" wait:*)' \
-  --allowedTools 'Bash(echo >> "$HOME/.claude/flows-v2/*/spawns.jsonl")' \
+--allowedTools 'Bash(python3 *flow_driver/__main__.py *)' \
+  --allowedTools 'Bash' \
   --allowedTools 'Read' \
   --allowedTools 'Write(~/.claude/flows-v2/*:*)' \
   --allowedTools 'Task'
 ```
 
 Rationale per grant:
-- `Bash(python3 "$HOME/.claude/scripts/flow_driver/__main__.py":*)` — run driver commands
-- `Bash(python3 "$HOME/.claude/scripts/fleet.py" wait:*)` — run fleet wait command
-- `Bash(echo >> "$HOME/.claude/flows-v2/*/spawns.jsonl")` — append to the agent's spawn evidence file
+- `Bash(python3 *flow_driver/__main__.py *)` — run driver commands (the shape verified to match)
+- `Bash` — unrestricted; needed because the spawn-line compound command and the wait loop do not match narrower
+  patterns (narrowing it is a Layer 1 task)
 - `Read` — read flow files and directives
 - `Write(~/.claude/flows-v2/*:*)` — write state, directives, pending records, logs
 - `Task` — spawn agents to run the prompts
 
 **Option 2: Permission mode**
 
-Run with `--permissionMode no-prompt` or equivalent, and handle denials as appropriate.
+Not verified; record the mode used. `--permissionMode no-prompt` is not a confirmed value for this CLI. Use
+Option 1 as the command.
 
 **Void condition**: If any tool call is denied (appears in the transcript), mark that run as
 `NOT MEASURED - permission denied`.
 
 Record the exact `--allowedTools` flags or permission mode used in each row's provenance.
+
+Concurrency: run one `next`/`start` process at a time per flow dir, and let no stale agent write after
+`clear-live`. This is unenforced until Layer 1.
 
 ## Evidence to Collect Per Run
 
