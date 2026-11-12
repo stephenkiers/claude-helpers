@@ -802,6 +802,11 @@ On success with nothing pending, skip Steps 4a–4d and proceed directly to the 
 - Extract shared contracts/interfaces (types, enums, constants) into the sub-task text given to *all* units.
 - When a work unit's sub-task text includes a `[decided: ruling recorded]` or `[accepted: doing-it]` directive, carry that tag through verbatim into the sub-task text.
 - Every **shared file** (barrel/index exports, `package.json`, route registries, migration registries) must be assigned to **exactly one** unit — never left unassigned.
+- **Units never own test files.** Test requirements found in the plan go in no unit; they reach Round 2 through the plan text, including the plan's "Tests (written spec-blind in Round 2)" section when one exists.
+
+When no non-test Round 1 work remains once test requirements are set aside, do not invent a unit to satisfy `MIN_UNITS`. Stop with Reason `test-only-plan: no Round 1 work; tests are a Round 2 deliverable`.
+
+When a plan step or a review action-plan item (fix step) requires changing an existing test's assertion or removing a test (work Round 1 may not do and Round 2 cannot do), stop with Reason `existing-test-edit: <step or finding id> <path>`. A finding that asks for a *new* test is not a stop; it goes to Round 2 through the plan text.
 
 **3. Call `unit-progress.py init`.** Once the split is decided (basis, units, owned-files):
 
@@ -848,6 +853,31 @@ On init failure, write the FAILED receipt (when `FLOW_DIR` is set) with
 - Do a fresh scoped split of only the named plan ids, sized by `unit-sizing.py --only-units`.
 - Call `init --scope scoped-a<ATTEMPT>` for a scoped record; main record untouched; commits marked in scoped record; next `check` follows the chain. The scope name is used verbatim and must match `scoped-a<digits>`. `check` on a scoped record also verifies the main record exists, the anchors agree, and the scoped base is an ancestor of HEAD.
 - In sequential mode `mark` refuses to record a unit as committed, failed or skipped while an earlier unit is still pending or failed. Status changes are otherwise permissive on purpose: Retry needs failed→pending.
+
+**6b. Preflight: enforce test paths not in owned_files.** After `units.json` is finalized (the fresh-split `init`, or item 6's scoped `init`) and before item 7, resolve the record directory and run the test-path check:
+
+```bash
+RECORD_DIR="<SCRATCH_PATH>/units/<UNIT_STEP>"
+[[ -n "${FLOW_DIR}" ]] && RECORD_DIR="${FLOW_DIR}/units/<UNIT_STEP>"
+if [[ -n "${ONLY_UNITS}" ]]; then
+  RECORD_DIR="${RECORD_DIR}/scoped-a<ATTEMPT>"
+fi
+python3 "$HOME/.claude/scripts/plan-test-paths.py" units --units "${RECORD_DIR}/units.json"
+PREFLIGHT_EXIT=$?
+if [[ $PREFLIGHT_EXIT -ne 0 ]]; then
+  if [[ $PREFLIGHT_EXIT -eq 1 ]]; then
+    # Hit on test paths; fail before Round 1 spend
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class other 2>/dev/null || true
+    ${FLOW_DIR:+Write the FAILED receipt with Reason "test-path-in-units: <first hit line>" FAILURE_CLASS: other SPLIT_BASIS: none}
+    exit 1
+  else
+    # Exit 2: check error
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class other 2>/dev/null || true
+    ${FLOW_DIR:+Write the FAILED receipt with Reason "test-path-in-units: check error: <first stderr line>" FAILURE_CLASS: other SPLIT_BASIS: none}
+    exit 1
+  fi
+fi
+```
 
 **7. Write the planned-paths file.** After finalization, collect all owned files from the persisted units (the union, for overlapping sequential ownership) plus any files changed in the ticket branch since `START_SHA`:
 
@@ -1443,7 +1473,7 @@ Never wrap any gate or check command in `timeout` or `gtimeout`. Any command tha
 
 ### Gate step 2: Anti-tamper scan
 
-The implementer is forbidden from touching test files or neutering the verify pipeline. Scan now.
+The implementer is forbidden from touching test files or neutering the verify pipeline. Tests are written by the Round 2 spec-blind author (ADR-0019 2026-11-12 amendment). Plan and unit test paths are rejected earlier by `plan-test-paths.py`. Scan now.
 
 Run the shared scan script (substitute the literal `TICKET_WT_PATH` recorded in Step 2). It runs
 `git diff` itself, prints `{"verdict": "pass"|"fail", "reasons": [...]}` on stdout, and exits 1 on
@@ -1510,13 +1540,15 @@ Max **K = 3** iterations. On each iteration:
      where `<FIX_WT_PATH>` is the absolute path of this iteration's fix worktree
    - The specific failures from the gate (compile errors, stub locations, tamper flags)
    - "Fix only these specific failures. Do not touch test files. Do not modify build config scripts."
+   - "Never revert or weaken behaviour the plan asks for in order to make an existing test pass. If the only fix is editing a test file, make no change and end with `STAGED: no NEEDS_TEST_UPDATE: <test path> - <one line why>`."
    - "Stage your changes (`git add -A`) and do not commit. The orchestrator applies your diff and
      commits it."
    - The owned files that need fixing
    - The Project conventions block (see Step 2)
 2. When it returns, validate its trailer (same incomplete-report check as Step 4c, `STAGED:` not
    `COMMITTED:`).
-3. Apply its diff back (same apply-and-commit pattern as Step 4c — `git diff --staged` from the
+3. **Check for planned-change-breaks-test.** After trailer validation passes, read the agent's report for the `STAGED:` line. If it begins `STAGED: no NEEDS_TEST_UPDATE: `, stop the loop at once with no further iteration. Do not apply the diff. Write the FAILED receipt with Reason `planned-change-breaks-test: <path>` (extracted from the line), `FAILURE_CLASS: gate_not_converged`, and the CHECK key lines from the last gate run. Telemetry: the existing `command-end … --failure-class gate_not_converged` line. This early exit runs before item 4's diff application, so it costs nothing to detect and no retry is offered for this class.
+4. Apply its diff back (same apply-and-commit pattern as Step 4c — `git diff --staged` from the
    fix worktree, `git apply --index` + commit in the ticket worktree, tear down worktree after).
 4. Re-run Gate steps 1–3 on the updated tree. No usage-check seam here — dropped per
    [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174): it never once needed a
@@ -1556,6 +1588,8 @@ and `permitted_skip_reasons()` for which steps each classification skips. The al
 `mechanical`, `test-only`, `no-test-files-changed`, `dirty-file`, `no-comparison-operator`,
 `no-new-tests`, and `pause-not-requested`. Append each skip row
 with `printf '%s SKIPPED <step-id> %s\n' "<RUN_KEY>" "<reason>" >> "<LEDGER_PATH>"`.
+
+A plan with a non-empty `### Tests (written spec-blind in Round 2)` section, or a `fix` action plan with an item that asks for a new test, is always classified `full`, never `mechanical` or `test-only`, so Round 2 runs.
 
 - **Mechanical** — formatting/lint/config-only diff, no logic change (e.g. clippy/prettier churn,
   dependency bumps). No Round 2, no Round 3, no Round 4, no sweeps. Append the `SKIPPED ... mechanical`
@@ -1660,6 +1694,7 @@ Launch a background `plan-implementer` in `$R2_WT_PATH` with a **spec-blind test
 >    **Every new test must import and call the real production symbol it claims to cover.** A test
 >    that asserts against a hand-built local copy of the logic, or that would still pass if the
 >    implementation were deleted, is not coverage — it's a defect. Do not assert a stored snapshot of current output unless the plan defines that output. Do not add a test whose subject is a private helper unless the plan names it. If a test you add overlaps an existing one, still add it as a new test and name the existing test in your report.
+>    When the plan has a `### Tests (written spec-blind in Round 2)` section, its spec statements are required coverage. They count as "the plan defines that output" for the stored-snapshot rule.
 > 5. Run the tests. **Do not fix the implementation if tests fail** — failing tests are signal.
 > 6. **Stage your changes (`git add -A`) and do not commit.** The orchestrator applies your diff
 >    and commits it.
