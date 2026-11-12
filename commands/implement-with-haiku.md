@@ -862,18 +862,26 @@ RECORD_DIR="<SCRATCH_PATH>/units/<UNIT_STEP>"
 if [[ -n "${ONLY_UNITS}" ]]; then
   RECORD_DIR="${RECORD_DIR}/scoped-a<ATTEMPT>"
 fi
-python3 "$HOME/.claude/scripts/plan-test-paths.py" units --units "${RECORD_DIR}/units.json"
-PREFLIGHT_EXIT=$?
+CHECK_OUTPUT=$(python3 "$HOME/.claude/scripts/plan-test-paths.py" units --units "${RECORD_DIR}/units.json" 2>&1) || PREFLIGHT_EXIT=$?
+if [[ -z "$PREFLIGHT_EXIT" ]]; then
+  PREFLIGHT_EXIT=0
+fi
 if [[ $PREFLIGHT_EXIT -ne 0 ]]; then
   if [[ $PREFLIGHT_EXIT -eq 1 ]]; then
     # Hit on test paths; fail before Round 1 spend
     python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class other 2>/dev/null || true
-    ${FLOW_DIR:+Write the FAILED receipt with Reason "test-path-in-units: <first hit line>" FAILURE_CLASS: other SPLIT_BASIS: none}
+    if [[ -n "$FLOW_DIR" ]]; then
+      # [Write FAILED receipt with Reason "test-path-in-units: <first line from CHECK_OUTPUT>" FAILURE_CLASS: other SPLIT_BASIS: none]
+    fi
+    printf 'Unit preflight: test file found: %s\n' "$(printf '%s' "$CHECK_OUTPUT" | head -1)" >&2
     exit 1
   else
     # Exit 2: check error
     python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class other 2>/dev/null || true
-    ${FLOW_DIR:+Write the FAILED receipt with Reason "test-path-in-units: check error: <first stderr line>" FAILURE_CLASS: other SPLIT_BASIS: none}
+    if [[ -n "$FLOW_DIR" ]]; then
+      # [Write FAILED receipt with Reason "test-path-in-units: check error: <first line from CHECK_OUTPUT>" FAILURE_CLASS: other SPLIT_BASIS: none]
+    fi
+    printf 'Unit preflight error: %s\n' "$(printf '%s' "$CHECK_OUTPUT" | head -1)" >&2
     exit 1
   fi
 fi

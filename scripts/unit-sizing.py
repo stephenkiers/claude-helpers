@@ -134,23 +134,32 @@ def step_file_paths(step_text: str) -> List[str]:
 
     Returns a list (preserving order from the original line) of cleaned paths.
     """
-    raw_files = extract_files_from_step(step_text)
-    if not raw_files:
-        return []
-
     result: List[str] = []
-    for entry in raw_files:
-        # Find first backtick position
-        backtick_pos = entry.find("`")
-        if backtick_pos >= 0:
-            # Keep text up to the first backtick
-            cleaned = entry[:backtick_pos].strip()
-        else:
-            # Keep first whitespace-delimited token
-            cleaned = entry.split()[0] if entry.split() else ""
 
-        if cleaned:
-            result.append(cleaned)
+    # Parse the Files line directly to preserve order (unlike extract_files_from_step which returns a set)
+    for line in step_text.split("\n"):
+        # Match lines starting with "- **Files**:"
+        if re.match(r"^\s*-\s+\*\*Files\*\*:", line):
+            # Extract everything after the colon
+            content = line.split("**Files**:", 1)[1].strip()
+            # Split on commas and parse paths, preserving order
+            for part in content.split(","):
+                path = part.strip()
+                # Remove backticks if present
+                path = path.lstrip("`").rstrip("`")
+                if path and path not in ("", "none", "N/A", "n/a"):
+                    # Now clean off annotations
+                    backtick_pos = path.find("`")
+                    if backtick_pos >= 0:
+                        # Keep text up to the first backtick
+                        cleaned = path[:backtick_pos].strip()
+                    else:
+                        # Keep first whitespace-delimited token
+                        cleaned = path.split()[0] if path.split() else ""
+
+                    if cleaned:
+                        result.append(cleaned)
+            break
 
     return result
 

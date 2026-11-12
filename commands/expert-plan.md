@@ -1123,13 +1123,14 @@ fi
 # Re-check after Step 8 repair (if repairs were made)
 if [ -f "$SESSION_DIR/audit.md" ] && ! grep -q "No findings" "$SESSION_DIR/audit.md"; then
   PLAN_RECHECK_EXIT=0
-  python3 "$HOME/.claude/scripts/plan-test-paths.py" plan --plan "${SESSION_DIR}/plan.md" 2>&1 || PLAN_RECHECK_EXIT=$?
+  CHECK_OUTPUT=$(python3 "$HOME/.claude/scripts/plan-test-paths.py" plan --plan "${SESSION_DIR}/plan.md" 2>&1) || PLAN_RECHECK_EXIT=$?
   
   if [ "$PLAN_RECHECK_EXIT" -ne 0 ]; then
     # A hit after Step 8 repair fails the step directly (no second dispatch)
     if [ -n "$FLOW_DIR" ]; then
-      # [Write FAILED receipt with Reason plan-test-paths: <first line>]
+      # [Write FAILED receipt with Reason plan-test-paths: <first line from CHECK_OUTPUT>]
     fi
+    printf 'Plan-time recheck: %s\n' "$(printf '%s' "$CHECK_OUTPUT" | head -1)" >&2
     python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class other 2>/dev/null || true
     exit 1
   fi
