@@ -889,5 +889,163 @@ test_result(
     f"buckets={buckets}",
 )
 
+print("[Test 33] validate_config_data: int and string kill switch values are rejected; False and absent are accepted")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _fixture_with_check(Path(tmp), "true")
+    rejected_values = []
+    for bad in (1, 0, "true", "false"):
+        try:
+            validate_config_data({"base": "main", "steps": ["true"], "gate_reuse_disabled": bad}, cwd=work)
+        except ValueError:
+            rejected_values.append(bad)
+    test_result(
+        "validate_config_data: non-bool kill switch values (1, 0, 'true', 'false') are all rejected",
+        rejected_values == [1, 0, "true", "false"],
+        f"rejected={rejected_values}",
+    )
+    off = validate_config_data({"base": "main", "steps": ["true"], "gate_reuse_disabled": False}, cwd=work)
+    test_result(
+        "validate_config_data: an explicit False kill switch is accepted",
+        off.gate_reuse_disabled is False,
+        f"gate_reuse_disabled={off.gate_reuse_disabled!r}",
+    )
+    absent = validate_config_data({"base": "main", "steps": ["true"]}, cwd=work)
+    test_result(
+        "validate_config_data: an absent kill switch defaults to gate reuse enabled",
+        absent.gate_reuse_disabled is False,
+        f"gate_reuse_disabled={absent.gate_reuse_disabled!r}",
+    )
+
+print("[Test 34] decide_gate_reuse: kill switch False is not a disable; a malformed value is named in the detail")
+with tempfile.TemporaryDirectory() as tmp:
+    worktree = Path(tmp) / "wt"
+    worktree.mkdir()
+    off_result = decide_gate_reuse(
+        config=MergeQueueConfig(base="main", steps=[Step(cmd="true")], gate_reuse_disabled=False),
+        worktree=worktree,
+        main_worktree=worktree,
+        tested_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        base_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    test_result(
+        "decide_gate_reuse: kill switch False does not produce a 'disabled' miss",
+        not (isinstance(off_result, Miss) and off_result.reason == "disabled"),
+        f"result={off_result}",
+    )
+    malformed_result = decide_gate_reuse(
+        config=MergeQueueConfig(base="main", steps=[Step(cmd="true")], gate_reuse_disabled="yes"),
+        worktree=worktree,
+        main_worktree=worktree,
+        tested_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        base_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    test_result(
+        "decide_gate_reuse: a malformed kill switch detail carries repr('yes')",
+        isinstance(malformed_result, Miss)
+        and malformed_result.reason == "disabled"
+        and "'yes'" in repr(malformed_result),
+        f"result={malformed_result!r}",
+    )
+
+print("[Test 35] expected_full_key: a check command change and a new commit each change the key")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _fixture_with_check(Path(tmp), "true")
+    before = expected_full_key(work, work, timeout=300)
+    cache = work / ".claude" / "repo-cache.json"
+    cache.write_text(json.dumps({"version": 1, "commands": {"check": "echo changed"}}) + "\n")
+    after_command = expected_full_key(work, work, timeout=300)
+    test_result(
+        "expected_full_key: a check command change changes the full digest",
+        before is not None and after_command is not None
+        and before.key.full_digest != after_command.key.full_digest,
+        f"before={before} after={after_command}",
+    )
+    cache.write_text(json.dumps({"version": 1, "commands": {"check": "true"}}) + "\n")
+    (work / "second.txt").write_text("two\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "second")
+    new_tree = _git(work, "rev-parse", "HEAD^{tree}")
+    after_commit = expected_full_key(work, work, timeout=300)
+    test_result(
+        "expected_full_key: a new commit moves the key tree to the new HEAD tree",
+        before is not None and after_commit is not None
+        and after_commit.key.tree == new_tree and after_commit.key.tree != before.key.tree,
+        f"before={before} after={after_commit} new_tree={new_tree}",
+    )
+    test_result(
+        "record_filename_hash: different full digests map to different record file names",
+        before is not None and after_command is not None
+        and record_filename_hash(before.key) != record_filename_hash(after_command.key),
+        f"before={before} after={after_command}",
+    )
+
+print("[Test 36] Phase 7: a Miss runs the gate once, writes no gate_reused row, and records miss:<reason>")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _setup_git_repo(Path(tmp))
+    state = Path(tmp) / "state"
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="true")])
+    run_step = MagicMock(return_value=MagicMock(success=True))
+    append = MagicMock()
+    _kick, _tested, fields = _run_phase7(
+        work, state, Miss("digest-mismatch", "placeholder: the gate must run"), run_step, append, config,
+    )
+    events = [c.args[0].get("event") for c in append.call_args_list]
+    test_result(
+        "Phase 7 miss: the gate runs exactly once",
+        run_step.call_count == 1,
+        f"run_step calls={run_step.call_count}",
+    )
+    test_result(
+        "Phase 7 miss: no gate_reused row is written",
+        "gate_reused" not in events,
+        f"events={events}",
+    )
+    test_result(
+        "Phase 7 miss: the result records gate_reuse as miss:digest-mismatch",
+        fields.get("gate_reuse") == "miss:digest-mismatch",
+        f"fields={fields}",
+    )
+
+print("[Test 37] MergeResult.gate_reuse grammar: every MissReason and 'reused' are accepted; other forms are rejected")
+accepted_failures = []
+for accepted in ["reused"] + [f"miss:{reason}" for reason in get_args(MissReason)]:
+    try:
+        MergeResult(outcome=MergeOutcome.REFUSED, pr=46, branch="x", worktree="wt", gate_reuse=accepted)
+    except ValueError:
+        accepted_failures.append(accepted)
+test_result(
+    "MergeResult: 'reused' and miss:<every MissReason> are accepted",
+    accepted_failures == [],
+    f"rejected={accepted_failures}",
+)
+rejected_forms = []
+bad_forms = ["miss", "miss:", "reuse", "reused:", "miss:Dirty-Tree", "miss:made-up"]
+for bad in bad_forms:
+    try:
+        MergeResult(outcome=MergeOutcome.REFUSED, pr=47, branch="x", worktree="wt", gate_reuse=bad)
+    except ValueError:
+        rejected_forms.append(bad)
+test_result(
+    "MergeResult: malformed gate_reuse values are all rejected",
+    rejected_forms == bad_forms,
+    f"rejected={rejected_forms}",
+)
+
+print("[Test 38] Trailer: reused=False is the default trailer, and a commit with no trailer has no gate marker")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _setup_git_repo(Path(tmp))
+    base = _git(work, "rev-parse", "HEAD")
+    tested_head = "b" * 40
+    test_result(
+        "build_trailer: reused=False produces the same line as the default",
+        build_trailer(base, tested_head, reused=False) == build_trailer(base, tested_head),
+    )
+    tree = _git(work, "rev-parse", "HEAD^{tree}")
+    plain_commit = _git(work, "commit-tree", tree, "-p", base, "-m", "plain commit without a trailer")
+    test_result(
+        "trailer_gate_reused: False for a commit with no Merge-Gate trailer",
+        trailer_gate_reused(plain_commit, cwd=work) is False,
+    )
+
 print()
 h.summarize_and_exit()
