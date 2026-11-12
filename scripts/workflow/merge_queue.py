@@ -25,12 +25,15 @@ import sys
 import tempfile
 import time
 import uuid
-from dataclasses import dataclass, field, asdict, fields
+from dataclasses import dataclass, field, asdict, fields, replace
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Tuple, Sequence
+from typing import List, Optional, Dict, Any, Tuple, Sequence, get_args
 
 from . import git
+from .checks import full_record_seen_for_tree
+from .gate_reuse import GateReuse, Miss, MissReason, Reuse, decide_gate_reuse
 from .git import abs_git_common_dir
 
 
@@ -96,6 +99,8 @@ class MergeQueueConfig:
     pr_merge_poll_secs: int = 60  # Timeout for polling PR metadata before merge (default 60s at ~1s intervals)
     scratch_env_strip: List[str] = field(default_factory=lambda: list(SCRATCH_ENV_STRIPPED_VARS))
     scratch_env: Dict[str, str] = field(default_factory=dict)
+    steps_dropped: int = 0  # Raw entries in "steps" that from_dict could not normalise (#491)
+    gate_reuse_disabled: Any = False  # Kill switch for queue-side gate reuse; any value but False disables it (#491)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization, converting Step objects to dicts."""
@@ -122,6 +127,7 @@ class MergeQueueConfig:
         # Normalize steps from Union[str, Dict] to List[Step]
         if "steps" in filtered_data and filtered_data["steps"]:
             normalized_steps = []
+            dropped = 0
             for step_data in filtered_data["steps"]:
                 if isinstance(step_data, Step):
                     # Already a Step object (from to_dict -> asdict -> Step)
@@ -133,7 +139,10 @@ class MergeQueueConfig:
                         cmd=step_data["cmd"],
                         timeout_secs=step_data.get("timeout_secs")
                     ))
+                else:
+                    dropped += 1
             filtered_data["steps"] = normalized_steps
+            filtered_data["steps_dropped"] = dropped
 
         return cls(**filtered_data)
 
@@ -292,7 +301,7 @@ def validate_config_data(data: Any, cwd: Optional[Path] = None) -> MergeQueueCon
         raise ValueError("Config must be a JSON object (dict), not a list or primitive value")
     data = dict(data)
 
-    known_keys = {"base", "steps", "cleanup", "scratch_setup", "scratch_env_strip", "scratch_env", "inherit_lock_fd", "allow_unverified", "mutation_timeout_secs", "pr_merge_poll_secs"}
+    known_keys = {"base", "steps", "cleanup", "scratch_setup", "scratch_env_strip", "scratch_env", "inherit_lock_fd", "allow_unverified", "mutation_timeout_secs", "pr_merge_poll_secs", "gate_reuse_disabled"}
     unknown = set(data.keys()) - known_keys
     if unknown:
         raise ValueError(f"Unknown config keys: {unknown}")
@@ -1109,6 +1118,13 @@ class MergeResult:
     log_path: Optional[str] = None
     restore_failed: Optional[str] = None
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))  # M6: Unique identifier for this run
+    # Gate reuse provenance (#491). None when Phase 7 was never reached. Old result files lack these keys.
+    gate_reuse: Optional[str] = None  # "reused" or "miss:<reason>"
+    gate_reuse_record: Optional[str] = None
+    gate_reuse_tree: Optional[str] = None
+    gate_reuse_digest: Optional[str] = None
+    gate_reuse_full_record_seen: Optional[bool] = None
+    gate_reuse_decided_at: Optional[str] = None  # UTC ISO-8601 time of the decision
 
     def __post_init__(self) -> None:
         """Enforce outcome-specific invariants on construction."""
@@ -1279,6 +1295,12 @@ def read_pr_result(pr: int, cwd: Path) -> Optional[Tuple[MergeResult, float]]:
                 log_path=data.get("log_path"),
                 restore_failed=data.get("restore_failed"),
                 run_id=data.get("run_id", str(uuid.uuid4())),
+                gate_reuse=data.get("gate_reuse"),
+                gate_reuse_record=data.get("gate_reuse_record"),
+                gate_reuse_tree=data.get("gate_reuse_tree"),
+                gate_reuse_digest=data.get("gate_reuse_digest"),
+                gate_reuse_full_record_seen=data.get("gate_reuse_full_record_seen"),
+                gate_reuse_decided_at=data.get("gate_reuse_decided_at"),
             )
             return (result, float(timestamp))
         except (ValueError, KeyError, TypeError):
@@ -1933,6 +1955,50 @@ def _phase_rebase(
     return None
 
 
+def _main_worktree_of(target_worktree: Path) -> Optional[Path]:
+    """
+    The main worktree of target_worktree's repo: the first `worktree` entry of the worktree list (#491).
+
+    Mirrors merge.py::_main_worktree_of. Returns None when the list cannot be read.
+    """
+    try:
+        porcelain = git.get_worktree_list_porcelain(cwd=target_worktree)
+    except Exception:
+        return None
+    for line in porcelain.splitlines():
+        if line.startswith("worktree "):
+            return Path(line[len("worktree "):])
+    return None
+
+
+def _gate_reuse_fields(outcome: GateReuse, full_record_seen: Optional[bool], decided_at: str) -> Dict[str, Any]:
+    """The gate_reuse MergeResult fields for one decision (#491)."""
+    if isinstance(outcome, Reuse):
+        return {
+            "gate_reuse": "reused",
+            "gate_reuse_record": outcome.record_name,
+            "gate_reuse_tree": outcome.expected.tree,
+            "gate_reuse_digest": outcome.expected.key.full_digest,
+            "gate_reuse_full_record_seen": full_record_seen,
+            "gate_reuse_decided_at": decided_at,
+        }
+    return {
+        "gate_reuse": f"miss:{outcome.reason}",
+        "gate_reuse_record": None,
+        "gate_reuse_tree": None,
+        "gate_reuse_digest": None,
+        "gate_reuse_full_record_seen": full_record_seen,
+        "gate_reuse_decided_at": decided_at,
+    }
+
+
+def _with_gate_fields(result: MergeResult, gate_fields: Dict[str, Any]) -> MergeResult:
+    """Attach the gate_reuse provenance to a result built after Phase 7 (#491). No-op when Phase 7 recorded none."""
+    if not gate_fields:
+        return result
+    return replace(result, **gate_fields)
+
+
 def _phase_run_gate_and_assertions(
     pr: int,
     branch: str,
@@ -1941,10 +2007,13 @@ def _phase_run_gate_and_assertions(
     config: MergeQueueConfig,
     lock_fd_to_inherit: Optional[int],
     cwd: Path,
-) -> Tuple[Optional[MergeResult], Optional[str]]:
+    base_sha: str,
+    main_worktree: Optional[Path],
+) -> Tuple[Optional[MergeResult], Optional[str], Dict[str, Any]]:
     """
-    Phase 7: Record tested_sha, run gate steps, and re-assert HEAD/tree.
-    Returns (KICKBACK if fails, tested_sha) or (None, tested_sha).
+    Phase 7: Record tested_sha, decide gate reuse (#491), run gate steps on a miss, re-assert HEAD/tree.
+    Returns (KICKBACK if fails, tested_sha, gate_fields). gate_fields holds the gate_reuse result fields and
+    is empty when tested_sha could not be recorded.
     """
     # Record tested_sha
     try:
@@ -1953,11 +2022,69 @@ def _phase_run_gate_and_assertions(
         return _kickback(
             pr, branch, worktree, orig_head,
             f"Failed to record tested_sha: {e}"
-        ), None
+        ), None, {}
 
-    # Run gate steps
+    # Gate reuse decision (#491). A Reuse skips the steps; a Miss runs them exactly as before.
+    decided_at = datetime.now(timezone.utc).isoformat()
+    outcome: GateReuse
+    if main_worktree is None:
+        outcome = Miss("digest-uncomputable", "main worktree could not be resolved")
+    else:
+        outcome = decide_gate_reuse(config, cwd, main_worktree, tested_sha, base_sha)
+
+    # A reuse needs its audit row before the gate is skipped. If the row cannot be written, run the gate.
+    if isinstance(outcome, Reuse):
+        try:
+            append_queue_log({
+                "event": "gate_reused",
+                "pr": pr,
+                "tested_sha": tested_sha,
+                "record": outcome.record_name,
+                "written_at": outcome.written_at,
+                "tree": outcome.expected.tree,
+                "full_digest": outcome.expected.key.full_digest,
+                "time": time.time(),
+            })
+            print(
+                f"merge-queue: PR #{pr}: gate reused: full check record {outcome.record_name} covers the tested tree",
+                file=sys.stderr,
+            )
+        except Exception as e:
+            outcome = Miss("audit-write-failed", f"{type(e).__name__}: {e}")
+
+    if isinstance(outcome, Miss):
+        # Best-effort: a logging failure never stops or skips the gate; the reason still reaches the result file.
+        try:
+            append_queue_log({
+                "event": "gate_reuse_miss",
+                "pr": pr,
+                "tested_sha": tested_sha,
+                "reason": outcome.reason,
+                "detail": outcome.detail,
+                "time": time.time(),
+            })
+        except Exception as e:
+            print(
+                f"merge-queue: PR #{pr}: gate reuse miss ({outcome.reason}) could not be logged: {e}",
+                file=sys.stderr,
+            )
+
+    # Opportunity diagnostic (measurement only): computed after the decision is final, and it cannot change it.
+    full_record_seen: Optional[bool]
+    if isinstance(outcome, Reuse):
+        full_record_seen = True
+    else:
+        try:
+            tree = Runner.run_git(["rev-parse", f"{tested_sha}^{{tree}}"], cwd=cwd).strip()
+            full_record_seen = full_record_seen_for_tree(cwd, tree)
+        except Exception:
+            full_record_seen = None
+    gate_fields = _gate_reuse_fields(outcome, full_record_seen, decided_at)
+
+    # Run gate steps (none when the gate was reused)
     state_dir = ensure_state_dir()
-    for i, step in enumerate(config.steps):
+    steps_to_run = config.steps if isinstance(outcome, Miss) else []
+    for i, step in enumerate(steps_to_run):
         step_name = f"step-{i}"
         log_path = state_dir / "logs" / f"{pr}-{step_name}.log"
 
@@ -1977,7 +2104,7 @@ def _phase_run_gate_and_assertions(
                 failing_step=step_name,
                 log_path=str(log_path),
                 details=step_outcome.error
-            ), tested_sha
+            ), tested_sha, gate_fields
 
     # Re-assert HEAD == tested_sha and clean tree
     try:
@@ -1987,21 +2114,30 @@ def _phase_run_gate_and_assertions(
                 pr, branch, worktree, orig_head,
                 "HEAD moved during gate steps",
                 tested_sha=tested_sha
-            ), tested_sha
+            ), tested_sha, gate_fields
         if not _is_tree_clean(cwd):
             return _kickback(
                 pr, branch, worktree, orig_head,
                 "Tree became dirty during gate steps",
                 tested_sha=tested_sha
-            ), tested_sha
+            ), tested_sha, gate_fields
+        if isinstance(outcome, Reuse):
+            # Pre-push tree re-check (#491): a skipped gate is sound only while HEAD still has the record's tree.
+            head_tree = Runner.run_git(["rev-parse", "HEAD^{tree}"], cwd=cwd).strip()
+            if head_tree != outcome.expected.tree:
+                return _kickback(
+                    pr, branch, worktree, orig_head,
+                    "Gate reuse tree re-check failed: HEAD tree differs from the reused record's tree",
+                    tested_sha=tested_sha
+                ), tested_sha, gate_fields
     except Exception as e:
         return _kickback(
             pr, branch, worktree, orig_head,
             f"Failed to re-assert HEAD: {e}",
             tested_sha=tested_sha
-        ), tested_sha
+        ), tested_sha, gate_fields
 
-    return None, tested_sha
+    return None, tested_sha, gate_fields
 
 
 def _phase_push(
@@ -2205,6 +2341,8 @@ def _locked_flow(
     # kickback, so let it propagate to run_one's outer handler.
     orig_head = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
     tested_sha: Optional[str] = None
+    # gate_reuse provenance from Phase 7 (#491); empty until the decision is made
+    gate_fields: Dict[str, Any] = {}
 
     try:
         # Phase 1: Validate tree and rebase state
@@ -2239,15 +2377,17 @@ def _locked_flow(
         if result:
             return result
 
-        # Phase 7: Run gate and post-gate assertions
-        result, tested_sha = _phase_run_gate_and_assertions(pr, branch, worktree, orig_head, config, lock_fd_to_inherit, cwd)
+        # Phase 7: Decide gate reuse (#491), run the gate on a miss, and run post-gate assertions
+        result, tested_sha, gate_fields = _phase_run_gate_and_assertions(
+            pr, branch, worktree, orig_head, config, lock_fd_to_inherit, cwd, base_sha, _main_worktree_of(cwd),
+        )
         if result:
             # Phase 6 may have moved local HEAD to tested_sha (not when it was skipped),
             # but nothing was ever pushed. Restore the worktree to orig_head so it matches origin/<branch>
             # again; otherwise the next enqueue's lease check (phase 4) sees local HEAD
             # diverged from remote and misreports it as "base moved".
             _restore_worktree_to_orig_head(cwd, orig_head)
-            return result
+            return _with_gate_fields(result, gate_fields)
         # tested_sha is guaranteed to be non-None here
         assert tested_sha is not None
 
@@ -2257,25 +2397,31 @@ def _locked_flow(
             # Push never landed (rejected/failed/unconfirmed-timeout); same restore
             # rationale as phase 7 above.
             _restore_worktree_to_orig_head(cwd, orig_head)
-            return result
+            return _with_gate_fields(result, gate_fields)
 
         # Phase 9: Verify base unchanged
         result = _phase_verify_base_unchanged(pr, branch, worktree, orig_head, tested_sha, base_sha, config, cwd)
         if result:
-            return result
+            return _with_gate_fields(result, gate_fields)
 
         # Phase 10: Merge
-        return _phase_merge(pr, branch, worktree, orig_head, tested_sha, base_sha, config, cwd)
+        return _with_gate_fields(
+            _phase_merge(pr, branch, worktree, orig_head, tested_sha, base_sha, config, cwd),
+            gate_fields,
+        )
 
     except Exception as e:
-        return MergeResult(
-            outcome=MergeOutcome.INTERNAL_ERROR,
-            pr=pr,
-            branch=branch,
-            worktree=worktree,
-            orig_head=orig_head,
-            tested_sha=tested_sha,
-            reason=f"Locked flow error: {e}",
+        return _with_gate_fields(
+            MergeResult(
+                outcome=MergeOutcome.INTERNAL_ERROR,
+                pr=pr,
+                branch=branch,
+                worktree=worktree,
+                orig_head=orig_head,
+                tested_sha=tested_sha,
+                reason=f"Locked flow error: {e}",
+            ),
+            gate_fields,
         )
 
 
@@ -2688,8 +2834,122 @@ def _cmd_enqueue(argv: List[str]) -> int:
         return 1
 
 
+# Miss reasons a guard refused (or a logged disable) and reasons that should not happen with a full record in
+# hand. Read only by the status summary (#491). Mirrors MissReason in gate_reuse.py.
+_GUARD_REFUSALS: Tuple[str, ...] = (
+    "stale-base", "dirty-tree", "disabled", "steps-unmappable", "command-mismatch", "tracked-state", "digest-mismatch",
+)
+_UNEXPECTED_MISSES: Tuple[str, ...] = (
+    "error", "digest-uncomputable", "records-unsafe", "tree-mismatch", "record-unparseable", "audit-write-failed",
+)
+
+
+def _parse_iso_utc(value: Any) -> Optional[datetime]:
+    """Parse an ISO-8601 time; a naive time is read as UTC. None when it does not parse."""
+    if not isinstance(value, str):
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _fmt_counts(counts: Dict[str, int], names: Sequence[str]) -> str:
+    """'name n, name n' for the nonzero names, in the given order, or 'none'."""
+    parts = [f"{name} {counts[name]}" for name in names if counts.get(name, 0)]
+    return ", ".join(parts) if parts else "none"
+
+
+def _miss_counts(records: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Count the miss reasons across records whose gate_reuse is 'miss:<reason>'."""
+    counts: Dict[str, int] = {}
+    for record in records:
+        gate = record.get("gate_reuse")
+        if isinstance(gate, str) and gate.startswith("miss:"):
+            reason = gate[len("miss:"):]
+            counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
+def _gate_reuse_status_lines(state_dir: Path, since: Optional[datetime]) -> List[str]:
+    """
+    The three gate reuse lines for `merge_queue status` (#491).
+
+    Covers the most recent 20 archived results that carry a gate_reuse value, limited to decisions at or after
+    `since` when given. Results written before gate reuse carry no value and are excluded. An unreadable archive
+    file is skipped.
+    """
+    results_dir = state_dir / "results"
+    records: List[Dict[str, Any]] = []
+    if results_dir.exists():
+        try:
+            files = sorted(results_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
+            files = []
+        for path in files:
+            if len(records) >= 20:
+                break
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or not data.get("gate_reuse"):
+                continue
+            if since is not None:
+                decided = _parse_iso_utc(data.get("gate_reuse_decided_at"))
+                if decided is None or decided < since:
+                    continue
+            records.append(data)
+
+    total = len(records)
+    reused = sum(1 for r in records if r.get("gate_reuse") == "reused")
+    miss_names = get_args(MissReason)
+    lines = [
+        f"Gate reuse (last {total}): reused {reused}/{total}; "
+        f"misses: {_fmt_counts(_miss_counts(records), miss_names)}",
+    ]
+
+    seen = [r for r in records if r.get("gate_reuse_full_record_seen") is True]
+    unknown = sum(1 for r in records if r.get("gate_reuse_full_record_seen") is None)
+    lines.append(
+        f"Opportunity: {len(seen)}/{total} runs had a full record for the tested tree (unknown: {unknown})"
+    )
+
+    seen_reused = sum(1 for r in seen if r.get("gate_reuse") == "reused")
+    seen_misses = _miss_counts(seen)
+    lines.append(
+        f"Of those {len(seen)}: reused {seen_reused}; "
+        f"refused by guard: {_fmt_counts(seen_misses, _GUARD_REFUSALS)}; "
+        f"unexpected: {_fmt_counts(seen_misses, _UNEXPECTED_MISSES)}"
+    )
+    return lines
+
+
 def _cmd_status(argv: List[str]) -> int:
     """Show queue status."""
+    parser = argparse.ArgumentParser(description="Show queue status")
+    parser.add_argument(
+        "--since",
+        default=None,
+        help="Count gate reuse results decided at or after this ISO-8601 time",
+    )
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit:
+        return 1
+
+    since: Optional[datetime] = None
+    if args.since is not None:
+        since = _parse_iso_utc(args.since)
+        if since is None:
+            print(f"Invalid --since value: {args.since} (expected ISO-8601)", file=sys.stderr)
+            return 3
+
     try:
         state_dir = ensure_state_dir()
 
@@ -2721,6 +2981,9 @@ def _cmd_status(argv: List[str]) -> int:
                     print(f"Last result: PR #{result_data.get('pr')} - {result_data.get('outcome')}")
             except Exception:
                 pass
+
+        for line in _gate_reuse_status_lines(state_dir, since):
+            print(line)
 
         return 0
 
