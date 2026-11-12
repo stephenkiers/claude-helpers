@@ -16,7 +16,6 @@ Run with: python3 tests/test_merge_queue_gate_reuse.py
 """
 
 import sys
-import json
 import os
 import tempfile
 import subprocess
@@ -27,27 +26,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from _test_harness import Harness
 from workflow.gate_reuse import (
-    MissReason,
-    GateReuse,
     Miss,
-    Reuse,
     queue_gate_step,
     decide_gate_reuse,
 )
 from workflow.checks import (
-    expected_full_key,
     classify_full_record,
     full_record_seen_for_tree,
     ExpectedFullKey,
-    RecordLookup,
 )
 from workflow.merge_queue import (
     MergeQueueConfig,
     Step,
     MergeResult,
     MergeOutcome,
-    run_step,
-    _phase_run_gate_and_assertions,
 )
 from workflow.models import FullKey
 
@@ -123,8 +115,8 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     result = decide_gate_reuse(
         config=config,
-        worktree=str(worktree),
-        main_worktree=str(worktree),
+        worktree=worktree,
+        main_worktree=worktree,
         tested_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         base_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     )
@@ -145,8 +137,8 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     result = decide_gate_reuse(
         config=config,
-        worktree=str(worktree),
-        main_worktree=str(worktree),
+        worktree=worktree,
+        main_worktree=worktree,
         tested_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         base_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     )
@@ -163,8 +155,8 @@ with tempfile.TemporaryDirectory() as tmp:
     config = MergeQueueConfig(base="main", steps=[])
     result = decide_gate_reuse(
         config=config,
-        worktree=str(worktree),
-        main_worktree=str(worktree),
+        worktree=worktree,
+        main_worktree=worktree,
         tested_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         base_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     )
@@ -181,7 +173,7 @@ with tempfile.TemporaryDirectory() as tmp:
     (worktree / ".claude").mkdir(parents=True)
     # Create a FullKey
     key = FullKey(tree="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", full_digest="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
-    lookup = classify_full_record(str(worktree), key)
+    lookup = classify_full_record(worktree, key)
     test_result(
         "classify_full_record: no record",
         lookup.__class__.__name__ == "NoRecord",
@@ -200,7 +192,7 @@ with tempfile.TemporaryDirectory() as tmp:
     records_dir.symlink_to(fake_target)
 
     key = FullKey(tree="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", full_digest="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
-    lookup = classify_full_record(str(worktree), key)
+    lookup = classify_full_record(worktree, key)
     test_result(
         "classify_full_record: records symlink",
         lookup.__class__.__name__ == "RecordsUnsafe",
@@ -212,7 +204,7 @@ with tempfile.TemporaryDirectory() as tmp:
     worktree = Path(tmp) / "wt"
     worktree.mkdir()
     (worktree / ".claude").mkdir(parents=True)
-    result = full_record_seen_for_tree(str(worktree), "cccccccccccccccccccccccccccccccccccccccc")
+    result = full_record_seen_for_tree(worktree, "cccccccccccccccccccccccccccccccccccccccc")
     test_result(
         "full_record_seen_for_tree: no records",
         result is False,
@@ -229,7 +221,7 @@ with tempfile.TemporaryDirectory() as tmp:
     fake_target.mkdir()
     records_dir.symlink_to(fake_target)
 
-    result = full_record_seen_for_tree(str(worktree), "cccccccccccccccccccccccccccccccccccccccc")
+    result = full_record_seen_for_tree(worktree, "cccccccccccccccccccccccccccccccccccccccc")
     test_result(
         "full_record_seen_for_tree: symlinked records",
         result is None,
@@ -275,6 +267,303 @@ test_result(
     result2.gate_reuse_full_record_seen is None,
     f"result2.gate_reuse_full_record_seen={result2.gate_reuse_full_record_seen}"
 )
+
+# ===== Additional coverage tests =====
+
+print("[Test 13] decide_gate_reuse: command-mismatch (different command)")
+with tempfile.TemporaryDirectory() as tmp:
+    worktree = Path(tmp) / "wt"
+    worktree.mkdir()
+    (worktree / ".claude").mkdir(parents=True)
+    config = MergeQueueConfig(
+        base="main",
+        steps=[Step(cmd="wrong command")]
+    )
+    with patch("workflow.gate_reuse.resolve_check_detail") as mock_resolve:
+        mock_resolve.return_value = MagicMock(command="correct command")
+        result = decide_gate_reuse(
+            config=config,
+            worktree=worktree,
+            main_worktree=worktree,
+            tested_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            base_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        )
+        test_result(
+            "decide_gate_reuse: command-mismatch",
+            isinstance(result, Miss) and result.reason == "command-mismatch",
+            f"result={result}"
+        )
+
+print("[Test 14] decide_gate_reuse: tracked-state (tracked .claude/repo-cache.json)")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _setup_git_repo(Path(tmp))
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="true")])
+    # Add and commit a repo-cache.json to the feature branch
+    (work / ".claude").mkdir(exist_ok=True)
+    (work / ".claude" / "repo-cache.json").write_text('{"commands": {}}')
+    _git(work, "add", "-f", ".claude/repo-cache.json")
+    _git(work, "commit", "-q", "-m", "add cache")
+    tested_sha = _git(work, "rev-parse", "HEAD")
+    base_sha = _git(work, "rev-parse", "main")
+
+    with patch("workflow.gate_reuse.resolve_check_detail") as mock_resolve:
+        mock_resolve.return_value = MagicMock(command="true")
+        with patch("workflow.merge_queue._is_tree_clean", return_value=True):
+            with patch("workflow.gate_reuse.git.is_ancestor", return_value=True):
+                result = decide_gate_reuse(
+                    config=config,
+                    worktree=work,
+                    main_worktree=work,
+                    tested_sha=tested_sha,
+                    base_sha=base_sha,
+                )
+                test_result(
+                    "decide_gate_reuse: tracked-state",
+                    isinstance(result, Miss) and result.reason == "tracked-state",
+                    f"result={result}"
+                )
+
+print("[Test 15] decide_gate_reuse: dirty-tree (untracked file)")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _setup_git_repo(Path(tmp))
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="true")])
+    tested_sha = _git(work, "rev-parse", "HEAD")
+    base_sha = _git(work, "rev-parse", "main")
+    # Add an untracked non-ignored file
+    (work / "untracked.txt").write_text("untracked")
+
+    with patch("workflow.gate_reuse.resolve_check_detail") as mock_resolve:
+        mock_resolve.return_value = MagicMock(command="true")
+        with patch("workflow.merge_queue._is_tree_clean", return_value=False):
+            result = decide_gate_reuse(
+                config=config,
+                worktree=work,
+                main_worktree=work,
+                tested_sha=tested_sha,
+                base_sha=base_sha,
+            )
+            test_result(
+                "decide_gate_reuse: dirty-tree",
+                isinstance(result, Miss) and result.reason == "dirty-tree",
+                f"result={result}"
+            )
+
+print("[Test 16] decide_gate_reuse: tree-mismatch (worktree_tree differs from HEAD^{tree})")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _setup_git_repo(Path(tmp))
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="true")])
+    tested_sha = _git(work, "rev-parse", "HEAD")
+    base_sha = _git(work, "rev-parse", "main")
+
+    with patch("workflow.gate_reuse.resolve_check_detail") as mock_resolve:
+        mock_resolve.return_value = MagicMock(command="true")
+        with patch("workflow.merge_queue._is_tree_clean", return_value=True):
+            with patch("workflow.gate_reuse.worktree_tree", return_value="wrong_tree"):
+                with patch("workflow.gate_reuse.git.is_ancestor", return_value=True):
+                    result = decide_gate_reuse(
+                        config=config,
+                        worktree=work,
+                        main_worktree=work,
+                        tested_sha=tested_sha,
+                        base_sha=base_sha,
+                    )
+                    test_result(
+                        "decide_gate_reuse: tree-mismatch",
+                        isinstance(result, Miss) and result.reason == "tree-mismatch",
+                        f"result={result}"
+                    )
+
+print("[Test 17] decide_gate_reuse: stale-base (fetched base differs)")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _setup_git_repo(Path(tmp))
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="true")])
+    tested_sha = _git(work, "rev-parse", "HEAD")
+    base_sha = _git(work, "rev-parse", "main")
+    different_sha = "cccccccccccccccccccccccccccccccccccccccc"
+
+    with patch("workflow.gate_reuse.resolve_check_detail") as mock_resolve:
+        mock_resolve.return_value = MagicMock(command="true")
+        with patch("workflow.merge_queue._is_tree_clean", return_value=True):
+            with patch("workflow.gate_reuse.git.run_git_command") as mock_git:
+                def git_side_effect(*args, **kwargs):
+                    cmd = args[0]
+                    if "rev-parse" in cmd and "^{tree}" in str(cmd):
+                        return _git(work, "rev-parse", f"{tested_sha}^{{tree}}") + "\n"
+                    if "rev-parse" in cmd and "origin/main" in str(cmd):
+                        return different_sha + "\n"
+                    return ""
+                mock_git.side_effect = git_side_effect
+                result = decide_gate_reuse(
+                    config=config,
+                    worktree=work,
+                    main_worktree=work,
+                    tested_sha=tested_sha,
+                    base_sha=base_sha,
+                )
+                test_result(
+                    "decide_gate_reuse: stale-base",
+                    isinstance(result, Miss) and result.reason == "stale-base",
+                    f"result={result}"
+                )
+
+print("[Test 18] decide_gate_reuse: digest-uncomputable (toolchain_digest returns None)")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _setup_git_repo(Path(tmp))
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="true")])
+    tested_sha = _git(work, "rev-parse", "HEAD")
+    base_sha = _git(work, "rev-parse", "main")
+
+    with patch("workflow.gate_reuse.resolve_check_detail") as mock_resolve:
+        mock_resolve.return_value = MagicMock(command="true")
+        with patch("workflow.merge_queue._is_tree_clean", return_value=True):
+            with patch("workflow.gate_reuse.git.is_ancestor", return_value=True):
+                with patch("workflow.gate_reuse.expected_full_key", return_value=None):
+                    result = decide_gate_reuse(
+                        config=config,
+                        worktree=work,
+                        main_worktree=work,
+                        tested_sha=tested_sha,
+                        base_sha=base_sha,
+                    )
+                    test_result(
+                        "decide_gate_reuse: digest-uncomputable",
+                        isinstance(result, Miss) and result.reason == "digest-uncomputable",
+                        f"result={result}"
+                    )
+
+print("[Test 19] decide_gate_reuse: record-unparseable (invalid record JSON)")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _setup_git_repo(Path(tmp))
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="true")])
+    tested_sha = _git(work, "rev-parse", "HEAD")
+    base_sha = _git(work, "rev-parse", "main")
+
+    # Create a valid ExpectedFullKey for the test first
+    test_tree = _git(work, "rev-parse", f"{tested_sha}^{{tree}}")
+    test_key = FullKey(tree=test_tree, full_digest="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+    test_full_key = ExpectedFullKey(tree=test_key.tree, mode="full", command_digest="cccc", toolchain_digest="tttt", key=test_key)
+
+    # Now create the record directory with an invalid record at the expected filename
+    (work / ".claude").mkdir(exist_ok=True)
+    records_dir = work / ".claude" / "check-records"
+    records_dir.mkdir(exist_ok=True)
+    # Import the hash function to create the correct filename
+    from workflow.checks import record_filename_hash
+    expected_filename = f"{record_filename_hash(test_key)}.json"
+    (records_dir / expected_filename).write_text("not valid json")
+
+    with patch("workflow.gate_reuse.resolve_check_detail") as mock_resolve:
+        mock_resolve.return_value = MagicMock(command="true")
+        with patch("workflow.merge_queue._is_tree_clean", return_value=True):
+            with patch("workflow.gate_reuse.git.is_ancestor", return_value=True):
+                with patch("workflow.gate_reuse.expected_full_key", return_value=test_full_key):
+                    result = decide_gate_reuse(
+                        config=config,
+                        worktree=work,
+                        main_worktree=work,
+                        tested_sha=tested_sha,
+                        base_sha=base_sha,
+                    )
+                    test_result(
+                        "decide_gate_reuse: record-unparseable",
+                        isinstance(result, Miss) and result.reason == "record-unparseable",
+                        f"result={result}"
+                    )
+
+print("[Test 20] decide_gate_reuse: minimum-record-only (only minimum record exists)")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _setup_git_repo(Path(tmp))
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="true")])
+    tested_sha = _git(work, "rev-parse", "HEAD")
+    base_sha = _git(work, "rev-parse", "main")
+
+    test_tree = _git(work, "rev-parse", f"{tested_sha}^{{tree}}")
+    test_key = FullKey(tree=test_tree, full_digest="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+    test_full_key = ExpectedFullKey(tree=test_tree, mode="full", command_digest="cccc", toolchain_digest="tttt", key=test_key)
+
+    with patch("workflow.gate_reuse.resolve_check_detail") as mock_resolve:
+        mock_resolve.return_value = MagicMock(command="true")
+        with patch("workflow.merge_queue._is_tree_clean", return_value=True):
+            with patch("workflow.gate_reuse.git.is_ancestor", return_value=True):
+                with patch("workflow.gate_reuse.expected_full_key", return_value=test_full_key):
+                    with patch("workflow.gate_reuse.classify_full_record") as mock_classify:
+                        from workflow.checks import MinimumOnly
+                        mock_classify.return_value = MinimumOnly()
+                        result = decide_gate_reuse(
+                            config=config,
+                            worktree=work,
+                            main_worktree=work,
+                            tested_sha=tested_sha,
+                            base_sha=base_sha,
+                        )
+                        test_result(
+                            "decide_gate_reuse: minimum-record-only",
+                            isinstance(result, Miss) and result.reason == "minimum-record-only",
+                            f"result={result}"
+                        )
+
+print("[Test 21] decide_gate_reuse: digest-mismatch (full record with different digest)")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _setup_git_repo(Path(tmp))
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="true")])
+    tested_sha = _git(work, "rev-parse", "HEAD")
+    base_sha = _git(work, "rev-parse", "main")
+
+    test_tree = _git(work, "rev-parse", f"{tested_sha}^{{tree}}")
+    test_key = FullKey(tree=test_tree, full_digest="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+    test_full_key = ExpectedFullKey(tree=test_tree, mode="full", command_digest="cccc", toolchain_digest="tttt", key=test_key)
+
+    with patch("workflow.gate_reuse.resolve_check_detail") as mock_resolve:
+        mock_resolve.return_value = MagicMock(command="true")
+        with patch("workflow.merge_queue._is_tree_clean", return_value=True):
+            with patch("workflow.gate_reuse.git.is_ancestor", return_value=True):
+                with patch("workflow.gate_reuse.expected_full_key", return_value=test_full_key):
+                    with patch("workflow.gate_reuse.classify_full_record") as mock_classify:
+                        from workflow.checks import DigestMismatch
+                        mock_classify.return_value = DigestMismatch()
+                        result = decide_gate_reuse(
+                            config=config,
+                            worktree=work,
+                            main_worktree=work,
+                            tested_sha=tested_sha,
+                            base_sha=base_sha,
+                        )
+                        test_result(
+                            "decide_gate_reuse: digest-mismatch",
+                            isinstance(result, Miss) and result.reason == "digest-mismatch",
+                            f"result={result}"
+                        )
+
+print("[Test 22] decide_gate_reuse: error (exception in classify_full_record)")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _setup_git_repo(Path(tmp))
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="true")])
+    tested_sha = _git(work, "rev-parse", "HEAD")
+    base_sha = _git(work, "rev-parse", "main")
+
+    test_tree = _git(work, "rev-parse", f"{tested_sha}^{{tree}}")
+    test_key = FullKey(tree=test_tree, full_digest="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+    test_full_key = ExpectedFullKey(tree=test_tree, mode="full", command_digest="cccc", toolchain_digest="tttt", key=test_key)
+
+    with patch("workflow.gate_reuse.resolve_check_detail") as mock_resolve:
+        mock_resolve.return_value = MagicMock(command="true")
+        with patch("workflow.merge_queue._is_tree_clean", return_value=True):
+            with patch("workflow.gate_reuse.git.is_ancestor", return_value=True):
+                with patch("workflow.gate_reuse.expected_full_key", return_value=test_full_key):
+                    with patch("workflow.gate_reuse.classify_full_record") as mock_classify:
+                        mock_classify.side_effect = RuntimeError("Test error")
+                        result = decide_gate_reuse(
+                            config=config,
+                            worktree=work,
+                            main_worktree=work,
+                            tested_sha=tested_sha,
+                            base_sha=base_sha,
+                        )
+                        test_result(
+                            "decide_gate_reuse: error (exception caught)",
+                            isinstance(result, Miss) and result.reason == "error",
+                            f"result={result}"
+                        )
 
 print()
 h.summarize_and_exit()
