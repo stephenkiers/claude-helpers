@@ -291,3 +291,21 @@ Round 2 and Round 3 authors report every added test's `<new id> | overlaps: <exi
 6. **Measurement: per-run hygiene counts.** Every run records `test-hygiene.json` with `round2_hygiene_hits`, `round4_hygiene_hits`, `overlap_candidates`, `overlap_none`, `overlap_unreported`, `round4_deleted`, `round4_relocated`, `layout_names_given` (bool), and `step` (`implement`/`fix`). On the "Cleanup commit already landed" resume path, fields not re-produced are written as `null` (never zero) to distinguish resumed from clean runs. In a flow, `FLOW_DIR/test-hygiene-<STEP>.json` is a sanctioned FLOW_DIR artifact (same precedent as `units/<STEP>/`): the orchestrator writes it with a second `test-cleanup-check.py hygiene-json --out "$FLOW_DIR/test-hygiene-<STEP>.json"` call (no `cp`; a failure prints a warning rather than being hidden). The output paths of `hygiene-json`, `layout-evidence` and `overlaps` share one confinement rule: inside the repo toplevel, `FLOW_DIR` (or the `--flow-dir` given), or the system temp dir where the run's scratch lives. A run that skips the Round 2 or Round 4 scan passes `--skip-round2` / `--skip-round4`, so stale evidence from an earlier invocation reads as `null`. Per-run files will answer a future question on whether a Round 2 rename gate (Q1 A) or a shortened Round 4 (D2 A) earns its cost.
 
 7. **Operator note:** run `/setup-local` after pulling so the new `~/.claude/prompts/test-cleanup-reference.md` symlink exists.
+
+## Amendment (2026-11-12): tests are a Round 2 deliverable; enforced at plan time and before Round 1 (#468)
+
+Tests are written by the Round 2 spec-blind author (ADR-0019 2026-11-12 amendment).
+
+- **Round 1 implementers never write tests.** They do not write tests in the `implement` step or the `fix` step.
+- **Plans carry test intent in "Tests (written spec-blind in Round 2)" as spec statements,** with no red-first requirement. Spec statements hold the expected values and exact strings to assert, never a red-on-base check. A non-empty Tests section forces Round 2 to run (the Round sizing override).
+- **Enforcement happens in two places,** both on `anti-cheat-scan.py`'s `is_test_path`:
+  - `/expert-plan` Step 6: runs `plan-test-paths.py plan` after synthesis, with one bounded synthesis repair on a hit, then fail.
+  - `/implement-with-haiku` Step 3 (preflight): runs `plan-test-paths.py units` before Round 1, over the finalized `units.json` in the run's own record directory.
+- **The scan's behaviour is unchanged.** Test-first ordering within a unit is no longer expressible under rule A.
+- **The D1 limitation: a planned change that breaks an existing test has no automatic owner.** The fix loop stops with `planned-change-breaks-test` instead of reverting, and the human takes over.
+  - Two related shapes also stop before Round 1 for the same reason:
+    - **Test-only plan.** If no non-test Round 1 work remains once test requirements are set aside, stop with `test-only-plan: no Round 1 work; tests are a Round 2 deliverable`. Do not invent a unit to satisfy `MIN_UNITS`.
+    - **Existing-test edit.** If a plan step or a review action-plan item (fix step) requires changing an existing test's assertion or removing a test, which Round 1 may not do and Round 2 cannot do, stop with `existing-test-edit: <step or finding id> <path>`. A finding that asks for a *new* test is not a stop; it goes to Round 2 through the plan text.
+- **The fix-loop early exit.** When the only fix is a test edit, the loop stops at `planned-change-breaks-test`, detected from the implementer's `STAGED: no NEEDS_TEST_UPDATE: <path>` trailer. This is a loop-shape change in #380's area.
+- **The divergent `_is_test_path` in `scripts/test-cleanup-check.py:1117`.** It is deliberately not unified. It also matches `test/` directories, `_spec.` and case-insensitive names. If it ever is unified, it must move toward the anti-cheat predicate, not away from it.
+- **Collisions.** #458 edits Round 2/4 prose in the same file. #456 / #484-#489 are the v2 driver (ADR-0026 Proposed). The driver's Layer 3 must carry both the plan-time and pre-Round-1 checks and the new failure reasons (`plan-test-paths`, `test-path-in-units`, `test-only-plan`, `existing-test-edit`, `planned-change-breaks-test`).

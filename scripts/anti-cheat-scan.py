@@ -20,7 +20,7 @@ Profiles:
              (neutered-verification), stub/placeholder markers on added lines
              (stub-body). "Wired but never called" stays judgment prose in the doc.
   fix-now    The implement profile minus the test-edit rule (test-removed still
-             applies), and nothing more. It is no stricter than the fix step it re-runs.
+             applies), and nothing more. Its range includes the re-run step's Round 2 and Round 4 test commits; Round 1's own Gate step 2 already ran the implement profile.
   heal       The check-heal profile. Everything in implement, plus gate-config-edit,
              added-suppression, env-guard and revert-to-pass. Requires --revert-base,
              the start of the work being healed (bases[implement]). revert-to-pass
