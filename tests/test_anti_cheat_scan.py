@@ -314,7 +314,34 @@ def main():
                       failed_with(rc, data), detail(rc, data))
 
     print()
-    print("[Section 5] --revert-base rules and fail-closed refs")
+    print("[Section 5] Criterion 3 regression: pin today's verdict for plan-owned test edits (#468)")
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, c0, c1 = make_repo(tmp)
+        c2 = commit(repo, {"tests/test_app.py": "def test_ok():\n    assert True\n\ndef test_new():\n    assert 1\n"}, "plan adds test")
+        rc, data = scan(repo, c1, c2, "implement")
+        h.test_result("criterion 3: additive test edit under implement fails", failed_with(rc, data), detail(rc, data))
+        h.test_result("criterion 3: verdict is 'fail'", data.get("verdict") == "fail", detail(rc, data))
+        h.test_result("criterion 3: reasons equals exactly ['test-edit: tests/test_app.py']",
+                      data.get("reasons") == ["test-edit: tests/test_app.py"], f"reasons={data.get('reasons')}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, c0, c1 = make_repo(tmp)
+        c2 = commit(repo, {}, "delete test", remove=["tests/test_app.py"])
+        rc, data = scan(repo, c1, c2, "implement")
+        h.test_result("criterion 3: deleted test under implement fails", failed_with(rc, data), detail(rc, data))
+        h.test_result("criterion 3: reasons equals exactly ['test-removed: tests/test_app.py']",
+                      data.get("reasons") == ["test-removed: tests/test_app.py"], f"reasons={data.get('reasons')}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, c0, c1 = make_repo(tmp)
+        c2 = commit(repo, {"tests/test_app.py": "def test_ok():\n    assert True\n\ndef test_new():\n    assert 1\n"}, "plan adds test")
+        rc, data = scan(repo, c1, c2, "fix-now")
+        h.test_result("criterion 3: additive test edit under fix-now passes", passed(rc, data), detail(rc, data))
+        h.test_result("criterion 3: fix-now verdict is 'pass'", data.get("verdict") == "pass", detail(rc, data))
+        h.test_result("criterion 3: fix-now reasons is empty", data.get("reasons") == [], f"reasons={data.get('reasons')}")
+
+    print()
+    print("[Section 6] --revert-base rules and fail-closed refs")
     with tempfile.TemporaryDirectory() as tmp:
         repo, c0, c1 = make_repo(tmp)
         c2 = commit(repo, {"src/other.py": "def g():\n    return 2\n"}, "clean")
