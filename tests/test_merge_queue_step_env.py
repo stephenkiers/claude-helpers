@@ -110,7 +110,7 @@ with tempfile.TemporaryDirectory() as tmp:
         with patch("workflow.merge_queue.Runner.run_git", return_value="dummy_sha\n"):
             with patch("workflow.merge_queue.ensure_state_dir", return_value=Path(tmp) / "state"):
                 with patch("workflow.merge_queue._is_tree_clean", return_value=True):
-                    result, tested_sha = _phase_run_gate_and_assertions(
+                    result, tested_sha, gate_reuse_data = _phase_run_gate_and_assertions(
                         pr=1,
                         branch="test-branch",
                         worktree=str(pr_worktree),
@@ -118,11 +118,13 @@ with tempfile.TemporaryDirectory() as tmp:
                         config=config,
                         lock_fd_to_inherit=None,
                         cwd=pr_worktree,
+                        base_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        main_worktree=pr_worktree,
                     )
                     test_result(
                         "(d) _phase_run_gate_and_assertions completes",
                         True,
-                        f"result={result}, tested_sha={tested_sha}",
+                        f"result={result}, tested_sha={tested_sha}, gate_reuse_data={gate_reuse_data}",
                     )
 
                     # Check that run_step was called at least once
