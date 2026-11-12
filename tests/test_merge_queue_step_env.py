@@ -109,7 +109,7 @@ with tempfile.TemporaryDirectory() as tmp:
     with patch("workflow.merge_queue.run_step", run_step_mock):
         with patch("workflow.merge_queue.Runner.run_git", return_value="dummy_sha\n"):
             with patch("workflow.merge_queue.ensure_state_dir", return_value=Path(tmp) / "state"):
-                with patch("workflow.merge_queue._is_tree_clean", return_value=True):
+                with patch("workflow.merge_queue.is_tree_clean", return_value=True):
                     result, tested_sha, gate_reuse_data = _phase_run_gate_and_assertions(
                         pr=1,
                         branch="test-branch",

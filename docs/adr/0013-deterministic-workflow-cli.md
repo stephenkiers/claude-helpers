@@ -348,6 +348,8 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 
 ### Amendment 11: `commands.check_minimum` selector, changed-files export, per-key records, and caching contract (2026-11-05, #387)
 
+**Amended (2026-11-12, #491):** the digest-input list below is extended by Amendment 14 (toolchain/lockfile digest), which is the current list.
+
 **Problem:** Minimum checks per PR (ADR-0023 amendment 2026-11-05) require a project-declared `check_minimum` selector, its inputs must be exported for non-cooperating selectors, and records must be per-key (FullKey vs MinimumKey) with distinct cache semantics and no read-modify-write.
 
 **Decision:**
@@ -393,6 +395,8 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 - Kept: `checks validate` and its per-key record cache under `.claude/check-records/` (`FullKey` and `MinimumKey`, the `CHECK_BASE` and `CHECK_CHANGED_FILES` exports, and the eviction rule). `resolve_check_detail` remains the resolver, and `resolve_check_command` remains as a wrapper because a test still calls it. `resolve-check`, `ensure-check` and `record-check-answer` are unchanged.
 
 **Supersedes:** Amendment 11's `checks run` contract (the bullet beginning "`checks run` keeps its CLI contract") and its receipt paragraph (the bullet beginning "**Receipts go through the same boundary**"). The `checks validate` contract, the record cache and the caching contract stay in force.
+
+**Correction (2026-11-12, #491):** the Problem paragraph above says the `/expert-flow` verify step reads the record cache through `checks validate`. That is wrong: verify resolves the command with `checks resolve-check --mode minimum` and never calls `checks validate` (see the ADR-0021 #491 amendment).
 
 **Consequences:** `checks run` and `checks receipt` are no longer subcommands and fail as unknown commands. Any external caller of those commands must move to `checks validate`. No receipt file is written or read; the merge gate reads per-key records only.
 
