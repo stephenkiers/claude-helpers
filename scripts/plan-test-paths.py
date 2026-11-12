@@ -104,7 +104,6 @@ def check_plan(plan_path: Path, is_test_path_func: callable, step_file_paths_fun
         return []
 
     # Find the end of the section (next ## heading or end of text)
-    impl_section_start = impl_start
     next_heading = re.search(r"\n##\s+", text[impl_start + len("## Implementation Steps"):])
     if next_heading:
         impl_end = impl_start + len("## Implementation Steps") + next_heading.start()
@@ -158,10 +157,10 @@ def check_units(units_path: Path, is_test_path_func: callable) -> List[str]:  # 
         raise RuntimeError(f"failed to read {units_path}: {e}")
 
     if "units" not in data:
-        raise RuntimeError(f"units.json missing 'units' key")
+        raise RuntimeError("units.json missing 'units' key")
 
     if not isinstance(data["units"], list):
-        raise RuntimeError(f"units.json 'units' is not a list")
+        raise RuntimeError("units.json 'units' is not a list")
 
     errors: List[str] = []
 
