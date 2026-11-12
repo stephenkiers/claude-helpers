@@ -47,7 +47,7 @@ Include user answers, tied to expert input where relevant.]
 ### Step 1: [Title]
 - **What**: [Description of this step]
 - **Why**: [Rationale — which expert input or user decision drives this]
-- **Files**: [Expected files to touch, if known]
+- **Files**: Expected non-test files to touch, comma-separated, one backtick-quoted path per entry. Never list a test file; tests are a Round 2 deliverable.
 
 ### Step 2: [Title]
 ...
@@ -57,6 +57,9 @@ Include user answers, tied to expert input where relevant.]
 
 ## Testing Strategy
 [What to test and how — informed by expert input. Concrete and testable.]
+
+### Tests (written spec-blind in Round 2)
+Spec statements a spec-blind author can test without reading the implementation. Include the exact expected values and exact strings to assert. Tests are written by the Round 2 spec-blind author (ADR-0019 2026-11-12 amendment).
 
 ## Out of Scope
 [Things explicitly deferred — from cost analysis, user decisions, or Carl's skepticism. State the reason.]
@@ -95,6 +98,7 @@ replacement for the plan.
 - **Risks only include things that weren't fully mitigated** by the approach.
 - **Scope is explicit** — name what is in and what is out, and why.
 - **Testing is concrete** — not vague ("test thoroughly"); specific ("test X with scenario Y").
+- **Test requirements converted to spec statements**: Test requirements written inside steps (for example "pin the golden key first") are converted into spec statements in the "Tests (written spec-blind in Round 2)" subsection, with no red-first ordering. A requirement to change an existing test's assertion is kept as a spec statement and flagged as an existing-test-edit stop.
 
 ---
 
@@ -115,6 +119,8 @@ After writing `{SESSION_DIR}/plan.md`, immediately perform these checks on the p
 5. **Decision Traceability**: For each decision listed in **Decisions Made**, verify a corresponding implementation step exists or it's listed in **Out of Scope**.
 
 6. **Sub-ticket Order (epic mode only)**: When `context.md` contains `EPIC_MODE: true`, verify the plan has a `## Sub-tickets` section, every `depends-on` names only earlier item numbers, and no contributor-named dependency was dropped. When it does not, verify the plan has **no** `## Sub-tickets` section.
+
+7. **Test file and requirement consistency**: No step's Files section names a test file. Every test requirement appears in the "Tests (written spec-blind in Round 2)" subsection under `## Testing Strategy`. The orchestrator enforces this rule by script after synthesis, with one repair dispatch on a hit.
 
 ### Correction Procedure
 

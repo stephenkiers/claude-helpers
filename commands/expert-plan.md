@@ -1009,6 +1009,42 @@ This is a self-check, not an independent audit. The main thread never claims it 
 
 Main thread copies nothing here; subagent writes within its checkpoint dir.
 
+**Plan-time test-file check (enforcing, one bounded repair).** After the synthesize-and-check receipt is validated and `plan.md` exists, run:
+
+```bash
+python3 "$HOME/.claude/scripts/plan-test-paths.py" plan --plan "${SESSION_DIR}/plan.md"
+```
+
+The script exits 0 when the plan's **Implementation Steps** section lists only non-test files in each step's Files line, or 1 when a test file is found, or 2 on error. Tests are written by the Round 2 spec-blind author (ADR-0019 2026-11-12 amendment).
+
+- **Exit 0**: Plan is clean. Proceed to Step 7.
+- **Exit 1 (first hit)**: One bounded repair dispatch. Re-dispatch the synthesize-and-check role once with the same inputs plus a `Repair input` block holding the script's stderr lines verbatim and the instruction: move each listed test path out of that step's Files into the step's "Tests (written spec-blind in Round 2)" section under `## Testing Strategy` as spec statements, and change nothing else. Validate its receipt, then re-run the check. On a first exit 1, re-dispatch synthesis once with the hit lines; a second exit 1 fails the step.
+- **Exit 1 (second hit)**: Plan step fails. In a flow, write the FAILED receipt with Reason `plan-test-paths: <first stderr line>`, `FAILURE_CLASS: other`. Standalone, stop and tell the user which step lists which test file.
+- **Exit 2**: Check error (usage, missing module, invalid JSON). Fail closed. In a flow, write the FAILED receipt with Reason `plan-test-paths: check error: <first stderr line>`, `FAILURE_CLASS: other`.
+
+**After Step 8 repair**: When Step 8 rewrites `plan.md` (if an audit produces findings and corrections are made), re-run the same check before Step 9 Deliver. A hit at this point fails the step directly (same Reason), with no second synthesis dispatch.
+
+```bash
+# Plan-time test-file check
+PLAN_CHECK_EXIT=0
+CHECK_OUTPUT=$(python3 "$HOME/.claude/scripts/plan-test-paths.py" plan --plan "${SESSION_DIR}/plan.md" 2>&1) || PLAN_CHECK_EXIT=$?
+
+if [ "$PLAN_CHECK_EXIT" -eq 1 ]; then
+  # First exit 1: dispatch one bounded repair
+  # [Re-dispatch synthesize-and-check with Repair input block containing CHECK_OUTPUT stderr lines]
+  # [Validate receipt, then re-run check]
+  # [If still exit 1, fail with FAILURE_CLASS: other; if exit 2, fail with check error]
+  printf 'Plan-time check: test file found in step Files. Dispatching repair synthesis...\n'
+elif [ "$PLAN_CHECK_EXIT" -eq 2 ]; then
+  printf 'Plan-time check error: %s\n' "$(printf '%s' "$CHECK_OUTPUT" | head -1)" >&2
+  if [ -n "$FLOW_DIR" ]; then
+    # [Write FAILED receipt with Reason plan-test-paths: check error]
+  fi
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage synthesize-plan --outcome failure --failure-class other 2>/dev/null || true
+  exit 1
+fi
+```
+
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage synthesize-plan --outcome success 2>/dev/null || true
 ```
@@ -1077,6 +1113,25 @@ if [ -f "$SESSION_DIR/audit.md" ]; then
     # [Apply corrections to plan.md, ask user if needed, recheck]
     
     python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage repair-plan --outcome success 2>/dev/null || true
+  fi
+fi
+```
+
+**Plan-time check after Step 8 repair.** When Step 8 has rewritten `plan.md`, re-run the check to ensure a repair did not reintroduce test paths:
+
+```bash
+# Re-check after Step 8 repair (if repairs were made)
+if [ -f "$SESSION_DIR/audit.md" ] && ! grep -q "No findings" "$SESSION_DIR/audit.md"; then
+  PLAN_RECHECK_EXIT=0
+  python3 "$HOME/.claude/scripts/plan-test-paths.py" plan --plan "${SESSION_DIR}/plan.md" 2>&1 || PLAN_RECHECK_EXIT=$?
+  
+  if [ "$PLAN_RECHECK_EXIT" -ne 0 ]; then
+    # A hit after Step 8 repair fails the step directly (no second dispatch)
+    if [ -n "$FLOW_DIR" ]; then
+      # [Write FAILED receipt with Reason plan-test-paths: <first line>]
+    fi
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class other 2>/dev/null || true
+    exit 1
   fi
 fi
 ```
