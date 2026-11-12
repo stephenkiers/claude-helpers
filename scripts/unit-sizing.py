@@ -123,6 +123,38 @@ def extract_files_from_step(step_text: str) -> set:  # type: ignore[type-arg]
     return files
 
 
+def step_file_paths(step_text: str) -> List[str]:
+    """Extract and clean file paths from a step's **Files**: line.
+
+    Builds on extract_files_from_step by further narrowing each entry to remove
+    annotations. For each entry:
+    - If it contains a backtick, keep text up to the first backtick
+    - Otherwise, keep the first whitespace-delimited token
+    - Drop empty results
+
+    Returns a list (preserving order from the original line) of cleaned paths.
+    """
+    raw_files = extract_files_from_step(step_text)
+    if not raw_files:
+        return []
+
+    result: List[str] = []
+    for entry in raw_files:
+        # Find first backtick position
+        backtick_pos = entry.find("`")
+        if backtick_pos >= 0:
+            # Keep text up to the first backtick
+            cleaned = entry[:backtick_pos].strip()
+        else:
+            # Keep first whitespace-delimited token
+            cleaned = entry.split()[0] if entry.split() else ""
+
+        if cleaned:
+            result.append(cleaned)
+
+    return result
+
+
 def build_result(
     kind: str,
     steps: Optional[int],
