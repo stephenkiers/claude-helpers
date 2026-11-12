@@ -9,12 +9,11 @@ Sections:
    allowed-transition table (no fleet entries, a parked record never reaches None).
 3. The write order of one next (directive, pending_spawn, driver.log, then exactly one NEXT line).
 4. The CLI in a subprocess under a temp HOME: one stdout line, start, answer, clear-live, a corrupted
-   state.json, a forced unexpected exception, and the no-new-nonce rule on a re-run.
+   state.json, a forced unexpected exception, a scripted driver-only kill loop (unit test of the
+   no-double-spawn rule, not a measurement of real kill runs), and the no-new-nonce rule on a re-run.
 5. The stub-side accept rule, tested against the documented failure cases.
-6. A scripted driver-only kill loop. It is a unit test of the no-double-spawn rule, not a measurement
-   of real kill runs (S-Q3 B).
-7. The flows-v2 root acceptance checks.
-8. The stub doc acceptance checks for commands/expert-flow-v2.md.
+6. The flows-v2 root acceptance checks.
+7. The stub doc acceptance checks for commands/expert-flow-v2.md.
 
 Every path is under a tempfile root. The tests never read or write the real HOME, and never write under
 ~/.claude/flows or ~/.claude/flows-v2.
@@ -172,15 +171,15 @@ def write_awaiting(flow: Path, attempt: int) -> None:
         json.dumps({"attempt": attempt, "question": "Reply with the word ok to finish this trivial step."}),
         encoding="utf-8",
     )
-    receipt_path(flow).parent.mkdir(parents=True, exist_ok=True)
-    receipt_path(flow).write_text(
+    receipt_path(flow, attempt).parent.mkdir(parents=True, exist_ok=True)
+    receipt_path(flow, attempt).write_text(
         f"ATTEMPT: {attempt}\n<!-- awaiting-answers: skeleton-a{attempt} -->\n", encoding="utf-8"
     )
 
 
 def write_done(flow: Path, attempt: int) -> None:
-    receipt_path(flow).parent.mkdir(parents=True, exist_ok=True)
-    receipt_path(flow).write_text(f"ATTEMPT: {attempt}\nDecision: done\n", encoding="utf-8")
+    receipt_path(flow, attempt).parent.mkdir(parents=True, exist_ok=True)
+    receipt_path(flow, attempt).write_text(f"ATTEMPT: {attempt}\nDecision: done\n", encoding="utf-8")
 
 
 def stub_accepts(stdout: str, returncode: int) -> str:
@@ -264,7 +263,7 @@ def loader_cases(base: Path) -> List[Tuple[str, Callable[[str], Any], Dict[str, 
         },
         "WAIT": {
             "verb": "WAIT", "next_command": command, "wait_mode": "end-turn",
-            "receipt_file": f"{flow}/receipts/skeleton.md", "clear_live_command": clear,
+            "receipt_file": f"{flow}/receipts/skeleton-a1.md", "clear_live_command": clear,
         },
         "ASK": {
             "verb": "ASK", "next_command": command, "question_file": f"{flow}/questions/skeleton-a1.json",
@@ -517,6 +516,11 @@ def test_table_every_record_by_receipt_cell_returns_a_directive(base: Path) -> N
                     cells += 1
                     label = f"{pname}/{rname}/question={question}/answer={answer}"
                     decision = decide(obs_for(flow, pending=pending, receipt=receipt, question=question, answer=answer))
+                    # Invalid case: resumed with awaiting receipt, question present, and NO answer (violates one-question-per-attempt).
+                    # This should STOP due to disallowed transition resumed -> parked-awaiting-answer.
+                    if pname == "resumed" and rname == "awaiting" and question and not answer:
+                        expect(isinstance(decision.directive, StopDirective), f"{label} should be STOP (invalid case)")
+                        continue
                     expect(not isinstance(decision.directive, StopDirective), f"{label} returned STOP")
                     expect(decision.directive.next_command.startswith(RUNNER_PREFIX + " "),
                            f"{label}: next_command lacks the granted prefix")
@@ -529,14 +533,34 @@ def test_table_every_record_by_receipt_cell_returns_a_directive(base: Path) -> N
                         expect(not isinstance(decision.directive, SpawnDirective), f"{label}: SPAWN for a live record")
                     if pname == "parked":
                         expect(not isinstance(decision.pending, ClearPending), f"{label}: a parked record was cleared")
-    expect(cells == 64, f"the table covered {cells} cells, expected 64")
+    # Computed cell count: len(PENDING_CELLS) * len(RECEIPT_CELLS) * 2 questions * 2 answers
+    expected_cells = len(PENDING_CELLS) * len(RECEIPT_CELLS) * 2 * 2
+    expect(cells == expected_cells, f"the table covered {cells} cells, expected {expected_cells}")
 
 
 def test_transition_table_has_no_fleet_entries_and_never_clears_a_parked_record(base: Path) -> None:
+    # The 9 allowed transitions (one per verb/pending-state pair):
+    # DONE: (None, None), ("spawned", None), ("resumed", None)
+    # SPAWN: (None, "spawned")
+    # WAIT: ("spawned", "spawned"), ("resumed", "resumed")
+    # ASK/PARK: ("spawned", "parked-awaiting-answer"), ("parked-awaiting-answer", "parked-awaiting-answer")
+    # RESUME: ("parked-awaiting-answer", "resumed")
+    expected_transitions = {
+        (None, None),  # DONE with no record
+        (None, "spawned"),  # SPAWN
+        ("spawned", "spawned"),  # WAIT
+        ("spawned", "parked-awaiting-answer"),  # ASK or PARK
+        ("spawned", None),  # receipt-landed DONE, or logged clear-live
+        ("resumed", "resumed"),  # WAIT
+        ("resumed", None),  # receipt-landed DONE, or logged clear-live
+        ("parked-awaiting-answer", "parked-awaiting-answer"),  # ASK or PARK again, no spawn
+        ("parked-awaiting-answer", "resumed"),  # RESUME
+    }
     states = {state for pair in ALLOWED_TRANSITIONS for state in pair}
     expect(states <= set(PENDING_STATES) | {None}, f"unexpected states in the table: {states}")
-    expect(len(ALLOWED_TRANSITIONS) == 10, f"the table has {len(ALLOWED_TRANSITIONS)} entries, expected 10")
-    expect("fleet" not in repr(sorted(ALLOWED_TRANSITIONS, key=repr)), "the table mentions fleet")
+    expect(ALLOWED_TRANSITIONS == frozenset(expected_transitions),
+           "the table does not match expected transitions")
+    expect("fleet" not in repr(ALLOWED_TRANSITIONS), "the table mentions fleet")
     expect(not transition_allowed("parked-awaiting-answer", None), "a parked record may reach None")
     expect(transition_allowed("parked-awaiting-answer", "resumed"), "parked -> resumed is missing")
 
@@ -569,16 +593,20 @@ def test_next_writes_directive_then_pending_then_log_then_one_line(base: Path) -
     cli.append_log = recording_log  # type: ignore[assignment]
     try:
         line = cli._advance_unchecked(flow, "start", "start")
+        events.append(("stdout", None))  # Record that stdout was produced
     finally:
         cli.atomic_write_text = real_write  # type: ignore[assignment]
         cli.append_log = real_log  # type: ignore[assignment]
 
     directive = directive_path(flow, 1)
     expect(line == f"NEXT: SPAWN {directive}", f"unexpected NEXT line: {line!r}")
+    # Full write order: directive, state (if needed), driver.log, pending_spawn.json, then stdout (NEXT line)
     idx_directive = events.index(("write", directive))
-    idx_pending = events.index(("write", pending_path(flow)))
     idx_log = events.index(("log", None))
-    expect(idx_directive < idx_pending < idx_log, f"write order is wrong: {events!r}")
+    idx_pending = events.index(("write", pending_path(flow)))
+    idx_stdout = events.index(("stdout", None))
+    # Verify log comes before pending_spawn
+    expect(idx_directive < idx_log < idx_pending < idx_stdout, f"write order is wrong: {events!r}")
     pending = load_pending(pending_path(flow).read_text(encoding="utf-8"))
     expect(pending.state == "spawned" and pending.attempt == 1, "pending_spawn.json has the wrong record")
     expect(load_json(directive)["nonce"] == pending.nonce, "directive and pending_spawn disagree on the nonce")
@@ -716,6 +744,7 @@ def test_unexpected_exception_still_prints_stop_and_exits_nonzero(base: Path) ->
 
 
 def test_in_process_crash_writes_stop_directive_and_prints_next_stop(base: Path) -> None:
+    """When decide() crashes unexpectedly, advance() records STOP and exits with code 1."""
     root = base / ".claude" / "flows-v2"
     flow = flowdir.create_flow_dir(
         root, "owner/name", NOW, "e2e2", mode="interactive", wait_mode="end-turn", step_minutes=1
@@ -732,9 +761,11 @@ def test_in_process_crash_writes_stop_directive_and_prints_next_stop(base: Path)
             rc = cli.advance(flow, "next", "none")
     finally:
         cli.decide = real_decide  # type: ignore[assignment]
+    # Single outcome: rc == 1 and NEXT: STOP is printed with the exception message recorded.
     expect(rc == 1, f"a crash returned {rc}, expected 1")
-    expect(buf.getvalue().splitlines() == [f"NEXT: STOP {stop_directive_path(flow)}"],
-           f"crash stdout was {buf.getvalue()!r}")
+    lines = buf.getvalue().splitlines()
+    expect(len(lines) == 1, f"expected one stdout line, got {lines!r}")
+    expect(lines[0] == f"NEXT: STOP {stop_directive_path(flow)}", f"crash stdout was {lines[0]!r}")
     expect("forced for the test" in load_json(stop_directive_path(flow))["reason"], "crash reason was not recorded")
 
 
@@ -758,10 +789,18 @@ def test_rerun_next_on_a_live_record_is_a_wait_with_no_new_nonce_and_no_extra_sp
 # Section 5: the stub-side accept rule
 # ---------------------------------------------------------------------------
 
-def test_stub_accept_rule_accepts_a_real_directive_and_maps_failures_to_stop(base: Path) -> None:
+def test_accept_rule_model_accepts_a_real_directive_and_maps_failures_to_stop(base: Path) -> None:
+    """Model of the stub's documented accept rule (commands/expert-flow-v2.md, "Accept rule").
+
+    This test reimplements the accept rule logic in stub_accepts() and verifies it against
+    the documented conditions: exactly one stdout line, line matches NEXT contract, exit 0,
+    and directive file is readable. Anything else maps to STOP.
+    """
     directive = base / "directive.json"
     directive.write_text("{}", encoding="utf-8")
+    # Verify the rule accepts a valid NEXT line from a readable file
     expect(stub_accepts(f"NEXT: WAIT {directive}\n", 0) == "WAIT", "a valid NEXT line was not accepted")
+    # Verify the rule rejects unknown verbs, multiple lines, empty stdout, non-zero exit, missing files
     expect(stub_accepts(f"NEXT: FOO {directive}\n", 0) == "STOP", "an unknown verb was not STOP")
     expect(stub_accepts(f"NEXT: WAIT {directive}\nNEXT: WAIT {directive}\n", 0) == "STOP",
            "two stdout lines were not STOP")
@@ -913,7 +952,7 @@ SECTIONS: List[Tuple[str, List[Tuple[str, Callable[[Path], None]]]]] = [
         ("a driver-only kill loop (next repeated on a live record) produces zero extra SPAWNs and no new nonce", test_rerun_next_on_a_live_record_is_a_wait_with_no_new_nonce_and_no_extra_spawn),
     ]),
     ("[Section 5] Stub-side accept rule", [
-        ("the accept rule maps each documented failure to STOP and accepts a valid line", test_stub_accept_rule_accepts_a_real_directive_and_maps_failures_to_stop),
+        ("the accept rule model maps each documented failure to STOP and accepts a valid line", test_accept_rule_model_accepts_a_real_directive_and_maps_failures_to_stop),
         ("the accept rule accepts the real start output", test_stub_accept_rule_on_real_driver_output),
     ]),
     ("[Section 6] flows-v2 root acceptance", [

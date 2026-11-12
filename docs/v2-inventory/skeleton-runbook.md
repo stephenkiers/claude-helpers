@@ -30,7 +30,7 @@ so a smaller run is labelled as such rather than padded.
 - **Step duration: short** (60 seconds recommended)
 - **Purpose**: Covers exactly-once execution, one park/answer cycle, and RESUME in the same session
 
-**Pre-check**: Before running the main R1 loop, verify that heartbeats arrive about every 60 seconds
+**Pre-check** (run once before the main R1 loop): Verify that heartbeats arrive about every 60 seconds
 in interactive mode. This baseline is needed to detect if later stalls are due to a kill vs. agent
 or harness tooling.
 
@@ -103,19 +103,22 @@ the kill point and re-run point.
 6. Record the final heartbeat timestamp and the session end time
 7. If the heartbeat reaches the final `done` line, record as `>= step_minutes (censored)`
 
+**Note on `fleet.py wait` snapshot race**: `fleet.py wait` reads the receipt file to detect the decision marker or awaiting marker. If the file is being written at the moment `fleet.py` reads it, the read may see an incomplete write (the file may not be flushed yet). This is known to the skeleton and will be addressed in Layer 1 with flock or similar atomicity guarantees. For now, if you observe spurious `wait-timeout` events when the heartbeat is progressing normally, this race may be the cause.
+
 **Evidence to collect**: flow dir, heartbeat count, survival time (censored or interval), which event
 ended the WAIT, `allowedTools` grant used or permission mode, model version, date.
 
-### R5: RESUME After a Park in Headless Mode
+### R5: RESUME After a Park in Headless Mode (N = 3 or actual count if fewer)
 
 - **Purpose**: Measure RESUME provenance after a headless park (row b of RESUME evidence)
 
 **Procedure**:
 1. Start a headless session (same permission setup as R3 and R4)
 2. Run the stub, supply the answer, and let it park (PARK verb, not ASK)
-3. In a new session or the same one, call `start --flow <flow dir>` to resume
-4. The stub will RESUME the agent
-5. Record the resuming session's ID
+3. Record the PARKed flow dir and the original session ID
+4. In a new session or the same one, call `start --flow <flow dir> --mode headless --wait-mode end-turn --step-minutes 15` to resume
+5. The stub will RESUME the agent
+6. Record the resuming session's ID
 
 **Evidence to collect**: flow dir, original session ID, resuming session ID, RESUME provenance.
 
@@ -134,18 +137,24 @@ looks like an agent death. For R3, R4, and R5:
 
 **Option 1: Explicit `--allowedTools` set**
 
-Pass `--allowedTools` covering the stub's Bash grant and the `general-purpose` agent's `Read`,
-`Write` and `Bash` use under `~/.claude/flows-v2/`:
+Pass these `--allowedTools` flags (one per grant):
 
 ```
---allowedTools \
-  'Bash(python3 "$HOME/.claude/scripts/flow_driver/__main__.py":*)', \
-  'Bash(python3 "$HOME/.claude/scripts/fleet.py" wait:*)', \
-  'Bash(cd ~ && mkdir -p):*' \
-  'Read' \
-  'Write(~/.claude/flows-v2/*:*)' \
-  'Task'
+--allowedTools 'Bash(python3 "$HOME/.claude/scripts/flow_driver/__main__.py":*)' \
+  --allowedTools 'Bash(python3 "$HOME/.claude/scripts/fleet.py" wait:*)' \
+  --allowedTools 'Bash(echo >> "$HOME/.claude/flows-v2/*/spawns.jsonl")' \
+  --allowedTools 'Read' \
+  --allowedTools 'Write(~/.claude/flows-v2/*:*)' \
+  --allowedTools 'Task'
 ```
+
+Rationale per grant:
+- `Bash(python3 "$HOME/.claude/scripts/flow_driver/__main__.py":*)` — run driver commands
+- `Bash(python3 "$HOME/.claude/scripts/fleet.py" wait:*)` — run fleet wait command
+- `Bash(echo >> "$HOME/.claude/flows-v2/*/spawns.jsonl")` — append to the agent's spawn evidence file
+- `Read` — read flow files and directives
+- `Write(~/.claude/flows-v2/*:*)` — write state, directives, pending records, logs
+- `Task` — spawn agents to run the prompts
 
 **Option 2: Permission mode**
 
@@ -162,7 +171,7 @@ For every run (R1–R5), collect these files and facts:
 
 1. **Flow directory**: absolute path (will be scrubbed to `<worktree>` or `~/.claude/flows-v2/…`)
 2. **`driver.log`**: append-only JSONL, contains every transition and verb
-3. **`spawns.jsonl`**: agent's evidence line: `{nonce, step, attempt, utc, prompt_file}`
+3. **`spawns.jsonl`**: agent's evidence line: `{nonce, step, attempt, utc, prompt_file}` (the `utc` timestamp is agent-written, not driver-written)
 4. **`heartbeat-a*` file**: one per attempt, timestamped lines with final `done`
 5. **Subagent transcript count**: number of transcript files for this session under the harness's
    project transcript directory
@@ -212,6 +221,17 @@ seconds.
 - **ASK or PARK**: `driver.log` emissions of ASK or PARK in excess of the `--after` events that
   called for one.
 - **Any verb with no counted evidence**: `NOT MEASURED`.
+
+## PR Guidance
+
+When opening a PR with the `skeleton-findings.md` results, reference the Sub-issue S (#484) in the PR body without a closing keyword. Use one of these forms:
+
+- "Addresses part of #484"
+- "Progress on #484"
+- "Related to #484"
+- "Partial results for #484"
+
+**Do not use any GitHub closing keyword** next to #484 in the PR title or body, as this PR should not close the issue (only the final Layer 1 PR will do that).
 
 ## Cleanup (S-D5)
 
