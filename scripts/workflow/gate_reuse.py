@@ -125,7 +125,8 @@ def _decide(
     from .merge_queue import is_tree_clean
 
     # 1. Kill switch. Reuse stays enabled only for the exact boolean False (the default when the key is absent).
-    # Any other value, including a malformed one such as "yes", is a forced miss.
+    # Any other value forces a miss. A non-boolean is rejected when merge-queue.json loads (validate_config_data),
+    # so this branch is the second line of defence for a config built without that validation.
     if config.gate_reuse_disabled is not False:
         return Miss(
             "disabled",

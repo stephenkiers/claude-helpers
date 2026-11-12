@@ -66,6 +66,11 @@ from workflow.merge_queue import (
     _UNEXPECTED_MISSES,
     _phase_run_gate_and_assertions,
     _with_gate_fields,
+    _merge_pr,
+    MergePROutcome,
+    Runner,
+    read_pr_result,
+    write_result_json,
 )
 from workflow.models import CHECK_RECORD_SCHEMA_VERSION, CheckRecord, FullKey, MinimumKey
 
@@ -330,7 +335,18 @@ with tempfile.TemporaryDirectory() as tmp:
         f"result={result}"
     )
 
-print("[Test 11] MergeResult carries gate_reuse provenance from Phase 7 (reused and miss)")
+def _round_trip_result(result, state, cwd):
+    """write_result_json into a temp state dir, then read result-<pr>.json back with read_pr_result."""
+    (state / "results").mkdir(parents=True, exist_ok=True)
+    with ExitStack() as stack:
+        stack.enter_context(patch("workflow.merge_queue.ensure_state_dir", return_value=state))
+        stack.enter_context(patch("workflow.merge_queue.get_state_dir", return_value=state))
+        stack.enter_context(patch("workflow.merge_queue.prune_old_results"))
+        write_result_json(result)
+        return read_pr_result(result.pr, cwd=cwd)
+
+
+print("[Test 11] MergeResult gate_reuse provenance from Phase 7 (reused and miss) survives a result-file round trip")
 ts = "2026-11-12T00:00:00+00:00"
 reuse_outcome = Reuse(
     record_name="rec-name",
@@ -342,27 +358,35 @@ reuse_outcome = Reuse(
     ),
 )
 base_result = MergeResult(outcome=MergeOutcome.REFUSED, pr=42, branch="feature", worktree="wt")
-reused_result = _with_gate_fields(base_result, _gate_reuse_fields(reuse_outcome, True, ts))
-test_result(
-    "MergeResult: reused gate sets gate_reuse, record, tree, digest and seen flag",
-    reused_result.gate_reuse == "reused"
-    and reused_result.gate_reuse_record == "rec-name"
-    and reused_result.gate_reuse_tree == "c" * 40
-    and reused_result.gate_reuse_digest == "d" * 64
-    and reused_result.gate_reuse_full_record_seen is True
-    and reused_result.gate_reuse_decided_at == ts,
-    f"reused_result={reused_result}"
-)
-miss_result = _with_gate_fields(base_result, _gate_reuse_fields(Miss("no-record", "none"), False, ts))
-test_result(
-    "MergeResult: a miss sets miss:<reason> and clears the record fields",
-    miss_result.gate_reuse == "miss:no-record"
-    and miss_result.gate_reuse_record is None
-    and miss_result.gate_reuse_tree is None
-    and miss_result.gate_reuse_digest is None
-    and miss_result.gate_reuse_full_record_seen is False,
-    f"miss_result={miss_result}"
-)
+with tempfile.TemporaryDirectory() as tmp:
+    state = Path(tmp) / "state"
+    reused_read = _round_trip_result(
+        _with_gate_fields(base_result, _gate_reuse_fields(reuse_outcome, True, ts)), state, Path(tmp),
+    )
+    test_result(
+        "MergeResult: reused gate is read back from result-<pr>.json with record, tree, digest, seen flag and decided_at",
+        reused_read is not None
+        and reused_read[0].gate_reuse == "reused"
+        and reused_read[0].gate_reuse_record == "rec-name"
+        and reused_read[0].gate_reuse_tree == "c" * 40
+        and reused_read[0].gate_reuse_digest == "d" * 64
+        and reused_read[0].gate_reuse_full_record_seen is True
+        and reused_read[0].gate_reuse_decided_at == ts,
+        f"read={reused_read}",
+    )
+    miss_read = _round_trip_result(
+        _with_gate_fields(base_result, _gate_reuse_fields(Miss("no-record", "none"), False, ts)), state, Path(tmp),
+    )
+    test_result(
+        "MergeResult: a miss is read back as miss:<reason> with the record fields cleared",
+        miss_read is not None
+        and miss_read[0].gate_reuse == "miss:no-record"
+        and miss_read[0].gate_reuse_record is None
+        and miss_read[0].gate_reuse_tree is None
+        and miss_read[0].gate_reuse_digest is None
+        and miss_read[0].gate_reuse_full_record_seen is False,
+        f"read={miss_read}",
+    )
 
 print("[Test 12] MergeResult gate_reuse fields default to None; grammar is enforced")
 test_result(
@@ -378,6 +402,15 @@ test_result(
 test_result(
     "MergeResult: no gate fields leaves the result unchanged",
     _with_gate_fields(base_result, {}) is base_result,
+)
+with tempfile.TemporaryDirectory() as tmp:
+    default_read = _round_trip_result(base_result, Path(tmp) / "state", Path(tmp))
+test_result(
+    "MergeResult: default gate fields are read back from the result file as None",
+    default_read is not None
+    and default_read[0].gate_reuse is None
+    and default_read[0].gate_reuse_full_record_seen is None,
+    f"read={default_read}",
 )
 rejected = None
 try:
@@ -795,7 +828,7 @@ with tempfile.TemporaryDirectory() as tmp:
     for call_idx, call in enumerate(run_step.call_args_list):
         test_result(
             f"Phase 7 no-scratch guard: call {call_idx + 1} has no env",
-            "env" not in call.kwargs and len(call.args) < 6,
+            call.kwargs.get("env") is None and call.kwargs.get("settings") is None and len(call.args) <= 5,
             f"kwargs={sorted(call.kwargs)} args={len(call.args)}",
         )
 
@@ -920,16 +953,18 @@ print("[Test 34] decide_gate_reuse: kill switch False is not a disable; a malfor
 with tempfile.TemporaryDirectory() as tmp:
     worktree = Path(tmp) / "wt"
     worktree.mkdir()
-    off_result = decide_gate_reuse(
-        config=MergeQueueConfig(base="main", steps=[Step(cmd="true")], gate_reuse_disabled=False),
-        worktree=worktree,
-        main_worktree=worktree,
-        tested_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        base_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    off_work = _fixture_with_check(Path(tmp), "true")
+    off_tested = _git(off_work, "rev-parse", "HEAD")
+    off_base = _git(off_work, "rev-parse", "main")
+    off_result = _decide(
+        MergeQueueConfig(base="main", steps=[Step(cmd="true")], gate_reuse_disabled=False),
+        off_work,
+        off_tested,
+        off_base,
     )
     test_result(
-        "decide_gate_reuse: kill switch False does not produce a 'disabled' miss",
-        not (isinstance(off_result, Miss) and off_result.reason == "disabled"),
+        "decide_gate_reuse: kill switch False reaches the record lookup (a real no-record miss)",
+        isinstance(off_result, Miss) and off_result.reason == "no-record",
         f"result={off_result}",
     )
     malformed_result = decide_gate_reuse(
@@ -1046,6 +1081,66 @@ with tempfile.TemporaryDirectory() as tmp:
         "trailer_gate_reused: False for a commit with no Merge-Gate trailer",
         trailer_gate_reused(plain_commit, cwd=work) is False,
     )
+
+# 39 | overlaps: 8, 10 (lookup-level only; this adds the decide_gate_reuse mapping)
+print("[Test 39] decide_gate_reuse: records-unsafe (the records directory is a symlink, real fixture)")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _fixture_with_check(Path(tmp), "true")
+    # The fixture's .claude/.gitignore lists check-records/, which is directory-only and does not match a
+    # symlink. Exclude the name locally so the symlink leaves the tree clean and the decision reaches the lookup.
+    exclude = work / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    with exclude.open("a") as f:
+        f.write("check-records\n")
+    fake_target = Path(tmp) / "fake"
+    fake_target.mkdir()
+    (work / ".claude" / "check-records").symlink_to(fake_target)
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="true")])
+    tested_sha = _git(work, "rev-parse", "HEAD")
+    base_sha = _git(work, "rev-parse", "main")
+    result = _decide(config, work, tested_sha, base_sha)
+    test_result(
+        "decide_gate_reuse: records-unsafe",
+        isinstance(result, Miss) and result.reason == "records-unsafe",
+        f"result={result}",
+    )
+
+# 40 | overlaps: 30, 38 (builder and reader only; this adds the _merge_pr call)
+print("[Test 40] _merge_pr: the body it sends carries gate=reused only for a reused gate, read back from a commit")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _setup_git_repo(Path(tmp))
+    tested_sha = _git(work, "rev-parse", "HEAD")
+    base_sha = _git(work, "rev-parse", "main")
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="true")])
+
+    def _pr_view(pr, fields, cwd=None):
+        if "state" in fields:
+            return {"state": "MERGED"}
+        return {"headRefOid": tested_sha, "mergeable": "MERGEABLE", "title": "Feature"}
+
+    for flag in (True, False):
+        run_gh = MagicMock(return_value="")
+        with ExitStack() as stack:
+            stack.enter_context(patch("workflow.merge_queue.git.pr_view_json", side_effect=_pr_view))
+            stack.enter_context(patch("workflow.merge_queue.Runner.run_gh", run_gh))
+            outcome = _merge_pr(42, tested_sha, base_sha, config, cwd=work, gate_reused=flag)
+        args = run_gh.call_args.args[0]
+        body = args[args.index("--body") + 1]
+        commit = _git(work, "commit-tree", _git(work, "rev-parse", "HEAD^{tree}"), "-p", base_sha, "-m", body)
+        expected_last = f"Merge-Gate: merge-queue tested-base={base_sha} tested-head={tested_sha}"
+        if flag:
+            expected_last += " gate=reused"
+        test_result(
+            f"_merge_pr gate_reused={flag}: the merge succeeds and the sent body ends with the expected trailer",
+            outcome == MergePROutcome.SUCCESS and body.splitlines()[-1] == expected_last,
+            f"outcome={outcome} last={body.splitlines()[-1]!r}",
+        )
+        test_result(
+            f"_merge_pr gate_reused={flag}: the commit reads back as reused={flag}",
+            trailer_gate_reused(commit, cwd=work) is flag
+            and parse_trailer(commit, cwd=work) == (base_sha, tested_sha),
+            f"reused={trailer_gate_reused(commit, cwd=work)}",
+        )
 
 print()
 h.summarize_and_exit()

@@ -27,7 +27,8 @@ analysis; the queue should catch it automatically.
 
 3. **Testing against the exact base:** Inside the lock, the queue fetches `origin/<base>`, runs the
    merge gate against `origin/<base>`, and verifies the base has not moved since the fetch. Only then
-   does it push and merge. This closes the landing-base integration gap.
+   does it push and merge. This closes the landing-base integration gap. *(Amended by #491: when a
+   passing full check record covers the exact tree, the gate steps are skipped; see the #491 amendment.)*
 
 4. **Unverified-main detection:** If the base branch has untrailered commits (showing it may not be
    in a trusted state), the queue runs the main gate in a scratch worktree before proceeding. A
@@ -49,6 +50,7 @@ analysis; the queue should catch it automatically.
    `/shipit`'s `--force-with-lease` push (confirmation-gated via the Ask block in a flow), and
    `/expert-rebase`'s `--force-with-lease` push (confirmation-gated for the branch being rebased).
    All four use `--force-with-lease` (never bare `--force`) and never inherit from `git config`.
+   *(Amended by #491: a gate satisfied by a tree-keyed full-mode record counts as "full gate passed"; see the #491 amendment.)*
 
 7. **Parallel mutation seam:** This module's `Runner.run_git`/`Runner.run_gh` are a separate, self-audited
    choke point for merge-queue mutations — they do not go through `scripts/workflow/mutations.py`'s
@@ -165,6 +167,8 @@ shas were tested:
 ```
 Merge-Gate: merge-queue tested-base=<40hex> tested-head=<40hex>
 ```
+
+*(Amended by #491: a reused gate appends ` gate=reused`; see the #491 amendment.)*
 
 This trailer is **provenance against accidents**, not a hostile committer:
 
@@ -456,22 +460,24 @@ top of the base allowlist.
 
 **The six guards.** Every guard is unconditional, and no config can relax them. They run in this order, and the first failure wins:
 
-1. **Kill switch.** `gate_reuse_disabled` in `merge-queue.json` forces a miss for any value other than the exact boolean `false` (absent counts as `false`), so a malformed value such as `"yes"` also misses. The kill switch can only force a miss. It is not a second path: a miss always runs the gate steps.
+1. **Kill switch.** `gate_reuse_disabled` in `merge-queue.json` forces a miss for any value other than the exact boolean `false` (absent counts as `false`). A non-boolean value such as `"yes"` is rejected when `merge-queue.json` loads (`validate_config_data`), so the config load fails and the queue does not run with it; the forced miss in `decide_gate_reuse` is the second line of defence for a config built without that validation. The kill switch can only force a miss. It is not a second path: a miss always runs the gate steps.
 2. **Single step.** The queue must have exactly one step, checked against the raw config count with no entries dropped while loading (`steps_dropped == 0`). Multi-step queues always run their steps.
 3. **Command.** The step's `cmd` must be byte-equal to the resolved full check command, with no normalisation, and its `timeout_secs` must equal the effective step timeout (through the digest's run-timeout input).
 4. **Tracked-state refusal.** `.claude/repo-cache.json`, `.claude/project.yaml` and any path under `.claude/check-record*` must not be tracked at `tested_sha`. The check reads the tested commit through `git ls-tree`, not ignore rules, so a PR that force-adds a forged passing record, or a tracked config, is refused.
-5. **Clean tree and tree equality.** The PR worktree must be clean, and `worktree_tree == tested_sha^{tree}`. Both are checked after the rebase-or-skip decision and again immediately before the force-push (W2).
-6. **Fail closed.** Any exception is a miss (`error`), never a skip. A fetch failure of `origin/<base>` is `stale-base`. A symlinked records directory or record file is `records-unsafe`, which is a miss.
+5. **Clean tree and tree equality.** The PR worktree must be clean, and `worktree_tree == tested_sha^{tree}`. Both are checked inside the decision (guards 5 and 6), after the rebase-or-skip decision. After the gate, or the skipped gate, Phase 7 re-asserts that HEAD equals `tested_sha` and the tree is clean; on a reuse it also re-checks `HEAD^{tree}` against the record's tree. All of this runs before the push.
+6. **Fail closed.** Any exception is a miss (`error`), never a skip. A fetch failure of `origin/<base>` is `error`, an unexpected-bucket event under the correctness rule below. A symlinked records directory or record file is `records-unsafe`, which is a miss.
 
 The reasons are the closed `MissReason` set in `gate_reuse.py`: `disabled`, `steps-unmappable`, `command-mismatch`, `tracked-state`, `dirty-tree`, `tree-mismatch`, `stale-base`, `digest-uncomputable`, `records-unsafe`, `record-unparseable`, `minimum-record-only`, `digest-mismatch`, `no-record`, `audit-write-failed` and `error`. The tests cover one case per reason, including a PR that ships a forged tracked record.
 
 **Audit before skip.** On `Reuse`, the queue appends a `gate_reused` event to `queue.jsonl` (record name, `written_at`, tree, `full_digest`, `tested_sha`) and prints a stderr line before the step loop is skipped. If that append raises, the decision becomes `miss:audit-write-failed` and the steps run. Phase 8 (push), Phase 9 (base unchanged) and the post-gate HEAD and clean-tree assertions run on both paths. On the reuse path the queue also re-checks `HEAD^{tree}` against the record's tree before pushing; a failure kicks back and never pushes. On a miss, a `gate_reuse_miss` event is appended best-effort; if that append fails, the reason goes to stderr and the steps still run.
 
+**"Reused" means decided, not final.** A kickback after Phase 7 (the post-gate HEAD, tree or tree re-check, the push, or the base check) keeps `gate_reuse: reused` in the result, because the decision was made and recorded before the kickback. `gate_reuse` records whether a record satisfied the gate, not whether the PR landed. The queue code relies on this reading (`_gate_reuse_fields`).
+
 **Force-push carve-out and the `Merge-Gate:` trailer (supersedes the earlier plan ruling that the trailer is unchanged).** A gate satisfied by a tree-keyed full-mode record counts as "full gate passed" for the force-push carve-out (Decision 6). A reused gate is marked in the trailer: when a record satisfied the gate, the queue writes `Merge-Gate: merge-queue tested-base=<40hex> tested-head=<40hex> gate=reused`. A gate that ran its steps writes the unchanged trailer. `parse_trailer` returns `(tested_base, tested_head)` for both forms, and `trailer_gate_reused` reads the marker alone. Provenance also lives in `result-<pr>.json` (`gate_reuse`, `gate_reuse_record`, `gate_reuse_tree`, `gate_reuse_digest`, `gate_reuse_full_record_seen`, `gate_reuse_decided_at`) and in `queue.jsonl`.
 
 **Records are timeless (no age bound).** A passing record carries `written_at`, but the queue never compares it with the clock. The guards prove that tree, command, toolchain digest and base ancestry match. They do not prove that a check depending on date, network, credentials or gitignored files would still pass today, so a non-hermetic check can pass stale. This is accepted: the controls are the hit-rate telemetry (`merge_queue status`) and the kill switch. A `gate_reuse_max_age_secs` bound with a `record-too-old` reason is the option if telemetry shows drift; it is not built.
 
-**Toolchain digest limits.** The digest (ADR-0013 Amendment 14) covers the lockfiles, the deps stamp, and the `python3` and `node` versions. It omits ruff, mypy, just and shellcheck. A check that runs those tools is keyed without their versions, so an upgrade to one of them alone can leave a stale record matching.
+**Toolchain digest limits.** The digest (ADR-0013 Amendment 14) covers the manifest files (`package.json`, the table lockfiles, the install-config files, and every file under `.yarn/releases/`), the deps stamp's install command and hashes, and the `python3` and `node` versions. It omits ruff, mypy, just and shellcheck. A check that runs those tools is keyed without their versions, so an upgrade to one of them alone can leave a stale record matching.
 
 **`_main_worktree_of` limitation.** Phase 7 resolves the main worktree through the first-entry `_main_worktree_of` rule in `merge_queue.py`. The primary-checkout work in #472 and #473 removes that rule. Until it lands, this amendment depends on the first-entry rule, and the #472/#473 change must reuse the primary resolver at that call site.
 

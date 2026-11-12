@@ -100,7 +100,7 @@ class MergeQueueConfig:
     scratch_env_strip: List[str] = field(default_factory=lambda: list(SCRATCH_ENV_STRIPPED_VARS))
     scratch_env: Dict[str, str] = field(default_factory=dict)
     steps_dropped: int = 0  # Raw entries in "steps" that from_dict could not normalise (#491)
-    gate_reuse_disabled: bool = False  # Kill switch for queue-side gate reuse; any value but False disables it (#491)
+    gate_reuse_disabled: bool = False  # Kill switch for queue-side gate reuse; True disables it. Non-bool is rejected at load (#491)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization, converting Step objects to dicts."""
@@ -2015,8 +2015,8 @@ def _gate_reuse_fields(outcome: GateReuse, full_record_seen: Optional[bool], dec
     """
     The gate_reuse MergeResult fields for one decision (#491).
 
-    "reused" means decided, not final: a kickback after Phase 7 keeps this value in the result (see #4 in the
-    ADR-0021 amendment). Only the gate's own outcome is final.
+    "reused" means decided, not final: a kickback after Phase 7 keeps this value in the result (see the
+    "reused means decided, not final" paragraph in the ADR-0021 #491 amendment). Only the gate's own outcome is final.
     """
     if isinstance(outcome, Reuse):
         return {
