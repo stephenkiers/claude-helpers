@@ -68,7 +68,6 @@ from workflow.merge_queue import (
     _with_gate_fields,
     _merge_pr,
     MergePROutcome,
-    Runner,
     read_pr_result,
     write_result_json,
 )
