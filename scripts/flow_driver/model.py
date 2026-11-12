@@ -11,7 +11,7 @@ import dataclasses
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Dict, FrozenSet, Literal, NoReturn, Optional, Tuple, TypeVar, Union
+from typing import Any, ClassVar, Dict, FrozenSet, Literal, NoReturn, Optional, Tuple, TypeVar, Union, get_args
 
 DRIVER_FORMAT = "skeleton"
 RUNNER_PREFIX = 'python3 "$HOME/.claude/scripts/flow_driver/__main__.py"'
@@ -20,7 +20,7 @@ GENERAL_PURPOSE_AGENT = "general-purpose"
 STOP_DIRECTIVE_NAME = "skeleton-stop.json"
 
 Verb = Literal["SPAWN", "RESUME", "WAIT", "ASK", "PARK", "STOP", "DONE"]
-VERBS: Tuple[Verb, ...] = ("SPAWN", "RESUME", "WAIT", "ASK", "PARK", "STOP", "DONE")
+VERBS: Tuple[Verb, ...] = get_args(Verb)  # type: ignore[assignment]
 _VERB_BY_NAME: Dict[str, Verb] = {verb: verb for verb in VERBS}
 
 
@@ -39,16 +39,7 @@ AfterEvent = Literal[
     "notification",
     "human-continue",
 ]
-AFTER_EVENTS: Tuple[AfterEvent, ...] = (
-    "start",
-    "spawn-launched",
-    "resume-sent",
-    "resume-failed",
-    "wait-settled",
-    "wait-timeout",
-    "notification",
-    "human-continue",
-)
+AFTER_EVENTS: Tuple[AfterEvent, ...] = get_args(AfterEvent)  # type: ignore[assignment]
 _AFTER_BY_NAME: Dict[str, AfterEvent] = {event: event for event in AFTER_EVENTS}
 
 
@@ -62,15 +53,16 @@ def parse_after(raw: Optional[str]) -> Union[AfterEvent, Literal["none", "unreco
 Mode = Literal["interactive", "headless"]
 WaitMode = Literal["end-turn", "foreground"]
 PendingState = Literal["spawned", "parked-awaiting-answer", "resumed"]
-MODES: Tuple[Mode, ...] = ("interactive", "headless")
-WAIT_MODES: Tuple[WaitMode, ...] = ("end-turn", "foreground")
-PENDING_STATES: Tuple[PendingState, ...] = ("spawned", "parked-awaiting-answer", "resumed")
+MODES: Tuple[Mode, ...] = get_args(Mode)  # type: ignore[assignment]
+WAIT_MODES: Tuple[WaitMode, ...] = get_args(WaitMode)  # type: ignore[assignment]
+PENDING_STATES: Tuple[PendingState, ...] = get_args(PendingState)  # type: ignore[assignment]
 _MODE_BY_NAME: Dict[str, Mode] = {mode: mode for mode in MODES}
 _WAIT_MODE_BY_NAME: Dict[str, WaitMode] = {mode: mode for mode in WAIT_MODES}
 _PENDING_BY_NAME: Dict[str, PendingState] = {state: state for state in PENDING_STATES}
 
 # The only legal (previous, new) pending states. decide() checks every decision against this table, so
 # a parked record can never reach None (no clear-live of a parked record, and decide never clears one).
+# One question per attempt: spawned -> parked on the first question, parked -> resumed on the answer.
 ALLOWED_TRANSITIONS: FrozenSet[Tuple[Optional[PendingState], Optional[PendingState]]] = frozenset(
     {
         (None, None),  # DONE with no record
@@ -79,7 +71,6 @@ ALLOWED_TRANSITIONS: FrozenSet[Tuple[Optional[PendingState], Optional[PendingSta
         ("spawned", "parked-awaiting-answer"),  # ASK or PARK
         ("spawned", None),  # receipt-landed DONE, or logged clear-live
         ("resumed", "resumed"),  # WAIT
-        ("resumed", "parked-awaiting-answer"),  # ASK or PARK after a second question
         ("resumed", None),  # receipt-landed DONE, or logged clear-live
         ("parked-awaiting-answer", "parked-awaiting-answer"),  # ASK or PARK again, no spawn
         ("parked-awaiting-answer", "resumed"),  # RESUME
@@ -248,8 +239,8 @@ def answer_path(flow: Path, attempt: int) -> Path:
     return flow / "answers" / f"skeleton-a{attempt}.json"
 
 
-def receipt_path(flow: Path) -> Path:
-    return flow / "receipts" / "skeleton.md"
+def receipt_path(flow: Path, attempt: int) -> Path:
+    return flow / "receipts" / f"skeleton-a{attempt}.md"
 
 
 def _check_loaded_object(data: object, what: str) -> Dict[str, Any]:
@@ -328,12 +319,31 @@ def load_state(text: str) -> StateRecord:
 
 
 def load_pending(text: str) -> PendingSpawn:
+    """Load and validate the pending_spawn.json record.
+
+    Raises:
+        SkeletonLoadError: if the JSON is malformed, missing a required field, has a wrong type,
+            attempt < 1, nonce is empty, step != "skeleton", or state is not a valid PendingState.
+        RecursionError: if JSON decoding exceeds the recursion limit.
+    """
     what = "pending_spawn.json"
-    obj = _load_object(text, what)
+    try:
+        obj = _load_object(text, what)
+    except RecursionError as exc:
+        raise SkeletonLoadError(f"{what}: JSON recursion limit exceeded") from exc
+    step = _str(obj, "step", what)
+    attempt = _int(obj, "attempt", what)
+    nonce = _str(obj, "nonce", what)
+    if attempt < 1:
+        raise SkeletonLoadError(f"{what}: 'attempt' must be at least 1")
+    if not nonce:
+        raise SkeletonLoadError(f"{what}: 'nonce' must not be empty")
+    if step != SKELETON_STEP:
+        raise SkeletonLoadError(f"{what}: 'step' must be {SKELETON_STEP!r}, got {step!r}")
     return PendingSpawn(
-        step=_str(obj, "step", what),
-        attempt=_int(obj, "attempt", what),
-        nonce=_str(obj, "nonce", what),
+        step=step,
+        attempt=attempt,
+        nonce=nonce,
         state=_pick(obj, "state", what, _PENDING_BY_NAME),
     )
 

@@ -4,6 +4,11 @@ Pure transition function for the v2 skeleton driver (Step 3, S-Q1 A, v2 plan Q5 
 `decide` performs no I/O. The CLI gathers an Observation at the edge (validated state and pending record,
 the parsed receipt, the question and answer presence, and a fresh nonce), calls decide, and then writes the
 result. The rules are a closed list; each one has a test case.
+
+Verb/transition pairing: Each verb corresponds to a pending state transition (or no change). SPAWN takes
+the pending from None to "spawned"; ASK or PARK takes "spawned"/"resumed" to "parked-awaiting-answer";
+RESUME takes "parked-awaiting-answer" to "resumed"; WAIT keeps the current pending; DONE clears pending to None.
+The allowed transitions are checked by _checked() against ALLOWED_TRANSITIONS in model.py.
 """
 
 import re
@@ -32,6 +37,7 @@ from .model import (
     StopDirective,
     WaitDirective,
     answer_path,
+    assert_never,
     prompt_path,
     question_path,
     receipt_path,
@@ -63,6 +69,15 @@ def parse_receipt(text: str) -> ReceiptView:
 
 @dataclass(frozen=True)
 class Observation:
+    """The boundary snapshot gathered from the flow directory by the CLI edge.
+
+    Invariants:
+    - If fault is not None, state and pending are uninitialized (may be None).
+    - question_present and answer_present are keyed by the current attempt (pending.attempt if pending is not None,
+      else state.last_attempt if state is not None, else 0).
+    - receipt may be for any attempt (checked by decide against the current attempt).
+    - fresh_nonce is a unique token for this call, used if decide() creates a SPAWN.
+    """
     flow_dir: Path
     state: Optional[StateRecord]
     pending: Optional[PendingSpawn]
@@ -123,7 +138,7 @@ def _resulting_state(change: PendingChange, prev: Optional[PendingState]) -> Opt
         return change.record.state
     if isinstance(change, ClearPending):
         return None
-    raise AssertionError(f"unhandled pending change: {change!r}")
+    assert_never(change)
 
 
 def _checked(obs: Observation, decision: Decision, prev: Optional[PendingState]) -> Decision:
@@ -154,7 +169,15 @@ def _ask_or_park(obs: Observation, state: StateRecord, attempt: int) -> Union[As
 
 
 def decide(obs: Observation) -> Decision:
-    """The closed transition rules. Rule numbers match the plan's Step 3 list."""
+    """The closed transition rules. Rule numbers match the plan's Step 3 list.
+
+    Preconditions:
+    - obs is a valid Observation gathered by the CLI edge from a single flow directory.
+    - No concurrent calls to decide for the same flow directory (see the single-caller invariant in cli.py).
+
+    Returns a Decision whose verb is one of SPAWN, RESUME, WAIT, ASK, PARK, STOP, or DONE, and whose
+    pending change is always transition-checked against ALLOWED_TRANSITIONS.
+    """
     # Rule 1: any loader error or unreadable boundary file is STOP, and pending_spawn is left unchanged.
     state = obs.state
     if obs.fault is not None or state is None:
@@ -168,7 +191,8 @@ def decide(obs: Observation) -> Decision:
     events: List[LogEntry] = []
 
     # Rules 8 and 10: a receipt for another attempt, or an awaiting-only receipt with no record, is logged as
-    # late and treated as no receipt.
+    # late and treated as no receipt. The log is evidence; if the same late receipt is observed on every poll,
+    # it is logged every time.
     if receipt is not None and (receipt.attempt != ref or (pending is None and receipt.awaiting)):
         events.append(
             LogEntry(
@@ -295,7 +319,7 @@ def decide(obs: Observation) -> Decision:
     wait = WaitDirective(
         next_command=next_cmd,
         wait_mode=state.wait_mode,
-        receipt_file=str(receipt_path(obs.flow_dir)),
+        receipt_file=str(receipt_path(obs.flow_dir, ref)),
         clear_live_command=clear_live_command(obs.flow_dir),
     )
     return _checked(

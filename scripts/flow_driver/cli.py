@@ -1,10 +1,21 @@
 """
 CLI edge for the v2 skeleton driver (Step 4): start, next, answer and clear-live.
 
+**Single-caller, single-answerer invariant:** every flow dir has exactly one sequential writer (one next/start
+process at a time, no concurrent calls; one answer process after a previous receipt write, no stale agent
+writes after clear-live). This is documented but not enforced; Layer 1 will add locking. Without this invariant,
+a WAIT-blocked flow can be clobbered by a stale agent writing a late receipt, or an answer can race with another
+answer or a clear-live.
+
 Write order for every next and start is fixed: the step prompt (SPAWN only), the directive file, state.json
 (only when last_attempt changes), pending_spawn.json, one driver.log line, and then exactly one stdout line,
 `NEXT: <VERB> <absolute directive file>`. Diagnostics go to stderr. An unexpected exception after the start of
 a next or start still tries to record and print `NEXT: STOP <stop directive file>`, then exits 1.
+
+Exit codes and stdout:
+- 0: successful next/answer/clear-live, one `NEXT: <VERB> ...` line on stdout.
+- 1: unexpected exception (driver error or I/O error), error line on stderr, attempt to write STOP directive.
+- 2: usage error (FlowPathError, bad flag, or mismatched --flow args), error line on stderr, nothing on stdout.
 """
 
 import argparse
@@ -87,11 +98,15 @@ def gather(flow: Path, fresh_nonce: str) -> Observation:
     try:
         state = read_state(flow)
         pending = read_pending(flow)
-        receipt_text = _read_optional(receipt_path(flow))
-        receipt = None if receipt_text is None else parse_receipt(receipt_text)
     except (SkeletonLoadError, OSError) as exc:
         fault = f"boundary file unreadable: {exc}"
     ref = pending.attempt if pending is not None else (state.last_attempt if state is not None else 0)
+    if fault is None:
+        try:
+            receipt_text = _read_optional(receipt_path(flow, ref))
+            receipt = None if receipt_text is None else parse_receipt(receipt_text)
+        except (SkeletonLoadError, OSError) as exc:
+            fault = f"boundary file unreadable: {exc}"
     return Observation(
         flow_dir=flow,
         state=state,
@@ -135,12 +150,12 @@ def render_step_prompt(flow: Path, attempt: int, nonce: str, step_minutes: int, 
         "   Do not wait for it. Do not write heartbeat lines by hand and do not backfill timestamps.",
         f"3. Write this question to {question_path(flow, attempt)}:",
         f'   {{"attempt": {attempt}, "question": "Reply with the word ok to finish this trivial step."}}',
-        f"   Then write {receipt_path(flow)} with exactly these lines:",
+        f"   Then write {receipt_path(flow, attempt)} with exactly these lines:",
         f"   ATTEMPT: {attempt}",
         f"   <!-- awaiting-answers: skeleton-a{attempt} -->",
         "   Then end your turn. Do nothing else until you are resumed.",
         f"4. Only when you are resumed: read the answer file {answer_path(flow, attempt)}, append one "
-        f"heartbeat line with the current UTC time to {heartbeat}, then rewrite {receipt_path(flow)} with "
+        f"heartbeat line with the current UTC time to {heartbeat}, then rewrite {receipt_path(flow, attempt)} with "
         "exactly these lines:",
         f"   ATTEMPT: {attempt}",
         "   Decision: done",
@@ -175,13 +190,11 @@ def _advance_unchecked(flow: Path, subcommand: str, after: str) -> str:
     if obs.state is not None and decision.last_attempt != obs.state.last_attempt:
         updated = replace(obs.state, last_attempt=decision.last_attempt)
         atomic_write_text(state_path(flow), _json_text(state_to_dict(updated)))
+    # Append log before pending write so that a failed log append does not leave pending_spawn.json unwritten.
     nonce: Optional[str] = obs.pending.nonce if obs.pending is not None else None
     change = decision.pending
     if isinstance(change, SetPending):
-        atomic_write_text(pending_path(flow), _json_text(pending_to_dict(change.record)))
         nonce = change.record.nonce
-    elif isinstance(change, ClearPending):
-        _remove_pending(flow)
     observed = "fault" if obs.fault is not None else (obs.pending.state if obs.pending is not None else "none")
     append_log(
         flow,
@@ -195,6 +208,11 @@ def _advance_unchecked(flow: Path, subcommand: str, after: str) -> str:
             "events": [{"event": event.event, "detail": event.detail} for event in decision.events],
         },
     )
+    # Write pending after log, so a crash during pending write leaves the log as evidence.
+    if isinstance(change, SetPending):
+        atomic_write_text(pending_path(flow), _json_text(pending_to_dict(change.record)))
+    elif isinstance(change, ClearPending):
+        _remove_pending(flow)
     return f"NEXT: {directive.verb} {target}"
 
 
@@ -206,7 +224,12 @@ def _remove_pending(flow: Path) -> None:
 
 
 def _crash_stop(flow: Path, subcommand: str, after: str, exc: Exception) -> int:
-    """After an unexpected exception: try to record and print NEXT: STOP, then exit non-zero."""
+    """After an unexpected exception: try to record and print NEXT: STOP, then exit non-zero.
+
+    A crashed next or start leaves the pending record unchanged. Recovery is via clear-live (if the record
+    was a stale spawn) or by re-running next when the fault is transient. The orchestrator must not run
+    a new next after a crash STOP until clear-live has been called or the fault is diagnosed.
+    """
     reason = f"driver error: {type(exc).__name__}: {exc}"
     print(reason, file=sys.stderr)
     target = stop_directive_path(flow)
@@ -285,11 +308,21 @@ def _cmd_start(args: argparse.Namespace) -> int:
 
 
 def _cmd_next(args: argparse.Namespace) -> int:
+    """Advance the flow to its next state. Single-caller invariant: only one next command runs at a time.
+
+    Concurrent calls to `next` from different processes will race and one may overwrite the other's
+    decision. The orchestrator enforces that only one next is running.
+    """
     flow = open_flow_dir(_now_flow_root(), Path(args.flow))
     return advance(flow, "next", parse_after(args.after))
 
 
 def _cmd_answer(args: argparse.Namespace) -> int:
+    """Write the human's answer for a parked attempt. Single-writer invariant: only one answer writes the file.
+
+    This function checks that the answer file does not exist before writing, but does not lock. The check-then-write
+    race is documented: only one answer command should be called per parked attempt.
+    """
     flow = open_flow_dir(_now_flow_root(), Path(args.flow))
     try:
         read_state(flow)

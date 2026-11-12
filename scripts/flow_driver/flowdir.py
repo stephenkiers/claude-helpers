@@ -79,15 +79,26 @@ def create_flow_dir(
     """
     Create a new, unique flow dir `<root>/<repo_key>/skeleton-<UTC stamp>-<token>` with its state.json.
 
-    `now` must be timezone-aware UTC. `token` must be lowercase hex. The dir is created with exist_ok=False,
-    so two calls never share a dir.
+    `now` must be timezone-aware UTC (tzinfo is not None). `token` must be lowercase hex. `step_minutes` must be >= 1.
+    The dir is created with exist_ok=False, so two calls never share a dir.
+
+    Raises:
+        FlowPathError: if repo is invalid, token is not lowercase hex, now is not UTC-aware, step_minutes < 1,
+            or the resolved flow dir is not within realpath(root).
     """
+    if now.tzinfo is None:
+        raise FlowPathError(f"create_flow_dir: 'now' must be timezone-aware, got {now}")
+    if step_minutes < 1:
+        raise FlowPathError(f"create_flow_dir: 'step_minutes' must be at least 1, got {step_minutes}")
     key = repo_key(repo)
     if not _TOKEN_RE.fullmatch(token):
         raise FlowPathError(f"token must be lowercase hex, got {token!r}")
     _contained_realpath(root, root)
     flow = root / key / f"skeleton-{now.strftime('%Y%m%dT%H%M%SZ')}-{token}"
-    _contained_realpath(flow, root)
+    real_flow = _contained_realpath(flow, root)
+    if not is_within(real_flow, os.path.realpath(str(root))):
+        raise FlowPathError(f"flow dir {real_flow} is not strictly within the flows-v2 root")
+    flow = Path(real_flow)
     flow.mkdir(parents=True, exist_ok=False)
     state = StateRecord(
         repo=repo,

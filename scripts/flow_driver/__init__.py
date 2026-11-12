@@ -1,6 +1,10 @@
 """
 Walking skeleton of the v2 /expert-flow driver (Sub-issue S). Disk-only boundary; pure decide() at its core.
 
+**Single-caller, single-answerer invariant:** every flow dir has exactly one sequential writer (one next/start
+process at a time, no concurrent calls; one answer process after a previous receipt write, no stale agent
+writes after clear-live). This is documented but not enforced; Layer 1 will add locking.
+
 Modules: model (boundary types and loaders), flowdir (flow-dir paths and containment), driver (pure decide),
 cli (the start, next, answer and clear-live edge). Run it through __main__.py.
 """
