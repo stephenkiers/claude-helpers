@@ -446,6 +446,63 @@ top of the base allowlist.
 
 **Cross-references.** #431 (a branch that merged an older base still takes the replaying rebase in Phase 6) is unchanged by this amendment. #447 was delivered by #460 (`e593c96a`) and is resolved; this amendment adds no work under it.
 
+## Amendment: Queue PR gate reuses a tree-keyed full check record (#491)
+
+**Status:** Accepted (2026-11-12, #491). Phase 7 of the queue may skip the gate steps when a passing full-mode check record already covers the exact tree, command and toolchain the gate would test. Reuse is on by default through one code path. The decision lives in `scripts/workflow/gate_reuse.py` (`decide_gate_reuse`, returning a closed `Reuse | Miss` type), and `merge_queue.py` Phase 7 calls it. A miss, and any exception inside the decision, runs the gate exactly as before.
+
+**Consumer precondition.** The queue is a new consumer of tree-keyed check records. A record satisfies the queue only when all of these hold: it is full-mode and passing; its tree equals the worktree's tree, which equals `tested_sha^{tree}`; its `full_digest` matches the digest the queue recomputes with `checks.expected_full_key` (the resolved full command and its source, the repo-cache commands, the run timeout, and the toolchain/lockfile digest defined in ADR-0013 Amendment 14); and a freshly fetched `origin/<base>` equals the base Phase 4 pinned and is an ancestor of `tested_sha`. As in #387, the ancestry check is a consumer precondition, not a key field. The queue never trusts a record's own claims: it re-derives the expected key with the same `checks.py` code that `checks validate` uses.
+
+**Decision 3 note.** The gate still covers the base plus the PR. Reuse is sound because the tested tree is exactly that content, so a record written for that tree proves the same gate. A branch that replays a rebase (Phase 6 did not skip) changes the tree, so its lookup misses and the steps run. This amendment neither closes nor pre-empts #431 (the older-base replaying rebase).
+
+**The six guards.** Every guard is unconditional, and no config can relax them. They run in this order, and the first failure wins:
+
+1. **Kill switch.** `gate_reuse_disabled` in `merge-queue.json` forces a miss for any value other than the exact boolean `false` (absent counts as `false`), so a malformed value such as `"yes"` also misses. The kill switch can only force a miss. It is not a second path: a miss always runs the gate steps.
+2. **Single step.** The queue must have exactly one step, checked against the raw config count with no entries dropped while loading (`steps_dropped == 0`). Multi-step queues always run their steps.
+3. **Command.** The step's `cmd` must be byte-equal to the resolved full check command, with no normalisation, and its `timeout_secs` must equal the effective step timeout (through the digest's run-timeout input).
+4. **Tracked-state refusal.** `.claude/repo-cache.json`, `.claude/project.yaml` and any path under `.claude/check-record*` must not be tracked at `tested_sha`. The check reads the tested commit through `git ls-tree`, not ignore rules, so a PR that force-adds a forged passing record, or a tracked config, is refused.
+5. **Clean tree and tree equality.** The PR worktree must be clean, and `worktree_tree == tested_sha^{tree}`. Both are checked after the rebase-or-skip decision and again immediately before the force-push (W2).
+6. **Fail closed.** Any exception is a miss (`error`), never a skip. A fetch failure of `origin/<base>` is `stale-base`. A symlinked records directory or record file is `records-unsafe`, which is a miss.
+
+The reasons are the closed `MissReason` set in `gate_reuse.py`: `disabled`, `steps-unmappable`, `command-mismatch`, `tracked-state`, `dirty-tree`, `tree-mismatch`, `stale-base`, `digest-uncomputable`, `records-unsafe`, `record-unparseable`, `minimum-record-only`, `digest-mismatch`, `no-record`, `audit-write-failed` and `error`. The tests cover one case per reason, including a PR that ships a forged tracked record.
+
+**Audit before skip.** On `Reuse`, the queue appends a `gate_reused` event to `queue.jsonl` (record name, `written_at`, tree, `full_digest`, `tested_sha`) and prints a stderr line before the step loop is skipped. If that append raises, the decision becomes `miss:audit-write-failed` and the steps run. Phase 8 (push), Phase 9 (base unchanged) and the post-gate HEAD and clean-tree assertions run on both paths. On the reuse path the queue also re-checks `HEAD^{tree}` against the record's tree before pushing; a failure kicks back and never pushes. On a miss, a `gate_reuse_miss` event is appended best-effort; if that append fails, the reason goes to stderr and the steps still run.
+
+**Force-push carve-out and the `Merge-Gate:` trailer.** A gate satisfied by a record counts as "full gate passed" for the force-push carve-out (Decision 6) and for the `Merge-Gate:` trailer. The trailer wording and `parse_trailer` are unchanged. Provenance (whether the steps ran or a record satisfied the gate) lives in `result-<pr>.json` (`gate_reuse`, `gate_reuse_record`, `gate_reuse_tree`, `gate_reuse_digest`, `gate_reuse_full_record_seen`, `gate_reuse_decided_at`) and in `queue.jsonl`, not in the trailer.
+
+**Hit sources.** Only `checks validate` callers write tree-keyed records:
+
+- **Shipit** (`commands/shipit.md`, `checks validate --mode minimum --worktree "$(pwd)"`, no `--main-worktree`). It writes a fallback `FullKey` only when `check_minimum` does not resolve from the worktree's own files. That record is on the shipped tree, so it is the one realistic hit source: the queue reuses it when the branch already contains the base and nothing was committed after shipit.
+- **Implement and fix** (`commands/implement-with-haiku.md`, `checks validate --mode minimum --main-worktree …`). It writes a fallback `FullKey` only when `check_minimum` is undeclared for that checkout. Later commits usually change the tree, so these rarely match.
+- **The off-queue merge gate** (`merge.py::_run_merge_gate_checks`, `checks validate --mode full`). It rarely precedes a queue run of the same tree.
+- **A manual `checks validate --mode full`.**
+
+The `/expert-flow` verify step writes no record in either mode. It resolves the command with `checks resolve-check --mode minimum` and a subagent runs the raw command; it never calls `checks validate`. ADR-0013 Amendment 12 (#462, 2026-11-05) says that verify reads the record cache "through `checks validate`", and that wording does not match `commands/expert-flow.md`; this amendment does not rely on it. A minimum record never satisfies the queue's `FullKey` request, so a hit needs a passing full-mode record on the same tree and digest.
+
+**Payoff.** Only single-step queues whose `cmd` byte-equals the resolved check can benefit (1 of 13 configured repos on the machine where this was measured). The queue's `timeout_secs` must equal the timeout the writing `validate` used (`checkTimeoutSecs`), or every lookup is `digest-mismatch`. Where `check_minimum` resolves in every checkout, reuse is expected to be near zero, because shipit and implement/fix then write only minimum records. In a checkout where `check_minimum` does not resolve for shipit, reuse removes the queue's repeat run of shipit's full run but not verify's run, so that checkout drops from three full runs to two, not one.
+
+**Residuals.**
+
+- Records live in the PR worktree, so a flow agent with `Write` can produce one. This is inherited from the #387 off-queue gate and extended to the queue. The tracked-state guard refuses committed records; an untracked record an agent writes is the remaining exposure. The gate already runs PR-authored code unsandboxed, so this is accident protection, not adversary-proofing.
+- `validate` exports `CHECK_BASE` and `CHECK_CHANGED_FILES`, and Phase 7 does not. A full check that reads them could behave differently under reuse. This repo's `just check` does not read them; only `scripts/check-minimum.py` does.
+- Installed tools outside the toolchain digest (for example user-site `mypy` or `ruff`) are not part of the key.
+- Reuse removes the queue's repeat run of a flaky test, so a test that failed in shipit and passed on re-run gets no second chance at the queue.
+
+**`check_minimum` documentation (W3).** Declaring `commands.check_minimum` stops `--mode minimum` from falling back to the full command. This is documented here only; there is no runtime fallback note. The declaration lives in the local, gitignored `.claude/project.yaml`. That file is per-machine state and is not part of any PR diff. It was missing on the machine where this was measured until this change, which is why every `--mode minimum` caller fell back to full. The reach rules are:
+
+- Verify, implement and fix pass `--main-worktree`, so they reach main's `project.yaml` through `resolve_check_detail`'s main-worktree branch.
+- Shipit and the stacked-child validates (`commands/cleanup.md`, `prompts/worktree-reference.md`) pass no `--main-worktree` and read only the worktree's own `project.yaml`. Each worktree therefore needs its own copy. New worktrees get one when `project.yaml` is seeded from main at creation.
+- After `check_minimum` is declared, shipit and implement/fix write `MinimumKey` records, which never satisfy the queue.
+
+Passing `--main-worktree` from shipit and the stacked-child validates is a separate, small follow-up. Until it lands, the per-worktree copies are the mechanism. Another machine or fork needs its own copies.
+
+**Measurement and rollback.** All actions below are human actions; there is no auto-remediation. The result file and `merge_queue status` report two signals: whether a full record existed for the tested tree (opportunity, `gate_reuse_full_record_seen`), and what happened when one did (correctness: the `reused` count and the guard-refusal and unexpected buckets). `merge_queue status --since <ISO-8601>` restricts the counts to decisions at or after a time. The rules are:
+
+- **Correctness rule (applies from the first merge, transition included).** Every run with `gate_reuse_full_record_seen: true` must end `reused`, or be refused by a guard whose reason explains it (`stale-base`, `dirty-tree`, `disabled`, `steps-unmappable`, `command-mismatch`, `tracked-state`, or a `digest-mismatch` where a human can name the input that changed). Any such run in the unexpected bucket (`error`, `digest-uncomputable`, `records-unsafe`, `tree-mismatch`, `record-unparseable`, `audit-write-failed`) means: set `gate_reuse_disabled: true` in `merge-queue.json` and open an issue to find the fault. The fix is a repair, not removal.
+- **Safety trigger.** If a merge whose result shows `gate_reuse: reused` is followed by a failing base verification of that merged commit, set the kill switch at once and open an issue.
+- **Opportunity rule: a removal schedule.** After the first 20 post-cutoff runs that carry a `gate_reuse` value, read `merge_queue status --since <transition cutoff>`. If fewer than 2 of those 20 had a full record for the tested tree, reuse has no hit source in this repo. Set the kill switch and open an issue to remove the queue-side reuse code, and quote any `minimum-record-only` count in that issue. This rule is expected to trip once `check_minimum` resolves in every checkout, because shipit and implement/fix then write only minimum records. Tripping it is a scheduled removal ("nothing to reuse here"), not evidence that reuse is broken, and it is an acceptable outcome. If opportunity is 2 or more and the correctness rule is clean, reuse stays.
+- **Rollback scope.** Rollback removes `gate_reuse.py`, the Phase 7 hunk, the config keys, the result and status fields, and this amendment (marked superseded). It does not revert the toolchain/lockfile digest in ADR-0013 Amendment 14, which is a separate change to the shared record cache and stands on its own. Reverting it would need its own amendment.
+- **Transition cutoff:** to be recorded when the per-worktree project.yaml copies are complete. Runs before the cutoff count for the correctness rule and the safety trigger, but not for the opportunity rule.
+
 ## Follow-ups
 
 - **GitHub ruleset:** after two clean weeks of local queuing, add a GitHub ruleset requiring the
