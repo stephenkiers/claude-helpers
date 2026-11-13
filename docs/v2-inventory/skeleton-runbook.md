@@ -19,6 +19,23 @@ The human runs these from a scratch directory that has no `.claude/flow-run` mar
 4. After all runs complete, remove both symlinks and record when they were removed. The removal must
    be verified before any merge.
 
+## Human cells: quick path
+
+`scripts/skeleton-manual.py` automates the bookkeeping for the interactive cells (R1, the R2 interrupt cells, R6).
+It is stdlib-only and never edits `skeleton-findings.md`.
+
+1. `python3 scripts/skeleton-manual.py setup` creates the two symlinks (refuses if either exists), and prints the
+   UTC time, `claude --version` and a scratch dir. `cd` into the scratch dir.
+2. `python3 scripts/skeleton-manual.py cells` prints the exact text to paste into `claude` and the human action
+   (for example, press Ctrl+C when `NEXT: SPAWN` appears) for each cell.
+3. Run the cells in an interactive `claude` session started from the scratch dir.
+4. `python3 scripts/skeleton-manual.py collect <flow-dir>` (or `collect --latest`) prints a scrubbed, read-only
+   evidence summary (spawn counts, double-spawn, verb counts, phantom-live, heartbeats, orphan overlap, receipts)
+   and names the findings rows it informs.
+5. Paste the summary into the findings rows by hand.
+6. `python3 scripts/skeleton-manual.py teardown` removes only the two symlinks and the `skeleton-*` flow dirs under
+   `~/.claude/flows-v2/`, verifies absence and prints the UTC time. Harness transcripts are left alone.
+
 ## Run Matrix (S-Q3 B)
 
 Each cell runs a fixed N (default 3 per S-Q3 B: "small fixed N"). The actual N is recorded per row,
