@@ -246,6 +246,97 @@ def test_341_doc_facts(h):
                   "for `ROUND 1`, any matching line suffices" in expert_flow)
 
 
+def test_468_doc_contract(h):
+    """Test #468 doc contract: rule A, enforcement points, Round sizing override, D1 limitation."""
+    def read(path):
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    # Files under test
+    EXPERT_PLAN = REPO_ROOT / "commands" / "expert-plan.md"
+    IMPL_PLAN = REPO_ROOT / "commands" / "implement-with-haiku.md"
+    SYNTH_PROMPT = REPO_ROOT / "prompts" / "plan-synthesize-and-check.md"
+    ADR_0019 = REPO_ROOT / "docs" / "adr" / "0019-content-driven-pause-checkpoints.md"
+    ADR_0023 = REPO_ROOT / "docs" / "adr" / "0023-expert-flow.md"
+    FLOW_CMD = REPO_ROOT / "commands" / "expert-flow.md"
+    SCAN_SCRIPT = REPO_ROOT / "scripts" / "anti-cheat-scan.py"
+
+    print("\n[Item 5] Canonical sentence and doc agreement")
+
+    # Canonical sentence appears in all four places
+    canonical = "Tests are written by the Round 2 spec-blind author (ADR-0019 2026-11-12 amendment)."
+    for path in [EXPERT_PLAN, IMPL_PLAN, SYNTH_PROMPT, ADR_0019]:
+        text = read(path)
+        h.test_result(f"canonical sentence appears in {path.name}",
+                      canonical in text, f"missing in {path.name}")
+
+    # Tests subsection in synthesize-and-check
+    synth_text = read(SYNTH_PROMPT)
+    h.test_result("prompts/plan-synthesize-and-check.md has Tests subsection heading",
+                  "### Tests (written spec-blind in Round 2)" in synth_text)
+
+    # expert-plan.md references the plan-test-paths.py script
+    expert_plan_text = read(EXPERT_PLAN)
+    h.test_result("commands/expert-plan.md contains plan-test-paths.py script reference",
+                  'plan-test-paths.py" plan --plan' in expert_plan_text)
+    h.test_result("commands/expert-plan.md has one bounded repair text",
+                  "On a first exit 1, re-dispatch synthesis once with the hit lines; a second exit 1 fails the step." in expert_plan_text)
+
+    # implement-with-haiku.md references the check and Round sizing
+    impl_text = read(IMPL_PLAN)
+    h.test_result("commands/implement-with-haiku.md contains plan-test-paths.py units check",
+                  'plan-test-paths.py" units --units' in impl_text)
+    h.test_result("commands/implement-with-haiku.md has Round sizing override sentence",
+                  "is always classified `full`, never `mechanical` or `test-only`, so Round 2 runs." in impl_text)
+
+    print("\n[Item 6] D1 doc contract: fix loop never reverts planned behavior")
+
+    h.test_result("commands/implement-with-haiku.md has 'Never revert or weaken behaviour' sentence",
+                  "Never revert or weaken behaviour the plan asks for in order to make an existing test pass." in impl_text)
+    h.test_result("commands/implement-with-haiku.md has STAGED: no NEEDS_TEST_UPDATE trailer format",
+                  "STAGED: no NEEDS_TEST_UPDATE: <test path> - <one line why>" in impl_text)
+    h.test_result("commands/implement-with-haiku.md has planned-change-breaks-test reason",
+                  "planned-change-breaks-test: <path>" in impl_text)
+    h.test_result("commands/implement-with-haiku.md has gate_not_converged failure class for that reason",
+                  "FAILURE_CLASS: gate_not_converged" in impl_text and "planned-change-breaks-test" in impl_text)
+    h.test_result("commands/implement-with-haiku.md has test-only-plan stop reason",
+                  "test-only-plan: no Round 1 work; tests are a Round 2 deliverable" in impl_text)
+    h.test_result("commands/implement-with-haiku.md has existing-test-edit stop reason",
+                  "existing-test-edit: <step or finding id> <path>" in impl_text)
+
+    print("\n[Item 7] Preflight record path doc contract")
+
+    h.test_result("commands/implement-with-haiku.md has RECORD_DIR set from FLOW_DIR",
+                  'RECORD_DIR="${FLOW_DIR}/units/<UNIT_STEP>"' in impl_text)
+    h.test_result("commands/implement-with-haiku.md has scoped-attempt path",
+                  'RECORD_DIR="${RECORD_DIR}/scoped-a<ATTEMPT>"' in impl_text)
+    h.test_result("commands/implement-with-haiku.md does NOT have literal SCRATCH_PATH units path",
+                  'plan-test-paths.py" units --units "<SCRATCH_PATH>/units/implement/units.json"' not in impl_text)
+
+    print("\n[Item 5 extended] Fix now wording clarification")
+
+    adr23_text = read(ADR_0023)
+    flow_text = read(FLOW_CMD)
+    scan_text = read(SCAN_SCRIPT)
+
+    # Old wording should be gone
+    old_phrase = "no stricter than an ordinary `fix`"
+    h.test_result("ADR-0023 does not contain old Fix now wording",
+                  old_phrase not in adr23_text, f"found: {old_phrase}")
+    h.test_result("commands/expert-flow.md does not contain old Fix now wording",
+                  old_phrase not in flow_text, f"found: {old_phrase}")
+    h.test_result("scripts/anti-cheat-scan.py does not contain old docstring sentence",
+                  "It is no stricter than the fix step it re-runs." not in scan_text)
+
+    # New wording should be present
+    new_phrase = "omits the test-edit rule because `sha_before..HEAD` includes the re-spawned step's Round 2 and Round 4 test commits"
+    h.test_result("ADR-0023 has new Fix now wording",
+                  new_phrase in adr23_text, f"missing: {new_phrase}")
+    h.test_result("commands/expert-flow.md has new Fix now wording",
+                  new_phrase in flow_text, f"missing: {new_phrase}")
+    h.test_result("scripts/anti-cheat-scan.py has new docstring wording",
+                  "Its range includes the re-run step's Round 2 and Round 4 test commits" in scan_text)
+
+
 def main():
     h = Harness("EXPERT-FLOW STRUCTURAL TEST SUITE")
 
@@ -1341,6 +1432,7 @@ def main():
                   "runner or shell exit `126`/`127`" in adr_text)
 
     test_341_doc_facts(h)
+    test_468_doc_contract(h)
 
     print()
     h.summarize_and_exit()

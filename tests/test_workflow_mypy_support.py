@@ -122,8 +122,8 @@ def test_mypy_ini_files_setting():
         return False, "mypy.ini does not have files setting"
 
     files = config.get("mypy", "files")
-    if files != "scripts/workflow,scripts/check-minimum.py,scripts/flow-accept.py,scripts/spike-effort.py,scripts/precedent-log.py,scripts/precedent-digest.py,scripts/flow-ledger.py,scripts/primary-checkout-drift.py,scripts/flow-verify-receipt.py,scripts/review-ruling.py,scripts/unit-sizing.py,scripts/unit-progress.py,scripts/flow-render-questions.py,scripts/check-pseudonyms.py,scripts/test-cleanup-check.py,scripts/flow-stop-baseline.py":
-        return False, f"files is {files}, expected scripts/workflow,scripts/check-minimum.py,scripts/flow-accept.py,scripts/spike-effort.py,scripts/precedent-log.py,scripts/precedent-digest.py,scripts/flow-ledger.py,scripts/primary-checkout-drift.py,scripts/flow-verify-receipt.py,scripts/review-ruling.py,scripts/unit-sizing.py,scripts/unit-progress.py,scripts/flow-render-questions.py,scripts/check-pseudonyms.py,scripts/test-cleanup-check.py,scripts/flow-stop-baseline.py"
+    if files != "scripts/workflow,scripts/check-minimum.py,scripts/flow-accept.py,scripts/spike-effort.py,scripts/precedent-log.py,scripts/precedent-digest.py,scripts/flow-ledger.py,scripts/primary-checkout-drift.py,scripts/flow-verify-receipt.py,scripts/review-ruling.py,scripts/unit-sizing.py,scripts/unit-progress.py,scripts/flow-render-questions.py,scripts/check-pseudonyms.py,scripts/test-cleanup-check.py,scripts/flow-stop-baseline.py,scripts/plan-test-paths.py":
+        return False, f"files is {files}, expected scripts/workflow,scripts/check-minimum.py,scripts/flow-accept.py,scripts/spike-effort.py,scripts/precedent-log.py,scripts/precedent-digest.py,scripts/flow-ledger.py,scripts/primary-checkout-drift.py,scripts/flow-verify-receipt.py,scripts/review-ruling.py,scripts/unit-sizing.py,scripts/unit-progress.py,scripts/flow-render-questions.py,scripts/check-pseudonyms.py,scripts/test-cleanup-check.py,scripts/flow-stop-baseline.py,scripts/plan-test-paths.py"
 
     return True, ""
 
@@ -236,7 +236,7 @@ if __name__ == "__main__":
     test_result("mypy.ini has check_untyped_defs = True", passed, msg)
 
     passed, msg = test_mypy_ini_files_setting()
-    test_result("mypy.ini has files = scripts/workflow,scripts/check-minimum.py,scripts/flow-accept.py,scripts/spike-effort.py,scripts/precedent-log.py,scripts/precedent-digest.py,scripts/flow-ledger.py,scripts/primary-checkout-drift.py,scripts/flow-verify-receipt.py,scripts/review-ruling.py,scripts/unit-sizing.py,scripts/unit-progress.py,scripts/flow-render-questions.py,scripts/check-pseudonyms.py,scripts/test-cleanup-check.py,scripts/flow-stop-baseline.py", passed, msg)
+    test_result("mypy.ini has files = scripts/workflow,scripts/check-minimum.py,scripts/flow-accept.py,scripts/spike-effort.py,scripts/precedent-log.py,scripts/precedent-digest.py,scripts/flow-ledger.py,scripts/primary-checkout-drift.py,scripts/flow-verify-receipt.py,scripts/review-ruling.py,scripts/unit-sizing.py,scripts/unit-progress.py,scripts/flow-render-questions.py,scripts/check-pseudonyms.py,scripts/test-cleanup-check.py,scripts/flow-stop-baseline.py,scripts/plan-test-paths.py", passed, msg)
 
     passed, msg = test_mypy_ini_cache_dir()
     test_result("mypy.ini has cache_dir = .mypy_cache", passed, msg)

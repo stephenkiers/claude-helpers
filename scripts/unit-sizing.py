@@ -123,6 +123,51 @@ def extract_files_from_step(step_text: str) -> set:  # type: ignore[type-arg]
     return files
 
 
+def step_file_paths(step_text: str) -> List[str]:
+    """Extract and clean file paths from a step's **Files**: line.
+
+    This is a separate parser. It does not call extract_files_from_step, so the
+    two can drift apart. Behaviours, as implemented:
+    - Only the first `- **Files**:` line in the step is read. Later Files lines are ignored.
+    - The line's content is split on every comma, including commas inside backticks.
+    - Each entry has its surrounding backticks stripped. If a backtick remains, the
+      entry keeps the text before it. Otherwise it keeps its first whitespace-delimited token.
+    - Entries that are empty, or exactly `none`, `N/A` or `n/a`, are dropped. The check
+      is case-sensitive, so `None` passes through as a path.
+    - A step with no Files line returns an empty list.
+
+    Returns a list (preserving order from the original line) of cleaned paths.
+    """
+    result: List[str] = []
+
+    # Parse the Files line directly to preserve order (unlike extract_files_from_step which returns a set)
+    for line in step_text.split("\n"):
+        # Match lines starting with "- **Files**:"
+        if re.match(r"^\s*-\s+\*\*Files\*\*:", line):
+            # Extract everything after the colon
+            content = line.split("**Files**:", 1)[1].strip()
+            # Split on commas and parse paths, preserving order
+            for part in content.split(","):
+                path = part.strip()
+                # Remove backticks if present
+                path = path.lstrip("`").rstrip("`")
+                if path and path not in ("", "none", "N/A", "n/a"):
+                    # Now clean off annotations
+                    backtick_pos = path.find("`")
+                    if backtick_pos >= 0:
+                        # Keep text up to the first backtick
+                        cleaned = path[:backtick_pos].strip()
+                    else:
+                        # Keep first whitespace-delimited token
+                        cleaned = path.split()[0] if path.split() else ""
+
+                    if cleaned:
+                        result.append(cleaned)
+            break
+
+    return result
+
+
 def build_result(
     kind: str,
     steps: Optional[int],

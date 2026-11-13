@@ -239,6 +239,10 @@ Raise only considerations that belong in your domain:
 Do not raise issues that belong to another persona's domain. They have their own perspective, and
 duplicate concerns dilute the panel. (The digest will see all contributions and can flag agreement.)
 
+## Test Requirements
+
+Contributors express test needs as spec statements for Round 2, never as step-owned test files. Tests are written by the Round 2 spec-blind author (ADR-0019 2026-11-12 amendment). If your domain identifies a requirement that needs testing, describe the spec and expected value (e.g., "pin golden key X = Y"), but do not list a test file path in any step's **Files** — the synthesizer converts your test statements into the plan's "Tests (written spec-blind in Round 2)" section.
+
 ## Quality Checklist
 
 Before returning your receipt:
