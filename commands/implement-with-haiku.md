@@ -862,10 +862,8 @@ RECORD_DIR="<SCRATCH_PATH>/units/<UNIT_STEP>"
 if [[ -n "${ONLY_UNITS}" ]]; then
   RECORD_DIR="${RECORD_DIR}/scoped-a<ATTEMPT>"
 fi
+PREFLIGHT_EXIT=0
 CHECK_OUTPUT=$(python3 "$HOME/.claude/scripts/plan-test-paths.py" units --units "${RECORD_DIR}/units.json" 2>&1) || PREFLIGHT_EXIT=$?
-if [[ -z "$PREFLIGHT_EXIT" ]]; then
-  PREFLIGHT_EXIT=0
-fi
 if [[ $PREFLIGHT_EXIT -ne 0 ]]; then
   if [[ $PREFLIGHT_EXIT -eq 1 ]]; then
     # Hit on test paths; fail before Round 1 spend
@@ -1560,16 +1558,16 @@ Max **K = 3** iterations. On each iteration:
 3. **Check for planned-change-breaks-test.** After trailer validation passes, read the agent's report for the `STAGED:` line. If it begins `STAGED: no NEEDS_TEST_UPDATE: `, stop the loop at once with no further iteration. Do not apply the diff. Write the FAILED receipt with Reason `planned-change-breaks-test: <path>` (extracted from the line), `FAILURE_CLASS: gate_not_converged`, and the CHECK key lines from the last gate run. Telemetry: the existing `command-end … --failure-class gate_not_converged` line. This early exit runs before item 4's diff application, so it costs nothing to detect and no retry is offered for this class.
 4. Apply its diff back (same apply-and-commit pattern as Step 4c — `git diff --staged` from the
    fix worktree, `git apply --index` + commit in the ticket worktree, tear down worktree after).
-4. Re-run Gate steps 1–3 on the updated tree. No usage-check seam here — dropped per
+5. Re-run Gate steps 1–3 on the updated tree. No usage-check seam here — dropped per
    [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174): it never once needed a
    `/compact` break across 8 measured real runs (round1-join already absorbed round 1's context
    cost, and a single fix-Haiku's contribution here is small), and the per-seam Bash call + printed
    line cost tokens/time for a `DECISION:` field that's unreliable anyway (most subagent transcripts
    in this pipeline never get counted, so it degrades to a floor guess). This has no effect on real
    telemetry — see the Usage gate log note in the Final summary.
-5. If gate passes → exit loop, then write the passing verdict to `integration-gate.txt` and append the
+6. If gate passes → exit loop, then write the passing verdict to `integration-gate.txt` and append the
    `integration-gate` row exactly as in Gate step 3. If still failing and iterations < K → repeat.
-6. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
+7. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
    failures. Do not proceed to Round 2. Let the human decide. Close the integration-gate stage with gate_not_converged:
    ```bash
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage integration-gate --outcome failure --failure-class gate_not_converged 2>/dev/null || true

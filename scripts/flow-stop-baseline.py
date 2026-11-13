@@ -93,6 +93,11 @@ RULES: List[Tuple[str, str, str]] = [
     (r"^(implementer-shortfall|implement run incomplete)", STEP_AGENT, "implementer shortfall"),
     (r"^reduced run", STEP_AGENT, "reduced run (fidelity audit)"),
     (r"^fidelity audit failed", STEP_AGENT, "fidelity audit failed (other)"),
+    (r"^planned-change-breaks-test", STEP_AGENT, "planned change breaks test"),
+    (r"^test-only-plan", STEP_AGENT, "test-only plan"),
+    (r"^existing-test-edit", STEP_AGENT, "existing test edit"),
+    (r"^test-path-in-units", STEP_AGENT, "test path in units"),
+    (r"^plan-test-paths", STEP_AGENT, "plan test-path check"),
 ]
 
 # Shape extraction from unmatched reasons: leading words (up to 3) used as grouping key only.
