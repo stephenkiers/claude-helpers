@@ -11,14 +11,16 @@ listed in plan steps or unit owned_files. It uses the anti-cheat-scan.py predica
 
 Modes:
   plan   Parse a synthesized plan.md: scan the Implementation Steps section for test
-         files in step Files lines. One bounded synthesis repair is allowed before
-         failing the step.
+         files in step Files lines. This script only reports. The one bounded
+         synthesis repair attempt is performed by the calling command (it owns the
+         retry), not here; this script never rewrites the plan.
   units  Parse units.json: check each unit's owned_files list for test files.
 
 Exit codes:
   0: no test files found (clean)
   1: test files found (enforcement failure)
-  2: error (bad arguments, missing files, parse errors)
+  2: error (bad arguments, missing files, parse errors, malformed plan or units,
+     a plan with no Implementation Steps heading or zero parsed steps)
 """
 
 import argparse
@@ -27,26 +29,34 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional
+from types import ModuleType
+from typing import Any, Callable, List, Tuple
+
+# The Implementation Steps heading must be a whole line of its own. Anchoring it stops
+# a heading like "## Implementation Steps (draft)" or a "### " subheading from matching.
+_IMPL_HEADING_RE = re.compile(r"^## Implementation Steps[ \t]*$", re.M)
+# The section ends at the next level-2 heading ("## X", but not "### X").
+_NEXT_H2_RE = re.compile(r"^## (?!#)", re.M)
 
 
-def _load_module(module_name: str, file_path: Path):  # type: ignore[no-untyped-def]
+def _load_module(module_name: str, file_path: Path) -> ModuleType:
     """Load a Python module from an absolute path using importlib.util.
 
-    Returns the loaded module or None on failure.
+    Raises RuntimeError (chained to the original exception) if the module cannot be
+    loaded, so the exception text reaches the caller's exit-2 message.
     """
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    if spec is None or spec.loader is None:
-        return None
-    module = importlib.util.module_from_spec(spec)
     try:
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"no import spec for {file_path}")
+        module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return module
-    except Exception:
-        return None
+    except Exception as e:
+        raise RuntimeError(f"failed to load {file_path}: {e}") from e
+    return module
 
 
-def _get_is_test_path() -> Optional[callable]:  # type: ignore[type-arg]
+def _get_is_test_path() -> Callable[..., Any]:
     """Load and return the is_test_path function from anti-cheat-scan.py.
 
     Resolves the path relative to this script's real path to work through symlinks.
@@ -54,19 +64,15 @@ def _get_is_test_path() -> Optional[callable]:  # type: ignore[type-arg]
     script_dir = Path(__file__).resolve().parent
     scan_path = script_dir / "anti-cheat-scan.py"
     if not scan_path.exists():
-        print(f"error: {scan_path} not found", file=sys.stderr)
-        return None
+        raise RuntimeError(f"{scan_path} not found")
     module = _load_module("anti_cheat_scan", scan_path)
-    if module is None:
-        print(f"error: failed to load {scan_path}", file=sys.stderr)
-        return None
     if not hasattr(module, "is_test_path"):
-        print(f"error: {scan_path} has no is_test_path function", file=sys.stderr)
-        return None
-    return module.is_test_path  # type: ignore[return-value]
+        raise RuntimeError(f"{scan_path} has no is_test_path function")
+    func: Callable[..., Any] = module.is_test_path
+    return func
 
 
-def _get_step_file_paths() -> Optional[callable]:  # type: ignore[type-arg]
+def _get_step_file_paths() -> Callable[..., Any]:
     """Load and return the step_file_paths function from unit-sizing.py.
 
     Resolves the path relative to this script's real path to work through symlinks.
@@ -74,57 +80,65 @@ def _get_step_file_paths() -> Optional[callable]:  # type: ignore[type-arg]
     script_dir = Path(__file__).resolve().parent
     sizing_path = script_dir / "unit-sizing.py"
     if not sizing_path.exists():
-        print(f"error: {sizing_path} not found", file=sys.stderr)
-        return None
+        raise RuntimeError(f"{sizing_path} not found")
     module = _load_module("unit_sizing", sizing_path)
-    if module is None:
-        print(f"error: failed to load {sizing_path}", file=sys.stderr)
-        return None
     if not hasattr(module, "step_file_paths"):
-        print(f"error: {sizing_path} has no step_file_paths function", file=sys.stderr)
-        return None
-    return module.step_file_paths  # type: ignore[return-value]
+        raise RuntimeError(f"{sizing_path} has no step_file_paths function")
+    func: Callable[..., Any] = module.step_file_paths
+    return func
 
 
-def check_plan(plan_path: Path, is_test_path_func: callable, step_file_paths_func: callable) -> List[str]:  # type: ignore[type-arg]
+def check_plan(
+    plan_path: Path,
+    is_test_path_func: Callable[..., Any],
+    step_file_paths_func: Callable[..., Any],
+) -> Tuple[List[str], int]:
     """Check plan.md for test files in Implementation Steps.
 
     Scans only the Implementation Steps section, extracting Files from each step
-    and checking against is_test_path. Returns a list of error messages.
+    and checking against is_test_path. Returns (error messages, number of steps scanned).
+
+    Raises RuntimeError when the file cannot be read, when there is no
+    Implementation Steps heading, or when the section parses to zero steps. A plan that
+    yields no steps must fail closed rather than pass as clean.
     """
     try:
         text = plan_path.read_text(encoding="utf-8")
     except Exception as e:
-        raise RuntimeError(f"failed to read {plan_path}: {e}")
+        raise RuntimeError(f"failed to read {plan_path}: {e}") from e
 
-    # Find Implementation Steps section (up to the next ## heading)
-    impl_start = text.find("## Implementation Steps")
-    if impl_start == -1:
-        # No Implementation Steps section found; this is clean
-        return []
+    heading = _IMPL_HEADING_RE.search(text)
+    if heading is None:
+        raise RuntimeError(
+            f"{plan_path} has no '## Implementation Steps' heading; refusing to report it clean"
+        )
 
-    # Find the end of the section (next ## heading or end of text)
-    next_heading = re.search(r"\n##\s+", text[impl_start + len("## Implementation Steps"):])
-    if next_heading:
-        impl_end = impl_start + len("## Implementation Steps") + next_heading.start()
-    else:
-        impl_end = len(text)
-
-    impl_section = text[impl_start:impl_end]
+    next_heading = _NEXT_H2_RE.search(text, heading.end())
+    impl_end = next_heading.start() if next_heading else len(text)
+    impl_section = text[heading.start():impl_end]
 
     # Split the section into steps by ### Step N headings
     steps = re.split(r"^###\s+Step\s+(\d+)\b", impl_section, flags=re.M)
 
+    # steps[0] is text before first heading, then [1] is step number, [2] is step content, etc.
+    step_count = (len(steps) - 1) // 2
+    if step_count == 0:
+        raise RuntimeError(
+            f"{plan_path}: scanned 0 steps in Implementation Steps; expected '### Step N' headings"
+        )
+
     errors: List[str] = []
 
-    # steps[0] is text before first heading, then [1] is step number, [2] is step content, etc.
     for i in range(1, len(steps), 2):
         step_num = steps[i]
         step_content = steps[i + 1] if i + 1 < len(steps) else ""
 
-        # Extract the step title from the first line
-        step_title_match = re.match(r"[^:\n]+:\s*([^\n]*)", step_content)
-        step_title = step_title_match.group(1).strip() if step_title_match else f"Step {step_num}"
+        # The split leaves the heading remainder at the start of step_content, e.g.
+        # ": Setup\n- **Files**: ...". Take the text after the colon on that first line.
+        title_match = re.match(r":[ \t]*([^\n]*)", step_content)
+        step_title = title_match.group(1).strip() if title_match else ""
+        if not step_title:
+            step_title = f"Step {step_num}"
 
         # Get file paths for this step
         file_paths = step_file_paths_func(step_content)
@@ -137,43 +151,49 @@ def check_plan(plan_path: Path, is_test_path_func: callable, step_file_paths_fun
                     f"tests are a Round 2 deliverable, move this to \"Tests (written spec-blind in Round 2)\""
                 )
 
-    return errors
+    return errors, step_count
 
 
-def check_units(units_path: Path, is_test_path_func: callable) -> List[str]:  # type: ignore[type-arg]
+def check_units(units_path: Path, is_test_path_func: Callable[..., Any]) -> List[str]:
     """Check units.json for test files in owned_files.
 
-    Returns a list of error messages.
+    Returns a list of error messages. Raises RuntimeError for a malformed record: a
+    non-object unit, or a unit without an owned_files list. A malformed unit must not
+    be skipped, because skipping would let its test files through unchecked.
     """
     if not units_path.exists():
         raise RuntimeError(f"{units_path} not found")
 
     try:
         text = units_path.read_text(encoding="utf-8")
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"invalid JSON in {units_path}: {e}")
     except Exception as e:
-        raise RuntimeError(f"failed to read {units_path}: {e}")
+        raise RuntimeError(f"failed to read {units_path}: {e}") from e
+
+    try:
+        data: object = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"invalid JSON in {units_path}: {e}") from e
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{units_path}: top level must be a JSON object with a 'units' list")
 
     if "units" not in data:
-        raise RuntimeError("units.json missing 'units' key")
+        raise RuntimeError(f"{units_path} missing 'units' key")
 
-    if not isinstance(data["units"], list):
-        raise RuntimeError("units.json 'units' is not a list")
+    units = data["units"]
+    if not isinstance(units, list):
+        raise RuntimeError(f"{units_path}: 'units' is not a list")
 
     errors: List[str] = []
 
-    for unit in data["units"]:
+    for index, unit in enumerate(units):
+        label = f"index {index}"
         if not isinstance(unit, dict):
-            continue
-        if "id" not in unit or "owned_files" not in unit:
-            continue
-
-        unit_id = unit["id"]
-        owned_files = unit["owned_files"]
+            raise RuntimeError(f"{units_path}: unit at {label} is not an object")
+        unit_id = unit.get("id", label)
+        owned_files = unit.get("owned_files")
         if not isinstance(owned_files, list):
-            continue
+            raise RuntimeError(f"{units_path}: unit {unit_id} has no owned_files list")
 
         for file_path in owned_files:
             if isinstance(file_path, str) and is_test_path_func(file_path):
@@ -209,19 +229,15 @@ def main(argv: List[str]) -> int:
         parser.print_help()
         return 2
 
-    # Load the shared predicates
-    is_test_path_func = _get_is_test_path()
-    if is_test_path_func is None:
-        return 2
-
-    step_file_paths_func = _get_step_file_paths()
-    if step_file_paths_func is None:
-        return 2
-
     try:
+        # Load the shared predicates; a load failure raises and exits 2 below.
+        is_test_path_func = _get_is_test_path()
+        step_file_paths_func = _get_step_file_paths()
+
         if args.mode == "plan":
             plan_path = Path(args.plan)
-            errors = check_plan(plan_path, is_test_path_func, step_file_paths_func)
+            errors, scanned = check_plan(plan_path, is_test_path_func, step_file_paths_func)
+            print(f"plan-test-paths: scanned {scanned} step(s) in Implementation Steps")
         elif args.mode == "units":
             units_path = Path(args.units)
             errors = check_units(units_path, is_test_path_func)
