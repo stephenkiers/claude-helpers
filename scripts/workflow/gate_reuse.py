@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, List, Literal, Optional, Union
 from . import git
 from .checks import (
     DigestMismatch,
+    ConfigKind,
     ExpectedFullKey,
     Found,
     MinimumOnly,
@@ -27,6 +28,7 @@ from .checks import (
     classify_full_record,
     expected_full_key,
     resolve_check_detail,
+    resolve_check_timeout,
     worktree_tree,
 )
 from .models import _never
@@ -87,6 +89,29 @@ def queue_gate_step(config: "MergeQueueConfig") -> Optional["Step"]:
     if len(config.steps) == 1 and config.steps_dropped == 0:
         return config.steps[0]
     return None
+
+
+def effective_gate_timeout(
+    config: "MergeQueueConfig", step: "Step", worktree: Path, main_worktree: Optional[Path]
+) -> int:
+    """
+    The run timeout the queue gives this step, and the one its record key is computed at (#491).
+
+    An explicit step timeout_secs wins. Without one, a step that is byte-equal to the resolved full check
+    command resolves its timeout exactly as `checks validate` does (checkTimeoutSecs and its fallbacks), so the
+    key the queue looks up matches the key validate wrote; any other step keeps mutation_timeout_secs. Phase 7
+    passes this same value to run_step, so the keyed limit and the enforced limit cannot diverge.
+    """
+    if step.timeout_secs is not None:
+        return step.timeout_secs
+    resolution = resolve_check_detail(worktree, main_worktree, mode="full")
+    if resolution.command is None or step.cmd != resolution.command:
+        return config.mutation_timeout_secs
+    source_kind: ConfigKind = "project.yaml" if resolution.source == "project.yaml" else "repo-cache"
+    timeout, _source = resolve_check_timeout(
+        worktree, main_worktree, resolution.source_file, source_kind, resolution.source_scope,
+    )
+    return timeout
 
 
 def decide_gate_reuse(
@@ -171,7 +196,7 @@ def _decide(
         return Miss("stale-base", "origin/base moved or is not an ancestor of tested_sha")
 
     # 8. The expected full key, at the effective step timeout (the same value Phase 7 hands run_step).
-    step_timeout = step.timeout_secs if step.timeout_secs is not None else config.mutation_timeout_secs
+    step_timeout = effective_gate_timeout(config, step, worktree, main_worktree)
     expected = expected_full_key(worktree, main_worktree, timeout=step_timeout)
     if expected is None or expected.tree != tree:
         return Miss("digest-uncomputable", "expected full key could not be computed for this tree")

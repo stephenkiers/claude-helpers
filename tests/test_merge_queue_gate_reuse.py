@@ -42,6 +42,7 @@ from workflow.gate_reuse import (
     Reuse,
     queue_gate_step,
     decide_gate_reuse,
+    effective_gate_timeout,
 )
 from workflow.checks import (
     classify_full_record,
@@ -715,6 +716,23 @@ with tempfile.TemporaryDirectory() as tmp:
         and before.key.full_digest != after_timeout.key.full_digest,
         f"before={before} after={after_timeout}",
     )
+
+print("[Test 25b] effective_gate_timeout: an unset step timeout resolves like checks validate for the check command")
+with tempfile.TemporaryDirectory() as tmp:
+    work = _fixture_with_check(Path(tmp), "true")
+    cache_path = work / ".claude" / "repo-cache.json"
+    cache = json.loads(cache_path.read_text())
+    cache["checkTimeoutSecs"] = 777
+    cache_path.write_text(json.dumps(cache))
+    qconfig = MergeQueueConfig(base="main", steps=[Step(cmd="true")], mutation_timeout_secs=300)
+    explicit = MergeQueueConfig(base="main", steps=[Step(cmd="true", timeout_secs=450)], mutation_timeout_secs=300)
+    other = MergeQueueConfig(base="main", steps=[Step(cmd="echo other")], mutation_timeout_secs=300)
+    got = effective_gate_timeout(qconfig, qconfig.steps[0], work, work)
+    test_result("effective_gate_timeout: unset step timeout on the check command uses checkTimeoutSecs", got == 777, f"got={got}")
+    got = effective_gate_timeout(explicit, explicit.steps[0], work, work)
+    test_result("effective_gate_timeout: an explicit step timeout wins", got == 450, f"got={got}")
+    got = effective_gate_timeout(other, other.steps[0], work, work)
+    test_result("effective_gate_timeout: a non-check step keeps mutation_timeout_secs", got == 300, f"got={got}")
 
 print("[Test 26] validate_config_data: gate_reuse_disabled must be a boolean")
 with tempfile.TemporaryDirectory() as tmp:

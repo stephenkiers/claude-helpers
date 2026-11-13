@@ -33,7 +33,7 @@ from typing import List, Optional, Dict, Any, Tuple, Sequence, get_args
 
 from . import git
 from .checks import full_record_seen_for_tree
-from .gate_reuse import GateReuse, Miss, MissReason, Reuse, decide_gate_reuse
+from .gate_reuse import GateReuse, Miss, MissReason, Reuse, decide_gate_reuse, effective_gate_timeout
 from .git import abs_git_common_dir
 
 
@@ -2137,7 +2137,7 @@ def _phase_run_gate_and_assertions(
             step.cmd,
             cwd,
             log_path,
-            timeout_secs=step.timeout_secs if step.timeout_secs is not None else config.mutation_timeout_secs,
+            timeout_secs=effective_gate_timeout(config, step, cwd, main_worktree),
             lock_fd_to_inherit=lock_fd_to_inherit,
         )
 
