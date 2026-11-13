@@ -294,14 +294,14 @@ Round 2 and Round 3 authors report every added test's `<new id> | overlaps: <exi
 
 ## Amendment (2026-11-12): tests are a Round 2 deliverable; enforced at plan time and before Round 1 (#468)
 
-Tests are written by the Round 2 spec-blind author (ADR-0019 2026-11-12 amendment).
+Dated clarification (2026-11-12): from this date, tests are written by the Round 2 spec-blind author, not by Round 1 implementers. This section is the record of that change.
 
 - **Round 1 implementers never write tests.** They do not write tests in the `implement` step or the `fix` step.
 - **Plans carry test intent in "Tests (written spec-blind in Round 2)" as spec statements,** with no red-first requirement. Spec statements hold the expected values and exact strings to assert, never a red-on-base check. A non-empty Tests section forces Round 2 to run (the Round sizing override).
 - **Enforcement happens in two places,** both on `anti-cheat-scan.py`'s `is_test_path`:
   - `/expert-plan` Step 6: runs `plan-test-paths.py plan` after synthesis, with one bounded synthesis repair on a hit, then fail.
   - `/implement-with-haiku` Step 3 (preflight): runs `plan-test-paths.py units` before Round 1, over the finalized `units.json` in the run's own record directory.
-- **The scan's behaviour is unchanged.** Test-first ordering within a unit is no longer expressible under rule A.
+- **The scan's behaviour is unchanged.** Rule A is the red-first ordering rule that this amendment replaces: within a unit, a spec-blind test was committed before the unit's implementation and had to fail on the base first. That ordering was expressible under rule A. It is no longer expressible, because tests now belong to Round 2 and carry no red-first requirement.
 - **The D1 limitation: a planned change that breaks an existing test has no automatic owner.** The fix loop stops with `planned-change-breaks-test` instead of reverting, and the human takes over.
   - Two related shapes also stop before Round 1 for the same reason:
     - **Test-only plan.** If no non-test Round 1 work remains once test requirements are set aside, stop with `test-only-plan: no Round 1 work; tests are a Round 2 deliverable`. Do not invent a unit to satisfy `MIN_UNITS`.

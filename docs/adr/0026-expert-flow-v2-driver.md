@@ -248,6 +248,11 @@ The build is layered, and each layer is its own sub-issue and PR under #456. The
 before any merge path exists, and Layer 2 ends in STOP before merge. The layer list and acceptance criteria are
 in `docs/plans/expert-flow-v2-driver.md`.
 
+**Driver scope for test-path stops (ADR-0019 2026-11-12 amendment, #468).** The Layer 3 driver must carry
+both the plan-time check and the pre-Round-1 units check, and their named stop reasons: `plan-test-paths`,
+`test-path-in-units`, `test-only-plan`, `existing-test-edit` and `planned-change-breaks-test`. Each is a
+named stop. None is a retry, so the driver adds no recovery counter for them.
+
 ### 13. The walking skeleton comes before the state schema (D4)
 
 Before Layer 1's state schema is written, a minimal driver and stub are built and run. The skeleton uses a

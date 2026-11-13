@@ -202,6 +202,38 @@ Description.
         h.test_result("step_file_paths handles single file correctly",
                       result == ["README.md"], f"result={result}")
 
+        # Test case 4b: No backticks, annotation after a bare path
+        step_no_backtick = """### Step 4: Plain paths
+- **Files**: src/plain.py, docs/x.md (new)
+"""
+        result = sizing_module.step_file_paths(step_no_backtick)
+        h.test_result("step_file_paths with no backticks keeps the first token of each entry",
+                      result == ["src/plain.py", "docs/x.md"], f"result={result}")
+
+        # Test case 4c: Two Files lines, only the first is read
+        step_multi_files = """### Step 5: Two Files lines
+- **Files**: `src/first.py`
+- **Files**: `src/second.py`
+"""
+        result = sizing_module.step_file_paths(step_multi_files)
+        h.test_result("step_file_paths reads only the first Files line",
+                      result == ["src/first.py"], f"result={result}")
+
+        # Test case 4d: Empty Files line and the none placeholder both give no paths
+        step_empty_files = """### Step 6: Empty Files
+- **Files**:
+"""
+        result = sizing_module.step_file_paths(step_empty_files)
+        h.test_result("step_file_paths returns empty list for an empty Files line",
+                      result == [], f"result={result}")
+
+        step_none_files = """### Step 7: None placeholder
+- **Files**: none
+"""
+        result = sizing_module.step_file_paths(step_none_files)
+        h.test_result("step_file_paths drops the none placeholder",
+                      result == [], f"result={result}")
+
         # Test case 5: Verify sizing output is unchanged
         plan_for_sizing = create_plan(5, 2)
         plan_file = Path(tmp) / "plan_sizing_unchanged.md"

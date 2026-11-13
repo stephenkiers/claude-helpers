@@ -126,11 +126,15 @@ def extract_files_from_step(step_text: str) -> set:  # type: ignore[type-arg]
 def step_file_paths(step_text: str) -> List[str]:
     """Extract and clean file paths from a step's **Files**: line.
 
-    Builds on extract_files_from_step by further narrowing each entry to remove
-    annotations. For each entry:
-    - If it contains a backtick, keep text up to the first backtick
-    - Otherwise, keep the first whitespace-delimited token
-    - Drop empty results
+    This is a separate parser. It does not call extract_files_from_step, so the
+    two can drift apart. Behaviours, as implemented:
+    - Only the first `- **Files**:` line in the step is read. Later Files lines are ignored.
+    - The line's content is split on every comma, including commas inside backticks.
+    - Each entry has its surrounding backticks stripped. If a backtick remains, the
+      entry keeps the text before it. Otherwise it keeps its first whitespace-delimited token.
+    - Entries that are empty, or exactly `none`, `N/A` or `n/a`, are dropped. The check
+      is case-sensitive, so `None` passes through as a path.
+    - A step with no Files line returns an empty list.
 
     Returns a list (preserving order from the original line) of cleaned paths.
     """
