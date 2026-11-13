@@ -450,6 +450,11 @@ def test_rules_table_all_entries_classified():
         r"^(implementer-shortfall|implement run incomplete)": "implementer-shortfall in unit 1",
         r"^reduced run": "reduced run by fidelity",
         r"^fidelity audit failed": "fidelity audit failed: other",
+        r"^planned-change-breaks-test": "planned-change-breaks-test: tests/test_x.py",
+        r"^test-only-plan": "test-only-plan: no Round 1 work",
+        r"^existing-test-edit": "existing-test-edit: tests/test_x.py",
+        r"^test-path-in-units": "test-path-in-units: unit 1",
+        r"^plan-test-paths": "plan-test-paths: check could not run",
     }
     for pattern, stop_class, label in module.RULES:
         # Use pre-computed test samples for common patterns.

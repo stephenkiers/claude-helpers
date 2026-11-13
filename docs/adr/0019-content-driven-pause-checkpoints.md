@@ -294,7 +294,7 @@ Round 2 and Round 3 authors report every added test's `<new id> | overlaps: <exi
 
 ## Amendment (2026-11-12): tests are a Round 2 deliverable; enforced at plan time and before Round 1 (#468)
 
-Dated clarification (2026-11-12): from this date, tests are written by the Round 2 spec-blind author, not by Round 1 implementers. This section is the record of that change.
+Tests are written by the Round 2 spec-blind author (ADR-0019 2026-11-12 amendment). Dated clarification (2026-11-12): from this date, tests are written by the Round 2 spec-blind author, not by Round 1 implementers. This section is the record of that change.
 
 - **Round 1 implementers never write tests.** They do not write tests in the `implement` step or the `fix` step.
 - **Plans carry test intent in "Tests (written spec-blind in Round 2)" as spec statements,** with no red-first requirement. Spec statements hold the expected values and exact strings to assert, never a red-on-base check. A non-empty Tests section forces Round 2 to run (the Round sizing override).
