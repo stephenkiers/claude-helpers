@@ -927,9 +927,9 @@ COMPARE_OUT=$(python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare 
 COMPARE_EXIT=$?
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
-  REASON_FLAG=""
+  REASON_ARGS=()
   if printf '%s' "$COMPARE_OUT" | grep -q "ERROR probe-failed head-probe"; then
-    REASON_FLAG="--reason primary-checkout-drift: head-probe-failed"
+    REASON_ARGS=("--reason" "primary-checkout-drift: head-probe-failed")
   fi
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
     --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "none" \
@@ -938,7 +938,7 @@ if [[ $COMPARE_EXIT -ne 0 ]]; then
     --detail --warn-paths "<comma-separated WARN paths or empty>" \
     --ticket-match "<path>:<ticket-match|ticket-differs|ticket-absent>" \
     --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>" \
-    $REASON_FLAG
+    "${REASON_ARGS[@]}"
   exit $?
 fi
 ```
@@ -1322,15 +1322,15 @@ COMPARE_OUT=$(python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare 
 COMPARE_EXIT=$?
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
-  REASON_FLAG=""
+  REASON_ARGS=()
   if printf '%s' "$COMPARE_OUT" | grep -q "ERROR probe-failed head-probe"; then
-    REASON_FLAG="--reason primary-checkout-drift: head-probe-failed"
+    REASON_ARGS=("--reason" "primary-checkout-drift: head-probe-failed")
   fi
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
     --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "none" \
     ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
     --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \
-    $REASON_FLAG
+    "${REASON_ARGS[@]}"
   exit $?
 fi
 ```
@@ -1855,9 +1855,9 @@ COMPARE_OUT=$(python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare 
 COMPARE_EXIT=$?
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
-  REASON_FLAG=""
+  REASON_ARGS=()
   if printf '%s' "$COMPARE_OUT" | grep -q "ERROR probe-failed head-probe"; then
-    REASON_FLAG="--reason primary-checkout-drift: head-probe-failed"
+    REASON_ARGS=("--reason" "primary-checkout-drift: head-probe-failed")
   fi
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
     --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "${PRIOR_SPLIT_BASIS:-none}" \
@@ -1866,7 +1866,7 @@ if [[ $COMPARE_EXIT -ne 0 ]]; then
     --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \
     --detail --warn-paths "<comma-separated WARN paths or empty>" \
     --ticket-match "<path>:<ticket-match|ticket-differs|ticket-absent>" \
-    $REASON_FLAG \
+    "${REASON_ARGS[@]}" \
     --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>"
   exit $?
 fi
@@ -2208,13 +2208,13 @@ COMPARE_OUT=$(python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare 
 COMPARE_EXIT=$?
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
-  REASON_FLAG=""
+  REASON_ARGS=()
   if printf '%s' "$COMPARE_OUT" | grep -q "ERROR probe-failed head-probe"; then
-    REASON_FLAG="--reason primary-checkout-drift: head-probe-failed"
+    REASON_ARGS=("--reason" "primary-checkout-drift: head-probe-failed")
   fi
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
     --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "${PRIOR_SPLIT_BASIS:-none}" \
-    $REASON_FLAG \
+    "${REASON_ARGS[@]}" \
     --label "in Round 3 follow-up" \
     ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
     --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \
@@ -2732,9 +2732,9 @@ COMPARE_OUT=$(python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare 
 COMPARE_EXIT=$?
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
-  REASON_FLAG=""
+  REASON_ARGS=()
   if printf '%s' "$COMPARE_OUT" | grep -q "ERROR probe-failed head-probe"; then
-    REASON_FLAG="--reason primary-checkout-drift: head-probe-failed"
+    REASON_ARGS=("--reason" "primary-checkout-drift: head-probe-failed")
   fi
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
     --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "${PRIOR_SPLIT_BASIS:-none}" \
@@ -2744,7 +2744,7 @@ if [[ $COMPARE_EXIT -ne 0 ]]; then
     --detail --warn-paths "<comma-separated WARN paths or empty>" \
     --ticket-match "<path>:<ticket-match|ticket-differs|ticket-absent>" \
     --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>" \
-    $REASON_FLAG
+    "${REASON_ARGS[@]}"
   exit $?
 fi
 ```

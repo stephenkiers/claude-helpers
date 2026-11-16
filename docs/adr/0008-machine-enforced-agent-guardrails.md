@@ -710,8 +710,9 @@ SHA now fails (Q2 ruling), regardless of baseline vintage.
 `merge-base --is-ancestor` calls) is three-valued. D1 decision: an inconclusive probe (timeout, exit 128,
 or any exception) is exit 2 with Receipt Reason `primary-checkout-drift: head-probe-failed`. This is
 returned even when the compare's other sub-checks (status drift, planned-path overlap) would have reported
-exit 0. The fail Reason and stderr differ from the baseline-unavailable case per-the fail subcommand's
-`--reason` flag acceptance (Step 3 implementation).
+exit 0. The fail Receipt Reason differs from the baseline-unavailable case per-the fail subcommand's
+`--reason` flag acceptance (Step 3 implementation), but no other `fail` behaviour changes: stderr remains
+`FAILED: primary-checkout-drift baseline unavailable` for both cases.
 
 **Optional `branch` field in snapshot:** Each non-skipped checkout entry records `"branch": "<ref>"|null`
 (a ref string when on a branch, null when detached). Skipped entries have no `branch` key. The baseline

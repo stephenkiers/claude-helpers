@@ -22,7 +22,7 @@ Subcommands:
     - Print lines: FAIL|WARN|INFO|SKIP <path> [ticket-match|ticket-differs|ticket-absent]
     - HEAD movement rule: branch changed, non-ancestor move, no resolvable upstream, move not reachable from upstream, or move against baseline without "branch" key is FAIL <primary> head-moved
     - A fast-forward reachable from the upstream is INFO <primary> head-advanced <old>..<new>, exit 0
-    - Exit 0 clean, 1 drift (FAIL including head-moved), 2 error (probe failed including head-probe)
+    - Exit 0 clean, 1 drift, 2 error (probe failed including head-probe)
     - ERROR lines to stdout: baseline-unavailable, probe-failed, probe-failed head-probe, planned-set-unavailable
 
   fail --compare-exit <1|2> [--label <text>] [--receipt <path>] [--attempt <k>]
@@ -414,6 +414,7 @@ def cmd_compare(
         P = escape_control_chars(checkout_real)
 
         # 1. Branch check (only when baseline entry has "branch" key, including null value)
+        skip_remaining_head_checks = False
         if "branch" in baseline_entry:
             current_branch = git_symbolic_ref_head(checkout_real)
             if current_branch == "probe-failed":
@@ -428,49 +429,50 @@ def cmd_compare(
                 # Branch changed
                 print(f"FAIL {P} head-moved")
                 fail_paths.add(P)
-                continue  # Skip sub-steps 2 to 6 for this checkout
+                skip_remaining_head_checks = True  # Skip sub-steps 2 to 6 for this checkout
 
             # 2. Unchanged (sub-step 2 continued): if current_head == baseline_head, print no head-level line
-            if current_head == baseline_head:
-                pass  # No head-level line
-            else:
-                # 3. Skip legacy path (sub-step 3 continues)
-                # 4. Ancestry check (sub-step 4)
-                is_ancestor_result = git_is_ancestor(checkout_real, baseline_head, current_head)
-                if is_ancestor_result == "probe-failed":
-                    print("ERROR probe-failed head-probe", file=sys.stdout)
-                    return EXIT_ERROR
-                elif is_ancestor_result == "not-ancestor":
-                    # Baseline not an ancestor of current
-                    print(f"FAIL {P} head-moved")
-                    fail_paths.add(P)
-                    continue
-
-                # 5. Upstream check (sub-step 5)
-                upstream_sha = git_resolve_upstream(checkout_real)
-                if upstream_sha == "probe-failed":
-                    print("ERROR probe-failed head-probe", file=sys.stdout)
-                    return EXIT_ERROR
-                elif upstream_sha is None:
-                    # No upstream configured
-                    print(f"FAIL {P} head-moved")
-                    fail_paths.add(P)
-                    continue
-
-                # 6. Reachability check (sub-step 6)
-                is_current_ancestor_result = git_is_ancestor(checkout_real, current_head, upstream_sha)
-                if is_current_ancestor_result == "probe-failed":
-                    print("ERROR probe-failed head-probe", file=sys.stdout)
-                    return EXIT_ERROR
-                elif is_current_ancestor_result == "ancestor":
-                    # Fast-forward reachable from upstream
-                    info_line = f"INFO {P} head-advanced {baseline_head}..{current_head}"
-                    escaped_info = escape_control_chars(info_line)
-                    print(escaped_info)
+            if not skip_remaining_head_checks:
+                if current_head == baseline_head:
+                    pass  # No head-level line
                 else:
-                    # Not reachable from upstream (local commit not on upstream)
-                    print(f"FAIL {P} head-moved")
-                    fail_paths.add(P)
+                    # 3. Skip legacy path (sub-step 3 continues)
+                    # 4. Ancestry check (sub-step 4)
+                    is_ancestor_result = git_is_ancestor(checkout_real, baseline_head, current_head)
+                    if is_ancestor_result == "probe-failed":
+                        print("ERROR probe-failed head-probe", file=sys.stdout)
+                        return EXIT_ERROR
+                    elif is_ancestor_result == "not-ancestor":
+                        # Baseline not an ancestor of current
+                        print(f"FAIL {P} head-moved")
+                        fail_paths.add(P)
+                    else:
+                        # Ancestor check passed, continue to sub-step 5
+                        # 5. Upstream check (sub-step 5)
+                        upstream_sha = git_resolve_upstream(checkout_real)
+                        if upstream_sha == "probe-failed":
+                            print("ERROR probe-failed head-probe", file=sys.stdout)
+                            return EXIT_ERROR
+                        elif upstream_sha is None:
+                            # No upstream configured
+                            print(f"FAIL {P} head-moved")
+                            fail_paths.add(P)
+                        else:
+                            # Upstream check passed, continue to sub-step 6
+                            # 6. Reachability check (sub-step 6)
+                            is_current_ancestor_result = git_is_ancestor(checkout_real, current_head, upstream_sha)
+                            if is_current_ancestor_result == "probe-failed":
+                                print("ERROR probe-failed head-probe", file=sys.stdout)
+                                return EXIT_ERROR
+                            elif is_current_ancestor_result == "ancestor":
+                                # Fast-forward reachable from upstream
+                                info_line = f"INFO {P} head-advanced {baseline_head}..{current_head}"
+                                escaped_info = escape_control_chars(info_line)
+                                print(escaped_info)
+                            else:
+                                # Not reachable from upstream (local commit not on upstream)
+                                print(f"FAIL {P} head-moved")
+                                fail_paths.add(P)
         else:
             # 3. Legacy baseline (baseline entry has no "branch" key): strict fail on any HEAD change
             if current_head != baseline_head:
