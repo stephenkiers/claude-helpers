@@ -621,7 +621,8 @@ def main():
         # Check that if "must be empty" is mentioned with git log, it includes --not @{upstream} or equivalent
         if "must be empty" in impl_haiku_text and "git log" in impl_haiku_text:
             # Find the section with log and must be empty
-            relevant_section = impl_haiku_text[max(0, impl_haiku_text.find("git log") - 200):impl_haiku_text.find("git log") + 500]
+            anchor = impl_haiku_text.find("log --oneline <expected-HEAD>..HEAD")
+            relevant_section = impl_haiku_text[max(0, anchor - 200):anchor + 500]
             has_upstream_exclude = "--not @{upstream}" in relevant_section or "not on the upstream" in relevant_section.lower()
             h.test_result(
                 "git log check includes upstream exclusion",
