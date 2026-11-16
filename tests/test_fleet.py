@@ -140,7 +140,16 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         rc = Path(tmp) / "01-plan.md"
         rc.write_text("ATTEMPT: 1\n<!-- awaiting-answers: questions/plan-01.json -->")
-        h.test_result("unchanged settled receipt times out", fl.wait(rc, 0.2, 0.05) == "timeout")
+        h.test_result("already-settled receipt settles immediately (FLEET-WAIT-STALE)",
+                      fl.wait(rc, 0.2, 0.05) == "settled")
+        h.test_result("require_change: unchanged settled receipt times out",
+                      fl.wait(rc, 0.2, 0.05, require_change=True) == "timeout")
+        t0 = time.monotonic()
+        h.test_result("already-settled returns well before a long timeout",
+                      fl.wait(rc, 30, 5) == "settled" and time.monotonic() - t0 < 2)
+        rc.write_text("STUB: x\nDecision: PASS")
+        h.test_result("unsettled stub receipt still times out", fl.wait(rc, 0.2, 0.05) == "timeout")
+        rc.write_text("ATTEMPT: 1\n<!-- awaiting-answers: questions/plan-01.json -->")
         import threading
         settle = threading.Timer(0.1, lambda: rc.write_text("ATTEMPT: 1\nDecision: PASS"))
         settle.start()

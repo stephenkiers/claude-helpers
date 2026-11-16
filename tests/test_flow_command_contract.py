@@ -41,6 +41,7 @@ DOC_FILES = [
     FLOW_REFERENCE,
     REPO_ROOT / "commands" / "expert-plan.md",
     REPO_ROOT / "commands" / "expert-review.md",
+    REPO_ROOT / "commands" / "expert-flow-v2.md",
 ]
 SUBCOMMANDS = {
     "flow-redo": ("sanitize", "archive", "restore", "check"),

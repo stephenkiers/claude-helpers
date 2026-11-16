@@ -10,6 +10,10 @@ rewrite.
 - `rules.md`: one row per v1 rule, with its v1 line range in `commands/expert-flow.md`, its ADR-0023
   section and amendment date, its target layer, and its disposition. It also holds the Fleet state
   contract sub-table, the Overlapping-issue dispositions sub-table, and the ADR-0023 amendment index.
+- `skeleton-runbook.md`: the measurement procedure for the walking skeleton's interactive and headless
+  runs, evidence collection, definitions, cleanup and scrubbing (Step 8).
+- `skeleton-findings.md`: the measured (or `NOT MEASURED`) results of the walking-skeleton runs, one row per
+  item, with provenance and the coverage disclaimer (Step 10).
 
 ## Purpose
 
