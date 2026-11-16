@@ -141,7 +141,7 @@ def validate_v2_flow_path(home: Path, path: Path) -> Tuple[str, int]:
         raise FlowPathError(f"flow dir must be under {real_root}, got {real}")
 
     # Get the relative path from root
-    rel_path = Path(real).relative_to(root)
+    rel_path = Path(real).relative_to(real_root)
     parts = rel_path.parts
 
     if len(parts) != 2:

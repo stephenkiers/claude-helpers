@@ -21,8 +21,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
+from typing import Iterator, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -90,6 +92,38 @@ def init_v2_state(flow: Path, repo="test/repo", issue=123, worktree=None) -> Pat
         worktree = str(flow.parent / "worktree")
     with mutating(flow, create=InitSpec(repo=repo, issue=issue, worktree=worktree)) as locked:
         init_state(locked, InitSpec(repo=repo, issue=issue, worktree=worktree))
+    return flow
+
+
+@contextmanager
+def patched_home(home: Path) -> Iterator[None]:
+    """Point HOME (and so Path.home() and expanduser) at a temp home for in-process code under test."""
+    old = os.environ.get("HOME")
+    os.environ["HOME"] = str(home)
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = old
+
+
+def run_cli(home: Path, *args: str) -> Tuple[int, str, str]:
+    """Run the real driver entry point in a subprocess with HOME set to the temp home: (rc, stdout, stderr)."""
+    env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_SESSION_ID"}
+    env["HOME"] = str(home)
+    proc = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "flow_driver" / "__main__.py"), *args],
+        capture_output=True, text=True, env=env, cwd=str(home), timeout=120,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def cli_flow(home: Path, v1: bool = False, key: str = "owner_name", issue: int = 123) -> Path:
+    """A flow dir with a path shape the CLI accepts (<root>/<repo key>/<issue>-<slug>-<id>)."""
+    flow = (v1_root(home) if v1 else v2_root(home)) / key / f"{issue}-test-id"
+    flow.mkdir(parents=True, exist_ok=True)
     return flow
 
 
@@ -429,21 +463,6 @@ def test_13_lock_inode_stable():
         h.test_result("13: lock inode unchanged", ino1 is None or ino1 == ino2)
 
 
-def test_14_prelock_state_reread_under_lock():
-    """Test 14: State is re-read under lock; rewritten state is used."""
-    with temp_home() as tmp:
-        home = Path(tmp)
-        flow = make_v2_flow(home)
-        init_v2_state(flow)
-
-        # This is implicitly tested by the mutating context re-reading after lock
-        # We verify the classification changes if rewritten
-        with mutating(flow):
-            pass  # Pre-lock classification succeeds, lock acquired, re-read succeeds
-
-        h.test_result("14: state re-read under lock completes", True)
-
-
 def test_15_verifier_lock_released_after_call():
     """Test 15: After run_verifier completes, the lock can be acquired immediately."""
     with temp_home() as tmp:
@@ -615,33 +634,55 @@ def test_18b_record_spawn_advances_counter_atomically():
 # ---------------------------------------------------------------------------
 
 def test_19_v1_and_skeleton_refused():
-    """Test 19: resume on v1 or skeleton flows exits 1, with correct message."""
+    """Test 19: resume on v1 or skeleton flows exits 1 with `refused: <class>`, writing nothing on stdout."""
     with temp_home() as tmp:
         home = Path(tmp)
 
-        # V1 flow
-        v1_flow = make_v1_flow(home)
+        v1_flow = cli_flow(home, v1=True)
         (v1_flow / "state.json").write_text(json.dumps({"step": "plan"}))
+        rc, out, err = run_cli(home, "resume", "--flow", str(v1_flow))
+        h.test_result("19a: v1 resume exits 1", rc == 1, f"rc={rc} err={err!r}")
+        h.test_result("19a: v1 refusal line", "refused: v1-owned" in err, err)
+        h.test_result("19a: nothing on stdout", out == "", out)
 
-        result = classify_state(v1_flow)
-        h.test_result("19a: v1 flow classified V1Foreign", isinstance(result, V1Foreign))
-
-        # Skeleton flow
-        skel_flow = make_v2_flow(home)
+        skel_flow = cli_flow(home, key="skel_repo")
         (skel_flow / "state.json").write_text(json.dumps({"driver_format": "skeleton"}))
+        rc, out, err = run_cli(home, "resume", "--flow", str(skel_flow))
+        h.test_result("19b: skeleton resume exits 1", rc == 1, f"rc={rc} err={err!r}")
+        h.test_result("19b: skeleton refusal line", "refused: skeleton-owned" in err, err)
+        h.test_result("19b: nothing on stdout", out == "", out)
 
-        result = classify_state(skel_flow)
-        h.test_result("19b: skeleton flow classified SkeletonForeign", isinstance(result, SkeletonForeign))
+        with patched_home(home):
+            h.test_result("19c: v1 flow classified V1Foreign", isinstance(classify_state(v1_flow), V1Foreign))
+            h.test_result("19d: skeleton flow classified SkeletonForeign", isinstance(classify_state(skel_flow), SkeletonForeign))
+
+
+def test_19e_v2_state_under_v1_root_is_v1():
+    """Test 19e: a valid driver_format 2 state under the v1 root is still V1Foreign (the root decides, not the content)."""
+    with temp_home() as tmp:
+        home = Path(tmp)
+        v2_flow = make_v2_flow(home)
+        init_v2_state(v2_flow)
+        v1_flow = cli_flow(home, v1=True, key="owner_name", issue=7)
+        (v1_flow / "state.json").write_text((v2_flow / "state.json").read_text())
+
+        with patched_home(home):
+            h.test_result("19e: valid v2 state under v1 root is V1Foreign", isinstance(classify_state(v1_flow), V1Foreign))
+        rc, out, err = run_cli(home, "resume", "--flow", str(v1_flow))
+        h.test_result("19e: CLI refuses it as v1-owned", rc == 1 and "refused: v1-owned" in err, f"rc={rc} err={err!r}")
 
 
 def test_20_resume_no_state_refused():
-    """Test 20: resume on v2-root with no state.json exits 1 with no-state."""
+    """Test 20: resume on a v2-root flow with no state.json exits 1 with no-state."""
     with temp_home() as tmp:
         home = Path(tmp)
-        flow = make_v2_flow(home)
+        flow = cli_flow(home)
 
-        result = classify_state(flow)
-        h.test_result("20: no state.json classified NoState", isinstance(result, NoState))
+        h.test_result("20a: no state.json classified NoState", isinstance(classify_state(flow), NoState))
+        rc, out, err = run_cli(home, "resume", "--flow", str(flow))
+        h.test_result("20b: exits 1", rc == 1, f"rc={rc} err={err!r}")
+        h.test_result("20c: refusal line", "refused: no-state" in err, err)
+        h.test_result("20d: nothing on stdout", out == "", out)
 
 
 def test_21_double_init_refused():
@@ -665,31 +706,41 @@ def test_21_double_init_refused():
 
 
 def test_22_schema_invalid_refused():
-    """Test 22: state with driver_format: True is refused as schema-invalid."""
+    """Test 22: state with driver_format: True is refused as schema-invalid, and the CLI exits 1."""
     with temp_home() as tmp:
         home = Path(tmp)
-        flow = make_v2_flow(home)
+        flow = cli_flow(home)
         (flow / "state.json").write_text(json.dumps({
             "driver_format": True,
             "step": "plan",
             "status": "running"
         }))
 
-        result = classify_state(flow)
-        h.test_result("22: driver_format True is InvalidState", isinstance(result, InvalidState))
+        h.test_result("22a: driver_format True is InvalidState", isinstance(classify_state(flow), InvalidState))
+        rc, out, err = run_cli(home, "resume", "--flow", str(flow))
+        h.test_result("22b: exits 1", rc == 1, f"rc={rc} err={err!r}")
+        h.test_result("22c: refusal line", "refused: schema-invalid" in err, err)
+        h.test_result("22d: nothing on stdout", out == "", out)
 
 
 def test_23_skeleton_subcommands_refused_on_v2():
-    """Test 23: Skeleton subcommands refused on v2 flows."""
+    """Test 23: skeleton subcommands (next, answer, clear-live) are refused on a v2 flow, exit 1, v2-owned."""
     with temp_home() as tmp:
         home = Path(tmp)
-        flow = make_v2_flow(home)
-        init_v2_state(flow)
+        flow = cli_flow(home)
+        rc, out, err = run_cli(home, "init", "--flow", str(flow), "--worktree", str(home / "wt"))
+        h.test_result("23a: init exits 0", rc == 0, f"rc={rc} err={err!r}")
+        before = (flow / "state.json").read_text()
 
-        # Try a skeleton command on v2 flow (this should fail in the real CLI)
-        # For now, just verify the state is v2-owned
-        result = classify_state(flow)
-        h.test_result("23: v2 state is V2Owned", isinstance(result, V2Owned))
+        for label, args in (
+            ("next", ("next", "--flow", str(flow))),
+            ("answer", ("answer", "--flow", str(flow), "--text", "x")),
+            ("clear-live", ("clear-live", "--flow", str(flow), "--reason", "r")),
+        ):
+            rc, out, err = run_cli(home, *args)
+            h.test_result(f"23b: {label} exits 1", rc == 1, f"rc={rc} err={err!r}")
+            h.test_result(f"23b: {label} refusal line", "refused: v2-owned" in err, err)
+        h.test_result("23c: state.json unchanged", (flow / "state.json").read_text() == before)
 
 
 def test_24_readonly_commands_leave_unchanged():
@@ -718,34 +769,43 @@ def test_24_readonly_commands_leave_unchanged():
 
 
 def test_25_list_shows_v1_and_initializing():
-    """Test 25: list shows v1 flows and initializing dirs."""
+    """Test 25: `list` exits 0 and shows v1 flows and v2 initializing dirs."""
     with temp_home() as tmp:
         home = Path(tmp)
 
-        # V1 flow
-        v1_flow = make_v1_flow(home, "owner", 1)
+        v1_flow = cli_flow(home, v1=True, key="owner_name", issue=1)
         (v1_flow / "state.json").write_text(json.dumps({"step": "plan", "status": "running"}))
+        v2_init = cli_flow(home, key="owner_name", issue=2)
 
-        # V2 initializing dir (no state.json)
-        v2_init = make_v2_flow(home, "owner", 2)
-
-        # Both should be readable
-        v1_result = read_flow(v1_flow)
-        v2_init_result = read_flow(v2_init)
-
-        h.test_result("25a: v1 flow readable", v1_result is not None)
-        h.test_result("25b: initializing dir readable", v2_init_result is not None)
+        rc, out, err = run_cli(home, "list")
+        h.test_result("25a: list exits 0", rc == 0, f"rc={rc} err={err!r}")
+        lines = out.splitlines()
+        h.test_result("25b: v1 flow listed with step and status",
+                      f"v1\towner_name/{v1_flow.name}\tplan\trunning" in lines, out)
+        h.test_result("25c: initializing dir listed",
+                      f"v2\towner_name/{v2_init.name}\t-\tinitializing" in lines, out)
+        h.test_result("25d: read_flow still readable in process",
+                      read_flow(v1_flow) is not None and read_flow(v2_init) is not None)
 
 
 def test_26_status_json_readonly():
-    """Test 26: status --json on v1 flow exits 0 with owner v1."""
+    """Test 26: status --json on a v1 flow exits 0 with owner v1 and writes nothing."""
     with temp_home() as tmp:
         home = Path(tmp)
-        flow = make_v1_flow(home)
+        flow = cli_flow(home, v1=True)
         (flow / "state.json").write_text(json.dumps({"step": "plan", "status": "running"}))
+        names_before = sorted(p.name for p in flow.iterdir())
 
-        result = classify_state(flow)
-        h.test_result("26: v1 flow classified as V1Foreign", isinstance(result, V1Foreign))
+        rc, out, err = run_cli(home, "status", "--json", "--flow", str(flow))
+        h.test_result("26a: exits 0", rc == 0, f"rc={rc} err={err!r}")
+        try:
+            data = json.loads(out)
+        except ValueError:
+            data = {}
+        h.test_result("26b: owner is v1", data.get("owner") == "v1", out)
+        h.test_result("26c: nothing written", sorted(p.name for p in flow.iterdir()) == names_before)
+        with patched_home(home):
+            h.test_result("26d: classified V1Foreign", isinstance(classify_state(flow), V1Foreign))
 
 
 def test_26a_resolve_read_flow_dir():
@@ -1250,28 +1310,36 @@ def test_43_every_decide_logs_and_prints():
 
 
 def test_43a_exit_codes_per_outcome():
-    """Test 43a: Exit codes match spec (0 for acted-on, 3 for not-yet-built, 1 for refusal, 2 for usage)."""
+    """Test 43a: exit codes per outcome: 0 acted-on, 1 refusal, 2 usage, 3 not-yet-built."""
     with temp_home() as tmp:
         home = Path(tmp)
+        flow = cli_flow(home)
 
-        # Test by running CLI commands that should exit with specific codes
-        make_v2_flow(home)
+        # Exit 2: path inside neither root.
+        bad_flow = home / "not-in-root"
+        rc, out, err = run_cli(home, "resume", "--flow", str(bad_flow))
+        h.test_result("43a-1: usage error exits 2", rc == 2, f"rc={rc} err={err!r}")
+        h.test_result("43a-1: nothing on stdout", out == "", out)
 
-        # Exit 2: usage error (path not in either root)
-        bad_flow = Path(tmp) / "not-in-root"
-        result = subprocess.run(
-            [sys.executable, "-c", f"""
-import sys
-sys.path.insert(0, '{REPO_ROOT}')
-from scripts.flow_driver import cli
-try:
-    sys.exit(cli.main_resume('{bad_flow}', redo=None))
-except SystemExit as e:
-    sys.exit(e.code if e.code else 2)
-"""],
-            capture_output=True, timeout=5
-        )
-        h.test_result("43a-1: usage error exits 2", result.returncode == 2, f"rc={result.returncode}")
+        rc, out, err = run_cli(home, "init", "--flow", str(flow), "--worktree", str(home / "wt"))
+        h.test_result("43a-2: init exits 0", rc == 0 and out.startswith("INIT flow="), f"rc={rc} out={out!r} err={err!r}")
+
+        # Exit 3: a fresh init fires a rule that Layer 1 has not built.
+        rc, out, err = run_cli(home, "resume", "--flow", str(flow))
+        h.test_result("43a-3: not-yet-built exits 3", rc == 3, f"rc={rc} err={err!r}")
+        h.test_result("43a-3: stderr names the rule and layer", err.startswith("not-yet-built: rule-") and " is Layer " in err, err)
+        h.test_result("43a-3: stdout carries the RESUME line", "RESUME rule=" in out and "outcome=not-yet-built" in out, out)
+
+        # Exit 0: a live step with no receipt waits.
+        with mutating(flow) as locked:
+            record_spawn(locked, "plan", "nonce1")
+        rc, out, err = run_cli(home, "resume", "--flow", str(flow))
+        h.test_result("43a-4: acted-on wait exits 0", rc == 0, f"rc={rc} err={err!r}")
+        h.test_result("43a-4: RESUME line on stdout", "rule=rule-1-live-step" in out and "outcome=wait" in out, out)
+
+        # Exit 1: a second init on the same flow is refused.
+        rc, out, err = run_cli(home, "init", "--flow", str(flow), "--worktree", str(home / "wt"))
+        h.test_result("43a-5: refusal exits 1", rc == 1 and "refused: exists" in err, f"rc={rc} err={err!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -1316,7 +1384,6 @@ if __name__ == "__main__":
     test_11_locked_refuses_locked()
     test_12_concurrent_reader_safety()
     test_13_lock_inode_stable()
-    test_14_prelock_state_reread_under_lock()
     test_15_verifier_lock_released_after_call()
     test_16_verifier_timeout_retried_once()
     test_17_commit_after_context_exit_raises()
@@ -1325,6 +1392,7 @@ if __name__ == "__main__":
     test_18b_record_spawn_advances_counter_atomically()
 
     test_19_v1_and_skeleton_refused()
+    test_19e_v2_state_under_v1_root_is_v1()
     test_20_resume_no_state_refused()
     test_21_double_init_refused()
     test_22_schema_invalid_refused()
