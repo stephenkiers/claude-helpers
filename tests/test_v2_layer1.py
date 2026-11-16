@@ -14,8 +14,6 @@ Every path uses a temp HOME and never touches the real ~/.claude/.
 Run with: python3 tests/test_v2_layer1.py
 """
 
-import contextlib
-import fcntl
 import io
 import json
 import os
@@ -31,22 +29,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from _test_harness import REPO_ROOT, Harness
 
 from scripts.workflow import fsutil
-from scripts.flow_driver import state, receipts, resume, cli, flowdir
+from scripts.flow_driver import receipts, flowdir
 from scripts.flow_driver.state import (
-    DRIVER_FORMAT_V2, Step, Status, StopSource, PendingState, AttemptOutcome,
-    TransitionKey, PendingSpawn, V2State, LiveRecord, ReceiptFingerprint,
-    load_v2_state, v2_state_to_dict, classify_state,
+    TransitionKey, PendingSpawn, V2State, LiveRecord, load_v2_state, classify_state,
     V2Owned, V1Foreign, SkeletonForeign, InvalidState, NoState, ReadOnlyFlow,
-    read_flow, mutating, LockedFlow, reconcile, StateSchemaError,
-    record_spawn, record_cleared, init_state, InitSpec, apply_transition,
+    read_flow, mutating, reconcile, StateSchemaError,
+    record_spawn, record_cleared, init_state, InitSpec,
 )
 from scripts.flow_driver.receipts import (
-    receipt_path, classify, Classification,
-    rebuild_receipt, run_verifier, VerifierTimeout, RebuildRefused,
-    archive_stale, land, rerun_malformed, store_fingerprint,
+    run_verifier, VerifierTimeout,
 )
 from scripts.flow_driver.resume import (
-    RULES, ResumeFacts, decide, ResumeDecision,
+    RULES, ResumeFacts, decide,
 )
 
 h = Harness("v2 Layer 1 tests")
@@ -376,7 +370,8 @@ sys.path.insert(0, '{REPO_ROOT}')
 from scripts.flow_driver import cli
 sys.exit(cli.main_resume('{flow}', redo=None))
 """],
-                capture_output=True, text=True, timeout=5
+                capture_output=True, text=True, timeout=5,
+                env={**os.environ, "HOME": str(home)}
             )
             h.test_result("11a: exit code is 1", result.returncode == 1)
             h.test_result("11b: stderr contains refused: locked", "refused: locked" in result.stderr)
@@ -717,7 +712,10 @@ def test_24_readonly_commands_leave_unchanged():
         h.test_result("24b: state.json unchanged", state_before == state_after)
 
         # No lock file created by readonly operations
-        h.test_result("24c: no .driver.lock from readonly", not (flow / ".driver.lock").exists() or (flow / ".driver.lock").stat().st_size > 0)
+        (flow / ".driver.lock").unlink()
+        names_before = sorted(p.name for p in flow.iterdir())
+        read_flow(flow)
+        h.test_result("24c: no .driver.lock from readonly", not (flow / ".driver.lock").exists() and sorted(p.name for p in flow.iterdir()) == names_before)
 
 
 def test_25_list_shows_v1_and_initializing():
@@ -983,7 +981,7 @@ def test_32_receipt_parity_with_verifier():
             # Try verifier parser
             verifier_attempt, verifier_error = verifier._receipt_attempt(receipt_text), verifier._receipt_attempt_error(receipt_text)
             # For this simplified test, just verify the receipt text can be classified
-            h.test_result(f"32: receipt format tested", True)
+            h.test_result("32: receipt format tested", True)
 
 
 def test_33_stale_receipt_archived():
@@ -1005,7 +1003,7 @@ def test_33_stale_receipt_archived():
         with mutating(flow) as locked:
             classification = receipts.classify(locked, locked.state.pending_spawn)
 
-        h.test_result("33: receipt with matching attempt is Landed", isinstance(classification, Landed))
+        h.test_result("33: receipt with matching attempt is Landed", classification.state == "landed")
 
 
 def test_34_well_formed_receipt_lands():
@@ -1051,13 +1049,21 @@ def test_35_no_attempt_line_malformed_after_two_reads():
         with mutating(flow) as locked:
             classification1 = receipts.classify(locked, locked.state.pending_spawn)
 
-        h.test_result("35a: first read is InProgress", isinstance(classification1, InProgress))
+        h.test_result("35a: first read is InProgress", classification1.state == "in-progress")
+
+        # The caller stores the fingerprint (plan Step 5: classify never stores it)
+        with mutating(flow) as locked:
+            pending = locked.state.pending_spawn
+            receipts.store_fingerprint(
+                locked, TransitionKey(locked.state.run_id, "plan", pending.attempt),
+                "plan", pending.attempt, classification1.fingerprint,
+            )
 
         # Second read with same content
         with mutating(flow) as locked:
             classification2 = receipts.classify(locked, locked.state.pending_spawn)
 
-        h.test_result("35b: second read is Malformed", isinstance(classification2, Malformed))
+        h.test_result("35b: second read is Malformed", classification2.state == "malformed")
 
 
 def test_36_malformed_receipt_archived_reruns():
@@ -1154,6 +1160,9 @@ def test_40_one_test_per_rule():
     with temp_home() as tmp:
         home = Path(tmp)
 
+        flow = make_v2_flow(home)
+        init_v2_state(flow)
+
         # Test rule-3-done: status == "done"
         facts = ResumeFacts(
             redo_requested=False, pending_human_input=None, heal_in_progress=None,
@@ -1166,7 +1175,8 @@ def test_40_one_test_per_rule():
                 pr=None, worktree=None, healed=False, attempt_log={}, applied=(), extra={}
             )
         )
-        decision = decide(facts)
+        with mutating(flow) as locked:
+            decision = decide(locked, facts)
         h.test_result("40a: rule-3-done fires on status done", decision.rule == "rule-3-done")
 
 
@@ -1174,6 +1184,9 @@ def test_40a_predicates_shortcircuit_on_state():
     """Test 40a: Predicates short-circuit on known state."""
     with temp_home() as tmp:
         home = Path(tmp)
+
+        flow = make_v2_flow(home)
+        init_v2_state(flow)
 
         # With pending_spawn spawned, rule-2a-assess should be False regardless of step
         facts = ResumeFacts(
@@ -1188,7 +1201,8 @@ def test_40a_predicates_shortcircuit_on_state():
                 pr=None, worktree=None, healed=False, attempt_log={}, applied=(), extra={}
             )
         )
-        decision = decide(facts)
+        with mutating(flow) as locked:
+            decision = decide(locked, facts)
         h.test_result("40a: pending_spawn spawned does not fire rule-2a", decision.rule != "rule-2a-assess")
 
 
@@ -1209,7 +1223,7 @@ def test_41_live_step_no_receipt_wait():
                 subagent_gone=None, assess_due=None, passing_outstanding_check=None,
                 later={}, state=locked.state
             )
-            decision = decide(facts)
+            decision = decide(locked, facts)
 
         h.test_result("41: rule-1-live-step fires for spawned", decision.rule == "rule-1-live-step")
         h.test_result("41: outcome is wait", decision.outcome == "wait")
@@ -1228,7 +1242,7 @@ def test_42_fresh_init_fires_rule_1a():
                 subagent_gone=None, assess_due=None, passing_outstanding_check=None,
                 later={}, state=locked.state
             )
-            decision = decide(facts)
+            decision = decide(locked, facts)
 
         h.test_result("42: fresh init fires rule-1a", decision.rule == "rule-1a-pending-input")
 
@@ -1253,20 +1267,19 @@ def test_43_every_decide_logs_and_prints():
                     subagent_gone=None, assess_due=None, passing_outstanding_check=None,
                     later={}, state=locked.state
                 )
-                decision = decide(facts)
+                decision = decide(locked, facts)
         finally:
             output = sys.stdout.getvalue()
             sys.stdout = old_stdout
 
         # Check log
         log_file = flow / "driver-log.jsonl"
-        if log_file.exists():
-            log_lines = [json.loads(l) for l in log_file.read_text().strip().split('\n') if l]
-            has_rule_fired = any(l.get("event") == "resume-rule-fired" for l in log_lines)
-            h.test_result("43a: resume-rule-fired logged", has_rule_fired)
+        log_lines = [json.loads(l) for l in log_file.read_text().strip().split('\n') if l] if log_file.exists() else []
+        has_rule_fired = any(l.get("event") == "resume-rule-fired" for l in log_lines)
+        h.test_result("43a: resume-rule-fired logged", has_rule_fired)
 
         # Check print
-        h.test_result("43b: RESUME line printed", "RESUME rule=" in output or True)  # May not capture if called differently
+        h.test_result("43b: RESUME line printed", "RESUME rule=" in output)
 
 
 def test_43a_exit_codes_per_outcome():
@@ -1291,7 +1304,7 @@ except SystemExit as e:
 """],
             capture_output=True, timeout=5
         )
-        h.test_result("43a-1: usage error exits 2", result.returncode == 2 or True)  # May vary by implementation
+        h.test_result("43a-1: usage error exits 2", result.returncode == 2, f"rc={result.returncode}")
 
 
 # ---------------------------------------------------------------------------
