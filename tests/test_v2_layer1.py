@@ -35,14 +35,14 @@ from scripts.flow_driver import receipts, flowdir
 from scripts.flow_driver.state import (
     TransitionKey, PendingSpawn, V2State, LiveRecord, load_v2_state, classify_state,
     V2Owned, V1Foreign, SkeletonForeign, InvalidState, NoState, ReadOnlyFlow,
-    read_flow, mutating, reconcile, StateSchemaError,
+    read_flow, mutating, reconcile, StateSchemaError, Refusal,
     record_spawn, record_cleared, init_state, InitSpec,
 )
 from scripts.flow_driver.receipts import (
     run_verifier, VerifierTimeout,
 )
 from scripts.flow_driver.resume import (
-    RULES, ResumeFacts, decide,
+    RULES, ResumeFacts, decide, _rule_2a_assess,
 )
 
 h = Harness("v2 Layer 1 tests")
@@ -320,14 +320,20 @@ def test_8_unknown_keys_preserved():
         state_data["x_future"] = [1, 2]
         (flow / "state.json").write_text(json.dumps(state_data))
 
-        # Modify and commit
-        with mutating(flow) as locked:
-            # Just read and commit without changing anything
-            locked.state.extra["x_future"] = [1, 2]  # Ensure it's preserved
+        # Load from disk and commit through the real path; the key must come from the file, not the test
+        from scripts.flow_driver import state as state_module
+        old_now = state_module._utc_now
+        state_module._utc_now = lambda: "2031-01-01T00:00:00Z"
+        try:
+            with mutating(flow) as locked:
+                h.test_result("8a: loaded state carries the unknown key", locked.state.extra.get("x_future") == [1, 2])
+                locked.commit(locked.state)
+        finally:
+            state_module._utc_now = old_now
 
-        # Verify it survived
         new_data = json.loads((flow / "state.json").read_text())
-        h.test_result("8: unknown key preserved", new_data.get("x_future") == [1, 2])
+        h.test_result("8b: unknown key preserved", new_data.get("x_future") == [1, 2])
+        h.test_result("8c: commit really wrote (updated changed)", new_data["updated"] == "2031-01-01T00:00:00Z")
 
 
 def test_9_live_projection():
@@ -436,13 +442,30 @@ def test_12_concurrent_reader_safety():
                 )
                 locked.commit(new_state)
 
-        # Every read should succeed
+        # A reader thread runs while the main thread keeps committing; it must never see a torn file
+        import threading
+        stop = threading.Event()
+        failures = []
+        reads = [0]
+
+        def reader() -> None:
+            while not stop.is_set():
+                try:
+                    json.loads((flow / "state.json").read_text())
+                    reads[0] += 1
+                except (json.JSONDecodeError, OSError) as exc:
+                    failures.append(repr(exc))
+
+        t = threading.Thread(target=reader)
+        t.start()
         try:
-            for _ in range(100):
-                json.loads((flow / "state.json").read_text())
-            h.test_result("12: 100 concurrent reads never fail", True)
-        except json.JSONDecodeError as e:
-            h.test_result("12: concurrent reader safety", False, str(e))
+            for _ in range(60):
+                with mutating(flow) as locked:
+                    locked.commit(locked.state)
+        finally:
+            stop.set()
+            t.join()
+        h.test_result("12: concurrent reader never sees a torn file", not failures and reads[0] > 0, str(failures[:1]))
 
 
 def test_13_lock_inode_stable():
@@ -470,33 +493,29 @@ def test_15_verifier_lock_released_after_call():
         flow = make_v2_flow(home)
         init_v2_state(flow)
 
-        with mutating(flow) as locked:
-            # Create a dummy verifier script
-            verifier = Path(tmp) / "dummy_verifier.py"
-            verifier.write_text("import sys; sys.exit(0)")
-
-            try:
-                run_verifier(locked, [], verifier=verifier, timeout_s=2)
-            except Exception:
-                pass  # Verifier might fail, but lock should be released
-
-        # Try to acquire lock in subprocess
-        time.sleep(0.1)
-        result = subprocess.run(
-            [sys.executable, "-c", f"""
+        probe = f"""
 import fcntl
 import os
-lock_path = '{flow / ".driver.lock"}'
-fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC, 0o600)
+fd = os.open('{flow / ".driver.lock"}', os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC, 0o600)
 try:
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     print("acquired")
+except BlockingIOError:
+    print("busy")
 finally:
     os.close(fd)
-"""],
-            capture_output=True, text=True, timeout=5
-        )
-        h.test_result("15: lock released after verifier", "acquired" in result.stdout or result.returncode == 0)
+"""
+        with mutating(flow) as locked:
+            verifier = Path(tmp) / "dummy_verifier.py"
+            verifier.write_text("import sys; sys.exit(0)")
+            result_during = run_verifier(locked, [], verifier=verifier, timeout_s=5)
+            h.test_result("15a: verifier ran and exited 0", result_during.returncode == 0)
+            during = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=10)
+            h.test_result("15b: lock is really held inside mutating", "busy" in during.stdout, during.stdout + during.stderr)
+
+        # After the context exits the lock must be free
+        result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=10)
+        h.test_result("15c: lock released after verifier", "acquired" in result.stdout, result.stdout + result.stderr)
 
 
 def test_16_verifier_timeout_retried_once():
@@ -623,7 +642,7 @@ def test_18b_record_spawn_advances_counter_atomically():
 
             state_obj = json.loads((flow / "state.json").read_text())
             h.test_result("18b-1: state.json written exactly once for spawn",
-                         write_count[0] >= 1 and state_obj["attempts"]["plan"] == 1 and
+                         write_count[0] == 1 and state_obj["attempts"]["plan"] == 1 and
                          state_obj["pending_spawn"]["attempt"] == 1)
         finally:
             fsutil.atomic_write_text = old_atomic_write
@@ -694,12 +713,12 @@ def test_21_double_init_refused():
         init_v2_state(flow)
         run_id_1 = json.loads((flow / "state.json").read_text())["run_id"]
 
-        # Second init should be refused
+        # Second init should be refused with the "exists" class
         try:
             init_v2_state(flow)
             h.test_result("21a: second init should fail", False, "no refusal")
-        except Exception:
-            pass
+        except Refusal as exc:
+            h.test_result("21a: second init refused as exists", exc.refusal_class == "exists", exc.refusal_class)
 
         run_id_2 = json.loads((flow / "state.json").read_text())["run_id"]
         h.test_result("21b: same run_id (not reinitialized)", run_id_1 == run_id_2)
@@ -861,7 +880,9 @@ def test_27_reconcile_mismatch_logged():
 
         # Trigger reconcile
         with mutating(flow) as locked:
-            reconcile(locked)
+            result27 = reconcile(locked)
+        h.test_result("27a: per_step carries the mismatch, not Ok",
+                      isinstance(result27.per_step.get("plan"), dict) and result27.per_step["plan"]["missing_archives"] == [1])
 
         # Check log
         log_lines = []
@@ -940,10 +961,11 @@ def test_29_counter_repaired():
             reconcile(locked)
         log_after = (flow / "driver-log.jsonl").read_text() if (flow / "driver-log.jsonl").exists() else ""
 
-        # Count repair events before and after
-        repairs_before = log_before.count('"event":"attempt-counter-repaired"')
-        repairs_after = log_after.count('"event":"attempt-counter-repaired"')
-        h.test_result("29b: no additional repair", repairs_after == repairs_before or repairs_after == 1)
+        def repairs(text: str) -> int:
+            return sum(1 for ln in text.splitlines() if ln.strip() and json.loads(ln).get("event") == "attempt-counter-repaired")
+
+        h.test_result("29b: exactly one repair after both reconciles", repairs(log_before) == 1 and repairs(log_after) == 1,
+                      f"before={repairs(log_before)} after={repairs(log_after)}")
 
 
 def test_30_reconcile_no_repair_no_write():
@@ -1108,11 +1130,11 @@ def test_36_malformed_receipt_archived_reruns():
         receipt_path_plan.parent.mkdir(parents=True, exist_ok=True)
         receipt_path_plan.write_text("ATTEMPT: x\nDecision: OK\n<!-- step-end -->\nbody")
 
-        # Store fingerprint first (from first read)
+        # classify never stores a fingerprint; this call only shows the receipt is not landed
         with mutating(flow) as locked:
-            receipts.classify(locked, locked.state.pending_spawn)
+            h.test_result("36a: not landed", receipts.classify(locked, locked.state.pending_spawn).state != "landed")
 
-        # Second read triggers rerun
+        # rerun_malformed is called directly here; the two-read rule is covered by tests 35 and 47
         with mutating(flow) as locked:
             run_id = locked.state.run_id
             receipts.rerun_malformed(locked, TransitionKey(run_id, "plan", 1), "plan", 1)
@@ -1195,7 +1217,7 @@ def test_40_one_test_per_rule():
             redo_requested=False, pending_human_input=None, heal_in_progress=None,
             subagent_gone=None, assess_due=None, passing_outstanding_check=None,
             later={}, state=V2State(
-                driver_format=2, run_id="test", issue=1, repo="test",
+                driver_format=2, run_id="0123456789abcdef", issue=1, repo="test/repo",
                 created="2026-11-16T00:00:00Z", updated="2026-11-16T00:00:00Z",
                 step="plan", status="done", live=None, pending_spawn=None,
                 attempts={}, failures={}, stop_reason={}, stop_source={},
@@ -1220,7 +1242,7 @@ def test_40a_predicates_shortcircuit_on_state():
             redo_requested=False, pending_human_input=None, heal_in_progress=None,
             subagent_gone=None, assess_due=None, passing_outstanding_check=None,
             later={}, state=V2State(
-                driver_format=2, run_id="test", issue=1, repo="test",
+                driver_format=2, run_id="0123456789abcdef", issue=1, repo="test/repo",
                 created="2026-11-16T00:00:00Z", updated="2026-11-16T00:00:00Z",
                 step="assess", status="running", live=LiveRecord(step="assess", attempt=1, nonce="n"),
                 pending_spawn=PendingSpawn(step="assess", attempt=1, nonce="n", state="spawned", receipt_seen=None),
@@ -1231,6 +1253,12 @@ def test_40a_predicates_shortcircuit_on_state():
         with mutating(flow) as locked:
             decision = decide(locked, facts)
         h.test_result("40a: pending_spawn spawned does not fire rule-2a", decision.rule != "rule-2a-assess")
+        h.test_result("40a: _rule_2a_assess is False with a pending spawn", _rule_2a_assess(facts) is False)
+        from dataclasses import replace as _replace
+        idle = _replace(facts.state, pending_spawn=None, live=None)
+        h.test_result("40a: _rule_2a_assess is True at step assess with nothing pending", _rule_2a_assess(_replace(facts, state=idle)) is True)
+        ship = _replace(facts, state=_replace(idle, step="ship"))
+        h.test_result("40a: _rule_2a_assess at ship with unknown check is None (fail closed)", _rule_2a_assess(ship) is None)
 
 
 def test_41_live_step_no_receipt_wait():
@@ -1351,6 +1379,7 @@ def test_44_docs_updated():
     runbook_path = REPO_ROOT / "docs" / "v2-inventory" / "skeleton-runbook.md"
     rules_path = REPO_ROOT / "docs" / "v2-inventory" / "rules.md"
 
+    h.test_result("44-0: runbook and rules docs exist", runbook_path.exists() and rules_path.exists())
     if runbook_path.exists():
         runbook_text = runbook_path.read_text()
         h.test_result("44a: Narrowing Bash Layer 1 string removed",
