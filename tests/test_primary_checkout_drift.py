@@ -1506,7 +1506,7 @@ def main():
         )
         h.test_result(
             "head-advanced + drift: primary not in ERROR paths",
-            f"ERROR primary-checkout-drift" in stdout and str(primary_path.resolve()) not in stdout.split("ERROR primary-checkout-drift")[1].split("\n")[0],
+            "ERROR primary-checkout-drift" in stdout and str(primary_path.resolve()) not in stdout.split("ERROR primary-checkout-drift")[1].split("\n")[0],
             f"stdout={stdout}",
         )
     print()
