@@ -301,13 +301,14 @@ def _guard_skeleton_subcommand(flow_dir: Path) -> Optional[int]:
     Allow only a skeleton flow; refuse every other class. Returns exit code 1 if refused, None if allowed.
     """
     owned = classify_state(flow_dir)
-    if isinstance(owned, SkeletonForeign):
+    # A skeleton flow, or an unreadable state (the skeleton turns that into a STOP directive), is allowed
+    if isinstance(owned, (SkeletonForeign, InvalidState)):
         return None
     if isinstance(owned, V2Owned):
         return _refuse(f"refused: v2-owned: flow {flow_dir.name} is a v2 flow; use init/resume")
     if isinstance(owned, V1Foreign):
         return _refuse(f"refused: v1-owned: flow {flow_dir.name} is a v1 flow and is read-only to the v2 driver")
-    # Allowlist: anything that is not a skeleton flow (invalid or empty state included) is refused
+    # Allowlist: anything else (an empty directory included) is refused
     return _refuse(f"refused: not-skeleton: flow {flow_dir.name} is not a skeleton flow ({type(owned).__name__})")
 
 
