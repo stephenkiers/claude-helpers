@@ -548,7 +548,7 @@ def main():
     print()
 
     # ========================================================================
-    # Spec statements 20-22: Documentation checks (spec-blind, grep at test time)
+    # Documentation checks (plan Tests statements 20-22, grep at test time)
     # ========================================================================
     print("[Spec 20] Module docstring: contains head-advanced, head-probe, no 'FAIL including head-moved'")
     drift_script_text = DRIFT_SCRIPT.read_text()

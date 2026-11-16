@@ -811,7 +811,7 @@ def main():
 
     print()
 
-    # Spec-blind Round 2 tests: statements 1-3 (snapshot branch recording)
+    # Snapshot branch recording (plan Tests statements 1-3)
     print("[Test 17a] Snapshot records branch field: main branch -> 'refs/heads/main'")
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path = Path(tmpdir) / "primary"
