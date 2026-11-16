@@ -288,6 +288,12 @@ def _refuse(message: str) -> int:
     return 1
 
 
+def _usage_error(message: str) -> int:
+    """A usage error (exit 2): a flow path inside neither root, or a malformed path. Not a refusal."""
+    print(message, file=sys.stderr)
+    return 2
+
+
 def _guard_skeleton_subcommand(flow_dir: Path) -> Optional[int]:
     """
     Guard for skeleton subcommands (start, next, answer, clear-live).
@@ -435,7 +441,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
         # For now, we just use the key as the repo identifier
         repo = repo_key.replace("_", "/")
     except FlowPathError as exc:
-        return _refuse(f"error: {exc}")
+        return _usage_error(f"error: {exc}")
 
     # Validate that worktree is absolute
     if not worktree_path.is_absolute():
@@ -480,7 +486,7 @@ def _cmd_resume(args: argparse.Namespace) -> int:
     try:
         owner_type, resolved_path = resolve_read_flow_dir(Path.home(), flow_path)
     except FlowPathError as exc:
-        return _refuse(f"error: {exc}")
+        return _usage_error(f"error: {exc}")
 
     # For v1 flows, refuse as v1-owned
     if owner_type == "v1":
@@ -538,7 +544,7 @@ def _resume_locked(resolved_path: Path, redo_step: Optional[str]) -> int:
 def _cmd_status(args: argparse.Namespace) -> int:
     """Print JSON status of a flow.
 
-    Exit code: 0 (always)
+    Exit codes: 0 on success; 2 for a flow path inside neither root (usage error).
     """
     flow_path = Path(args.flow)
 
@@ -546,7 +552,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     try:
         owner_type, resolved_path = resolve_read_flow_dir(Path.home(), flow_path)
     except FlowPathError as exc:
-        return _refuse(f"error: {exc}")
+        return _usage_error(f"error: {exc}")
 
     # Read the flow without locking
     flow_view = read_flow(resolved_path)

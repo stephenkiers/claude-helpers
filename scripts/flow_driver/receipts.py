@@ -6,7 +6,7 @@ classification (into Absent, InProgress, Landed, Stale, Malformed), storage in a
 verifier subprocess wrapper. The verifier is called only from mutating commands, requiring a LockedFlow.
 
 Well-formedness (Step 5, refined Q2 = C):
-  - exactly one line starts with ATTEMPT:, with value matching ^[1-9][0-9]*$
+  - exactly one line starts with ATTEMPT:, and its value after strip() matches ^[1-9][0-9]*$
   - exactly one line matches ^Decision: (OK|FAILED)\\s*$
   - the text contains <!-- step-end -->
   - the verifier's _receipt_attempt returns the same integer and _receipt_attempt_error is False
@@ -19,7 +19,7 @@ Classification rules (two-read stability):
   - Malformed: incomplete, fingerprint stable across two invocations (== pending.receipt_seen)
 
 Transitions via apply_transition:
-  - land: once-per-attempt, moves receipt to archive/<step>/a<k>.landed.md
+  - land: once-per-attempt, moves receipt to archive/<step>/a<k>.landed.md, pending -> receipt-landed
   - archive_stale: repeatable, moves to archive/<step>/a<k>.stale.<sha256[:12]>.md
   - rerun_malformed: once-per-attempt, moves to archive/<step>/a<k>.malformed.md, returns rerun decision
   - store_fingerprint: repeatable, stores receipt_seen in pending_spawn (run before archive_stale/land to detect InProgress vs Malformed)
@@ -27,12 +27,15 @@ Transitions via apply_transition:
 Python 3.8 floor: no match statements, no f-strings with = debug syntax.
 """
 
+import dataclasses
 import hashlib
+import importlib.util
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Literal, NamedTuple, Optional, Sequence
+from types import ModuleType
+from typing import List, Literal, NamedTuple, Optional, Sequence
 
 from .state import LockedFlow, PendingSpawn, ReceiptFingerprint, Step, TransitionKey, V2State, apply_transition
 
@@ -51,6 +54,21 @@ _STEP_INDICES = {
     "merge": "09",
 }
 
+# The strict ATTEMPT value: a positive integer with no leading zero (Q2 = C).
+_ATTEMPT_VALUE = re.compile(r"[1-9][0-9]*")
+_DECISION_LINE = re.compile(r"^Decision: (OK|FAILED)\s*$")
+_STEP_END = "<!-- step-end -->"
+_VERIFIER_PATH = Path(__file__).parent.parent / "flow-verify-receipt.py"
+_verifier_module: Optional[ModuleType] = None
+
+
+class Receipt(NamedTuple):
+    """A parsed, well-formed step receipt."""
+    step: Step
+    attempt: int
+    decision: Literal["OK", "FAILED"]
+    rebuilt: bool
+
 
 def receipt_path(flow_dir: Path, step: Step) -> Path:
     """Path to the receipt for step: steps/<NN>-<step>.md."""
@@ -58,45 +76,67 @@ def receipt_path(flow_dir: Path, step: Step) -> Path:
     return flow_dir / "steps" / f"{idx}-{step}.md"
 
 
+def _load_verifier() -> ModuleType:
+    """Load flow-verify-receipt.py once; it is the authoritative ATTEMPT parser (one parser, Step 5)."""
+    global _verifier_module
+    if _verifier_module is None:
+        spec = importlib.util.spec_from_file_location("flow_verify_receipt", _VERIFIER_PATH)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load verifier from {_VERIFIER_PATH}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _verifier_module = module
+    return _verifier_module
+
+
+def _attempt_lines(text: str) -> List[str]:
+    return [ln for ln in text.split("\n") if ln.startswith("ATTEMPT:")]
+
+
 def _get_receipt_attempt(text: str) -> Optional[int]:
-    """Extract ATTEMPT from receipt (via shared parser). Returns None when absent or invalid."""
-    # This wraps the verifier's _receipt_attempt function
-    for line in text.split("\n"):
-        if line.startswith("ATTEMPT:"):
-            attempt_str = line.split(":", 1)[1].strip()
-            try:
-                parsed = int(attempt_str)
-                return parsed if parsed >= 1 else None
-            except ValueError:
-                return None
-    return None
+    """
+    The strict ATTEMPT value: exactly one ATTEMPT: line whose value after strip() matches ^[1-9][0-9]*$.
+
+    Returns None when absent, duplicated, non-numeric, zero or leading-zero. Leading zeros are rejected here
+    even though the verifier accepts them, so "ATTEMPT: 02" is incomplete and re-runs (Q2 = C).
+    """
+    lines = _attempt_lines(text)
+    if len(lines) != 1:
+        return None
+    value = lines[0].split(":", 1)[1].strip()
+    if not _ATTEMPT_VALUE.fullmatch(value):
+        return None
+    return int(value)
 
 
 def _receipt_attempt_error(text: str) -> bool:
-    """True when receipt has ATTEMPT: line but it's not a valid integer >= 1."""
-    has_line = any(ln.startswith("ATTEMPT:") for ln in text.split("\n"))
-    return has_line and _get_receipt_attempt(text) is None
+    """True when receipt has ATTEMPT: line but it's not a valid integer >= 1 (verifier-compatible)."""
+    verifier = _load_verifier()
+    return bool(verifier._receipt_attempt_error(text))
 
 
-def _is_well_formed(text: str) -> bool:
-    """Check if receipt meets all well-formedness criteria."""
-    # Count ATTEMPT: lines
-    attempt_lines = [ln for ln in text.split("\n") if ln.startswith("ATTEMPT:")]
-    if len(attempt_lines) != 1:
-        return False
-    # Check the ATTEMPT value
+def parse_receipt(step: Step, text: str) -> Optional[Receipt]:
+    """
+    Parse a receipt into a Receipt when it is well-formed; None when it is incomplete (Q2 = C).
+
+    The verifier is the authoritative parser: its _receipt_attempt must return the same integer as the strict
+    driver parse, and its _receipt_attempt_error must be False.
+    """
+    attempt = _get_receipt_attempt(text)
+    if attempt is None:
+        return None
     if _receipt_attempt_error(text):
-        return False
-    if _get_receipt_attempt(text) is None:
-        return False
-    # Check for exactly one Decision: line
-    decision_lines = [ln for ln in text.split("\n") if re.match(r"^Decision: (OK|FAILED)\s*$", ln)]
-    if len(decision_lines) != 1:
-        return False
-    # Check for step-end marker
-    if "<!-- step-end -->" not in text:
-        return False
-    return True
+        return None
+    if _load_verifier()._receipt_attempt(text) != attempt:
+        return None
+    decisions = [m.group(1) for m in (_DECISION_LINE.match(ln) for ln in text.split("\n")) if m is not None]
+    if len(decisions) != 1:
+        return None
+    if _STEP_END not in text:
+        return None
+    decision: Literal["OK", "FAILED"] = "OK" if decisions[0] == "OK" else "FAILED"
+    rebuilt = any(ln.strip() == "REBUILT: yes" for ln in text.split("\n"))
+    return Receipt(step=step, attempt=attempt, decision=decision, rebuilt=rebuilt)
 
 
 class Classification(NamedTuple):
@@ -104,6 +144,7 @@ class Classification(NamedTuple):
     state: Literal["absent", "in-progress", "landed", "stale", "malformed"]
     attempt: Optional[int] = None
     fingerprint: Optional[ReceiptFingerprint] = None
+    receipt: Optional[Receipt] = None
 
 
 class RebuildRefused(Exception):
@@ -152,13 +193,12 @@ def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
     fingerprint = _compute_fingerprint(text)
 
     # Well-formed: Landed or Stale
-    if _is_well_formed(text):
-        attempt = _get_receipt_attempt(text)
-        assert attempt is not None  # _is_well_formed guarantees this
-        if attempt == pending.attempt:
-            return Classification(state="landed", attempt=attempt, fingerprint=fingerprint)
+    receipt = parse_receipt(pending.step, text)
+    if receipt is not None:
+        if receipt.attempt == pending.attempt:
+            return Classification(state="landed", attempt=receipt.attempt, fingerprint=fingerprint, receipt=receipt)
         else:
-            return Classification(state="stale", attempt=attempt, fingerprint=fingerprint)
+            return Classification(state="stale", attempt=receipt.attempt, fingerprint=fingerprint, receipt=receipt)
 
     # Incomplete: InProgress or Malformed
     if pending.receipt_seen is None or fingerprint != pending.receipt_seen:
@@ -173,25 +213,29 @@ def land(locked: LockedFlow, key: TransitionKey, step: Step, attempt: int) -> No
     """
     Archive a well-formed landed receipt and record the attempt as receipt-landed.
 
-    Transitions: pending_spawn.state -> receipt-landed, live -> None, attempt_log[attempt] = receipt-landed.
+    Transitions: pending_spawn.state -> receipt-landed (live is projected to null by commit),
+    attempt_log[attempt] = receipt-landed. pending_spawn itself is kept, so the landing is visible.
     """
     path = receipt_path(locked.path, step)
     archive_dir = locked.path / "archive" / step
 
     def _do_land(_: LockedFlow, state: V2State) -> V2State:
+        pending = state.pending_spawn
+        if pending is None or (pending.step, pending.attempt) != (step, attempt):
+            raise RuntimeError(f"land: no pending spawn for {step} attempt {attempt}")
+
         # Move receipt to archive
         archive_dir.mkdir(parents=True, exist_ok=True)
         archive_path = archive_dir / f"a{attempt}.landed.md"
         if path.exists():
             path.rename(archive_path)
 
-        # Update state: land the attempt, null pending_spawn and live
-        import dataclasses
+        # Update state: the pending spawn is receipt-landed (live null via the D1 projection)
         outcomes = {s: dict(per_step) for s, per_step in state.attempt_log.items()}
         outcomes.setdefault(step, {})[attempt] = "receipt-landed"  # type: ignore[arg-type]
         new_state = dataclasses.replace(
             state,
-            pending_spawn=None,
+            pending_spawn=dataclasses.replace(pending, state="receipt-landed"),
             attempt_log=outcomes,
         )
         return new_state
@@ -248,7 +292,6 @@ def rerun_malformed(locked: LockedFlow, key: TransitionKey, step: Step, attempt:
             path.rename(archive_path)
 
         # Update state: clear pending, record malformed outcome
-        import dataclasses
         outcomes = {s: dict(per_step) for s, per_step in state.attempt_log.items()}
         outcomes.setdefault(step, {})[attempt] = "receipt-malformed"  # type: ignore[arg-type]
         new_state = dataclasses.replace(
@@ -271,7 +314,6 @@ def store_fingerprint(locked: LockedFlow, key: TransitionKey, step: Step, attemp
     Used to detect two-read stability for InProgress/Malformed classification.
     """
     def _do_store_fingerprint(_: LockedFlow, state: V2State) -> V2State:
-        import dataclasses
         if state.pending_spawn is None or state.pending_spawn.step != step or state.pending_spawn.attempt != attempt:
             raise RuntimeError(f"store_fingerprint: no matching pending spawn for {key.step} attempt {key.attempt}")
 
@@ -291,22 +333,27 @@ def store_fingerprint(locked: LockedFlow, key: TransitionKey, step: Step, attemp
     )
 
 
-def rebuild_receipt(locked: LockedFlow, key: TransitionKey, step: Step, attempt: int, source: Optional[object], decision: str, body: str) -> Path:
+def rebuild_receipt(
+    locked: LockedFlow,
+    key: TransitionKey,
+    source: Optional[Receipt],
+    decision: Literal["OK", "FAILED"],
+    body: str,
+) -> Path:
     """
     Write a rebuilt receipt to archive (ADR-0026 §9 self-heal rule).
 
-    Raises RebuildRefused if source is not None, source.decision == "FAILED" and decision == "OK".
-    Writes archive/<step>/a<k>.rebuilt.md. Never overwrites the step receipt or archive. Logs a separate
-    receipt-rebuilt event.
+    step and attempt come from key (TransitionKey(run_id, step, attempt)). Raises RebuildRefused if source is
+    not None, source.decision == "FAILED" and decision == "OK". Writes archive/<step>/a<k>.rebuilt.md, never
+    the step receipt and never an existing archive name. Logs a separate receipt-rebuilt event.
     """
     # Check the invariant: cannot turn FAILED into OK
-    if source is not None:
-        if hasattr(source, "decision") and source.decision == "FAILED" and decision == "OK":
-            raise RebuildRefused("cannot rebuild FAILED receipt with OK decision")
+    if source is not None and source.decision == "FAILED" and decision == "OK":
+        raise RebuildRefused("cannot rebuild FAILED receipt with OK decision")
 
-    archive_dir = locked.path / "archive" / step
+    archive_dir = locked.path / "archive" / key.step
     archive_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = archive_dir / f"a{attempt}.rebuilt.md"
+    archive_path = archive_dir / f"a{key.attempt}.rebuilt.md"
 
     # Build the rebuilt receipt text
     rebuilt_text = f"REBUILT: yes\nDecision: {decision}\n\n{body}\n"
@@ -327,7 +374,7 @@ def run_verifier(locked: LockedFlow, args: Sequence[str], *, timeout_s: float = 
     a second consecutive timeout in the same invocation is refused.
     """
     if verifier is None:
-        verifier = Path(__file__).parent.parent / "flow-verify-receipt.py"
+        verifier = _VERIFIER_PATH
 
     try:
         result = subprocess.run(
