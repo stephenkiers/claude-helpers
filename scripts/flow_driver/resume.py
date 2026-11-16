@@ -201,7 +201,7 @@ def _rule_1_action(locked: LockedFlow, pending: PendingSpawn) -> Literal["wait",
     - Stale -> archive_stale, then wait
     - Malformed -> rerun_malformed, then rerun
     """
-    key = TransitionKey(locked.state.run_id, pending.step, pending.attempt)
+    key = TransitionKey(locked.require_state().run_id, pending.step, pending.attempt)
 
     # Roll forward a move that crashed between the archive rename and the state commit: the receipt is gone
     # but its archive exists while pending_spawn still says live.
