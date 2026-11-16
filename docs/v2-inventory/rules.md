@@ -13,12 +13,12 @@ Disposition values: **port, pinned by test** (layer named) or **dropped, reason*
 | v1 lines | Area | ADR section / amendment | Target layer | Disposition |
 |---|---|---|---|---|
 | 995-1187 | The step loop: spawn each step, run the verifier, fidelity audit and gate in order, advance `STEP` only after `WRITE-STATE` | ADR base text; 2026-10-13 gated Rebase, 2026-10-14 more human in the loop | Layer 2 (Step 9) | port, pinned by test |
-| 853-956 | Flow state: `state.json` keys (`step`, `status`, `live`, `attempts`, `failures`, `stop_reason`, `stop_source`, `flags`, `pr`, `worktree`, `healed`, `redo_archive`, `skill_retries`) | ADR base text; 2026-10-27 assess keys; 2026-10-29 #380 `healed` | Layer 1 (Step 8) | port, pinned by test (field contract) |
+| 853-956 | Flow state: `state.json` keys (`step`, `status`, `live`, `attempts`, `failures`, `stop_reason`, `stop_source`, `flags`, `pr`, `worktree`, `healed`, `redo_archive`, `skill_retries`) | ADR base text; 2026-10-27 assess keys; 2026-10-29 #380 `healed` | Layer 1 (Step 8) | port, pinned by test (state.py: v2 state schema; v1 field contract retained) |
 | 957-994 | Step list and order (`worktree` through `merge`) | ADR base text | Layer 2 (Step 9) | port, pinned by test |
-| 1188-1199 | Orchestrator-written receipts (`steps/<NN>-<step>.md`) | ADR section 2.2 (2026-10-14, #276) | Layer 1 (Step 8) | port, pinned by test |
-| 1308-1327 | Re-entry pre-checks | ADR base text | Layer 1 (Step 8) | port, pinned by test |
-| 1188-1199 (receipt contract, used by 995-1187) | `Decision: OK` / `FAILED`, `ATTEMPT`, `CHECK`/`CHECK_EXIT`/`CHECK_SHA`, `RUN_KEY`/`RECEIPT_CONTRACT` keys | 2026-10-26 #338; 2026-10-29 #346 | Layer 1 (Step 8) | port, pinned by test |
-| 1897-1928 | Attempt logging and `attempts[STEP]` counting; first-attempt identity floor for plan and review freshness | 2026-10-21 #310 (counted from disk by attempt) | Layer 1 (Step 8) | port, pinned by test |
+| 1188-1199 | Orchestrator-written receipts (`steps/<NN>-<step>.md`) | ADR section 2.2 (2026-10-14, #276) | Layer 1 (Step 8) | port, pinned by test (receipts.py: receipt classification and archive) |
+| 1308-1327 | Re-entry pre-checks | ADR base text | Layer 2 (Step 9) | port, pinned by test (spawn gating; ship case Layer 3) |
+| 1188-1199 (receipt contract, used by 995-1187) | `Decision: OK` / `FAILED`, `ATTEMPT`, `CHECK`/`CHECK_EXIT`/`CHECK_SHA`, `RUN_KEY`/`RECEIPT_CONTRACT` keys | 2026-10-26 #338; 2026-10-29 #346 | Layer 1 (Step 8) | port, pinned by test (receipts.py: well-formedness and verifier parity) |
+| 1897-1928 | Attempt logging and `attempts[STEP]` counting; first-attempt identity floor for plan and review freshness | 2026-10-21 #310 (counted from disk by attempt) | Layer 1 (Step 8) | port, pinned by test (state.py: reconcile and counter repair) |
 | 2015-2034 (deps) | Deps precondition: `deps ensure` before worktree, implement, fix and verify; a manifest change stops for approval | 2026-11-01 #417 | Layer 2 (Step 9) | port, pinned by test |
 | 1953-1993 | Deps precondition block (`deps ensure`, `commands.install`) | 2026-11-01 #417 | Layer 2 (Step 9) | port, pinned by test |
 | 1994-2328 | Per-step details (worktree, track, plan, implement, review, fix, verify, ship, merge) | ADR base text; many amendments (see index) | Layers 2 and 3 | port, pinned by test |
@@ -32,7 +32,7 @@ Order matters. Rule 1b (heal in progress) runs before rules 4 and 5, so a heal i
 | v1 lines | Rule | ADR section / amendment | Target layer | Disposition |
 |---|---|---|---|---|
 | 546 | Rule 0: redo entry (`--redo <STEP>` only), runs before rule 1 | 2026-10-20 #286 | Layer 3 (Step 10) | port, pinned by test |
-| 547-555 | Rule 1: live step, a previous session's step agent still running | ADR base text; 2026-10-14 more human in the loop | Layer 1 (Step 8) | port, pinned by test |
+| 547-555 | Rule 1: live step, a previous session's step agent still running | ADR base text; 2026-10-14 more human in the loop | Layer 1 (Step 8) | port, pinned by test (resume.py: rule 1 decision and receipts.classify outcomes) |
 | 556-602 | Rule 2: `status: paused` at a step gate (`plan`, `implement`, `review`, `fix`, `verify`) | 2026-10-16 third (step gates opt-in); 2026-10-16 second (`taken-over`) | Layer 3 (Step 10) | port, pinned by test |
 | 603-604 | Rule 2a: assess stage (`STEP` is `assess`, or `ship`/`merge` with no passing outstanding check) | 2026-10-27 #383 | Layer 3 (Step 10) | port, pinned by test |
 | 605 | Rule 3: `status: done` prints `flow already done`; no telemetry | ADR base text | Layer 2 (Step 9) | port, pinned by test |
@@ -94,7 +94,7 @@ Order matters. Rule 1b (heal in progress) runs before rules 4 and 5, so a heal i
 | 2302-2307 | Healed run: the gate is always asked, even under `--auto-merge` (any `HEAL:` record, `healed: true`, or a `Flow-Heal:` commit) | 2026-10-29 #380 | Layer 3 (Step 10) | port, pinned by test (first test in Layer 3, per the plan) |
 | 2308-2316 | Merge gate question: Merge, Hold, Take over; fleet parks it as a `gate` ask | 2026-10-29 #380; 2026-11-02 #421 | Layer 3 (Step 10) | port, pinned by test |
 | 91-96 | `--auto-merge` per-run only; a healed run suspends it | 2026-10-29 #380 | Layer 3 (Step 10) | port, pinned by test |
-| 2467 | No stored default for `--auto-merge`; resume never restores it | ADR base text | Layer 1 (Step 8) | port, pinned by test |
+| 2467 | No stored default for `--auto-merge`; resume never restores it | ADR base text | Layer 3 (Step 10) | port, pinned by test (Rule 9: flags.auto_merge restoration) |
 | 97-103 | `--gates` stored per flow; inherited by epic children | 2026-10-16 third | Layer 3 (Step 10) | port, pinned by test |
 | 2440-2451 | Exit paths (Hold at merge gate, Pause at step gate, Take over, Abort, Done) | ADR base text | Layer 2 (Step 9) | port, pinned by test |
 
@@ -158,6 +158,70 @@ Also read by `heal.py` through the flow dir and not through `state.json`: `steps
 `HEAL:` records and `fleet-ask.json` (`status: open`, `step`, `header`). `fleet-ask.json` bytes are
 hashed by `stop_key_for`, so its shape must match what `fleet.py` reads (Step 11).
 
+## 2.1. v2 state schema (Layer 1, scripts/flow_driver/state.py)
+
+The v2 `state.json` schema (driver_format: 2) is defined by the frozen dataclass in `scripts/flow_driver/state.py`. Every key listed below is strict; unknown top-level keys are preserved verbatim in `extra` (Q5 = A). The schema answers skeleton findings: AC2-K1-kill, AC2-K2-kill (live projection), PHANTOM-LIVE, ORPHAN-OVERLAP (flock fd non-inheritable), LATE-RECEIPT, RESUME-b, PERMISSION-VOID (attempt_log), and S-D1 (coverage disclaimer); see `docs/v2-inventory/skeleton-findings.md`.
+
+### v2 state.json keys and types
+
+| Key | Type | Meaning |
+|---|---|---|
+| `driver_format` | `int` | Always 2 |
+| `run_id` | `str` | 16 hex characters, minted by `init` |
+| `issue` | `int` | Ticket number |
+| `repo` | `str` | Repo key `OWNER/NAME` |
+| `created` | `str` | ISO format `YYYY-MM-DDTHH:MM:SSZ`, set at init, never changed |
+| `updated` | `str` | ISO format `YYYY-MM-DDTHH:MM:SSZ`, updated on every write |
+| `step` | `str` | Current step: `worktree`, `plan`, `track`, `implement`, `review`, `fix`, `verify`, `assess`, `ship`, `merge` |
+| `status` | `str` | Status: `running`, `awaiting`, `paused`, `failed`, `done`, `abandoned` |
+| `live` | `object` or `null` | Null, or `{step, attempt, nonce}` exactly matching the projection of `pending_spawn` (D1). Clears together with `pending_spawn` |
+| `pending_spawn` | `object` or `null` | Null, or `{step, attempt, nonce, state, receipt_seen}`; `state` is `spawned`, `parked-awaiting-answer`, `resumed`, or `receipt-landed`; `receipt_seen` is null or `{sha256: str, size: int}` |
+| `attempts` | `object` | Per-step attempt counter: `{step: int >= 0}`. Advanced only by `record_spawn` and reconcile repair. The fleet reads `attempts.plan` as the plan counter |
+| `failures` | `object` | Per-step failure count: `{step: int >= 0}` |
+| `stop_reason` | `object` | Per-step stop reason: `{step: str}` |
+| `stop_source` | `object` | Per-step stop source: `{step: "receipt" \| "validation" \| "audit" \| "tree"}` |
+| `pr` | `str` or `null` | PR URL once ship has run |
+| `worktree` | `str` or `null` | Absolute worktree path, set at init and stored verbatim (never resolved; Layer 1 never calls the primary resolver; see #472-#475) |
+| `healed` | `bool` | True when a check heal has run (forces merge gate to ask). Never reset on resume |
+| `attempt_log` | `object` | Per-step per-attempt outcome history: `{step: {"<attempt>": "receipt-landed" \| "cleared" \| "receipt-malformed" \| "abandoned"}}`. Kept separate from `attempts` so the fleet's `attempts.plan` keeps its meaning (PERMISSION-VOID) |
+| `applied` | `array[str]` | Canonical transition keys already applied; every key is unique; see apply_transition in scripts/flow_driver/state.py (Step 3) |
+| `extra` | `object` | Unknown top-level keys preserved verbatim; never interpreted by the driver |
+
+### Fleet field contract
+
+The fields in the row above labeled as read by fleet or heal (§2: `issue`, `updated`, `step`, `status`, `live`, `attempts.plan`, `stop_reason`, `stop_source`, `failures`, `pr`, `worktree`, `healed`) keep their documented meanings and types on v2 flows. §2 is authoritative for their semantics.
+
+### Driver exit-code contract (Layer 1)
+
+| Exit code | Outcome class | Meaning |
+|---|---|---|
+| 0 | Acted-on | `init` succeeded; `resume` reached an acted-on outcome (`wait`, `receipt-landed`, `rerun`), or is reading-only (`status --json`); `list` exit 0 always. `rerun` exits 0 because the driver healed the malformed or stale attempt itself |
+| 1 | Refusal | A command precondition failed and the driver does not heal it itself (a `locked` refusal is transient; the caller retries later): locked, v1-owned, skeleton-owned, schema-invalid, no-state, exists, verifier-timeout (after one automatic retry). One line to stderr in form `refused: <class>: <detail>`. Nothing on stdout |
+| 2 | Usage error | Bad flags, mismatched `--flow` arguments, path inside neither `~/.claude/flows/` nor `~/.claude/flows-v2/`. The skeleton's existing code, including `FlowPathError` |
+| 3 | Not-yet-built | Fail-closed, distinct from refusal. A resume rule that is not yet built in Layer 1 fires, returning `outcome=not-yet-built` and the rule's layer number. Stdout carries `RESUME rule=<name> outcome=not-yet-built`; stderr is exactly `not-yet-built: <rule name> is Layer <N>`. Exit 3 is a STOP-with-reason only for rules not yet built; it disappears rule by rule as later layers land. No live v2 flow runs in production until Layer 2, so the residual (Step 7: a self-healed flow stops at exit 3 on the next `resume` without spawning) is not observed |
+
+### Lock order (ADR-0026 §10)
+
+1. Fleet per-ticket lock (`fleet.py`'s per-flow locking, if any)
+2. Flow lock (`.driver.lock` via `scripts/workflow/fsutil.py:nonblocking_flock` (taken by `state.py:mutating`))
+3. `main.lock` is never taken while the flow lock is held
+
+### Resume cascade notes
+
+- **First match wins.** `resume.RULES` is evaluated in order and the first rule whose predicate holds decides. Rule 1
+  (live step) fires only while `status` is `running` or `awaiting`.
+- **Cadence assumption.** `receipts.classify` confirms landed and malformed receipts by two reads with an identical
+  fingerprint. That is only meaningful when resumes are separated by real time or liveness. Layer 2 must add a quiet
+  interval or a `subagent_gone` gate before acting on `rerun`.
+- **Timeout wording.** A verifier timeout is retried once automatically (a `verifier-timeout-retry` log event is
+  written); a second timeout is the refusal `verifier-timeout`.
+- **Re-targeted rows.** Rows 10, 11 and 21 of the inventory are re-targeted to Layer 2 (#486) and Layer 3 (#487), and
+  the `auto-merge` default (`flags.auto_merge` false unless passed per run) carries to #486 and #487 unchanged.
+
+### Rule table ordering note
+
+`rules.md` §1.2 lists rules in a specific order: Rule 1b (heal in progress) runs before rules 4 and 5. The table order places Rule 3b after Rule 5, but Rule 3b's text in §1.2 says "before rule 4". Layer 1 asserts only 1b < 4 and 1b < 5 (see `scripts/flow_driver/resume.py` test 39). Rule 3b ordering is settled by Layer 3 (#487), which gives it real behavior.
+
 ## 3. Overlapping-issue dispositions
 
 From the plan's "Overlapping-issue dispositions" (Q2 and seq 1: fold the overlapping issues into layers).
@@ -187,7 +251,7 @@ Headings marked `###` are amendment-tagged subsection headings. The subsection `
 | 3 | Amendment (2026-10-14): base-stale Rebase is automatic, with an `/expert-rebase` worker fallback | Automatic naive rebase, then `/expert-rebase` worker on conflicts; never a push | Layer 3 | port, pinned by test |
 | 4 | Amendment (2026-10-13): Start fresh deletes the old flow's worktree | Start fresh removes the old flow's worktree (sanctioned destructive action) | Layer 2 | port, pinned by test |
 | 5 | Amendment (2026-10-14): more human in the loop — context-carrying relay, full checkpoint relay, step gates | Relay carries context; full checkpoint relay; step gates | Layer 3 | port, pinned by test |
-| 6 | Amendment (2026-10-14): receipt markers survive finalization | Receipt markers are kept through finalization | Layer 1 | port, pinned by test |
+| 6 | Amendment (2026-10-14): receipt markers survive finalization | Receipt markers are kept through finalization | Layer 2 (Step 9) | port, pinned by test (marker preservation in the step loop) |
 | 7 | Amendment (2026-10-19): fidelity audit owns judgment only, verifier owns counts (#318) | Verifier owns counts; fidelity audit (expert-scout, Haiku) owns judgment only | Layer 2 | port, pinned by test |
 | 8 | Amendment (2026-10-15): bare /expert-flow in the ticket worktree (#302) | Bare `/expert-flow` in the ticket worktree auto-detects the issue; resumes silently only in the exact hand-off state | Layer 2 | port, pinned by test |
 | 9 | Amendment (2026-10-15): The plan checkpoint is a report and a conversation | Plan checkpoint is a report plus conversation; decision briefs shown through a report | Layer 3 | port, pinned by test |

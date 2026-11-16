@@ -131,6 +131,14 @@ Attempt counts are kept two ways: a counter in state, and a count derived from a
 reconcile runs under the lock and logs any mismatch (W3). Every transition is keyed by
 `(run_id, step, attempt)` and is idempotent under that key.
 
+> **2026-11-16 note (#485, review rulings).** Reconcile repairs a counter that is behind the archived receipts
+> (logged as `attempt-counter-repaired`), and it defers the repair for a step whose spawn is still pending. A
+> malformed receipt is re-run automatically by `resume`: the receipt is archived, the counter is repaired, and the
+> command exits 0 with outcome `rerun`. This is a self-heal inside the existing archive-and-count rule, not a new
+> remediation. Layer 2 (#486) owns two obligations: a cap on automatic re-runs (a step that keeps writing
+> malformed receipts must stop, not loop), and consuming `rerun` through `record_spawn`, which is what opens the
+> next attempt.
+
 ### 6. Read-only and mutating commands are split
 
 Commands are either read-only or mutating, and the split is structural, not a convention:
@@ -171,7 +179,17 @@ and in fleet mode the recording fleet run identity (`FLEET_RUN_ID`). Its states 
 - `parked-awaiting-answer`: the step agent wrote a question file and the driver emitted ASK or PARK. The agent
   is waiting, not running. A new answer moves it on; nothing else does.
 - `resumed`: the answer is on disk and the driver emitted RESUME (SendMessage). Treated as **live**.
-- `receipt-landed`: a receipt whose `ATTEMPT` value matches has landed. `pending_spawn` is cleared.
+- `receipt-landed`: a receipt whose `ATTEMPT` value matches has landed. `pending_spawn` is kept with state
+  `receipt-landed` (not live), so the landing stays visible until the next `record_spawn` replaces it.
+
+> **2026-11-16 note (#485, review rulings).** Text above originally said `receipt-landed` clears `pending_spawn`.
+> Layer 1 keeps the record in state `receipt-landed`; it never counts as live. Layer 2 clears it by recording the
+> next spawn. A stale receipt (its `ATTEMPT` does not match the pending attempt) is archived by `resume` and the
+> command exits 0; it is not a refusal.
+>
+> The `resume` cadence assumption: receipt classification confirms a landed or malformed receipt only after two
+> reads with an identical fingerprint. That stability is only meaningful when resumes are separated by real time or
+> proven liveness. Layer 2 must add a quiet interval or a `subagent_gone` gate before it acts on `rerun`.
 
 An outstanding `spawned` or `resumed` record with no receipt counts as live. Recovery then takes one of two
 forms:
@@ -201,7 +219,12 @@ A failed RESUME for a step not on that allowlist is a STOP. A re-spawn gets a ne
 **Recovery table.** `recovery.py` holds the recovery decisions as data, with counters in state that survive a
 crash: Retry (max 2), take-over, keep-previous, redo (max 2), the one-shot Unknown-skill retry, the base-stale
 auto-rebase, and the flow-healer heal (which records `healed: true` in state, for the merge gate). No new
-remediation is added. `resume.py` implements the resume cascade as an ordered, named rule table. The rule that
+remediation is added.
+
+> **2026-11-16 note (#485, review rulings).** Two Layer 1 behaviours are bounded self-heals inside this table,
+> not new remediations: the automatic re-run of a malformed receipt with the attempt-counter repair
+> (Decision 5 note), and archiving a stale receipt with exit 0 (Decision 8 note). Layer 2 (#486) adds the re-run
+> cap and the `record_spawn` consumption of `rerun`. `resume.py` implements the resume cascade as an ordered, named rule table. The rule that
 fired is logged. Rule 1b's ordering stays before rules 4 and 5, as in v1. `pending_spawn` with no receipt is
 recoverable, not a fresh start.
 

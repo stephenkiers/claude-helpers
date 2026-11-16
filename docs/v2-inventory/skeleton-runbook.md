@@ -120,7 +120,7 @@ the kill point and re-run point.
 6. Record the final heartbeat timestamp and the session end time
 7. If the heartbeat reaches the final `done` line, record as `>= step_minutes (censored)`
 
-**Note on `fleet.py wait` snapshot race**: `fleet.py wait` reads the receipt file to detect the decision marker or awaiting marker. If the file is being written at the moment `fleet.py` reads it, the read may see an incomplete write (the file may not be flushed yet). This is known to the skeleton and will be addressed in Layer 1 with flock or similar atomicity guarantees. For now, if you observe spurious `wait-timeout` events when the heartbeat is progressing normally, this race may be the cause.
+**Note on `fleet.py wait` snapshot race**: `fleet.py wait` reads the receipt file to detect the decision marker or awaiting marker. If the file is being written at the moment `fleet.py` reads it, the read may see an incomplete write (the file may not be flushed yet). This is known to the skeleton and stays open until the layer that may edit `fleet.py` (Layer 4); see the plan for #485, "Open Items". For now, if you observe spurious `wait-timeout` events when the heartbeat is progressing normally, this race may be the cause.
 
 **Evidence to collect**: flow dir, heartbeat count, survival time (censored or interval), which event
 ended the WAIT, `allowedTools` grant used or permission mode, model version, date.
@@ -178,7 +178,7 @@ Rationale per grant:
   narrower pattern matches it, so a measurable run needs this broader grant. A driver-provided `record-spawn`
   helper verb was considered and not added: the spawn line is the agent's own independent evidence (the agent
   writes the `utc`, and SPAWN-XCHECK compares it with the harness transcript), so having the driver write it would
-  remove the cross-check. Narrowing `Bash` is a Layer 1 task.
+  remove the cross-check. Narrowing `Bash` is a Layer 2 task.
 - `Read` — read flow files and directives
 - `Write(~/.claude/flows-v2/*)` — write state, directives, pending records, logs
 - `Task` — spawn agents to run the prompts
@@ -195,7 +195,7 @@ Option 1 as the command.
 Record the exact `--allowedTools` flags or permission mode used in each row's provenance.
 
 Concurrency: run one `next`/`start` process at a time per flow dir, and let no stale agent write after
-`clear-live`. This is unenforced until Layer 1.
+`clear-live`. Layer 1 enforces this via the per-flow flock (`.driver.lock`); see `docs/v2-inventory/rules.md` §2.1 "Lock order".
 
 ## Evidence to Collect Per Run
 

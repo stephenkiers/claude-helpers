@@ -148,7 +148,7 @@ walking skeleton sits between Layer 0 and Layer 1.
   receipt is recoverable, not a fresh start.
 - Command split: `status --json` and `list` are structurally read-only. Worktree paths resolve through the primary
   resolver.
-- Every refusal (locked, v1-owned, skeleton-owned, schema-invalid, stale receipt) is a non-zero exit with a one-line
+- Every refusal (locked, v1-owned, skeleton-owned, schema-invalid; a stale receipt is archived and exits 0) is a non-zero exit with a one-line
   reason, which the stub surfaces as STOP.
 
 **Acceptance criteria:**
@@ -178,9 +178,12 @@ walking skeleton sits between Layer 0 and Layer 1.
 - **Transition function.** `steps.py` turns disk state plus an event into the next directive. The driver writes each
   directive to a file before printing `NEXT: <verb> <file>`. That file is an audit log only. The stub calls
   `driver next <flow>` after any event and never echoes anything back.
+- **Layer 2 acceptance (#486).** A cap on automatic re-runs of a malformed receipt, and `record_spawn` consuming the
+  `rerun` outcome so the next attempt opens atomically. Also a quiet interval or `subagent_gone` gate before acting on
+  `rerun` (the two-read stability assumption in `receipts.classify`).
 - **Spawn and liveness.** `pending_spawn` (step, attempt, nonce, state, and in fleet mode the fleet run identity) is
   written before every SPAWN or RESUME. States: `spawned` (live), `parked-awaiting-answer` (waiting, not running; a new
-  answer moves it on), `resumed` (live), `receipt-landed` (cleared). An outstanding `spawned` or `resumed` record with no
+  answer moves it on), `resumed` (live), `receipt-landed` (kept, not live). An outstanding `spawned` or `resumed` record with no
   receipt is live. Interactive recovery is a logged `driver clear-live` by the human. A re-spawn requires a cleared
   `pending_spawn` and gets a new nonce. The per-step re-spawn allowlist (W1) is settled by tests here; until a step is
   proven, a failed RESUME for it is a STOP.
