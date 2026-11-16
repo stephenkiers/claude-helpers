@@ -68,6 +68,7 @@ from .state import (
     mutating,
     read_flow,
 )
+from .receipts import VerifierTimeout
 from .resume import ResumeFacts, decide as resume_decide
 
 
@@ -458,6 +459,11 @@ def _cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def main_resume(flow: str, redo: Optional[str] = None) -> int:
+    """Programmatic entry point for the resume verb; returns the exit code the CLI would return."""
+    return _cmd_resume(argparse.Namespace(flow=flow, redo=redo))
+
+
 def _cmd_resume(args: argparse.Namespace) -> int:
     """Resume a v2 flow.
 
@@ -480,7 +486,19 @@ def _cmd_resume(args: argparse.Namespace) -> int:
     if owner_type == "v1":
         return _refuse(f"refused: v1-owned: flow {resolved_path.name} is a v1 flow and is read-only to the v2 driver")
 
-    # For v2 flows, run the resume logic
+    # A single verifier timeout is recoverable: mutating re-enters once (fresh lock and re-read).
+    # A second timeout within this invocation is a refusal.
+    for reentry in (1, 2):
+        try:
+            return _resume_locked(resolved_path, redo_step)
+        except VerifierTimeout as exc:
+            if reentry == 2:
+                return _refuse(f"refused: verifier-timeout: {exc}")
+    return _refuse("refused: verifier-timeout")  # unreachable: the loop returns on every path
+
+
+def _resume_locked(resolved_path: Path, redo_step: Optional[str]) -> int:
+    """Run the resume cascade under the flow lock and map the decision to an exit code."""
     try:
         with mutating(resolved_path) as locked:
             if locked.state is None:
@@ -497,17 +515,18 @@ def _cmd_resume(args: argparse.Namespace) -> int:
                 passing_outstanding_check=None,
             )
 
-            # Decide which resume rule applies
+            # Decide which resume rule applies (decide prints the RESUME line and logs the rule)
             decision = resume_decide(locked, facts)
 
             # Handle the decision
             if decision.outcome == "not-yet-built":
-                print(f"RESUME rule={decision.rule} outcome={decision.outcome}")
                 print(f"not-yet-built: {decision.rule} is Layer {decision.layer}", file=sys.stderr)
                 return 3
             else:
                 # Acted-on outcome (wait, receipt-landed, rerun)
                 return 0
+    except VerifierTimeout:
+        raise
     except Refusal as exc:
         return _refuse(f"refused: {exc.refusal_class}: {exc.detail}")
     except StateSchemaError as exc:

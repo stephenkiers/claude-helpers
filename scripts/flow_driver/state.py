@@ -71,7 +71,8 @@ from typing import (
     get_args,
 )
 
-from scripts.workflow.fsutil import LockHeld, atomic_write_text, nonblocking_flock
+from scripts.workflow import fsutil
+from scripts.workflow.fsutil import LockHeld, nonblocking_flock
 
 from .model import assert_never
 
@@ -638,7 +639,7 @@ class LockedFlow:
         )
         text = json.dumps(v2_state_to_dict(stamped), indent=2, sort_keys=True) + "\n"
         load_v2_state(json.loads(text))  # the bytes must read back as a valid v2 state before they replace the old file
-        atomic_write_text(self.path / STATE_FILE, text, fsync=True)
+        fsutil.atomic_write_text(self.path / STATE_FILE, text, fsync=True)
         self._state = stamped
 
     def log(self, event: str, *, step: Optional[Step], attempt: Optional[int], **fields: object) -> None:
@@ -767,7 +768,8 @@ def reconcile(locked: LockedFlow) -> ReconcileResult:
                 mismatch["missing_archives"] = sorted(missing)
             if unrecorded:
                 mismatch["unrecorded_archives"] = sorted(unrecorded)
-            locked.log("attempt-reconcile-mismatch", step=step, attempt=None, **mismatch)
+            log_fields = {k: v for k, v in mismatch.items() if k not in ("event", "step")}
+            locked.log("attempt-reconcile-mismatch", step=step, attempt=None, **log_fields)
             per_step[step] = mismatch
 
         # Repair: raise counter if needed

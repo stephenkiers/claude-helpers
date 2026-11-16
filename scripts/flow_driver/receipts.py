@@ -287,7 +287,7 @@ def store_fingerprint(locked: LockedFlow, key: TransitionKey, step: Step, attemp
         "store_fingerprint",
         _do_store_fingerprint,
         content=fingerprint.sha256,
-        postcondition=lambda s: s.pending_spawn is None or s.pending_spawn.receipt_seen != fingerprint,
+        postcondition=lambda s: s.pending_spawn is not None and s.pending_spawn.receipt_seen == fingerprint,
     )
 
 

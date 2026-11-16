@@ -170,12 +170,12 @@ def _later_rule(name: RuleName, facts: ResumeFacts) -> Optional[bool]:
 
 
 RULES: Tuple[ResumeRule, ...] = (
-    ResumeRule("rule-0-redo", 1, _rule_0_redo),
+    ResumeRule("rule-0-redo", 3, _rule_0_redo),
     ResumeRule("rule-1-live-step", 1, _rule_1_live_step),
-    ResumeRule("rule-2-paused-gate", 1, _rule_2_paused_gate),
-    ResumeRule("rule-2a-assess", 1, _rule_2a_assess),
+    ResumeRule("rule-2-paused-gate", 3, _rule_2_paused_gate),
+    ResumeRule("rule-2a-assess", 3, _rule_2a_assess),
     ResumeRule("rule-3-done", 2, _rule_3_done),
-    ResumeRule("rule-3a-abandoned", 1, _rule_3a_abandoned),
+    ResumeRule("rule-3a-abandoned", 3, _rule_3a_abandoned),
     ResumeRule("rule-1a-pending-input", 2, _rule_1a_pending_input),
     ResumeRule("rule-1b-heal-in-progress", 3, _rule_1b_heal_in_progress),
     ResumeRule("rule-4-failed", 3, _rule_4_failed),
