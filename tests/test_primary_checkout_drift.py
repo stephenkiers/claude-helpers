@@ -811,6 +811,765 @@ def main():
 
     print()
 
+    # Spec-blind Round 2 tests: statements 1-3 (snapshot branch recording)
+    print("[Test 17a] Snapshot records branch field: main branch -> 'refs/heads/main'")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+
+        head_sha = init_git_repo(str(primary_path))
+        create_worktree(str(primary_path), str(ticket_path))
+
+        exit_code, stdout, stderr = run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+        h.test_result(
+            "snapshot exits 0",
+            exit_code == 0,
+            f"exit={exit_code}, stderr={stderr}",
+        )
+
+        import json
+        baseline_data = json.loads(baseline_path.read_text())
+        checkouts = baseline_data.get("checkouts", {})
+        h.test_result(
+            "baseline has checkouts dict",
+            len(checkouts) > 0,
+            f"checkouts={checkouts}",
+        )
+
+        primary_path_resolved = str(primary_path.resolve())
+        primary_entry = checkouts.get(primary_path_resolved)
+        h.test_result(
+            "primary checkout entry found",
+            primary_entry is not None,
+            f"entries={list(checkouts.keys())}",
+        )
+
+        if primary_entry:
+            h.test_result(
+                "primary entry has 'branch' key",
+                "branch" in primary_entry,
+                f"entry={primary_entry}",
+            )
+            h.test_result(
+                "branch value is refs/heads/main",
+                primary_entry.get("branch") == "refs/heads/main",
+                f"branch={primary_entry.get('branch')}",
+            )
+            h.test_result(
+                "version is 1",
+                baseline_data.get("version") == 1,
+                f"version={baseline_data.get('version')}",
+            )
+    print()
+
+    print("[Test 17b] Snapshot records detached HEAD as branch null")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+
+        init_git_repo(str(primary_path))
+        create_worktree(str(primary_path), str(ticket_path))
+
+        # Detach HEAD in primary
+        _git(primary_path, "checkout", "--detach")
+
+        exit_code, stdout, stderr = run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+        h.test_result(
+            "snapshot exits 0 with detached HEAD",
+            exit_code == 0,
+            f"exit={exit_code}",
+        )
+
+        import json
+        baseline_data = json.loads(baseline_path.read_text())
+        checkouts = baseline_data.get("checkouts", {})
+        primary_path_resolved = str(primary_path.resolve())
+        primary_entry = checkouts.get(primary_path_resolved)
+        h.test_result(
+            "detached HEAD entry has branch null",
+            primary_entry and primary_entry.get("branch") is None,
+            f"entry={primary_entry}",
+        )
+    print()
+
+    print("[Test 17c] Skipped entry (orchestrator == primary) has no branch key")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        baseline_path = Path(tmpdir) / "baseline.json"
+
+        init_git_repo(str(primary_path))
+
+        exit_code, stdout, stderr = run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(primary_path),
+            "--out", str(baseline_path),
+        )
+        h.test_result(
+            "snapshot exits 0 when skipped",
+            exit_code == 0 and "SKIP" in stdout,
+            f"exit={exit_code}, stdout={stdout}",
+        )
+
+        import json
+        baseline_data = json.loads(baseline_path.read_text())
+        checkouts = baseline_data.get("checkouts", {})
+        primary_path_resolved = str(primary_path.resolve())
+        skipped_entry = checkouts.get(primary_path_resolved)
+        h.test_result(
+            "skipped entry has no branch key",
+            skipped_entry and "branch" not in skipped_entry,
+            f"entry={skipped_entry}",
+        )
+    print()
+
+    # Spec statement 5: HEAD unchanged
+    print("[Test 18] HEAD unchanged: no head-advanced and no head-moved in stdout")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # No changes - HEAD stays the same
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "HEAD unchanged: exit 0",
+            exit_code == 0,
+            f"exit={exit_code}",
+        )
+        h.test_result(
+            "HEAD unchanged: no head-advanced in stdout",
+            "head-advanced" not in stdout,
+            f"stdout={stdout}",
+        )
+        h.test_result(
+            "HEAD unchanged: no head-moved in stdout",
+            "head-moved" not in stdout,
+            f"stdout={stdout}",
+        )
+    print()
+
+    # Spec statement 7: No upstream
+    print("[Test 19] No upstream configured: HEAD advances -> FAIL head-moved, exit 1")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Commit in primary (no upstream)
+        Path(primary_path, "commit.txt").write_text("content")
+        _git(primary_path, "add", "commit.txt")
+        _git(primary_path, "commit", "-m", "local commit")
+
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "no upstream: exit 1",
+            exit_code == 1,
+            f"exit={exit_code}",
+        )
+        h.test_result(
+            "no upstream: FAIL head-moved",
+            f"FAIL {primary_path.resolve()} head-moved" in stdout,
+            f"stdout={stdout}",
+        )
+    print()
+
+    # Spec statement 8: reset --hard
+    print("[Test 20] git reset --hard HEAD~1: baseline not ancestor -> FAIL head-moved")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        origin = attach_upstream(primary_path, tmpdir)
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        # Commit something to push to upstream
+        Path(primary_path, "extra.txt").write_text("extra")
+        _git(primary_path, "add", "extra.txt")
+        _git(primary_path, "commit", "-m", "extra")
+        _git(primary_path, "push", "origin", "main")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Reset hard
+        _git(primary_path, "reset", "--hard", "HEAD~1")
+
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "reset --hard: exit 1",
+            exit_code == 1,
+            f"exit={exit_code}",
+        )
+        h.test_result(
+            "reset --hard: FAIL head-moved",
+            f"FAIL {primary_path.resolve()} head-moved" in stdout,
+            f"stdout={stdout}",
+        )
+    print()
+
+    # Spec statement 9: amend
+    print("[Test 21] git commit --amend: HEAD changed -> FAIL head-moved")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        attach_upstream(primary_path, tmpdir)
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Amend HEAD commit
+        Path(primary_path, "new.txt").write_text("new")
+        _git(primary_path, "add", "new.txt")
+        _git(primary_path, "commit", "--amend", "-m", "amended")
+
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "amend: exit 1",
+            exit_code == 1,
+            f"exit={exit_code}",
+        )
+        h.test_result(
+            "amend: FAIL head-moved",
+            f"FAIL {primary_path.resolve()} head-moved" in stdout,
+            f"stdout={stdout}",
+        )
+    print()
+
+    # Spec statement 10: switch to descendant branch
+    print("[Test 22] Switch to branch descended from baseline -> FAIL head-moved")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        attach_upstream(primary_path, tmpdir)
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Create and switch to new branch with descendant commit
+        _git(primary_path, "checkout", "-b", "other")
+        Path(primary_path, "other.txt").write_text("other")
+        _git(primary_path, "add", "other.txt")
+        _git(primary_path, "commit", "-m", "other commit")
+
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "switch to descendant: exit 1",
+            exit_code == 1,
+            f"exit={exit_code}",
+        )
+        h.test_result(
+            "switch to descendant: FAIL head-moved",
+            f"FAIL {primary_path.resolve()} head-moved" in stdout,
+            f"stdout={stdout}",
+        )
+        h.test_result(
+            "switch to descendant: no head-advanced",
+            "head-advanced" not in stdout,
+            f"stdout={stdout}",
+        )
+    print()
+
+    # Spec statement 11: switch at same SHA
+    print("[Test 23] Switch to branch at same SHA -> FAIL head-moved")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        attach_upstream(primary_path, tmpdir)
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Create new branch at same SHA and switch
+        _git(primary_path, "checkout", "-b", "same_sha")
+
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "switch at same SHA: exit 1",
+            exit_code == 1,
+            f"exit={exit_code}",
+        )
+        h.test_result(
+            "switch at same SHA: FAIL head-moved",
+            f"FAIL {primary_path.resolve()} head-moved" in stdout,
+            f"stdout={stdout}",
+        )
+    print()
+
+    # Spec statement 12: unrelated history
+    print("[Test 24] Switch to orphan branch -> FAIL head-moved")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        attach_upstream(primary_path, tmpdir)
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Create orphan branch
+        _git(primary_path, "checkout", "--orphan", "unrelated")
+        _git(primary_path, "rm", "-rf", ".")
+        Path(primary_path, "orphan.txt").write_text("orphan")
+        _git(primary_path, "add", "orphan.txt")
+        _git(primary_path, "commit", "-m", "orphan commit")
+
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "orphan branch: exit 1",
+            exit_code == 1,
+            f"exit={exit_code}",
+        )
+        h.test_result(
+            "orphan branch: FAIL head-moved",
+            f"FAIL {primary_path.resolve()} head-moved" in stdout,
+            f"stdout={stdout}",
+        )
+    print()
+
+    # Spec statement 13: detached HEAD cases
+    print("[Test 25] Detached at baseline and compare (same SHA) -> exit 0, no head-level line")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        attach_upstream(primary_path, tmpdir)
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        # Detach HEAD in primary before snapshot
+        _git(primary_path, "checkout", "--detach")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Still detached at same SHA
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "detached same SHA: exit 0",
+            exit_code == 0,
+            f"exit={exit_code}",
+        )
+        h.test_result(
+            "detached same SHA: no head-level line",
+            "head-advanced" not in stdout and "head-moved" not in stdout,
+            f"stdout={stdout}",
+        )
+    print()
+
+    print("[Test 25b] Detached at baseline, then detached at descendant -> FAIL head-moved")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        attach_upstream(primary_path, tmpdir)
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        # Detach HEAD before snapshot
+        _git(primary_path, "checkout", "--detach")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Commit in detached state
+        Path(primary_path, "detached.txt").write_text("detached")
+        _git(primary_path, "add", "detached.txt")
+        _git(primary_path, "commit", "-m", "detached commit")
+
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "detached descendant: exit 1",
+            exit_code == 1,
+            f"exit={exit_code}",
+        )
+        h.test_result(
+            "detached descendant: FAIL head-moved",
+            f"FAIL {primary_path.resolve()} head-moved" in stdout,
+            f"stdout={stdout}",
+        )
+    print()
+
+    # Spec statement 14: legacy baseline
+    print("[Test 26] Legacy baseline (no branch key): fast-forward -> FAIL head-moved")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        origin = attach_upstream(primary_path, tmpdir)
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Remove the branch key to simulate legacy baseline
+        import json
+        baseline_data = json.loads(baseline_path.read_text())
+        checkouts = baseline_data.get("checkouts", {})
+        primary_path_resolved = str(primary_path.resolve())
+        if primary_path_resolved in checkouts and "branch" in checkouts[primary_path_resolved]:
+            del checkouts[primary_path_resolved]["branch"]
+        baseline_path.write_text(json.dumps(baseline_data))
+
+        # Fast-forward to upstream
+        land_commit_on_upstream(primary_path, origin, tmpdir)
+
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "legacy baseline: exit 1",
+            exit_code == 1,
+            f"exit={exit_code}",
+        )
+        h.test_result(
+            "legacy baseline: FAIL head-moved",
+            f"FAIL {primary_path.resolve()} head-moved" in stdout,
+            f"stdout={stdout}",
+        )
+        h.test_result(
+            "legacy baseline: no head-advanced",
+            "head-advanced" not in stdout,
+            f"stdout={stdout}",
+        )
+    print()
+
+    # Spec statement 15: inconclusive probe
+    print("[Test 27] Inconclusive probe (invalid SHA): exit 2, ERROR probe-failed head-probe")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        attach_upstream(primary_path, tmpdir)
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Replace head with invalid SHA
+        import json
+        baseline_data = json.loads(baseline_path.read_text())
+        checkouts = baseline_data.get("checkouts", {})
+        primary_path_resolved = str(primary_path.resolve())
+        if primary_path_resolved in checkouts:
+            checkouts[primary_path_resolved]["head"] = "1111111111111111111111111111111111111111"
+        baseline_path.write_text(json.dumps(baseline_data))
+
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "inconclusive probe: exit 2",
+            exit_code == 2,
+            f"exit={exit_code}",
+        )
+        h.test_result(
+            "inconclusive probe: ERROR probe-failed head-probe",
+            "ERROR probe-failed head-probe" in stdout,
+            f"stdout={stdout}",
+        )
+        h.test_result(
+            "inconclusive probe: no head-advanced",
+            "head-advanced" not in stdout,
+            f"stdout={stdout}",
+        )
+        h.test_result(
+            "inconclusive probe: no FAIL head-moved",
+            f"FAIL {primary_path.resolve()} head-moved" not in stdout,
+            f"stdout={stdout}",
+        )
+    print()
+
+    # Spec statement 16: fast-forward with planned file drift
+    print("[Test 28] Fast-forward + planned file drift: INFO head-advanced + FAIL ticket-...")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        origin = attach_upstream(primary_path, tmpdir)
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("driftfile.txt\n")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Fast-forward to upstream
+        land_commit_on_upstream(primary_path, origin, tmpdir)
+        new_sha = _git(primary_path, "rev-parse", "HEAD")
+
+        # Add drift file
+        Path(primary_path, "driftfile.txt").write_text("drift")
+
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "head-advanced + drift: exit 1",
+            exit_code == 1,
+            f"exit={exit_code}",
+        )
+        h.test_result(
+            "head-advanced + drift: has INFO head-advanced",
+            f"INFO {primary_path.resolve()} head-advanced {head_sha}..{new_sha}" in stdout,
+            f"stdout={stdout}",
+        )
+        h.test_result(
+            "head-advanced + drift: has FAIL drift file",
+            "FAIL driftfile.txt ticket-" in stdout,
+            f"stdout={stdout}",
+        )
+        h.test_result(
+            "head-advanced + drift: primary not in ERROR paths",
+            f"ERROR primary-checkout-drift" in stdout and str(primary_path.resolve()) not in stdout.split("ERROR primary-checkout-drift")[1].split("\n")[0],
+            f"stdout={stdout}",
+        )
+    print()
+
+    # Spec statement 17: read-only
+    print("[Test 29] Read-only: refs, HEAD, status unchanged by compare during head-advanced")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        head_sha = init_git_repo(str(primary_path))
+        origin = attach_upstream(primary_path, tmpdir)
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        run_drift_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Fast-forward
+        land_commit_on_upstream(primary_path, origin, tmpdir)
+
+        # Get state before compare (after fast-forward but before compare)
+        refs_before = _git(primary_path, "for-each-ref")
+        head_before = _git(primary_path, "rev-parse", "HEAD")
+        status_before = get_git_status_output(str(primary_path))
+
+        # Run compare (should not modify primary)
+        exit_code, stdout, stderr = run_drift_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        )
+
+        # Get state after compare
+        refs_after = _git(primary_path, "for-each-ref")
+        head_after = _git(primary_path, "rev-parse", "HEAD")
+        status_after = get_git_status_output(str(primary_path))
+
+        h.test_result(
+            "read-only: refs unchanged by compare",
+            refs_before == refs_after,
+            f"before={refs_before[:100]}, after={refs_after[:100]}",
+        )
+        h.test_result(
+            "read-only: HEAD unchanged by compare",
+            head_before == head_after,
+            f"before={head_before}, after={head_after}",
+        )
+        h.test_result(
+            "read-only: status unchanged by compare",
+            status_before == status_after,
+            f"before length={len(status_before)}, after length={len(status_after)}",
+        )
+    print()
+
     h.summarize_and_exit()
 
 

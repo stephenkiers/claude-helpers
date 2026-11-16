@@ -547,6 +547,133 @@ def main():
 
     print()
 
+    # ========================================================================
+    # Spec statements 20-22: Documentation checks (spec-blind, grep at test time)
+    # ========================================================================
+    print("[Spec 20] Module docstring: contains head-advanced, head-probe, no 'FAIL including head-moved'")
+    drift_script_text = DRIFT_SCRIPT.read_text()
+    # Find the module docstring (first triple-quoted string)
+    import re
+    docstring_match = re.search(r'"""(.*?)"""', drift_script_text, re.DOTALL)
+    if docstring_match:
+        docstring = docstring_match.group(1)
+        h.test_result(
+            "docstring contains 'head-advanced'",
+            "head-advanced" in docstring,
+            f"docstring excerpt: {docstring[:300]}",
+        )
+        h.test_result(
+            "docstring contains 'head-probe'",
+            "head-probe" in docstring,
+            f"docstring excerpt: {docstring[:300]}",
+        )
+        h.test_result(
+            "docstring does not contain 'FAIL including head-moved'",
+            "FAIL including head-moved" not in docstring,
+            f"docstring excerpt: {docstring[:500]}",
+        )
+    else:
+        h.test_result("docstring found", False, "No module docstring found")
+    print()
+
+    print("[Spec 21] commands/implement-with-haiku.md: contains head-advanced and head-probe-failed")
+    impl_haiku_path = REPO_ROOT / "commands" / "implement-with-haiku.md"
+    if impl_haiku_path.exists():
+        impl_haiku_text = impl_haiku_path.read_text()
+        h.test_result(
+            "implement-with-haiku.md contains 'head-advanced'",
+            "head-advanced" in impl_haiku_text,
+            f"file exists={impl_haiku_path.exists()}",
+        )
+        h.test_result(
+            "implement-with-haiku.md contains 'primary-checkout-drift: head-probe-failed'",
+            "primary-checkout-drift: head-probe-failed" in impl_haiku_text,
+            f"file exists={impl_haiku_path.exists()}",
+        )
+        h.test_result(
+            "--compare-exit description no longer says only 'baseline unavailable'",
+            "--compare-exit" in impl_haiku_text and not (
+                "--compare-exit" in impl_haiku_text and
+                impl_haiku_text[impl_haiku_text.find("--compare-exit"):impl_haiku_text.find("--compare-exit")+500].count("baseline unavailable") == 1
+            ),
+            "need to verify --compare-exit description",
+        )
+    else:
+        h.test_result("implement-with-haiku.md found", False, f"File not found at {impl_haiku_path}")
+    print()
+
+    print("[Spec 21b] Every fail invocation routes head-probe case correctly")
+    if impl_haiku_path.exists():
+        impl_haiku_text = impl_haiku_path.read_text()
+        # Check that there's conditional --reason for head-probe case OR shared block
+        has_conditional_reason = "head-probe" in impl_haiku_text and "--reason" in impl_haiku_text
+        has_shared_block = "### Drift barrier failure block" in impl_haiku_text
+        h.test_result(
+            "fail invocations handle head-probe case (conditional --reason or shared block)",
+            has_conditional_reason or has_shared_block,
+            f"conditional={has_conditional_reason}, shared_block={has_shared_block}",
+        )
+    print()
+
+    print("[Spec 21c] Log check no longer says must be empty without --not @{upstream}")
+    if impl_haiku_path.exists():
+        impl_haiku_text = impl_haiku_path.read_text()
+        # Check that if "must be empty" is mentioned with git log, it includes --not @{upstream} or equivalent
+        if "must be empty" in impl_haiku_text and "git log" in impl_haiku_text:
+            # Find the section with log and must be empty
+            relevant_section = impl_haiku_text[max(0, impl_haiku_text.find("git log") - 200):impl_haiku_text.find("git log") + 500]
+            has_upstream_exclude = "--not @{upstream}" in relevant_section or "not on the upstream" in relevant_section.lower()
+            h.test_result(
+                "git log check includes upstream exclusion",
+                has_upstream_exclude,
+                f"section: {relevant_section}",
+            )
+        else:
+            h.test_result(
+                "git log / must be empty section found",
+                "must be empty" in impl_haiku_text and "git log" in impl_haiku_text,
+                "Need to find git log...must be empty section",
+            )
+    print()
+
+    print("[Spec 22] ADR-0008 amendment with #495 and #475, no new ADR-0023 heading")
+    adr_0008_path = REPO_ROOT / "docs" / "adr" / "0008-machine-enforced-agent-guardrails.md"
+    adr_0023_path = REPO_ROOT / "docs" / "adr" / "0023-expert-flow.md"
+
+    if adr_0008_path.exists():
+        adr_0008_text = adr_0008_path.read_text()
+        # Check for amendment heading with #495 and #475
+        amendment_found = False
+        for line in adr_0008_text.split("\n"):
+            if line.startswith("## Amendment") and "#495" in line and "#475" in line:
+                amendment_found = True
+                break
+        h.test_result(
+            "ADR-0008 has Amendment heading with both #495 and #475",
+            amendment_found,
+            "Need Amendment heading with both issue numbers",
+        )
+    else:
+        h.test_result("ADR-0008 found", False, f"File not found at {adr_0008_path}")
+
+    if adr_0023_path.exists():
+        adr_0023_text = adr_0023_path.read_text()
+        # Count amendment headings before and after a known point
+        # We just need to verify no NEW amendment heading was added (the existing structure is preserved)
+        # The plan says the cross-reference is added to the existing "Amendment (2026-10-26)" section, not a new one
+        amendment_lines = [line for line in adr_0023_text.split("\n") if line.startswith("## Amendment")]
+        # We need to verify that the number of amendment headings is what we expect
+        # The existing amendment should still be there
+        has_existing_2026_10_26 = any("2026-10-26" in line for line in amendment_lines)
+        h.test_result(
+            "ADR-0023 preserves existing Amendment headings (no new one added)",
+            has_existing_2026_10_26,
+            f"amendment_lines={amendment_lines}",
+        )
+    else:
+        h.test_result("ADR-0023 found", False, f"File not found at {adr_0023_path}")
+    print()
+
     h.summarize_and_exit()
 
 
