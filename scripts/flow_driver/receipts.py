@@ -36,30 +36,29 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Callable, Dict, List, Literal, NamedTuple, Optional, Sequence, Union
+from typing import Callable, Dict, List, Literal, NamedTuple, Optional, Protocol, cast, Sequence, Union
 
-from .state import LockedFlow, PendingSpawn, ReceiptFingerprint, Step, TransitionKey, V2State, apply_transition
+from .state import STEPS, LockedFlow, PendingSpawn, ReceiptFingerprint, Step, TransitionKey, V2State, apply_transition
 
 
-# Map step names to their zero-padded indices in the Step order
-_STEP_INDICES: Dict[Step, str] = {
-    "worktree": "00",
-    "plan": "01",
-    "track": "02",
-    "implement": "03",
-    "review": "04",
-    "fix": "05",
-    "verify": "06",
-    "assess": "07",
-    "ship": "08",
-    "merge": "09",
-}
+# Receipt file prefixes derive from the one step order (state.STEPS), so they cannot drift from it.
+_STEP_INDICES: Dict[Step, str] = {step: f"{i:02d}" for i, step in enumerate(STEPS)}
 
 # The strict ATTEMPT value: a positive integer with no leading zero (Q2 = C).
 _ATTEMPT_VALUE = re.compile(r"[1-9][0-9]*")
 _DECISION_LINE = re.compile(r"^Decision: (OK|FAILED)\s*$")
 _STEP_END = "<!-- step-end -->"
 _VERIFIER_PATH = Path(__file__).parent.parent / "flow-verify-receipt.py"
+
+
+class _VerifierModule(Protocol):
+    """The two helpers of flow-verify-receipt.py this module calls (loaded by path, so typed here)."""
+
+    def _receipt_attempt(self, text: str) -> Optional[int]: ...
+
+    def _receipt_attempt_error(self, text: str) -> bool: ...
+
+
 _verifier_module: Optional[ModuleType] = None
 
 
@@ -79,7 +78,7 @@ def receipt_path(flow_dir: Path, step: Step) -> Path:
     return flow_dir / "steps" / f"{idx}-{step}.md"
 
 
-def _load_verifier() -> ModuleType:
+def _load_verifier() -> _VerifierModule:
     """Load flow-verify-receipt.py once; it is the authoritative ATTEMPT parser (one parser, Step 5)."""
     global _verifier_module
     if _verifier_module is None:
@@ -89,7 +88,7 @@ def _load_verifier() -> ModuleType:
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         _verifier_module = module
-    return _verifier_module
+    return cast(_VerifierModule, _verifier_module)
 
 
 def _attempt_lines(text: str) -> List[str]:
@@ -120,7 +119,7 @@ def receipt_attempt(text: str) -> Optional[int]:
 def _receipt_attempt_error(text: str) -> bool:
     """True when receipt has ATTEMPT: line but it's not a valid integer >= 1 (verifier-compatible)."""
     verifier = _load_verifier()
-    return bool(verifier._receipt_attempt_error(text))
+    return verifier._receipt_attempt_error(text)
 
 
 def parse_receipt(step: Step, text: str) -> Optional[Receipt]:

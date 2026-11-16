@@ -72,6 +72,7 @@ from .state import (
     read_flow,
 )
 from .receipts import VerifierTimeout
+from .model import assert_never
 from .resume import CascadeExhausted, ResumeFacts, decide as resume_decide
 
 
@@ -616,7 +617,6 @@ def _cmd_status(args: argparse.Namespace) -> int:
         owner_str = "initializing"
         state_obj = None
     else:
-        from .model import assert_never
         assert_never(flow_view.owned)
 
     result = {
@@ -628,86 +628,55 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _flow_row(flow_dir: Path) -> Tuple[str, str]:
+    """(step, status) for one flow dir, reusing classify_state so ownership has one definition."""
+    owned = classify_state(flow_dir)
+    if isinstance(owned, V2Owned):
+        return owned.state.step, owned.state.status
+    if isinstance(owned, NoState):
+        return "-", "initializing"
+    if isinstance(owned, InvalidState):
+        return "-", f"invalid ({owned.field}: {owned.reason})"
+    if isinstance(owned, SkeletonForeign):
+        return "-", "skeleton"
+    if isinstance(owned, V1Foreign):
+        try:
+            data = json.loads((flow_dir / "state.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return "-", "initializing"
+        except (OSError, ValueError) as exc:
+            return "-", f"invalid (state.json: unreadable {exc.__class__.__name__})"
+        if not isinstance(data, dict):
+            return "-", "invalid (state.json: top level is not a JSON object)"
+        return str(data.get("step", "-")), str(data.get("status", "-"))
+    assert_never(owned)
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
-    """List all flows in flows-v2 and flows.
+    """List all flows in flows-v2 and flows. Bad state prints as invalid with its class, never silently.
 
     Exit code: 0 (always)
     """
     home = Path.home()
     repo_filter = args.repo
-
-    flows_to_list: List[Tuple[str, str, str, str]] = []
-
-    # Scan v2 flows
-    v2_root = flows_v2_root(home)
-    if v2_root.exists():
-        for repo_dir in v2_root.iterdir():
+    wanted = repo_filter.replace("/", "_") if repo_filter else None
+    rows: List[Tuple[str, str, str, str]] = []
+    for label, root in (("v2", flows_v2_root(home)), ("v1", home / ".claude" / "flows")):
+        if not root.exists():
+            continue
+        for repo_dir in root.iterdir():
             if not repo_dir.is_dir() or repo_dir.name.startswith("."):
+                continue
+            if wanted and repo_dir.name != wanted:
                 continue
             for flow_dir in repo_dir.iterdir():
                 if not flow_dir.is_dir() or flow_dir.name.startswith("."):
                     continue
-
-                # Apply repo filter if given
-                if repo_filter and repo_dir.name != repo_filter.replace("/", "_"):
-                    continue
-
-                # Try to read state
-                step_str = "-"
-                status_str = "-"
-                try:
-                    state_file = flow_dir / "state.json"
-                    if state_file.exists():
-                        from .state import load_v2_state
-                        state_text = state_file.read_text(encoding="utf-8")
-                        state_obj = load_v2_state(json.loads(state_text))
-                        step_str = state_obj.step
-                        status_str = state_obj.status
-                    else:
-                        step_str = "-"
-                        status_str = "initializing"
-                except Exception:
-                    pass
-
-                flows_to_list.append(("v2", f"{repo_dir.name}/{flow_dir.name}", step_str, status_str))
-
-    # Scan v1 flows
-    v1_root = home / ".claude" / "flows"
-    if v1_root.exists():
-        for repo_dir in v1_root.iterdir():
-            if not repo_dir.is_dir() or repo_dir.name.startswith("."):
-                continue
-            for flow_dir in repo_dir.iterdir():
-                if not flow_dir.is_dir() or flow_dir.name.startswith("."):
-                    continue
-
-                # Apply repo filter if given
-                if repo_filter and repo_dir.name != repo_filter.replace("/", "_"):
-                    continue
-
-                # Try to read state
-                step_str = "-"
-                status_str = "-"
-                try:
-                    state_file = flow_dir / "state.json"
-                    if state_file.exists():
-                        state_text = state_file.read_text(encoding="utf-8")
-                        state_data = json.loads(state_text)
-                        step_str = state_data.get("step", "-")
-                        status_str = state_data.get("status", "-")
-                    else:
-                        step_str = "-"
-                        status_str = "initializing"
-                except Exception:
-                    pass
-
-                flows_to_list.append(("v1", f"{repo_dir.name}/{flow_dir.name}", step_str, status_str))
-
-    # Sort and print
-    flows_to_list.sort(key=lambda x: x[1])
-    for owner, path, step, status in flows_to_list:
+                step, status = _flow_row(flow_dir)
+                rows.append((label, f"{repo_dir.name}/{flow_dir.name}", step, status))
+    rows.sort(key=lambda x: x[1])
+    for owner, path, step, status in rows:
         print(f"{owner}\t{path}\t{step}\t{status}")
-
     return 0
 
 

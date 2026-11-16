@@ -65,6 +65,7 @@ from typing import (
     Mapping,
     NamedTuple,
     Optional,
+    Set,
     Tuple,
     TypeVar,
     Union,
@@ -722,6 +723,35 @@ class ReconcileResult:
     repairs: Tuple[Tuple[Step, int, int], ...]  # (step, from_counter, to_counter)
 
 
+_ARCHIVE_NAME = re.compile(r"^a([1-9][0-9]*)\.(landed|malformed|stale\.[0-9a-f]+|rebuilt)\.md$")
+
+
+def _scan_step_archive(step_archive_dir: Path) -> Tuple[Set[int], int]:
+    """Scan: (landed attempts, highest attempt) found in archive/<step>/. Reads only, trusted sources only."""
+    landed: Set[int] = set()
+    highest = 0
+    if not step_archive_dir.is_dir():
+        return landed, highest
+    from . import receipts as receipts_module  # local import to avoid cycle
+    for entry in step_archive_dir.iterdir():
+        if entry.name.startswith(".") or entry.name.endswith(".tmp"):
+            continue
+        match = _ARCHIVE_NAME.match(entry.name)
+        if not match:
+            continue
+        k = int(match.group(1))
+        highest = max(highest, k)
+        if match.group(2) == "landed":
+            landed.add(k)
+            try:
+                from_receipt = receipts_module.receipt_attempt(entry.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError):
+                continue
+            if from_receipt is not None:
+                highest = max(highest, from_receipt)
+    return landed, highest
+
+
 def reconcile(locked: LockedFlow) -> ReconcileResult:
     """
     Reconcile attempts with archived receipts (Layer 1 Step 4).
@@ -758,32 +788,7 @@ def reconcile(locked: LockedFlow) -> ReconcileResult:
                 if outcome == "receipt-landed":
                     landed_recorded.add(attempt)
 
-        # Find landed archives: archive/<step>/a<k>.landed.md
-        landed_archived = set()
-        highest_archived = 0
-        step_archive_dir = archive_base / step if archive_base.exists() else None
-
-        if step_archive_dir and step_archive_dir.is_dir():
-            for entry in step_archive_dir.iterdir():
-                if entry.name.startswith(".") or entry.name.endswith(".tmp"):
-                    continue
-                name = entry.name
-                # Match archive patterns: a<k>.landed.md, a<k>.malformed.md, a<k>.stale.<hex>.md, a<k>.rebuilt.md
-                match = re.match(r"^a([1-9][0-9]*)\.(landed|malformed|stale\.[0-9a-f]+|rebuilt)\.md$", name)
-                if match:
-                    k = int(match.group(1))
-                    highest_archived = max(highest_archived, k)
-                    if match.group(2) == "landed":
-                        landed_archived.add(k)
-                        # Parse ATTEMPT from the landed archive content (trusted source)
-                        try:
-                            content = entry.read_text(encoding="utf-8")
-                            from . import receipts as receipts_module  # local import to avoid cycle
-                            attempt_from_receipt = receipts_module.receipt_attempt(content)
-                            if attempt_from_receipt is not None:
-                                highest_archived = max(highest_archived, attempt_from_receipt)
-                        except (OSError, UnicodeDecodeError):
-                            pass
+        landed_archived, highest_archived = _scan_step_archive(archive_base / step)
 
         # Detect mismatch (kept in per_step; a later "Ok" never overwrites it)
         counter = state.attempts.get(step, 0)

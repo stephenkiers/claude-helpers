@@ -1509,6 +1509,33 @@ def test_49_init_repo_with_underscore():
         h.test_result("49d: mismatched --repo exits 2", rc3 == 2)
 
 
+def test_50_load_time_schema_checks_and_list():
+    """Test 50 (F24, F25): load_v2_state rejects bad run_id, repo shape and duplicate applied; list reports invalid state."""
+    with temp_home() as tmp:
+        home = Path(tmp)
+        flow = cli_flow(home)
+        wt = home / "wt"
+        wt.mkdir()
+        rc, _, _ = run_cli(home, "init", "--flow", str(flow), "--worktree", str(wt))
+        good = json.loads((flow / "state.json").read_text())
+        h.test_result("50a: init ok", rc == 0)
+
+        def bad_class(mutate):
+            doc = json.loads(json.dumps(good))
+            mutate(doc)
+            (flow / "state.json").write_text(json.dumps(doc))
+            return classify_state(flow)
+
+        r1 = bad_class(lambda d: d.update(run_id="NOT-HEX"))
+        h.test_result("50b: non-hex run_id is InvalidState", isinstance(r1, InvalidState) and r1.field == "run_id")
+        r2 = bad_class(lambda d: d.update(repo="no-slash"))
+        h.test_result("50c: bad repo shape is InvalidState", isinstance(r2, InvalidState) and r2.field == "repo")
+        r3 = bad_class(lambda d: d.update(applied=["a", "a"]))
+        h.test_result("50d: duplicate applied is InvalidState", isinstance(r3, InvalidState))
+        rc, out, _ = run_cli(home, "list")
+        h.test_result("50e: list shows invalid and does not hide it", rc == 0 and "invalid" in out)
+
+
 if __name__ == "__main__":
     # Run tests
     test_1_atomic_write_positional()
@@ -1572,5 +1599,6 @@ if __name__ == "__main__":
     test_47_strict_attempt_02_is_incomplete()
     test_48_crash_between_archive_and_commit_rolls_forward()
     test_49_init_repo_with_underscore()
+    test_50_load_time_schema_checks_and_list()
 
     h.summarize_and_exit()
