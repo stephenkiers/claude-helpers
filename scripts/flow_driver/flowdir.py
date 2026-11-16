@@ -12,7 +12,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import NewType
+from typing import Literal, NewType, Tuple
 
 from scripts.workflow.fsutil import atomic_write_text
 from scripts.workflow.paths import is_within
@@ -122,3 +122,68 @@ def open_flow_dir(root: Path, path: Path) -> FlowDir:
     if not os.path.isdir(real):
         raise FlowPathError(f"flow dir {real} does not exist")
     return FlowDir(Path(real))
+
+
+def validate_v2_flow_path(home: Path, path: Path) -> Tuple[str, int]:
+    """
+    Validate that path is a v2 flow dir with the correct structure.
+
+    The flow dir must be ~/.claude/flows-v2/<OWNER_NAME key>/<issue>-<slug>-<id>.
+    Returns (repo_key, issue).
+
+    Raises FlowPathError if the path is invalid.
+    """
+    root = flows_v2_root(home)
+    real = os.path.realpath(str(path))
+    real_root = os.path.realpath(str(root))
+
+    if not is_within(real, real_root):
+        raise FlowPathError(f"flow dir must be under {real_root}, got {real}")
+
+    # Get the relative path from root
+    rel_path = Path(real).relative_to(root)
+    parts = rel_path.parts
+
+    if len(parts) != 2:
+        raise FlowPathError(f"flow dir must have structure flows-v2/REPO_KEY/ISSUE-SLUG-ID, got {rel_path}")
+
+    repo_key_part = parts[0]
+    flow_name = parts[1]
+
+    # flow_name should be ISSUE-SLUG-ID (at least three parts separated by hyphens)
+    flow_parts = flow_name.split("-")
+    if len(flow_parts) < 3:
+        raise FlowPathError(f"flow name must be ISSUE-SLUG-ID, got {flow_name}")
+
+    # First part should be a valid integer (the issue number)
+    try:
+        issue = int(flow_parts[0])
+    except ValueError:
+        raise FlowPathError(f"issue in flow name must be an integer, got {flow_parts[0]}")
+
+    return (repo_key_part, issue)
+
+
+def resolve_read_flow_dir(home: Path, path: Path) -> Tuple[Literal["v2", "v1"], Path]:
+    """
+    Resolve a flow dir path that is read-only. Accept paths under either flows-v2 or v1 flows.
+
+    Returns (owner_type, realpath) where owner_type is "v2" or "v1".
+    Creates nothing, takes no lock, opens nothing for writing.
+
+    Raises FlowPathError if the path is inside neither root.
+    """
+    real = os.path.realpath(str(path))
+    v2_root = os.path.realpath(str(flows_v2_root(home)))
+    v1_root = os.path.realpath(str(home / ".claude" / "flows"))
+
+    # Check if under v2 root
+    if real == v2_root or is_within(real, v2_root):
+        return ("v2", Path(real))
+
+    # Check if under v1 root
+    if real == v1_root or is_within(real, v1_root):
+        return ("v1", Path(real))
+
+    # Not in either root
+    raise FlowPathError(f"flow dir must be under flows-v2 or flows, got {real}")

@@ -1,11 +1,8 @@
 """
-CLI edge for the v2 skeleton driver (Step 4): start, next, answer and clear-live.
+CLI edge for the v2 driver (Layer 1 Step 7): init, resume, status --json, list, and skeleton subcommands.
 
-**Single-caller, single-answerer invariant:** every flow dir has exactly one sequential writer (one next/start
-process at a time, no concurrent calls; one answer process after a previous receipt write, no stale agent
-writes after clear-live). This is documented but not enforced; Layer 1 will add locking. Without this invariant,
-a WAIT-blocked flow can be clobbered by a stale agent writing a late receipt, or an answer can race with another
-answer or a clear-live.
+Layer 1 adds locking and read-only split from the skeleton subcommands (start, next, answer, clear-live).
+The skeleton subcommands are guarded to refuse v2 or v1 flows.
 
 Write order for every next and start is fixed: the step prompt (SPAWN only), the directive file, state.json
 (only when last_attempt changes), pending_spawn.json, one driver.log line, and then exactly one stdout line,
@@ -13,9 +10,10 @@ Write order for every next and start is fixed: the step prompt (SPAWN only), the
 a next or start still tries to record and print `NEXT: STOP <stop directive file>`, then exits 1.
 
 Exit codes and stdout:
-- 0: successful next/answer/clear-live, one `NEXT: <VERB> ...` line on stdout.
-- 1: unexpected exception (driver error or I/O error), error line on stderr, attempt to write STOP directive.
-- 2: usage error (FlowPathError, bad flag, or mismatched --flow args), error line on stderr, nothing on stdout.
+- 0: success (init, resume with acted-on outcome, status, list)
+- 1: refusal (locked, v1-owned, skeleton-owned, schema-invalid, no-state, exists, verifier-timeout)
+- 2: usage error (FlowPathError, bad flag, mismatched --flow args, path inside neither root)
+- 3: not-yet-built (fail-closed, distinct from refusal; for rules not yet built in Layer 1)
 """
 
 import argparse
@@ -25,12 +23,12 @@ import sys
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from scripts.workflow.fsutil import atomic_write_text
 
 from .driver import Decision, Observation, ReceiptView, decide, next_command, parse_receipt
-from .flowdir import FlowPathError, create_flow_dir, flows_v2_root, format_utc, open_flow_dir
+from .flowdir import FlowPathError, create_flow_dir, flows_v2_root, format_utc, open_flow_dir, resolve_read_flow_dir, validate_v2_flow_path
 from .model import (
     MODES,
     WAIT_MODES,
@@ -56,6 +54,21 @@ from .model import (
     state_to_dict,
     stop_directive_path,
 )
+from .state import (
+    InitSpec,
+    InvalidState,
+    NoState,
+    Refusal,
+    SkeletonForeign,
+    StateSchemaError,
+    V1Foreign,
+    V2Owned,
+    classify_state,
+    init_state,
+    mutating,
+    read_flow,
+)
+from .resume import ResumeFacts, decide as resume_decide
 
 
 class UsageError(Exception):
@@ -274,6 +287,20 @@ def _refuse(message: str) -> int:
     return 1
 
 
+def _guard_skeleton_subcommand(flow_dir: Path) -> Optional[int]:
+    """
+    Guard for skeleton subcommands (start, next, answer, clear-live).
+
+    Refuse if the flow is v2-owned or v1-owned. Returns exit code 1 if refused, None if allowed.
+    """
+    owned = classify_state(flow_dir)
+    if isinstance(owned, V2Owned):
+        return _refuse(f"refused: v2-owned: flow {flow_dir.name} is a v2 flow; use init/resume")
+    if isinstance(owned, V1Foreign):
+        return _refuse(f"refused: v1-owned: flow {flow_dir.name} is a v1 flow and is read-only to the v2 driver")
+    return None
+
+
 def _check_args_match(flow: Path, args: argparse.Namespace) -> None:
     """With --flow, the create-only flags must agree with the flow's state.json (an unreadable state is a STOP)."""
     try:
@@ -303,6 +330,9 @@ def _cmd_start(args: argparse.Namespace) -> int:
         )
     else:
         flow = open_flow_dir(root, Path(args.flow))
+        guard_result = _guard_skeleton_subcommand(flow)
+        if guard_result is not None:
+            return guard_result
         _check_args_match(flow, args)
     return advance(flow, "start", "start")
 
@@ -314,6 +344,9 @@ def _cmd_next(args: argparse.Namespace) -> int:
     decision. The orchestrator enforces that only one next is running.
     """
     flow = open_flow_dir(_now_flow_root(), Path(args.flow))
+    guard_result = _guard_skeleton_subcommand(flow)
+    if guard_result is not None:
+        return guard_result
     return advance(flow, "next", parse_after(args.after))
 
 
@@ -324,6 +357,9 @@ def _cmd_answer(args: argparse.Namespace) -> int:
     race is documented: only one answer command should be called per parked attempt.
     """
     flow = open_flow_dir(_now_flow_root(), Path(args.flow))
+    guard_result = _guard_skeleton_subcommand(flow)
+    if guard_result is not None:
+        return guard_result
     try:
         read_state(flow)
         pending = read_pending(flow)
@@ -353,6 +389,9 @@ def _cmd_answer(args: argparse.Namespace) -> int:
 
 def _cmd_clear_live(args: argparse.Namespace) -> int:
     flow = open_flow_dir(_now_flow_root(), Path(args.flow))
+    guard_result = _guard_skeleton_subcommand(flow)
+    if guard_result is not None:
+        return guard_result
     try:
         read_state(flow)
         pending = read_pending(flow)
@@ -377,13 +416,270 @@ def _cmd_clear_live(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_init(args: argparse.Namespace) -> int:
+    """Initialize a new v2 flow.
+
+    Exit codes:
+    - 0: success, prints "INIT flow=<dir> run_id=<run_id>"
+    - 1: refusal (locked, exists, v1-owned, skeleton-owned, schema-invalid)
+    - 2: usage error (invalid path)
+    """
+    flow_path = Path(args.flow)
+    worktree_path = Path(args.worktree)
+
+    # Validate the flow path structure
+    try:
+        repo_key, issue = validate_v2_flow_path(Path.home(), flow_path)
+        # Reconstruct repo from key (replace underscore back to slash)
+        # For now, we just use the key as the repo identifier
+        repo = repo_key.replace("_", "/")
+    except FlowPathError as exc:
+        return _refuse(f"error: {exc}")
+
+    # Validate that worktree is absolute
+    if not worktree_path.is_absolute():
+        return _refuse("error: --worktree must be an absolute path")
+
+    # Initialize the flow
+    try:
+        with mutating(flow_path, create=InitSpec(repo=repo, issue=issue, worktree=str(worktree_path))) as locked:
+            init_state(locked, InitSpec(repo=repo, issue=issue, worktree=str(worktree_path)))
+            if locked.state is None:
+                return _refuse("error: init_state failed to create state")
+            run_id = locked.state.run_id
+    except Refusal as exc:
+        return _refuse(f"refused: {exc.refusal_class}: {exc.detail}")
+    except StateSchemaError as exc:
+        return _refuse(f"refused: schema-invalid: {exc}")
+    except Exception as exc:
+        return _refuse(f"error: {type(exc).__name__}: {exc}")
+
+    print(f"INIT flow={flow_path} run_id={run_id}")
+    return 0
+
+
+def _cmd_resume(args: argparse.Namespace) -> int:
+    """Resume a v2 flow.
+
+    Exit codes:
+    - 0: success (wait, receipt-landed, rerun outcomes)
+    - 1: refusal (locked, v1-owned, skeleton-owned, schema-invalid, no-state, verifier-timeout)
+    - 2: usage error (path inside neither root)
+    - 3: not-yet-built (fail-closed for rules not yet built in Layer 1)
+    """
+    flow_path = Path(args.flow)
+    redo_step = args.redo
+
+    # Resolve which root the flow is under
+    try:
+        owner_type, resolved_path = resolve_read_flow_dir(Path.home(), flow_path)
+    except FlowPathError as exc:
+        return _refuse(f"error: {exc}")
+
+    # For v1 flows, refuse as v1-owned
+    if owner_type == "v1":
+        return _refuse(f"refused: v1-owned: flow {resolved_path.name} is a v1 flow and is read-only to the v2 driver")
+
+    # For v2 flows, run the resume logic
+    try:
+        with mutating(resolved_path) as locked:
+            if locked.state is None:
+                return _refuse(f"refused: no-state: flow {resolved_path.name} has no state.json; run init first")
+
+            # Gather facts for resume
+            facts = ResumeFacts(
+                state=locked.state,
+                redo_requested=redo_step is not None,
+                pending_human_input=None,
+                heal_in_progress=None,
+                subagent_gone=None,
+                assess_due=None,
+                passing_outstanding_check=None,
+            )
+
+            # Decide which resume rule applies
+            decision = resume_decide(locked, facts)
+
+            # Handle the decision
+            if decision.outcome == "not-yet-built":
+                print(f"RESUME rule={decision.rule} outcome={decision.outcome}")
+                print(f"not-yet-built: {decision.rule} is Layer {decision.layer}", file=sys.stderr)
+                return 3
+            else:
+                # Acted-on outcome (wait, receipt-landed, rerun)
+                return 0
+    except Refusal as exc:
+        return _refuse(f"refused: {exc.refusal_class}: {exc.detail}")
+    except StateSchemaError as exc:
+        return _refuse(f"refused: schema-invalid: {exc}")
+    except Exception as exc:
+        return _refuse(f"error: {type(exc).__name__}: {exc}")
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    """Print JSON status of a flow.
+
+    Exit code: 0 (always)
+    """
+    flow_path = Path(args.flow)
+
+    # Resolve which root the flow is under
+    try:
+        owner_type, resolved_path = resolve_read_flow_dir(Path.home(), flow_path)
+    except FlowPathError as exc:
+        return _refuse(f"error: {exc}")
+
+    # Read the flow without locking
+    flow_view = read_flow(resolved_path)
+
+    # Determine the owner type
+    owner_str: str
+    state_obj: Optional[Dict[str, Any]] = None
+    if isinstance(flow_view.owned, V2Owned):
+        owner_str = "v2"
+        from .state import v2_state_to_dict
+        state_obj = v2_state_to_dict(flow_view.owned.state)
+    elif isinstance(flow_view.owned, V1Foreign):
+        owner_str = "v1"
+        # Try to read v1 state.json if present
+        try:
+            v1_state_text = (resolved_path / "state.json").read_text(encoding="utf-8")
+            state_obj = json.loads(v1_state_text)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            state_obj = None
+    elif isinstance(flow_view.owned, SkeletonForeign):
+        owner_str = "skeleton"
+        try:
+            skeleton_state_text = (resolved_path / "state.json").read_text(encoding="utf-8")
+            state_obj = json.loads(skeleton_state_text)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            state_obj = None
+    elif isinstance(flow_view.owned, InvalidState):
+        owner_str = "invalid"
+        state_obj = None
+    elif isinstance(flow_view.owned, NoState):
+        owner_str = "initializing"
+        state_obj = None
+    else:
+        from .model import assert_never
+        assert_never(flow_view.owned)
+
+    result = {
+        "owner": owner_str,
+        "flow": str(resolved_path),
+        "state": state_obj,
+    }
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def _cmd_list(args: argparse.Namespace) -> int:
+    """List all flows in flows-v2 and flows.
+
+    Exit code: 0 (always)
+    """
+    home = Path.home()
+    repo_filter = args.repo
+
+    flows_to_list: List[Tuple[str, str, str, str]] = []
+
+    # Scan v2 flows
+    v2_root = flows_v2_root(home)
+    if v2_root.exists():
+        for repo_dir in v2_root.iterdir():
+            if not repo_dir.is_dir() or repo_dir.name.startswith("."):
+                continue
+            for flow_dir in repo_dir.iterdir():
+                if not flow_dir.is_dir() or flow_dir.name.startswith("."):
+                    continue
+
+                # Apply repo filter if given
+                if repo_filter and repo_dir.name != repo_filter.replace("/", "_"):
+                    continue
+
+                # Try to read state
+                step_str = "-"
+                status_str = "-"
+                try:
+                    state_file = flow_dir / "state.json"
+                    if state_file.exists():
+                        from .state import load_v2_state
+                        state_text = state_file.read_text(encoding="utf-8")
+                        state_obj = load_v2_state(json.loads(state_text))
+                        step_str = state_obj.step
+                        status_str = state_obj.status
+                    else:
+                        step_str = "-"
+                        status_str = "initializing"
+                except Exception:
+                    pass
+
+                flows_to_list.append(("v2", f"{repo_dir.name}/{flow_dir.name}", step_str, status_str))
+
+    # Scan v1 flows
+    v1_root = home / ".claude" / "flows"
+    if v1_root.exists():
+        for repo_dir in v1_root.iterdir():
+            if not repo_dir.is_dir() or repo_dir.name.startswith("."):
+                continue
+            for flow_dir in repo_dir.iterdir():
+                if not flow_dir.is_dir() or flow_dir.name.startswith("."):
+                    continue
+
+                # Apply repo filter if given
+                if repo_filter and repo_dir.name != repo_filter.replace("/", "_"):
+                    continue
+
+                # Try to read state
+                step_str = "-"
+                status_str = "-"
+                try:
+                    state_file = flow_dir / "state.json"
+                    if state_file.exists():
+                        state_text = state_file.read_text(encoding="utf-8")
+                        state_data = json.loads(state_text)
+                        step_str = state_data.get("step", "-")
+                        status_str = state_data.get("status", "-")
+                    else:
+                        step_str = "-"
+                        status_str = "initializing"
+                except Exception:
+                    pass
+
+                flows_to_list.append(("v1", f"{repo_dir.name}/{flow_dir.name}", step_str, status_str))
+
+    # Sort and print
+    flows_to_list.sort(key=lambda x: x[1])
+    for owner, path, step, status in flows_to_list:
+        print(f"{owner}\t{path}\t{step}\t{status}")
+
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="flow_driver",
-        description="Walking skeleton of the v2 /expert-flow driver (Sub-issue S). Disk-only boundary.",
+        description="v2 and skeleton /expert-flow driver (Layer 1 and skeleton modes). Disk-only boundary.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # V2 driver commands (Layer 1)
+    init = sub.add_parser("init", help="initialize a new v2 flow")
+    init.add_argument("--flow", required=True, help="absolute flow dir path (must match flows-v2 structure)")
+    init.add_argument("--worktree", required=True, help="absolute worktree path")
+
+    resume = sub.add_parser("resume", help="resume a v2 flow")
+    resume.add_argument("--flow", required=True, help="absolute flow dir path")
+    resume.add_argument("--redo", help="re-do a step (not yet implemented in Layer 1)")
+
+    status = sub.add_parser("status", help="get JSON status of a flow (read-only)")
+    status.add_argument("--json", action="store_true", required=True, help="output JSON")
+    status.add_argument("--flow", required=True, help="absolute flow dir path")
+
+    lst = sub.add_parser("list", help="list all flows in flows-v2 and flows (read-only)")
+    lst.add_argument("--repo", help="filter by OWNER/NAME")
+
+    # Skeleton driver commands (unchanged)
     start = sub.add_parser("start", help="create a flow dir (or open --flow) and perform one next")
     start.add_argument("--repo", required=True, help="OWNER/NAME")
     start.add_argument("--mode", required=True, choices=list(MODES))
@@ -408,13 +704,25 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        # V2 driver commands
+        if args.command == "init":
+            return _cmd_init(args)
+        if args.command == "resume":
+            return _cmd_resume(args)
+        if args.command == "status":
+            return _cmd_status(args)
+        if args.command == "list":
+            return _cmd_list(args)
+        # Skeleton driver commands
         if args.command == "start":
             return _cmd_start(args)
         if args.command == "next":
             return _cmd_next(args)
         if args.command == "answer":
             return _cmd_answer(args)
-        return _cmd_clear_live(args)
+        if args.command == "clear-live":
+            return _cmd_clear_live(args)
+        return 2
     except (FlowPathError, UsageError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
