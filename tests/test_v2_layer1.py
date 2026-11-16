@@ -1011,8 +1011,8 @@ def test_31_receipt_path_step_index():
             h.test_result(f"31: {step} path", str(path).endswith(expected_suffix))
 
 
-def test_33_stale_receipt_archived():
-    """Test 33: Stale receipt (wrong attempt) is archived, doesn't satisfy current attempt."""
+def test_33_matching_attempt_receipt_is_landed():
+    """Test 33: A receipt whose ATTEMPT matches the pending attempt classifies as landed."""
     with temp_home() as tmp:
         home = Path(tmp)
         flow = make_v2_flow(home)
@@ -1367,6 +1367,120 @@ def test_44_docs_updated():
 # Main
 # ---------------------------------------------------------------------------
 
+def _spawn_plan(flow: Path) -> None:
+    init_v2_state(flow)
+    with mutating(flow) as locked:
+        record_spawn(locked, "plan", "nonce1")
+
+
+def _write_plan_receipt(flow: Path, text: str) -> Path:
+    path = receipts.receipt_path(flow, "plan")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def _facts_for(locked):
+    return ResumeFacts(
+        state=locked.state, redo_requested=False, pending_human_input=None, heal_in_progress=None,
+        subagent_gone=None, assess_due=None, passing_outstanding_check=None,
+    )
+
+
+def test_45_stale_receipt_classifies_stale_and_decide_waits():
+    """Test 45: ATTEMPT 2 against pending attempt 1 is stale; decide archives it and waits."""
+    with temp_home() as tmp:
+        flow = make_v2_flow(Path(tmp))
+        _spawn_plan(flow)
+        path = _write_plan_receipt(flow, "ATTEMPT: 2\nDecision: OK\n<!-- step-end -->\nbody")
+        with mutating(flow) as locked:
+            cls = receipts.classify(locked, locked.state.pending_spawn)
+            h.test_result("45a: wrong attempt is stale", cls.state == "stale")
+            decision = decide(locked, _facts_for(locked))
+        h.test_result("45b: decide waits", decision.outcome == "wait")
+        h.test_result("45c: stale receipt moved out of the step path", not path.exists())
+        h.test_result("45d: archived as stale", len(list((flow / "archive" / "plan").glob("a1.stale.*.md"))) == 1)
+
+
+def test_46_decide_lands_and_pending_state_is_receipt_landed():
+    """Test 46: decide on a landed receipt keeps pending_spawn with state receipt-landed, live null."""
+    with temp_home() as tmp:
+        flow = make_v2_flow(Path(tmp))
+        _spawn_plan(flow)
+        _write_plan_receipt(flow, "ATTEMPT: 1\nDecision: OK\n<!-- step-end -->\nbody")
+        with mutating(flow) as locked:
+            decision = decide(locked, _facts_for(locked))
+        h.test_result("46a: outcome receipt-landed", decision.outcome == "receipt-landed")
+        with mutating(flow) as locked:
+            pending = locked.state.pending_spawn
+            h.test_result("46b: pending_spawn kept with state receipt-landed", pending is not None and pending.state == "receipt-landed")
+            h.test_result("46c: live projected to null", locked.state.live is None)
+
+
+def test_47_strict_attempt_02_is_incomplete():
+    """Test 47: ATTEMPT: 02 is rejected by the strict parse; after two identical reads it is malformed and reruns."""
+    with temp_home() as tmp:
+        flow = make_v2_flow(Path(tmp))
+        _spawn_plan(flow)
+        _write_plan_receipt(flow, "ATTEMPT: 02\nDecision: OK\n<!-- step-end -->\nbody")
+        h.test_result("47a: strict parse rejects 02", receipts.receipt_attempt("ATTEMPT: 02\n") is None)
+        with mutating(flow) as locked:
+            first = decide(locked, _facts_for(locked))
+        with mutating(flow) as locked:
+            second = decide(locked, _facts_for(locked))
+        h.test_result("47b: first read waits", first.outcome == "wait")
+        h.test_result("47c: second read reruns", second.outcome == "rerun")
+
+
+def test_48_crash_between_archive_and_commit_rolls_forward():
+    """Test 48 (F1): a crash after the archive rename but before the state commit is finished by the next resume."""
+    from scripts.flow_driver import state as state_module
+    with temp_home() as tmp:
+        flow = make_v2_flow(Path(tmp))
+        _spawn_plan(flow)
+        path = _write_plan_receipt(flow, "ATTEMPT: 1\nDecision: OK\n<!-- step-end -->\nbody")
+        original = state_module.LockedFlow.commit
+        calls = {"n": 0}
+
+        def crashing(self, new_state):  # type: ignore[no-untyped-def]
+            calls["n"] += 1
+            raise OSError("simulated crash before commit")
+
+        state_module.LockedFlow.commit = crashing  # type: ignore[method-assign]
+        try:
+            try:
+                with mutating(flow) as locked:
+                    decide(locked, _facts_for(locked))
+            except OSError:
+                pass
+        finally:
+            state_module.LockedFlow.commit = original  # type: ignore[method-assign]
+        h.test_result("48a: the receipt was moved but state not committed", not path.exists() and (flow / "archive" / "plan" / "a1.landed.md").exists() and calls["n"] >= 1)
+        with mutating(flow) as locked:
+            decision = decide(locked, _facts_for(locked))
+        h.test_result("48b: resume rolls forward to receipt-landed", decision.outcome == "receipt-landed")
+        with mutating(flow) as locked:
+            h.test_result("48c: state records receipt-landed", locked.state.pending_spawn is not None and locked.state.pending_spawn.state == "receipt-landed")
+
+
+def test_49_init_repo_with_underscore():
+    """Test 49 (F4): --repo keeps an underscore repo name intact and a mismatched --repo is a usage error."""
+    with temp_home() as tmp:
+        home = Path(tmp)
+        flow = cli_flow(home, key="owner_my_repo")
+        wt = home / "wt"
+        wt.mkdir()
+        rc, out, err = run_cli(home, "init", "--flow", str(flow), "--worktree", str(wt), "--repo", "owner/my_repo")
+        h.test_result("49a: init with --repo exits 0", rc == 0)
+        rc2, _, _ = run_cli(home, "status", "--json", "--flow", str(flow))
+        h.test_result("49b: status works", rc2 == 0)
+        state = json.loads((flow / "state.json").read_text())
+        h.test_result("49c: repo recorded as given", state["repo"] == "owner/my_repo")
+        flow2 = cli_flow(home, key="owner_other", issue=124)
+        rc3, _, err3 = run_cli(home, "init", "--flow", str(flow2), "--worktree", str(wt), "--repo", "owner/my_repo")
+        h.test_result("49d: mismatched --repo exits 2", rc3 == 2)
+
+
 if __name__ == "__main__":
     # Run tests
     test_1_atomic_write_positional()
@@ -1409,7 +1523,7 @@ if __name__ == "__main__":
     test_30a_untrusted_attempt_ignored()
 
     test_31_receipt_path_step_index()
-    test_33_stale_receipt_archived()
+    test_33_matching_attempt_receipt_is_landed()
     test_34_well_formed_receipt_lands()
     test_35_no_attempt_line_malformed_after_two_reads()
     test_36_malformed_receipt_archived_reruns()
@@ -1425,5 +1539,10 @@ if __name__ == "__main__":
     test_43a_exit_codes_per_outcome()
 
     test_44_docs_updated()
+    test_45_stale_receipt_classifies_stale_and_decide_waits()
+    test_46_decide_lands_and_pending_state_is_receipt_landed()
+    test_47_strict_attempt_02_is_incomplete()
+    test_48_crash_between_archive_and_commit_rolls_forward()
+    test_49_init_repo_with_underscore()
 
     h.summarize_and_exit()

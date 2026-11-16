@@ -9,7 +9,7 @@ Write order for every next and start is fixed: the step prompt (SPAWN only), the
 `NEXT: <VERB> <absolute directive file>`. Diagnostics go to stderr. An unexpected exception after the start of
 a next or start still tries to record and print `NEXT: STOP <stop directive file>`, then exits 1.
 
-Exit codes and stdout:
+Exit codes and stdout (init prints `INIT flow=<dir> run_id=<id>`; resume prints `RESUME rule=<rule> outcome=<outcome>`):
 - 0: success (init, resume with acted-on outcome, status, list)
 - 1: refusal (locked, v1-owned, skeleton-owned, schema-invalid, no-state, exists, verifier-timeout)
 - 2: usage error (FlowPathError, bad flag, mismatched --flow args, path inside neither root)
@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from scripts.workflow.fsutil import atomic_write_text
 
 from .driver import Decision, Observation, ReceiptView, decide, next_command, parse_receipt
-from .flowdir import FlowPathError, create_flow_dir, flows_v2_root, format_utc, open_flow_dir, resolve_read_flow_dir, validate_v2_flow_path
+from .flowdir import FlowPathError, create_flow_dir, repo_key as _repo_key, flows_v2_root, format_utc, open_flow_dir, resolve_read_flow_dir, validate_v2_flow_path
 from .model import (
     MODES,
     WAIT_MODES,
@@ -69,7 +69,7 @@ from .state import (
     read_flow,
 )
 from .receipts import VerifierTimeout
-from .resume import ResumeFacts, decide as resume_decide
+from .resume import CascadeExhausted, ResumeFacts, decide as resume_decide
 
 
 class UsageError(Exception):
@@ -298,14 +298,17 @@ def _guard_skeleton_subcommand(flow_dir: Path) -> Optional[int]:
     """
     Guard for skeleton subcommands (start, next, answer, clear-live).
 
-    Refuse if the flow is v2-owned or v1-owned. Returns exit code 1 if refused, None if allowed.
+    Allow only a skeleton flow; refuse every other class. Returns exit code 1 if refused, None if allowed.
     """
     owned = classify_state(flow_dir)
+    if isinstance(owned, SkeletonForeign):
+        return None
     if isinstance(owned, V2Owned):
         return _refuse(f"refused: v2-owned: flow {flow_dir.name} is a v2 flow; use init/resume")
     if isinstance(owned, V1Foreign):
         return _refuse(f"refused: v1-owned: flow {flow_dir.name} is a v1 flow and is read-only to the v2 driver")
-    return None
+    # Allowlist: anything that is not a skeleton flow (invalid or empty state included) is refused
+    return _refuse(f"refused: not-skeleton: flow {flow_dir.name} is not a skeleton flow ({type(owned).__name__})")
 
 
 def _check_args_match(flow: Path, args: argparse.Namespace) -> None:
@@ -437,20 +440,25 @@ def _cmd_init(args: argparse.Namespace) -> int:
     # Validate the flow path structure
     try:
         repo_key, issue = validate_v2_flow_path(Path.home(), flow_path)
-        # Reconstruct repo from key (replace underscore back to slash)
-        # For now, we just use the key as the repo identifier
-        repo = repo_key.replace("_", "/")
+        explicit_repo = getattr(args, "repo", None)
+        if explicit_repo is not None:
+            # The key must be the one this repo maps to, so a mistyped --repo cannot land in another repo's dir
+            if _repo_key(explicit_repo) != repo_key:
+                return _usage_error(f"error: --repo {explicit_repo} does not match the flow path key {repo_key}")
+            repo = explicit_repo
+        else:
+            # Without --repo the key is reversed on its first underscore (exact only for names with no underscore)
+            repo = repo_key.replace("_", "/", 1)
     except FlowPathError as exc:
         return _usage_error(f"error: {exc}")
 
-    # Validate that worktree is absolute
     if not worktree_path.is_absolute():
-        return _refuse("error: --worktree must be an absolute path")
+        return _usage_error("error: --worktree must be an absolute path")
 
-    # Initialize the flow
+    spec = InitSpec(repo=repo, issue=issue, worktree=str(worktree_path))
     try:
-        with mutating(flow_path, create=InitSpec(repo=repo, issue=issue, worktree=str(worktree_path))) as locked:
-            init_state(locked, InitSpec(repo=repo, issue=issue, worktree=str(worktree_path)))
+        with mutating(flow_path, create=spec) as locked:
+            init_state(locked, spec)
             if locked.state is None:
                 return _refuse("error: init_state failed to create state")
             run_id = locked.state.run_id
@@ -458,7 +466,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
         return _refuse(f"refused: {exc.refusal_class}: {exc.detail}")
     except StateSchemaError as exc:
         return _refuse(f"refused: schema-invalid: {exc}")
-    except Exception as exc:
+    except OSError as exc:
         return _refuse(f"error: {type(exc).__name__}: {exc}")
 
     print(f"INIT flow={flow_path} run_id={run_id}")
@@ -500,7 +508,23 @@ def _cmd_resume(args: argparse.Namespace) -> int:
         except VerifierTimeout as exc:
             if reentry == 2:
                 return _refuse(f"refused: verifier-timeout: {exc}")
+            _log_verifier_retry(resolved_path, str(exc))
     return _refuse("refused: verifier-timeout")  # unreachable: the loop returns on every path
+
+
+def _log_verifier_retry(flow_path: Path, detail: str) -> None:
+    """Record the first verifier timeout (the retry is otherwise invisible). Best effort: a lock miss is skipped."""
+    try:
+        with mutating(flow_path) as locked:
+            if locked.state is not None:
+                locked.log(
+                    "verifier-timeout-retry",
+                    step=locked.state.step,
+                    attempt=locked.state.attempts.get(locked.state.step, 0),
+                    detail=detail,
+                )
+    except (Refusal, StateSchemaError, OSError):
+        pass
 
 
 def _resume_locked(resolved_path: Path, redo_step: Optional[str]) -> int:
@@ -537,7 +561,9 @@ def _resume_locked(resolved_path: Path, redo_step: Optional[str]) -> int:
         return _refuse(f"refused: {exc.refusal_class}: {exc.detail}")
     except StateSchemaError as exc:
         return _refuse(f"refused: schema-invalid: {exc}")
-    except Exception as exc:
+    except CascadeExhausted as exc:
+        return _refuse(f"refused: cascade-exhausted: {exc}")
+    except OSError as exc:
         return _refuse(f"error: {type(exc).__name__}: {exc}")
 
 
@@ -692,6 +718,7 @@ def build_parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init", help="initialize a new v2 flow")
     init.add_argument("--flow", required=True, help="absolute flow dir path (must match flows-v2 structure)")
     init.add_argument("--worktree", required=True, help="absolute worktree path")
+    init.add_argument("--repo", help="OWNER/NAME; required when the repo name contains an underscore (the key cannot be reversed)")
 
     resume = sub.add_parser("resume", help="resume a v2 flow")
     resume.add_argument("--flow", required=True, help="absolute flow dir path")

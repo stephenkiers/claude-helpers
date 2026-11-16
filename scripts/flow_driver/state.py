@@ -478,6 +478,11 @@ def load_v2_state(raw: object) -> V2State:
     )
     if state.live != _project_live(state.pending_spawn):
         raise StateSchemaError("live", "must be null unless pending_spawn is spawned or resumed, then a copy of it")
+    pending = state.pending_spawn
+    if pending is not None and state.attempts.get(pending.step, 0) < pending.attempt:
+        raise StateSchemaError("attempts", "the counter for the pending step must be >= pending_spawn.attempt")
+    if len(set(state.applied)) != len(state.applied):
+        raise StateSchemaError("applied", "must not contain duplicate keys")
     return state
 
 
@@ -642,7 +647,7 @@ class LockedFlow:
         fsutil.atomic_write_text(self.path / STATE_FILE, text, fsync=True)
         self._state = stamped
 
-    def log(self, event: str, *, step: Optional[Step], attempt: Optional[int], **fields: object) -> None:
+    def log(self, event: str, *, step: Step, attempt: int, **fields: object) -> None:
         self._check_open("log")
         record: Dict[str, object] = {
             "ts": _utc_now(),
@@ -705,6 +710,7 @@ def reconcile(locked: LockedFlow) -> ReconcileResult:
     archive_base = locked.path / "archive"
     repairs: List[Tuple[Step, int, int]] = []
     per_step: Dict[Step, Union[Literal["Ok"], Mapping[str, object]]] = {}
+    new_attempts = dict(state.attempts)
 
     # Collect all steps that appear anywhere
     steps_to_check = set(state.attempts.keys()) | set(state.attempt_log.keys())
@@ -745,22 +751,22 @@ def reconcile(locked: LockedFlow) -> ReconcileResult:
                         # Parse ATTEMPT from the landed archive content (trusted source)
                         try:
                             content = entry.read_text(encoding="utf-8")
-                            # Import receipts to access the verifier parser
                             from . import receipts as receipts_module  # local import to avoid cycle
-                            attempt_from_receipt = receipts_module._get_receipt_attempt(content)
+                            attempt_from_receipt = receipts_module.receipt_attempt(content)
                             if attempt_from_receipt is not None:
                                 highest_archived = max(highest_archived, attempt_from_receipt)
                         except (OSError, UnicodeDecodeError):
                             pass
 
-        # Detect mismatch
+        # Detect mismatch (kept in per_step; a later "Ok" never overwrites it)
+        counter = state.attempts.get(step, 0)
         if landed_recorded != landed_archived:
             missing = landed_recorded - landed_archived
             unrecorded = landed_archived - landed_recorded
-            mismatch = {
+            mismatch: Dict[str, object] = {
                 "event": "attempt-reconcile-mismatch",
                 "step": step,
-                "counter": state.attempts.get(step, 0),
+                "counter": counter,
                 "landed_recorded": sorted(landed_recorded),
                 "landed_archived": sorted(landed_archived),
             }
@@ -769,22 +775,22 @@ def reconcile(locked: LockedFlow) -> ReconcileResult:
             if unrecorded:
                 mismatch["unrecorded_archives"] = sorted(unrecorded)
             log_fields = {k: v for k, v in mismatch.items() if k not in ("event", "step")}
-            locked.log("attempt-reconcile-mismatch", step=step, attempt=None, **log_fields)
+            locked.log("attempt-reconcile-mismatch", step=step, attempt=counter, **log_fields)
             per_step[step] = mismatch
 
-        # Repair: raise counter if needed
-        current_counter = state.attempts.get(step, 0)
-        if current_counter < highest_archived:
-            repairs.append((step, current_counter, highest_archived))
-            new_attempts = dict(state.attempts)
-            new_attempts[step] = highest_archived
-            locked.log("attempt-counter-repaired", step=step, attempt=None, **{"from": current_counter, "to": highest_archived})
-            state = dataclasses.replace(state, attempts=new_attempts)
-            per_step[step] = "Ok"
-            # Commit the repair immediately
-            locked.commit(state)
-        else:
-            per_step[step] = "Ok"
+        # Repair: raise the counter, unless this step's spawn is pending (record_spawn already owns it)
+        if counter < highest_archived:
+            pending = state.pending_spawn
+            if pending is not None and pending.step == step:
+                locked.log("attempt-counter-repair-deferred", step=step, attempt=counter, to=highest_archived)
+            else:
+                repairs.append((step, counter, highest_archived))
+                new_attempts[step] = highest_archived
+                locked.log("attempt-counter-repaired", step=step, attempt=highest_archived, **{"from": counter, "to": highest_archived})
+        per_step.setdefault(step, "Ok")
+
+    if repairs:
+        locked.commit(dataclasses.replace(state, attempts=new_attempts))
 
     return ReconcileResult(per_step=per_step, repairs=tuple(repairs))
 
@@ -832,6 +838,10 @@ def _require_pending_transition(prev: V2State, new: V2State) -> None:
     new_state = None if new.pending_spawn is None else new.pending_spawn.state
     if (prev_state, new_state) not in ALLOWED_TRANSITIONS:
         raise RuntimeError(f"illegal pending_spawn transition {prev_state!r} -> {new_state!r}")
+    if prev.pending_spawn is not None and new.pending_spawn is not None:
+        before, after = prev.pending_spawn, new.pending_spawn
+        if (before.step, before.attempt, before.nonce) != (after.step, after.attempt, after.nonce):
+            raise RuntimeError("illegal pending_spawn transition: the spawn identity changed")
 
 
 TransitionFn = Callable[[LockedFlow, V2State], V2State]
@@ -912,6 +922,17 @@ def init_state(locked: LockedFlow, spec: InitSpec) -> None:
     locked.commit(state)
 
 
+def _is_closed_repeatable(canon: str, run_id: str, step: Step, new_attempt: int) -> bool:
+    """True for a repeatable key (run:step:attempt:name:content) of an earlier attempt of step."""
+    parts = canon.split(":")
+    if len(parts) < 5 or parts[0] != run_id or parts[1] != step:
+        return False
+    try:
+        return int(parts[2]) < new_attempt
+    except ValueError:
+        return False
+
+
 def record_spawn(locked: LockedFlow, step: Step, nonce: str) -> int:
     """
     Open a spawn for the next attempt of step. The counter and pending_spawn are written in the same replace,
@@ -927,7 +948,10 @@ def record_spawn(locked: LockedFlow, step: Step, nonce: str) -> int:
         attempts = dict(current.attempts)
         attempts[step] = attempt
         pending = PendingSpawn(step=step, attempt=attempt, nonce=nonce, state="spawned", receipt_seen=None)
-        return dataclasses.replace(current, attempts=attempts, pending_spawn=pending)
+        # Repeatable keys (they carry a content sha) of attempts that closed are dead weight: drop them so
+        # `applied` does not grow with every polled receipt (Layer 4 polling will add one per fingerprint).
+        kept = tuple(k for k in current.applied if not _is_closed_repeatable(k, current.run_id, step, attempt))
+        return dataclasses.replace(current, attempts=attempts, pending_spawn=pending, applied=kept)
 
     apply_transition(locked, key, "record_spawn", _spawn)
     return attempt

@@ -30,18 +30,19 @@ Python 3.8 floor: no match statements, no f-strings with = debug syntax.
 import dataclasses
 import hashlib
 import importlib.util
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import List, Literal, NamedTuple, Optional, Sequence
+from typing import Callable, Dict, List, Literal, NamedTuple, Optional, Sequence, Union
 
 from .state import LockedFlow, PendingSpawn, ReceiptFingerprint, Step, TransitionKey, V2State, apply_transition
 
 
 # Map step names to their zero-padded indices in the Step order
-_STEP_INDICES = {
+_STEP_INDICES: Dict[Step, str] = {
     "worktree": "00",
     "plan": "01",
     "track": "02",
@@ -72,7 +73,9 @@ class Receipt(NamedTuple):
 
 def receipt_path(flow_dir: Path, step: Step) -> Path:
     """Path to the receipt for step: steps/<NN>-<step>.md."""
-    idx = _STEP_INDICES.get(step, "XX")  # type: ignore[arg-type]
+    idx = _STEP_INDICES.get(step)
+    if idx is None:
+        raise ValueError(f"unknown step: {step!r}")
     return flow_dir / "steps" / f"{idx}-{step}.md"
 
 
@@ -107,6 +110,11 @@ def _get_receipt_attempt(text: str) -> Optional[int]:
     if not _ATTEMPT_VALUE.fullmatch(value):
         return None
     return int(value)
+
+
+def receipt_attempt(text: str) -> Optional[int]:
+    """Public form of the strict ATTEMPT parse (None when absent, duplicated or not [1-9][0-9]*)."""
+    return _get_receipt_attempt(text)
 
 
 def _receipt_attempt_error(text: str) -> bool:
@@ -164,12 +172,47 @@ class VerifierResult(NamedTuple):
     stderr: str
 
 
-def _compute_fingerprint(text: str) -> ReceiptFingerprint:
-    """Compute SHA256 and size of receipt text."""
-    return ReceiptFingerprint(
-        sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        size=len(text),
-    )
+def _compute_fingerprint(data: Union[bytes, str]) -> ReceiptFingerprint:  # noqa: UP037
+    """Compute SHA256 and byte size of the raw receipt content (str is encoded as UTF-8)."""
+    raw = data if isinstance(data, bytes) else data.encode("utf-8")
+    return ReceiptFingerprint(sha256=hashlib.sha256(raw).hexdigest(), size=len(raw))
+
+
+class ReceiptChanged(Exception):
+    """The receipt changed between classification and archiving; the move was undone."""
+
+
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _archive_move(path: Path, dest: Path, accept: Callable[[bytes], bool]) -> None:
+    """
+    Move the step receipt to dest, then re-read the captured file and check accept(bytes).
+
+    A receipt rewritten between classify and the move is not archived under the wrong name: on mismatch the
+    file is put back (or, when the step path was re-created meanwhile, parked as a<k>.changed.<sha12>.md)
+    and ReceiptChanged is raised. A missing receipt is a no-op (the move already happened on a crashed run).
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        return
+    path.rename(dest)
+    data = dest.read_bytes()
+    if not accept(data):
+        sha12 = hashlib.sha256(data).hexdigest()[:12]
+        if path.exists():
+            parked = dest.with_name(dest.name.rsplit(".", 2)[0] + f".changed.{sha12}.md")
+            dest.rename(parked)
+        else:
+            dest.rename(path)
+        raise ReceiptChanged(f"receipt changed while archiving to {dest.name}")
+    _fsync_dir(dest.parent)
+    _fsync_dir(path.parent)
 
 
 def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
@@ -178,19 +221,22 @@ def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
 
     For InProgress vs Malformed, requires two-read stability: an incomplete receipt is InProgress
     if its fingerprint differs from pending.receipt_seen, or Malformed if it's the same.
+
+    Cadence assumption (Layer 2 must honour it): a receipt still being written can look identical across two
+    reads taken back to back. Layer 2 must leave a quiet interval between resumes, or gate on subagent_gone,
+    before acting on a `rerun` outcome.
     """
     path = receipt_path(locked.path, pending.step)
 
-    # Absent
-    if not path.exists():
-        return Classification(state="absent")
-
+    # Absent only when the file is genuinely missing; any other I/O error propagates (it is not "no receipt")
     try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        raw = path.read_bytes()
+    except FileNotFoundError:
         return Classification(state="absent")
 
-    fingerprint = _compute_fingerprint(text)
+    # Undecodable bytes are replaced, so a corrupt receipt classifies (malformed) instead of vanishing
+    text = raw.decode("utf-8", errors="replace")
+    fingerprint = _compute_fingerprint(raw)
 
     # Well-formed: Landed or Stale
     receipt = parse_receipt(pending.step, text)
@@ -209,6 +255,39 @@ def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
         return Classification(state="malformed", fingerprint=fingerprint)
 
 
+def _is_landed(step: Step, attempt: int, data: bytes) -> bool:
+    receipt = parse_receipt(step, data.decode("utf-8", errors="replace"))
+    return receipt is not None and receipt.attempt == attempt
+
+
+def _receipt_sha_is_not(path: Path, sha256: str) -> bool:
+    try:
+        return _compute_fingerprint(path.read_bytes()).sha256 != sha256
+    except FileNotFoundError:
+        return True
+
+
+def roll_forward(locked: LockedFlow, key: TransitionKey, pending: PendingSpawn) -> Optional[Literal["receipt-landed", "rerun"]]:
+    """
+    Finish an archive move whose state commit never happened (a crash between rename and commit).
+
+    Only acts when the step receipt is absent and an archive for this attempt exists: a landed archive that
+    parses as landed re-runs land; a malformed archive re-runs rerun_malformed. Returns None when nothing to do.
+    """
+    if receipt_path(locked.path, pending.step).exists():
+        return None
+    archive_dir = locked.path / "archive" / pending.step
+    landed = archive_dir / f"a{pending.attempt}.landed.md"
+    malformed = archive_dir / f"a{pending.attempt}.malformed.md"
+    if landed.exists() and _is_landed(pending.step, pending.attempt, landed.read_bytes()):
+        land(locked, key, pending.step, pending.attempt)
+        return "receipt-landed"
+    if malformed.exists():
+        rerun_malformed(locked, key, pending.step, pending.attempt)
+        return "rerun"
+    return None
+
+
 def land(locked: LockedFlow, key: TransitionKey, step: Step, attempt: int) -> None:
     """
     Archive a well-formed landed receipt and record the attempt as receipt-landed.
@@ -225,10 +304,8 @@ def land(locked: LockedFlow, key: TransitionKey, step: Step, attempt: int) -> No
             raise RuntimeError(f"land: no pending spawn for {step} attempt {attempt}")
 
         # Move receipt to archive
-        archive_dir.mkdir(parents=True, exist_ok=True)
         archive_path = archive_dir / f"a{attempt}.landed.md"
-        if path.exists():
-            path.rename(archive_path)
+        _archive_move(path, archive_path, lambda b: _is_landed(step, attempt, b))
 
         # Update state: the pending spawn is receipt-landed (live null via the D1 projection)
         outcomes = {s: dict(per_step) for s, per_step in state.attempt_log.items()}
@@ -256,10 +333,8 @@ def archive_stale(locked: LockedFlow, key: TransitionKey, step: Step, attempt: i
 
     def _do_archive_stale(_: LockedFlow, state: V2State) -> V2State:
         # Move receipt to stale archive
-        archive_dir.mkdir(parents=True, exist_ok=True)
         archive_path = archive_dir / f"a{attempt}.stale.{sha_short}.md"
-        if path.exists():
-            path.rename(archive_path)
+        _archive_move(path, archive_path, lambda b: hashlib.sha256(b).hexdigest() == receipt_sha256)
         # State unchanged (pending_spawn and live stay as is)
         return state
 
@@ -269,7 +344,7 @@ def archive_stale(locked: LockedFlow, key: TransitionKey, step: Step, attempt: i
         "archive_stale",
         _do_archive_stale,
         content=receipt_sha256,
-        postcondition=lambda s: not path.exists() or _compute_fingerprint(path.read_text(encoding="utf-8")).sha256 != receipt_sha256,
+        postcondition=lambda s: _receipt_sha_is_not(path, receipt_sha256),
     )
 
 
@@ -286,10 +361,8 @@ def rerun_malformed(locked: LockedFlow, key: TransitionKey, step: Step, attempt:
 
     def _do_rerun_malformed(_: LockedFlow, state: V2State) -> V2State:
         # Move receipt to malformed archive
-        archive_dir.mkdir(parents=True, exist_ok=True)
         archive_path = archive_dir / f"a{attempt}.malformed.md"
-        if path.exists():
-            path.rename(archive_path)
+        _archive_move(path, archive_path, lambda b: parse_receipt(step, b.decode("utf-8", errors="replace")) is None)
 
         # Update state: clear pending, record malformed outcome
         outcomes = {s: dict(per_step) for s, per_step in state.attempt_log.items()}
@@ -354,10 +427,13 @@ def rebuild_receipt(
     archive_dir = locked.path / "archive" / key.step
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive_path = archive_dir / f"a{key.attempt}.rebuilt.md"
+    if source is not None and (source.step, source.attempt) != (key.step, key.attempt):
+        raise RebuildRefused("source receipt does not belong to this transition key")
 
-    # Build the rebuilt receipt text
+    # Build the rebuilt receipt text; exclusive create so an existing archive is never overwritten
     rebuilt_text = f"REBUILT: yes\nDecision: {decision}\n\n{body}\n"
-    archive_path.write_text(rebuilt_text, encoding="utf-8")
+    with open(archive_path, "x", encoding="utf-8") as fh:
+        fh.write(rebuilt_text)
 
     locked.log("receipt-rebuilt", step=key.step, attempt=key.attempt)
     return archive_path

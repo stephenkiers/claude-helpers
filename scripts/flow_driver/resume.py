@@ -54,6 +54,10 @@ class ResumeFacts:
     later: Mapping[RuleName, Optional[bool]] = dataclasses.field(default_factory=dict)
 
 
+class CascadeExhausted(Exception):
+    """No rule fired: the cascade is incomplete. The CLI maps this to a refusal (exit 1)."""
+
+
 class ResumeDecision(NamedTuple):
     """The outcome of decide(). Outcomes: wait, receipt-landed, rerun (acted-on); not-yet-built (fail-closed)."""
 
@@ -77,7 +81,9 @@ def _rule_0_redo(facts: ResumeFacts) -> Optional[bool]:
 
 
 def _rule_1_live_step(facts: ResumeFacts) -> Optional[bool]:
-    """True when pending_spawn is not None and its state is spawned or resumed, else False. Pure."""
+    """True when status is running or awaiting and pending_spawn is spawned or resumed, else False. Pure."""
+    if facts.state.status not in ("running", "awaiting"):
+        return False
     pending = facts.state.pending_spawn
     if pending is None:
         return False
@@ -161,12 +167,7 @@ def _rule_5_subagent_gone(facts: ResumeFacts) -> Optional[bool]:
     return facts.subagent_gone
 
 
-# Every other later rule reads later[name], which is None unless a test injects it.
-
-
-def _later_rule(name: RuleName, facts: ResumeFacts) -> Optional[bool]:
-    """Fallback for rules owned by later layers (read from later mapping)."""
-    return facts.later.get(name)
+# Every later rule below reads facts.later[name], which is None unless a test injects it.
 
 
 RULES: Tuple[ResumeRule, ...] = (
@@ -200,7 +201,14 @@ def _rule_1_action(locked: LockedFlow, pending: PendingSpawn) -> Literal["wait",
     - Stale -> archive_stale, then wait
     - Malformed -> rerun_malformed, then rerun
     """
-    key = TransitionKey(locked.state.run_id, pending.step, pending.attempt)  # type: ignore[union-attr]
+    key = TransitionKey(locked.state.run_id, pending.step, pending.attempt)
+
+    # Roll forward a move that crashed between the archive rename and the state commit: the receipt is gone
+    # but its archive exists while pending_spawn still says live.
+    forward = receipts.roll_forward(locked, key, pending)
+    if forward is not None:
+        return forward
+
     classification = receipts.classify(locked, pending)
 
     if classification.state == "absent":
@@ -211,16 +219,27 @@ def _rule_1_action(locked: LockedFlow, pending: PendingSpawn) -> Literal["wait",
             receipts.store_fingerprint(locked, key, pending.step, pending.attempt, classification.fingerprint)
         return "wait"
     elif classification.state == "landed":
-        receipts.land(locked, key, pending.step, pending.attempt)
+        try:
+            receipts.land(locked, key, pending.step, pending.attempt)
+        except receipts.ReceiptChanged:
+            locked.log("receipt-changed-while-archiving", step=pending.step, attempt=pending.attempt, action="land")
+            return "wait"
         return "receipt-landed"
     elif classification.state == "stale":
         # Archive the stale receipt; pending_spawn stays pending
         if classification.fingerprint is not None:
-            receipts.archive_stale(locked, key, pending.step, pending.attempt, classification.fingerprint.sha256)
+            try:
+                receipts.archive_stale(locked, key, pending.step, pending.attempt, classification.fingerprint.sha256)
+            except receipts.ReceiptChanged:
+                locked.log("receipt-changed-while-archiving", step=pending.step, attempt=pending.attempt, action="archive_stale")
         return "wait"
     elif classification.state == "malformed":
         # Rerun: archive malformed, clear pending, return rerun decision
-        receipts.rerun_malformed(locked, key, pending.step, pending.attempt)
+        try:
+            receipts.rerun_malformed(locked, key, pending.step, pending.attempt)
+        except receipts.ReceiptChanged:
+            locked.log("receipt-changed-while-archiving", step=pending.step, attempt=pending.attempt, action="rerun_malformed")
+            return "wait"
         return "rerun"
     else:
         # Exhaustive dispatch
@@ -242,26 +261,24 @@ def decide(locked: LockedFlow, facts: ResumeFacts) -> ResumeDecision:
             continue
 
         # Predicate is True or None: rule fires
+        outcome: Literal["wait", "receipt-landed", "rerun", "not-yet-built"]
         if rule.name == "rule-1-live-step":
-            # Rule 1 has real behavior in Layer 1
-            if facts.state.pending_spawn is None:
-                # Precondition failed (should not happen if predicate was True)
-                outcome: Literal["wait", "receipt-landed", "rerun", "not-yet-built"] = "wait"
-            else:
-                pending = facts.state.pending_spawn
-                rule_outcome = _rule_1_action(locked, pending)
-                outcome = rule_outcome
+            # Rule 1 has real behavior in Layer 1; its predicate guarantees a live pending_spawn
+            pending = facts.state.pending_spawn
+            if pending is None:
+                raise RuntimeError("rule-1-live-step fired without a pending_spawn")
+            outcome = _rule_1_action(locked, pending)
         else:
             # All other rules: fail-closed "not-yet-built" outcome
             outcome = "not-yet-built"
 
         # Log and print the decision
-        locked.log("resume-rule-fired", step=facts.state.step, attempt=None, rule=rule.name, outcome=outcome, layer=rule.layer)
+        locked.log("resume-rule-fired", step=facts.state.step, attempt=facts.state.attempts.get(facts.state.step, 0), rule=rule.name, outcome=outcome, layer=rule.layer)
         stdout_line = f"RESUME rule={rule.name} outcome={outcome}"
         print(stdout_line)
 
         return ResumeDecision(rule=rule.name, outcome=outcome, layer=rule.layer)
 
-    # Exhaustion: no rule fired (should not reach here if the cascade is complete and fail-closed)
-    # This should never happen in normal operation since the cascade is designed to be exhaustive and fail-closed
-    raise RuntimeError("No resume rule fired; the cascade is incomplete")
+    # Exhaustion: every predicate returned False. The table is meant to be fail-closed, so this is a defect,
+    # reported as a defined refusal rather than a traceback.
+    raise CascadeExhausted("no resume rule fired; the cascade is incomplete")
