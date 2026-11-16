@@ -606,7 +606,7 @@ def test_18a_repeatable_transitions_not_swallowed():
         receipt_path_plan.write_text(receipt_a)
         with mutating(flow) as locked:
             run_id = locked.state.run_id
-            receipts.archive_stale(locked, TransitionKey(run_id, "plan", 2), "plan", 2, sha256_text(receipt_a))
+            receipts.archive_stale(locked, TransitionKey(run_id, "plan", 2), sha256_text(receipt_a))
 
         archived1 = list(flow.glob("archive/plan/a2.stale.*.md"))
         h.test_result("18a-1: first stale archived", len(archived1) == 1)
@@ -615,7 +615,7 @@ def test_18a_repeatable_transitions_not_swallowed():
         receipt_path_plan.write_text(receipt_b)
         with mutating(flow) as locked:
             run_id = locked.state.run_id
-            receipts.archive_stale(locked, TransitionKey(run_id, "plan", 2), "plan", 2, sha256_text(receipt_b))
+            receipts.archive_stale(locked, TransitionKey(run_id, "plan", 2), sha256_text(receipt_b))
 
         archived2 = list(flow.glob("archive/plan/a2.stale.*.md"))
         h.test_result("18a-2: both stales archived", len(archived2) == 2)
@@ -1071,7 +1071,7 @@ def test_34_well_formed_receipt_lands():
 
         with mutating(flow) as locked:
             run_id = locked.state.run_id
-            receipts.land(locked, TransitionKey(run_id, "plan", 1), "plan", 1)
+            receipts.land(locked, TransitionKey(run_id, "plan", 1))
 
         # Verify archive
         archive_path = flow / "archive" / "plan" / "a1.landed.md"
@@ -1104,7 +1104,7 @@ def test_35_no_attempt_line_malformed_after_two_reads():
             pending = locked.state.pending_spawn
             receipts.store_fingerprint(
                 locked, TransitionKey(locked.state.run_id, "plan", pending.attempt),
-                "plan", pending.attempt, classification1.fingerprint,
+                classification1.fingerprint,
             )
 
         # Second read with same content
@@ -1136,7 +1136,7 @@ def test_36_malformed_receipt_archived_reruns():
         # rerun_malformed is called directly here; the two-read rule is covered by tests 35 and 47
         with mutating(flow) as locked:
             run_id = locked.state.run_id
-            receipts.rerun_malformed(locked, TransitionKey(run_id, "plan", 1), "plan", 1)
+            receipts.rerun_malformed(locked, TransitionKey(run_id, "plan", 1))
 
         # Verify archive
         archive_path = flow / "archive" / "plan" / "a1.malformed.md"

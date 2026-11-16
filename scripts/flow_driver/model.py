@@ -20,7 +20,7 @@ GENERAL_PURPOSE_AGENT = "general-purpose"
 STOP_DIRECTIVE_NAME = "skeleton-stop.json"
 
 Verb = Literal["SPAWN", "RESUME", "WAIT", "ASK", "PARK", "STOP", "DONE"]
-VERBS: Tuple[Verb, ...] = get_args(Verb)  # type: ignore[assignment]
+VERBS: Tuple[Verb, ...] = get_args(Verb)
 _VERB_BY_NAME: Dict[str, Verb] = {verb: verb for verb in VERBS}
 
 
@@ -39,7 +39,7 @@ AfterEvent = Literal[
     "notification",
     "human-continue",
 ]
-AFTER_EVENTS: Tuple[AfterEvent, ...] = get_args(AfterEvent)  # type: ignore[assignment]
+AFTER_EVENTS: Tuple[AfterEvent, ...] = get_args(AfterEvent)
 _AFTER_BY_NAME: Dict[str, AfterEvent] = {event: event for event in AFTER_EVENTS}
 
 
@@ -53,9 +53,9 @@ def parse_after(raw: Optional[str]) -> Union[AfterEvent, Literal["none", "unreco
 Mode = Literal["interactive", "headless"]
 WaitMode = Literal["end-turn", "foreground"]
 PendingState = Literal["spawned", "parked-awaiting-answer", "resumed"]
-MODES: Tuple[Mode, ...] = get_args(Mode)  # type: ignore[assignment]
-WAIT_MODES: Tuple[WaitMode, ...] = get_args(WaitMode)  # type: ignore[assignment]
-PENDING_STATES: Tuple[PendingState, ...] = get_args(PendingState)  # type: ignore[assignment]
+MODES: Tuple[Mode, ...] = get_args(Mode)
+WAIT_MODES: Tuple[WaitMode, ...] = get_args(WaitMode)
+PENDING_STATES: Tuple[PendingState, ...] = get_args(PendingState)
 _MODE_BY_NAME: Dict[str, Mode] = {mode: mode for mode in MODES}
 _WAIT_MODE_BY_NAME: Dict[str, WaitMode] = {mode: mode for mode in WAIT_MODES}
 _PENDING_BY_NAME: Dict[str, PendingState] = {state: state for state in PENDING_STATES}

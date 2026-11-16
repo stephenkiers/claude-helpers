@@ -102,11 +102,11 @@ RefusalClass = Literal[
     "cascade-exhausted",
 ]
 
-STEPS: Tuple[Step, ...] = get_args(Step)  # type: ignore[assignment]
-STATUSES: Tuple[Status, ...] = get_args(Status)  # type: ignore[assignment]
-STOP_SOURCES: Tuple[StopSource, ...] = get_args(StopSource)  # type: ignore[assignment]
-PENDING_STATES: Tuple[PendingState, ...] = get_args(PendingState)  # type: ignore[assignment]
-ATTEMPT_OUTCOMES: Tuple[AttemptOutcome, ...] = get_args(AttemptOutcome)  # type: ignore[assignment]
+STEPS: Tuple[Step, ...] = get_args(Step)
+STATUSES: Tuple[Status, ...] = get_args(Status)
+STOP_SOURCES: Tuple[StopSource, ...] = get_args(StopSource)
+PENDING_STATES: Tuple[PendingState, ...] = get_args(PendingState)
+ATTEMPT_OUTCOMES: Tuple[AttemptOutcome, ...] = get_args(AttemptOutcome)
 _STEP_BY_NAME: Dict[str, Step] = {step: step for step in STEPS}
 _STATUS_BY_NAME: Dict[str, Status] = {status: status for status in STATUSES}
 _STOP_SOURCE_BY_NAME: Dict[str, StopSource] = {source: source for source in STOP_SOURCES}
@@ -137,7 +137,11 @@ ALLOWED_TRANSITIONS: FrozenSet[Tuple[Optional[PendingState], Optional[PendingSta
 
 # Every transition name is declared exactly once here. "once" transitions run at most once per
 # (run_id, step, attempt). "repeatable" transitions also carry a content hash in their key.
-TRANSITION_KINDS: Dict[str, TransitionKind] = {
+TransitionName = Literal[
+    "record_spawn", "land", "rerun_malformed", "record_cleared", "archive_stale", "store_fingerprint"
+]
+
+TRANSITION_KINDS: Dict[TransitionName, TransitionKind] = {
     "record_spawn": "once",
     "land": "once",
     "rerun_malformed": "once",
@@ -448,6 +452,10 @@ def _project_live(pending: Optional[PendingSpawn]) -> Optional[LiveRecord]:
     return LiveRecord(step=pending.step, attempt=pending.attempt, nonce=pending.nonce)
 
 
+_RUN_ID_RE = re.compile(r"[0-9a-f]{16}")
+_REPO_SHAPE_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+
+
 def load_v2_state(raw: object) -> V2State:
     """Validate a parsed state.json object into a V2State. Raises StateSchemaError on any violation."""
     if not isinstance(raw, dict):
@@ -481,6 +489,10 @@ def load_v2_state(raw: object) -> V2State:
     )
     if state.live != _project_live(state.pending_spawn):
         raise StateSchemaError("live", "must be null unless pending_spawn is spawned or resumed, then a copy of it")
+    if not _RUN_ID_RE.fullmatch(state.run_id):
+        raise StateSchemaError("run_id", "must be 16 lowercase hex characters")
+    if not _REPO_SHAPE_RE.fullmatch(state.repo):
+        raise StateSchemaError("repo", "must be OWNER/NAME")
     pending = state.pending_spawn
     if pending is not None and state.attempts.get(pending.step, 0) < pending.attempt:
         raise StateSchemaError("attempts", "the counter for the pending step must be >= pending_spawn.attempt")
@@ -865,7 +877,7 @@ TransitionFn = Callable[[LockedFlow, V2State], V2State]
 def apply_transition(
     locked: LockedFlow,
     key: TransitionKey,
-    name: str,
+    name: TransitionName,
     fn: TransitionFn,
     *,
     content: Optional[str] = None,

@@ -95,7 +95,7 @@ def _rule_2_paused_gate(facts: ResumeFacts) -> Optional[bool]:
     if facts.state.status != "paused":
         return False
     gated_steps = ("plan", "implement", "review", "fix", "verify")
-    return facts.state.step in gated_steps  # type: ignore[return-value]
+    return facts.state.step in gated_steps
 
 
 def _rule_2a_assess(facts: ResumeFacts) -> Optional[bool]:
@@ -211,39 +211,28 @@ def _rule_1_action(locked: LockedFlow, pending: PendingSpawn) -> Literal["wait",
 
     classification = receipts.classify(locked, pending)
 
-    if classification.state == "absent":
+    if isinstance(classification, receipts.Absent):
         return "wait"
-    elif classification.state == "in-progress":
+    if isinstance(classification, receipts.InProgress):
         # Store the fingerprint for two-read stability detection
-        if classification.fingerprint is not None:
-            receipts.store_fingerprint(locked, key, pending.step, pending.attempt, classification.fingerprint)
+        receipts.store_fingerprint(locked, key, classification.fingerprint)
         return "wait"
-    elif classification.state == "landed":
-        try:
-            receipts.land(locked, key, pending.step, pending.attempt)
-        except receipts.ReceiptChanged:
-            locked.log("receipt-changed-while-archiving", step=pending.step, attempt=pending.attempt, action="land")
+    try:
+        if isinstance(classification, receipts.Landed):
+            receipts.land(locked, key)
+            return "receipt-landed"
+        if isinstance(classification, receipts.Stale):
+            # Archive the stale receipt; pending_spawn stays pending
+            receipts.archive_stale(locked, key, classification.fingerprint.sha256)
             return "wait"
-        return "receipt-landed"
-    elif classification.state == "stale":
-        # Archive the stale receipt; pending_spawn stays pending
-        if classification.fingerprint is not None:
-            try:
-                receipts.archive_stale(locked, key, pending.step, pending.attempt, classification.fingerprint.sha256)
-            except receipts.ReceiptChanged:
-                locked.log("receipt-changed-while-archiving", step=pending.step, attempt=pending.attempt, action="archive_stale")
+        if isinstance(classification, receipts.Malformed):
+            # Rerun: archive malformed, clear pending, return rerun decision
+            receipts.rerun_malformed(locked, key)
+            return "rerun"
+    except receipts.ReceiptChanged:
+        locked.log("receipt-changed-while-archiving", step=pending.step, attempt=pending.attempt, action=classification.state)
         return "wait"
-    elif classification.state == "malformed":
-        # Rerun: archive malformed, clear pending, return rerun decision
-        try:
-            receipts.rerun_malformed(locked, key, pending.step, pending.attempt)
-        except receipts.ReceiptChanged:
-            locked.log("receipt-changed-while-archiving", step=pending.step, attempt=pending.attempt, action="rerun_malformed")
-            return "wait"
-        return "rerun"
-    else:
-        # Exhaustive dispatch
-        assert_never(classification.state)
+    assert_never(classification)
 
 
 def decide(locked: LockedFlow, facts: ResumeFacts) -> ResumeDecision:

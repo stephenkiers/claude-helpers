@@ -147,12 +147,46 @@ def parse_receipt(step: Step, text: str) -> Optional[Receipt]:
     return Receipt(step=step, attempt=attempt, decision=decision, rebuilt=rebuilt)
 
 
-class Classification(NamedTuple):
-    """Result of classifying a receipt."""
-    state: Literal["absent", "in-progress", "landed", "stale", "malformed"]
-    attempt: Optional[int] = None
-    fingerprint: Optional[ReceiptFingerprint] = None
-    receipt: Optional[Receipt] = None
+class Absent(NamedTuple):
+    """No receipt file."""
+    state: Literal["absent"] = "absent"
+
+
+class InProgress(NamedTuple):
+    """Incomplete receipt whose fingerprint is new or changed."""
+    fingerprint: ReceiptFingerprint
+    state: Literal["in-progress"] = "in-progress"
+
+
+class Landed(NamedTuple):
+    """Well-formed receipt for the pending attempt."""
+    receipt: Receipt
+    fingerprint: ReceiptFingerprint
+    state: Literal["landed"] = "landed"
+
+    @property
+    def attempt(self) -> int:
+        return self.receipt.attempt
+
+
+class Stale(NamedTuple):
+    """Well-formed receipt for a different attempt."""
+    receipt: Receipt
+    fingerprint: ReceiptFingerprint
+    state: Literal["stale"] = "stale"
+
+    @property
+    def attempt(self) -> int:
+        return self.receipt.attempt
+
+
+class Malformed(NamedTuple):
+    """Incomplete receipt whose fingerprint was stable across two reads."""
+    fingerprint: ReceiptFingerprint
+    state: Literal["malformed"] = "malformed"
+
+
+Classification = Union[Absent, InProgress, Landed, Stale, Malformed]
 
 
 class RebuildRefused(Exception):
@@ -232,7 +266,7 @@ def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
-        return Classification(state="absent")
+        return Absent()
 
     # Undecodable bytes are replaced, so a corrupt receipt classifies (malformed) instead of vanishing
     text = raw.decode("utf-8", errors="replace")
@@ -242,17 +276,17 @@ def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
     receipt = parse_receipt(pending.step, text)
     if receipt is not None:
         if receipt.attempt == pending.attempt:
-            return Classification(state="landed", attempt=receipt.attempt, fingerprint=fingerprint, receipt=receipt)
+            return Landed(receipt=receipt, fingerprint=fingerprint)
         else:
-            return Classification(state="stale", attempt=receipt.attempt, fingerprint=fingerprint, receipt=receipt)
+            return Stale(receipt=receipt, fingerprint=fingerprint)
 
     # Incomplete: InProgress or Malformed
     if pending.receipt_seen is None or fingerprint != pending.receipt_seen:
         # Fingerprint changed or not yet stored: InProgress
-        return Classification(state="in-progress", fingerprint=fingerprint)
+        return InProgress(fingerprint=fingerprint)
     else:
         # Fingerprint stable: Malformed
-        return Classification(state="malformed", fingerprint=fingerprint)
+        return Malformed(fingerprint=fingerprint)
 
 
 def _is_landed(step: Step, attempt: int, data: bytes) -> bool:
@@ -280,21 +314,22 @@ def roll_forward(locked: LockedFlow, key: TransitionKey, pending: PendingSpawn) 
     landed = archive_dir / f"a{pending.attempt}.landed.md"
     malformed = archive_dir / f"a{pending.attempt}.malformed.md"
     if landed.exists() and _is_landed(pending.step, pending.attempt, landed.read_bytes()):
-        land(locked, key, pending.step, pending.attempt)
+        land(locked, key)
         return "receipt-landed"
     if malformed.exists():
-        rerun_malformed(locked, key, pending.step, pending.attempt)
+        rerun_malformed(locked, key)
         return "rerun"
     return None
 
 
-def land(locked: LockedFlow, key: TransitionKey, step: Step, attempt: int) -> None:
+def land(locked: LockedFlow, key: TransitionKey) -> None:
     """
     Archive a well-formed landed receipt and record the attempt as receipt-landed.
 
     Transitions: pending_spawn.state -> receipt-landed (live is projected to null by commit),
     attempt_log[attempt] = receipt-landed. pending_spawn itself is kept, so the landing is visible.
     """
+    step, attempt = key.step, key.attempt
     path = receipt_path(locked.path, step)
     archive_dir = locked.path / "archive" / step
 
@@ -309,7 +344,7 @@ def land(locked: LockedFlow, key: TransitionKey, step: Step, attempt: int) -> No
 
         # Update state: the pending spawn is receipt-landed (live null via the D1 projection)
         outcomes = {s: dict(per_step) for s, per_step in state.attempt_log.items()}
-        outcomes.setdefault(step, {})[attempt] = "receipt-landed"  # type: ignore[arg-type]
+        outcomes.setdefault(step, {})[attempt] = "receipt-landed"
         new_state = dataclasses.replace(
             state,
             pending_spawn=dataclasses.replace(pending, state="receipt-landed"),
@@ -320,13 +355,14 @@ def land(locked: LockedFlow, key: TransitionKey, step: Step, attempt: int) -> No
     apply_transition(locked, key, "land", _do_land)
 
 
-def archive_stale(locked: LockedFlow, key: TransitionKey, step: Step, attempt: int, receipt_sha256: str) -> None:
+def archive_stale(locked: LockedFlow, key: TransitionKey, receipt_sha256: str) -> None:
     """
     Archive a well-formed stale receipt. Repeatable by sha256; pending_spawn stays pending.
 
     The receipt is moved to archive/<step>/a<attempt>.stale.<sha256[:12]>.md.
     pending_spawn and live are unchanged, so the current attempt remains awaited.
     """
+    step, attempt = key.step, key.attempt
     path = receipt_path(locked.path, step)
     archive_dir = locked.path / "archive" / step
     sha_short = receipt_sha256[:12]
@@ -348,7 +384,7 @@ def archive_stale(locked: LockedFlow, key: TransitionKey, step: Step, attempt: i
     )
 
 
-def rerun_malformed(locked: LockedFlow, key: TransitionKey, step: Step, attempt: int) -> int:
+def rerun_malformed(locked: LockedFlow, key: TransitionKey) -> int:
     """
     Archive a malformed receipt and prepare for re-run.
 
@@ -356,6 +392,7 @@ def rerun_malformed(locked: LockedFlow, key: TransitionKey, step: Step, attempt:
     Does not set status=failed or stop_reason/stop_source. Never refuses.
     Returns the next attempt number.
     """
+    step, attempt = key.step, key.attempt
     path = receipt_path(locked.path, step)
     archive_dir = locked.path / "archive" / step
 
@@ -366,7 +403,7 @@ def rerun_malformed(locked: LockedFlow, key: TransitionKey, step: Step, attempt:
 
         # Update state: clear pending, record malformed outcome
         outcomes = {s: dict(per_step) for s, per_step in state.attempt_log.items()}
-        outcomes.setdefault(step, {})[attempt] = "receipt-malformed"  # type: ignore[arg-type]
+        outcomes.setdefault(step, {})[attempt] = "receipt-malformed"
         new_state = dataclasses.replace(
             state,
             pending_spawn=None,
@@ -380,12 +417,14 @@ def rerun_malformed(locked: LockedFlow, key: TransitionKey, step: Step, attempt:
     return next_attempt
 
 
-def store_fingerprint(locked: LockedFlow, key: TransitionKey, step: Step, attempt: int, fingerprint: ReceiptFingerprint) -> None:
+def store_fingerprint(locked: LockedFlow, key: TransitionKey, fingerprint: ReceiptFingerprint) -> None:
     """
     Store the receipt fingerprint in pending_spawn.receipt_seen (repeatable transition).
 
     Used to detect two-read stability for InProgress/Malformed classification.
     """
+    step, attempt = key.step, key.attempt
+
     def _do_store_fingerprint(_: LockedFlow, state: V2State) -> V2State:
         if state.pending_spawn is None or state.pending_spawn.step != step or state.pending_spawn.attempt != attempt:
             raise RuntimeError(f"store_fingerprint: no matching pending spawn for {key.step} attempt {key.attempt}")
