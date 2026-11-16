@@ -10,7 +10,8 @@ Tests cover:
 - compare subcommand with --baseline, --ticket-wt, --start-sha, --planned
 - planned-vs-unplanned classification and exit codes
 - pre-dirty baseline handling
-- HEAD movement detection (INFO only, not a FAIL)
+- HEAD movement: a fast-forward onto the primary's upstream is benign (INFO head-advanced,
+  exit 0); a local commit not on the upstream, or any other move, is FAIL head-moved
 - skip condition when orchestrator cwd == primary
 - missing/corrupt baseline → exit 2
 - file integrity: primary checkout never modified
@@ -29,6 +30,41 @@ from _test_harness import Harness, REPO_ROOT
 from _inproc import run_python
 
 DRIFT_SCRIPT = REPO_ROOT / "scripts" / "primary-checkout-drift.py"
+
+
+def _git(cwd, *args: str) -> str:
+    """Run a git command in cwd (check=True) and return stripped stdout."""
+    result = subprocess.run(
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
+    )
+    return result.stdout.strip()
+
+
+def attach_upstream(primary_path, tmpdir) -> str:
+    """Give primary a bare origin, push its current branch, set it as upstream.
+
+    Returns the bare origin path (as a string).
+    """
+    origin = Path(tmpdir) / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(origin)], capture_output=True, check=True)
+    branch = _git(primary_path, "branch", "--show-current")
+    _git(primary_path, "remote", "add", "origin", str(origin))
+    _git(primary_path, "push", "-u", "origin", branch)
+    return str(origin)
+
+
+def land_commit_on_upstream(primary_path, origin: str, tmpdir) -> None:
+    """Commit in a second clone, push to origin, then fast-forward primary onto it."""
+    other = Path(tmpdir) / "other"
+    subprocess.run(["git", "clone", origin, str(other)], capture_output=True, check=True)
+    _git(other, "config", "user.email", "test@example.com")
+    _git(other, "config", "user.name", "Test User")
+    (other / "upstream.txt").write_text("landed upstream")
+    _git(other, "add", "upstream.txt")
+    _git(other, "commit", "-m", "upstream commit")
+    _git(other, "push", "origin", "HEAD")
+    branch = _git(primary_path, "branch", "--show-current")
+    _git(primary_path, "pull", "--ff-only", "origin", branch)
 
 
 def run_script(cmd: str, *args: str) -> tuple:
@@ -572,7 +608,7 @@ def main():
 
     print()
 
-    print("Test 2g: HEAD moved by commit in primary -> FAIL head-moved, exit 1")
+    print("Test 2g-a: HEAD fast-forwarded onto the primary's upstream -> benign, exit 0")
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path = Path(tmpdir) / "primary"
         ticket_path = Path(tmpdir) / "ticket"
@@ -580,10 +616,10 @@ def main():
         planned_path = Path(tmpdir) / "planned.txt"
 
         start_sha = init_git_repo(str(primary_path))
+        origin = attach_upstream(primary_path, tmpdir)
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        # Take baseline
         run_script(
             "snapshot",
             "--checkout", str(primary_path),
@@ -591,22 +627,10 @@ def main():
             "--out", str(baseline_path),
         )
 
-        # Make a commit in primary (moving HEAD)
-        Path(primary_path, "new.txt").write_text("new")
-        subprocess.run(
-            ["git", "add", "new.txt"],
-            cwd=primary_path,
-            capture_output=True,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "new commit"],
-            cwd=primary_path,
-            capture_output=True,
-            check=True,
-        )
+        # Fast-forward the primary onto a commit that landed on its upstream
+        land_commit_on_upstream(primary_path, origin, tmpdir)
+        new_sha = _git(primary_path, "rev-parse", "HEAD")
 
-        # Compare
         exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
@@ -614,19 +638,69 @@ def main():
             "--start-sha", start_sha,
             "--planned", str(planned_path),
         )
-
         h.test_result(
-            "compare exits 1 when HEAD moves",
+            "fast-forward onto upstream -> exit 0, no FAIL, no ERROR",
+            exit_code == 0 and "FAIL" not in stdout and "ERROR" not in stdout,
+            f"exit={exit_code}, stdout={stdout[:300]}",
+        )
+        h.test_result(
+            "fast-forward onto upstream -> INFO head-advanced <old>..<new>",
+            f"INFO {primary_path.resolve()} head-advanced {start_sha}..{new_sha}" in stdout,
+            f"stdout={stdout[:300]}",
+        )
+        h.test_result(
+            "fast-forward onto upstream -> no head-moved",
+            "head-moved" not in stdout,
+            f"stdout={stdout[:300]}",
+        )
+    print()
+
+    print("Test 2g-b: local commit not on the upstream -> FAIL head-moved, exit 1")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path = Path(tmpdir) / "primary"
+        ticket_path = Path(tmpdir) / "ticket"
+        baseline_path = Path(tmpdir) / "baseline.json"
+        planned_path = Path(tmpdir) / "planned.txt"
+
+        start_sha = init_git_repo(str(primary_path))
+        attach_upstream(primary_path, tmpdir)
+        create_worktree(str(primary_path), str(ticket_path))
+        planned_path.write_text("")
+
+        run_script(
+            "snapshot",
+            "--checkout", str(primary_path),
+            "--orchestrator-cwd", str(ticket_path),
+            "--out", str(baseline_path),
+        )
+
+        # Local, unpushed commit in primary (not on the upstream)
+        Path(primary_path, "newcommit.txt").write_text("new commit content")
+        _git(primary_path, "add", "newcommit.txt")
+        _git(primary_path, "commit", "-m", "new commit")
+
+        exit_code, stdout, stderr = run_script(
+            "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", start_sha,
+            "--planned", str(planned_path),
+        )
+        h.test_result(
+            "local commit not on upstream -> exit 1",
             exit_code == 1,
-            f"exit_code={exit_code}",
+            f"exit={exit_code}, stdout={stdout[:300]}",
         )
-
         h.test_result(
-            "compare reports HEAD change with FAIL",
-            "FAIL" in stdout and "head-moved" in stdout,
-            f"stdout={stdout}",
+            "local commit not on upstream -> FAIL <primary> head-moved",
+            f"FAIL {primary_path.resolve()} head-moved" in stdout,
+            f"stdout={stdout[:300]}",
         )
-
+        h.test_result(
+            "local commit not on upstream -> no head-advanced",
+            "head-advanced" not in stdout,
+            f"stdout={stdout[:300]}",
+        )
     print()
 
     print("Test 2h: missing baseline file -> exit 2 with ERROR reason")
