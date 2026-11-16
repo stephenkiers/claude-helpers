@@ -196,15 +196,27 @@ The fields in the row above labeled as read by fleet or heal (§2: `issue`, `upd
 | Exit code | Outcome class | Meaning |
 |---|---|---|
 | 0 | Acted-on | `init` succeeded; `resume` reached an acted-on outcome (`wait`, `receipt-landed`, `rerun`), or is reading-only (`status --json`); `list` exit 0 always. `rerun` exits 0 because the driver healed the malformed or stale attempt itself |
-| 1 | Refusal | A command precondition failed and cannot be healed: locked, v1-owned, skeleton-owned, schema-invalid, no-state, exists, verifier-timeout (after one automatic retry). One line to stderr in form `refused: <class>: <detail>`. Nothing on stdout |
+| 1 | Refusal | A command precondition failed and the driver does not heal it itself (a `locked` refusal is transient; the caller retries later): locked, v1-owned, skeleton-owned, schema-invalid, no-state, exists, verifier-timeout (after one automatic retry). One line to stderr in form `refused: <class>: <detail>`. Nothing on stdout |
 | 2 | Usage error | Bad flags, mismatched `--flow` arguments, path inside neither `~/.claude/flows/` nor `~/.claude/flows-v2/`. The skeleton's existing code, including `FlowPathError` |
 | 3 | Not-yet-built | Fail-closed, distinct from refusal. A resume rule that is not yet built in Layer 1 fires, returning `outcome=not-yet-built` and the rule's layer number. Stdout carries `RESUME rule=<name> outcome=not-yet-built`; stderr is exactly `not-yet-built: <rule name> is Layer <N>`. Exit 3 is a STOP-with-reason only for rules not yet built; it disappears rule by rule as later layers land. No live v2 flow runs in production until Layer 2, so the residual (Step 7: a self-healed flow stops at exit 3 on the next `resume` without spawning) is not observed |
 
 ### Lock order (ADR-0026 §10)
 
 1. Fleet per-ticket lock (`fleet.py`'s per-flow locking, if any)
-2. Flow lock (`.driver.lock` via `scripts/flow_driver/state.py:nonblocking_flock`)
+2. Flow lock (`.driver.lock` via `scripts/workflow/fsutil.py:nonblocking_flock` (taken by `state.py:mutating`))
 3. `main.lock` is never taken while the flow lock is held
+
+### Resume cascade notes
+
+- **First match wins.** `resume.RULES` is evaluated in order and the first rule whose predicate holds decides. Rule 1
+  (live step) fires only while `status` is `running` or `awaiting`.
+- **Cadence assumption.** `receipts.classify` confirms landed and malformed receipts by two reads with an identical
+  fingerprint. That is only meaningful when resumes are separated by real time or liveness. Layer 2 must add a quiet
+  interval or a `subagent_gone` gate before acting on `rerun`.
+- **Timeout wording.** A verifier timeout is retried once automatically (a `verifier-timeout-retry` log event is
+  written); a second timeout is the refusal `verifier-timeout`.
+- **Re-targeted rows.** Rows 10, 11 and 21 of the inventory are re-targeted to Layer 2 (#486) and Layer 3 (#487), and
+  the `auto-merge` default (`flags.auto_merge` false unless passed per run) carries to #486 and #487 unchanged.
 
 ### Rule table ordering note
 
