@@ -364,6 +364,32 @@ def _read_stamp(path: Path) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+STAMP_STATE_FIELDS: Tuple[str, ...] = ("command", "lockfile_sha256", "manifest_sha256")
+
+
+def installed_state(worktree: Path) -> Optional[Dict[str, str]]:
+    """
+    The install fingerprint the deps stamp records for this worktree, read-only: its command,
+    lockfile_sha256 and manifest_sha256 (a null field reads as "none"), or {"stamp": "absent"} when no
+    stamp exists. None when the stamp location or the stamp cannot be read. Never writes.
+    """
+    path, _err = _stamp_path(worktree)
+    if path is None:
+        return None
+    if not path.exists() and not path.is_symlink():
+        return {"stamp": "absent"}
+    stamp = _read_stamp(path)
+    if not stamp:
+        return None
+    state: Dict[str, str] = {}
+    for field_name in STAMP_STATE_FIELDS:
+        value = stamp.get(field_name)
+        if value is not None and not isinstance(value, str):
+            return None
+        state[field_name] = "none" if value is None else value
+    return state
+
+
 def _write_stamp(path: Path, data: Dict[str, Any]) -> Optional[str]:
     try:
         atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")

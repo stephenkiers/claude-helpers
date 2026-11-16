@@ -19,11 +19,11 @@ import tempfile
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Dict, Iterator, Optional, Set, TextIO, Tuple, Any, Mapping, Final, Literal
+from typing import List, Dict, Iterator, Optional, Set, TextIO, Tuple, Any, Mapping, Final, Literal, Union
 
 from .safety import Unknown, fail_closed
 from .cache import read_repo_cache
-from .deps import atomic_write_text, find_lockfile, read_json_object
+from .deps import atomic_write_text, find_lockfile, installed_state, manifest_sha, read_json_object
 from .models import (
     validate_repo_cache, valid_timeout_secs, Mode, parse_mode, CheckKey, check_key_of, CheckRecord,
     FullKey, MinimumKey, satisfies, parse_check_record, record_filename_hash, CHECK_RECORD_SCHEMA_VERSION,
@@ -68,6 +68,8 @@ RECORDS_EXCLUDE_PATHSPEC: Final = ":(exclude,glob).claude/check-record*/**"
 RECORDS_PATHSPEC: Final = ":(glob).claude/check-record*/**"
 # Most records kept per worktree; the oldest are removed after a write beyond this.
 MAX_CHECK_RECORDS: Final = 200
+# Each toolchain probe (python3 / node --version) is bounded so a wedged tool cannot hang a validate run.
+TOOLCHAIN_PROBE_TIMEOUT_SECS: Final = 5
 # A temp file in the records directory older than this is crash residue, not a concurrent write.
 STALE_TEMP_SECS: Final = 3600
 
@@ -1407,6 +1409,115 @@ def _lookup_satisfying_record(records_dir: Path, requested: CheckKey) -> Optiona
     return None
 
 
+@dataclass(frozen=True)
+class Found:
+    """A passing full record satisfies the expected key. `name` is the record file stem."""
+    name: str
+    record: CheckRecord
+
+
+@dataclass(frozen=True)
+class RecordUnparseable:
+    """The record file at the expected name exists, but parse_check_record rejects it (passed false, schema drift)."""
+
+
+@dataclass(frozen=True)
+class MinimumOnly:
+    """Only a minimum record for the same tree and full digest exists; the full gate does not accept it."""
+
+
+@dataclass(frozen=True)
+class DigestMismatch:
+    """A full record for the same tree exists under a different full digest (a command, timeout or toolchain changed)."""
+
+
+@dataclass(frozen=True)
+class NoRecord:
+    """No record for the expected key, and none for the same tree that explains the miss."""
+
+
+@dataclass(frozen=True)
+class RecordsUnsafe:
+    """The records directory or a record file is a symlink, so no record in it is trusted."""
+
+
+# Closed set of read-only record lookups. Callers branch with isinstance and end in _never(), so mypy
+# reports any variant left unhandled.
+RecordLookup = Union[Found, RecordUnparseable, MinimumOnly, DigestMismatch, NoRecord, RecordsUnsafe]
+
+
+def classify_full_record(worktree: Path, expected: FullKey) -> RecordLookup:
+    """
+    Classify the record state for one expected full key. Strictly read-only: nothing is written, swept or
+    evicted.
+
+    A symlinked records directory, or any symlinked record file, is RecordsUnsafe and is never followed.
+    Found is decided only by _lookup_satisfying_record, so the single fail-closed parser and satisfies
+    decide it. On a miss, a diagnostic scan of the records directory reports a minimum record or a full
+    record with another digest for the same tree. A record file that cannot be read or parsed during that
+    scan is skipped, so it never turns a miss into Found.
+    """
+    records_dir = worktree / RECORDS_REL_DIR
+    if records_dir.is_symlink():
+        return RecordsUnsafe()
+    if not records_dir.is_dir():
+        return NoRecord()
+    paths = sorted(records_dir.glob("*.json"))
+    if any(path.is_symlink() for path in paths):
+        return RecordsUnsafe()
+
+    hit = _lookup_satisfying_record(records_dir, expected)
+    if hit is not None:
+        name, record = hit
+        return Found(name=name, record=record)
+    if (records_dir / f"{record_filename_hash(expected)}.json").exists():
+        return RecordUnparseable()
+
+    minimum_only = False
+    digest_mismatch = False
+    for path in paths:
+        scanned = _read_record(path, path.stem)
+        if scanned is None:
+            continue
+        key = scanned.key
+        if key.tree != expected.tree:
+            continue
+        if isinstance(key, MinimumKey) and key.full_digest == expected.full_digest:
+            minimum_only = True
+        elif isinstance(key, FullKey) and key.full_digest != expected.full_digest:
+            digest_mismatch = True
+    if minimum_only:
+        return MinimumOnly()
+    if digest_mismatch:
+        return DigestMismatch()
+    return NoRecord()
+
+
+def full_record_seen_for_tree(worktree: Path, tree: str) -> Optional[bool]:
+    """
+    Whether any record under .claude/check-records parses as a full key for `tree`, whatever its digest.
+
+    True when one does, False when none does. None on any error, or when the records directory or a record
+    file is a symlink. Read-only, and a measurement input only: it never feeds a reuse decision.
+    """
+    try:
+        records_dir = worktree / RECORDS_REL_DIR
+        if records_dir.is_symlink():
+            return None
+        if not records_dir.is_dir():
+            return False
+        seen = False
+        for path in sorted(records_dir.glob("*.json")):
+            if path.is_symlink():
+                return None
+            record = _read_record(path, path.stem)
+            if record is not None and isinstance(record.key, FullKey) and record.key.tree == tree:
+                seen = True
+        return seen
+    except Exception:
+        return None
+
+
 def _mtime(path: Path) -> float:
     """Modification time, or 0.0 when the file has already gone (sorts it first; removal then no-ops)."""
     try:
@@ -1688,6 +1799,142 @@ def _changed_set(worktree: Path) -> Tuple[Optional[str], List[str], Optional[str
     return base, computed, changed_files_hash(computed), "computed"
 
 
+@dataclass(frozen=True)
+class ExpectedFullKey:
+    """
+    The full key a `checks validate` run of one worktree looks up or writes, with its parts. command_digest
+    covers the full-gate commands, the resolved full command and its source, and the run timeout. full_digest
+    (the key's digest) is command_digest plus the toolchain/lockfile digest.
+    """
+    command_digest: str
+    toolchain_digest: str
+    key: FullKey
+
+    @property
+    def tree(self) -> str:
+        """The tree the key was built for (the key's own tree, so the two cannot disagree)."""
+        return self.key.tree
+
+
+# Per-process memo of tool version probes, keyed by (argv, worktree). Only definitive answers are kept; a
+# timeout is logged and not memoised, so a later call in the same process probes again.
+_TOOL_VERSION_MEMO: Dict[Tuple[Tuple[str, ...], str], Optional[str]] = {}
+
+
+def _tool_version(argv: List[str], worktree: Path) -> Optional[str]:
+    """
+    One tool's version line for the toolchain digest. "absent" when the tool is not on PATH. None on a
+    non-zero exit, an empty answer or any other failure, which disables the cache for the run. A probe that
+    times out returns None with a distinct warning. Answers are memoised per process and worktree.
+    """
+    memo_key = (tuple(argv), str(worktree))
+    if memo_key in _TOOL_VERSION_MEMO:
+        return _TOOL_VERSION_MEMO[memo_key]
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=TOOLCHAIN_PROBE_TIMEOUT_SECS,
+        )
+    except FileNotFoundError:
+        _TOOL_VERSION_MEMO[memo_key] = "absent"
+        return "absent"
+    except subprocess.TimeoutExpired:
+        logging.warning(
+            "toolchain probe timed out after %ss: %s", TOOLCHAIN_PROBE_TIMEOUT_SECS, " ".join(argv)
+        )
+        return None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        _TOOL_VERSION_MEMO[memo_key] = None
+        return None
+    if proc.returncode != 0:
+        _TOOL_VERSION_MEMO[memo_key] = None
+        return None
+    version = proc.stdout.strip() or proc.stderr.strip()
+    _TOOL_VERSION_MEMO[memo_key] = version or None
+    return version or None
+
+
+def toolchain_digest(worktree: Path) -> Optional[str]:
+    """
+    sha256 over the toolchain and installed-dependency inputs of a check run: the manifest digest, the deps
+    stamp's install fingerprint, `python3 --version`, and `node --version` when package.json exists at the
+    worktree root ("n/a" otherwise). It runs `python3 --version` and `node --version` in the worktree; those
+    probes are memoised per process and worktree, and a probe timeout is logged. The digest does not cover
+    ruff, mypy, just or shellcheck, a documented limitation (ADR-0021). None when an input cannot be read: a
+    probe timeout, an unexpected error, or an unreadable deps stamp. A tool that is not installed is recorded
+    as "absent".
+    """
+    try:
+        manifest = manifest_sha(worktree)
+        installed = installed_state(worktree)
+        if installed is None:
+            return None
+        python_version = _tool_version(["python3", "--version"], worktree)
+        if python_version is None:
+            return None
+        node_version = "n/a"
+        if (worktree / "package.json").exists():
+            probed_node = _tool_version(["node", "--version"], worktree)
+            if probed_node is None:
+                return None
+            node_version = probed_node
+    except Exception:
+        return None
+    canonical = json.dumps(
+        {
+            "manifest_sha256": manifest,
+            "installed": installed,
+            "python3": python_version,
+            "node": node_version,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def expected_full_key(
+    worktree: Path, main_worktree: Optional[Path], timeout: int
+) -> Optional[ExpectedFullKey]:
+    """
+    The expected full key for this worktree at this run timeout: the one place it is computed, so
+    `checks validate` and the merge queue's gate reuse cannot drift (ADR-0013 Amendment 14).
+
+    Returns None when the tree is unavailable, the key cannot be built, or the toolchain digest cannot be
+    computed. The last case is logged, and the caller then runs the check with no lookup and no write.
+    """
+    tree = worktree_tree(worktree)
+    if tree is None:
+        return None
+    full_resolution = resolve_check_detail(worktree, main_worktree, mode="full")
+    cache_data, _ = read_repo_cache(worktree / ".claude" / "repo-cache.json")
+    commands_dict: Mapping[str, Optional[str]] = cache_data.commands if cache_data else {}
+    full_inputs = _digest_inputs(
+        commands_dict, minimum=False, command=full_resolution.command, source=full_resolution.source
+    )
+    # The effective timeout is part of the key: a pass under a looser limit does not prove a pass under
+    # a stricter one (a check that needs 400s passes at 900s and must not satisfy a 300s request).
+    full_inputs["run timeout secs"] = str(timeout)
+    command_digest = _commands_digest(full_inputs)
+    toolchain = toolchain_digest(worktree)
+    if toolchain is None:
+        logging.warning("idempotency disabled: toolchain digest unavailable: this check run is not cached")
+        return None
+    full_digest = _commands_digest({**full_inputs, "toolchain digest": toolchain})
+    try:
+        key = FullKey(tree=tree, full_digest=full_digest)
+    except ValueError:
+        return None
+    return ExpectedFullKey(
+        command_digest=command_digest,
+        toolchain_digest=toolchain,
+        key=key,
+    )
+
+
 def validate(
     worktree: Path,
     mode: str = "full",
@@ -1708,7 +1955,8 @@ def validate(
     A hit runs nothing. A miss runs the resolved command with CHECK_BASE and CHECK_CHANGED_FILES
     exported, and writes a record only after a pass with the tree unchanged across the run. A failed
     run evicts only an older passing record for the same key. Minimum with no check_minimum runs, and
-    is keyed as, the full check.
+    is keyed as, the full check. When the toolchain digest cannot be computed, the run does no lookup and
+    no write (a logged warning); the check still runs and its exit code is unchanged.
     """
     requested = parse_mode(mode)
     if requested is None:
@@ -1732,22 +1980,13 @@ def validate(
     if resolution.fell_back_to_full:
         logging.warning("checks validate: check_minimum is not declared; running the full check instead")
 
-    # Digests: the full digest covers the full-gate commands plus the resolved full command and its
-    # source; the minimum digest covers check_minimum plus the resolved minimum command and its
-    # source. A command that changes from any source (project.yaml, main worktree, justfile) with an
-    # unchanged tree therefore misses instead of reusing a pass earned by a different command.
+    # Digests: the full key comes from expected_full_key (the same function the merge queue's gate reuse
+    # calls). The minimum digest covers check_minimum plus the resolved minimum command and its source. A
+    # command that changes from any source (project.yaml, main worktree, justfile) with an unchanged tree
+    # therefore misses instead of reusing a pass earned by a different command.
     cache_data, _ = read_repo_cache(worktree / ".claude" / "repo-cache.json")
     commands_dict: Mapping[str, Optional[str]] = cache_data.commands if cache_data else {}
-    full_resolution = (
-        resolution if requested == "full" else resolve_check_detail(worktree, main_worktree, mode="full")
-    )
-    full_inputs = _digest_inputs(
-        commands_dict, minimum=False, command=full_resolution.command, source=full_resolution.source
-    )
-    # The effective timeout is part of the key: a pass under a looser limit does not prove a pass under
-    # a stricter one (a check that needs 400s passes at 900s and must not satisfy a 300s request).
-    full_inputs["run timeout secs"] = str(timeout)
-    full_digest = _commands_digest(full_inputs)
+    expected = expected_full_key(worktree, main_worktree, timeout)
     fell_back = resolution.fell_back_to_full
     minimum_inputs = _digest_inputs(
         commands_dict,
@@ -1758,14 +1997,15 @@ def validate(
     minimum_digest = _commands_digest(minimum_inputs)
 
     # Changed files: one canonical computation, hashed exactly as exported. An unresolved base means no hash.
-    tree = worktree_tree(worktree)
+    tree = expected.tree if expected is not None else worktree_tree(worktree)
     base, changed, files_hash, changed_source = _changed_set(worktree)
     if tree is None:
         changed_source = "tree-unavailable"
 
+    # No expected key (no tree, or no toolchain digest) means no lookup and no write; the check still runs.
     key: Optional[CheckKey] = None
-    if tree is not None:
-        key = check_key_of(mode_executed, tree, full_digest, minimum_digest, files_hash)
+    if expected is not None:
+        key = check_key_of(mode_executed, expected.tree, expected.key.full_digest, minimum_digest, files_hash)
         if key is None:
             logging.warning("idempotency disabled: no key: this check run is not cached")
 

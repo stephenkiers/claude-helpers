@@ -364,7 +364,9 @@ ADR-0021).
 
 1. **Merge queue** — `--force-with-lease=<branch>:<lease_sha>` with explicit refspec
    `<tested_sha>:refs/heads/<branch>`, audited in a single function (`force_push_tested()`), runs
-   only after the full gate has passed. See [ADR-0021 Decision 6](docs/adr/0021-local-merge-queue.md).
+   only after the full gate has passed. A gate satisfied by a tree-keyed full-mode check record counts as
+   the full gate having passed; the queue marks such a reused gate `gate=reused` in the `Merge-Gate:`
+   trailer. See [ADR-0021 Decision 6](docs/adr/0021-local-merge-queue.md) and its #491 amendment.
 2. **`/shipit`** — stacked-branch `--force-with-lease` push (for rebased stacked branches), confirmed
    after the minimum check gate passes (`checks validate --mode minimum`). The full check runs at merge,
    not here. See `commands/shipit.md` "Sync stacked children" section. Also,

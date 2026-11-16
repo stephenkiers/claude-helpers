@@ -133,6 +133,8 @@ verify/implement/fix) run `checks validate --mode minimum`, which falls back to 
 `commands.check_minimum` is undeclared. The merge gate (`merge.py`, ADR-0021) runs the full check and is the
 authoritative gate. A minimum record never satisfies the merge gate.
 
+The merge queue's PR gate (ADR-0021 #491 amendment) accepts only a passing full record under its guards; a miss runs the gate.
+
 ## Change Note: checkTimeoutSecs Semantics (2026-10-13)
 
 **Scope:** The `checkTimeoutSecs` per-repo override is honored by `checks validate` (`scripts/workflow/cli.py`);

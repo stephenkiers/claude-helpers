@@ -348,6 +348,8 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 
 ### Amendment 11: `commands.check_minimum` selector, changed-files export, per-key records, and caching contract (2026-11-05, #387)
 
+**Amended (2026-11-12, #491):** the digest-input list below is extended by Amendment 14 (toolchain/lockfile digest), which is the current list.
+
 **Problem:** Minimum checks per PR (ADR-0023 amendment 2026-11-05) require a project-declared `check_minimum` selector, its inputs must be exported for non-cooperating selectors, and records must be per-key (FullKey vs MinimumKey) with distinct cache semantics and no read-modify-write.
 
 **Decision:**
@@ -394,11 +396,26 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 
 **Supersedes:** Amendment 11's `checks run` contract (the bullet beginning "`checks run` keeps its CLI contract") and its receipt paragraph (the bullet beginning "**Receipts go through the same boundary**"). The `checks validate` contract, the record cache and the caching contract stay in force.
 
+**Correction (2026-11-12, #491):** the Problem paragraph above says the `/expert-flow` verify step reads the record cache through `checks validate`. That is wrong: verify resolves the command with `checks resolve-check --mode minimum` and never calls `checks validate` (see the ADR-0021 #491 amendment).
+
 **Consequences:** `checks run` and `checks receipt` are no longer subcommands and fail as unknown commands. Any external caller of those commands must move to `checks validate`. No receipt file is written or read; the merge gate reads per-key records only.
 
 ### Amendment 13: gate modes for `checks validate` (2026-11-05, #462)
 
 **Decision (no code change).** `checks validate --mode minimum` is the gate that PR-level steps and force-push gates run (`/shipit`, `/stack-sync`, and the flow verify/implement/fix steps). `checks validate --mode full` is the gate the merge path runs (ADR-0021), and it is the authoritative one. A minimum record never satisfies the merge gate. This is the human ruling on #462 (Needs-you #2, option A) and refines the ADR-0012 2026-11-05 amendment and ADR-0023 2026-11-05 amendment (#462). Amendment 12's removal of `checks run` and `checks receipt` stands. The exit-code and timeout paragraphs of earlier amendments that name `checks run` are superseded by Amendment 12; `docs/workflow-cli-invariants.md` now describes `checks validate`.
+
+### Amendment 14: Toolchain/lockfile digest input and cache-disable path (2026-11, #491)
+
+**Problem:** The record key covered the command, its source, the repo-cache commands and the run timeout, but not the toolchain or the installed dependencies. A full record written under one Python or Node version, or before a dependency install changed, still matched the key, so a later run could hit a record that tested a different toolchain. The merge queue's gate reuse (ADR-0021 #491 amendment) depends on this key, so the gap had to close first.
+
+**Decision:**
+
+- **Digest input (amends Amendment 11's digest-input list).** `full_digest`, and therefore every `FullKey` and `MinimumKey`, now also covers a toolchain/lockfile digest. The digest is a sha256 over canonical JSON of: `deps.manifest_sha(worktree)`; the deps stamp's `command`, `lockfile_sha256` and `manifest_sha256` (or `{"stamp": "absent"}`), read through the public `deps.installed_state`; `python3 --version`; and `node --version` when `package.json` exists at the worktree root (`"n/a"` otherwise). A tool that is not on PATH is recorded as `"absent"`. The implementation is `checks.toolchain_digest`, and `checks.expected_full_key` builds the full key from the same inputs for `validate` and for the queue.
+- **Cache-disable path.** When the toolchain digest cannot be computed (a probe timeout of 5 s, an unexpected error, or an unreadable deps stamp), `checks validate` does no record lookup and writes no record for that run, logs a warning, and still runs the check with its exit code unchanged. This applies to every consumer: implement/fix, shipit, stack-sync and the off-queue merge gate (#387). A probe failure loses only the cache, never the check.
+- **Existing records.** Every existing record misses once after this lands, because the digest inputs changed. There is no schema change. The record cache is advisory, so one extra full run per checkout is the cost.
+- **Rollback.** Reverting the queue reuse (ADR-0021 #491 amendment) does not revert this amendment. The digest stands on its own as a change to the shared cache contract. Reverting it would need its own amendment.
+
+**Consequences:** The off-queue merge gate, shipit, implement/fix and stack-sync now hit only when the toolchain and installed dependencies match the record. A toolchain change is a miss, and a `None` digest is a logged, uncached run. Tests cover a hit on unchanged inputs, a miss when the deps stamp or the Python version changes, and the check still running with `toolchain_digest` returning `None`.
 
 ### Amendment 12: `commands.cleanup` teardown hook (2026-11-11)
 

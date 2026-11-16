@@ -1524,7 +1524,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
     cwd = Path(tmpdir)
     with patch('workflow.merge_queue.Runner.run_git') as mock_git:
         mock_git.return_value = "f" * 40 + "\n"
-        with patch('workflow.merge_queue._is_tree_clean') as mock_clean:
+        with patch('workflow.merge_queue.is_tree_clean') as mock_clean:
             mock_clean.return_value = False
             try:
                 result = _locked_flow(
@@ -1552,7 +1552,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
     cwd = Path(tmpdir)
     with patch('workflow.merge_queue.Runner.run_git') as mock_git:
         mock_git.return_value = "e" * 40 + "\n"
-        with patch('workflow.merge_queue._is_tree_clean') as mock_clean:
+        with patch('workflow.merge_queue.is_tree_clean') as mock_clean:
             mock_clean.return_value = True
             with patch('workflow.merge_queue._has_rebase_or_merge_in_progress') as mock_rebase:
                 mock_rebase.return_value = False
@@ -1756,7 +1756,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
     config = MergeQueueConfig(base="main", steps=[Step(cmd="echo test")])
 
     with patch('workflow.merge_queue.Runner.run_git') as mock_git:
-        with patch('workflow.merge_queue._is_tree_clean') as mock_clean:
+        with patch('workflow.merge_queue.is_tree_clean') as mock_clean:
             with patch('workflow.merge_queue._has_rebase_or_merge_in_progress') as mock_rebase:
                 with patch('workflow.merge_queue.git.pr_view_json') as mock_pr_view:
                     with patch('workflow.merge_queue.load_and_validate_config') as mock_config:
