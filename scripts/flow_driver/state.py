@@ -681,13 +681,110 @@ def _refuse_for_write(owned: Owned, flow_dir: Path, create: Optional[InitSpec]) 
     assert_never(owned)
 
 
-def _reconcile(locked: LockedFlow) -> None:
-    """
-    The attempt reconcile hook (Layer 1 Step 4). Called under the lock, after validation, before the caller decides.
+@dataclass(frozen=True)
+class ReconcileResult:
+    """Outcome of the reconcile pass: per-step results and any repairs applied."""
 
-    Step 3 leaves it as a no-op. Step 4 replaces this body with the archive reconcile.
+    per_step: Mapping[Step, Union[Literal["Ok"], Mapping[str, object]]]
+    repairs: Tuple[Tuple[Step, int, int], ...]  # (step, from_counter, to_counter)
+
+
+def reconcile(locked: LockedFlow) -> ReconcileResult:
     """
-    return None
+    Reconcile attempts with archived receipts (Layer 1 Step 4).
+
+    Called under the lock, after validation, before the caller decides. For each step in attempts,
+    attempt_log or archive/: compare recorded landed attempts with archived landed receipts,
+    repair a lagging counter from the highest archived attempt (trusted sources only: filename
+    attempts and parsed ATTEMPT from landed archives), and log mismatches. Never refuses.
+
+    Returns a ReconcileResult with per-step reconcile outcomes and any counter repairs applied.
+    """
+    state = locked.require_state()
+    archive_base = locked.path / "archive"
+    repairs: List[Tuple[Step, int, int]] = []
+    per_step: Dict[Step, Union[Literal["Ok"], Mapping[str, object]]] = {}
+
+    # Collect all steps that appear anywhere
+    steps_to_check = set(state.attempts.keys()) | set(state.attempt_log.keys())
+    if archive_base.is_dir():
+        for step_dir in archive_base.iterdir():
+            if step_dir.is_dir():
+                try:
+                    step = _as_enum("step", step_dir.name, _STEP_BY_NAME)
+                    steps_to_check.add(step)
+                except StateSchemaError:
+                    pass
+
+    for step in sorted(steps_to_check):
+        # Find landed attempts recorded in attempt_log with outcome receipt-landed
+        landed_recorded = set()
+        if step in state.attempt_log:
+            for attempt, outcome in state.attempt_log[step].items():
+                if outcome == "receipt-landed":
+                    landed_recorded.add(attempt)
+
+        # Find landed archives: archive/<step>/a<k>.landed.md
+        landed_archived = set()
+        highest_archived = 0
+        step_archive_dir = archive_base / step if archive_base.exists() else None
+
+        if step_archive_dir and step_archive_dir.is_dir():
+            for entry in step_archive_dir.iterdir():
+                if entry.name.startswith(".") or entry.name.endswith(".tmp"):
+                    continue
+                name = entry.name
+                # Match archive patterns: a<k>.landed.md, a<k>.malformed.md, a<k>.stale.<hex>.md, a<k>.rebuilt.md
+                match = re.match(r"^a([1-9][0-9]*)\.(landed|malformed|stale\.[0-9a-f]+|rebuilt)\.md$", name)
+                if match:
+                    k = int(match.group(1))
+                    highest_archived = max(highest_archived, k)
+                    if match.group(2) == "landed":
+                        landed_archived.add(k)
+                        # Parse ATTEMPT from the landed archive content (trusted source)
+                        try:
+                            content = entry.read_text(encoding="utf-8")
+                            # Import receipts to access the verifier parser
+                            from . import receipts as receipts_module  # local import to avoid cycle
+                            attempt_from_receipt = receipts_module._get_receipt_attempt(content)
+                            if attempt_from_receipt is not None:
+                                highest_archived = max(highest_archived, attempt_from_receipt)
+                        except (OSError, UnicodeDecodeError):
+                            pass
+
+        # Detect mismatch
+        if landed_recorded != landed_archived:
+            missing = landed_recorded - landed_archived
+            unrecorded = landed_archived - landed_recorded
+            mismatch = {
+                "event": "attempt-reconcile-mismatch",
+                "step": step,
+                "counter": state.attempts.get(step, 0),
+                "landed_recorded": sorted(landed_recorded),
+                "landed_archived": sorted(landed_archived),
+            }
+            if missing:
+                mismatch["missing_archives"] = sorted(missing)
+            if unrecorded:
+                mismatch["unrecorded_archives"] = sorted(unrecorded)
+            locked.log("attempt-reconcile-mismatch", step=step, attempt=None, **mismatch)
+            per_step[step] = mismatch
+
+        # Repair: raise counter if needed
+        current_counter = state.attempts.get(step, 0)
+        if current_counter < highest_archived:
+            repairs.append((step, current_counter, highest_archived))
+            new_attempts = dict(state.attempts)
+            new_attempts[step] = highest_archived
+            locked.log("attempt-counter-repaired", step=step, attempt=None, **{"from": current_counter, "to": highest_archived})
+            state = dataclasses.replace(state, attempts=new_attempts)
+            per_step[step] = "Ok"
+            # Commit the repair immediately
+            locked.commit(state)
+        else:
+            per_step[step] = "Ok"
+
+    return ReconcileResult(per_step=per_step, repairs=tuple(repairs))
 
 
 @contextmanager
@@ -715,7 +812,8 @@ def mutating(flow_dir: Path, *, create: Optional[InitSpec] = None) -> Iterator[L
         _refuse_for_write(owned, path, create)
         state = owned.state if isinstance(owned, V2Owned) else None
         locked = LockedFlow(path, state, token=_MUTATING_TOKEN)
-        _reconcile(locked)
+        if state is not None:
+            reconcile(locked)
         try:
             yield locked
         finally:
