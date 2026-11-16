@@ -20,7 +20,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path

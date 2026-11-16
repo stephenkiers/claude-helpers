@@ -59,6 +59,9 @@ from .state import (
     InvalidState,
     NoState,
     Refusal,
+    no_state_refusal,
+    v1_owned_refusal,
+    v2_owned_refusal,
     SkeletonForeign,
     StateSchemaError,
     V1Foreign,
@@ -305,11 +308,11 @@ def _guard_skeleton_subcommand(flow_dir: Path) -> Optional[int]:
     if isinstance(owned, (SkeletonForeign, InvalidState)):
         return None
     if isinstance(owned, V2Owned):
-        return _refuse(f"refused: v2-owned: flow {flow_dir.name} is a v2 flow; use init/resume")
+        return _refuse(str(v2_owned_refusal(flow_dir.name)))
     if isinstance(owned, V1Foreign):
-        return _refuse(f"refused: v1-owned: flow {flow_dir.name} is a v1 flow and is read-only to the v2 driver")
+        return _refuse(str(v1_owned_refusal(flow_dir.name)))
     # Allowlist: anything else (an empty directory included) is refused
-    return _refuse(f"refused: not-skeleton: flow {flow_dir.name} is not a skeleton flow ({type(owned).__name__})")
+    return _refuse(str(Refusal("not-skeleton", f"flow {flow_dir.name} is not a skeleton flow ({type(owned).__name__})")))
 
 
 def _check_args_match(flow: Path, args: argparse.Namespace) -> None:
@@ -464,9 +467,9 @@ def _cmd_init(args: argparse.Namespace) -> int:
                 return _refuse("error: init_state failed to create state")
             run_id = locked.state.run_id
     except Refusal as exc:
-        return _refuse(f"refused: {exc.refusal_class}: {exc.detail}")
+        return _refuse(str(exc))
     except StateSchemaError as exc:
-        return _refuse(f"refused: schema-invalid: {exc}")
+        return _refuse(str(Refusal("schema-invalid", str(exc))))
     except OSError as exc:
         return _refuse(f"error: {type(exc).__name__}: {exc}")
 
@@ -499,7 +502,7 @@ def _cmd_resume(args: argparse.Namespace) -> int:
 
     # For v1 flows, refuse as v1-owned
     if owner_type == "v1":
-        return _refuse(f"refused: v1-owned: flow {resolved_path.name} is a v1 flow and is read-only to the v2 driver")
+        return _refuse(str(v1_owned_refusal(resolved_path.name)))
 
     # A single verifier timeout is recoverable: mutating re-enters once (fresh lock and re-read).
     # A second timeout within this invocation is a refusal.
@@ -508,9 +511,9 @@ def _cmd_resume(args: argparse.Namespace) -> int:
             return _resume_locked(resolved_path, redo_step)
         except VerifierTimeout as exc:
             if reentry == 2:
-                return _refuse(f"refused: verifier-timeout: {exc}")
+                return _refuse(str(Refusal("verifier-timeout", str(exc))))
             _log_verifier_retry(resolved_path, str(exc))
-    return _refuse("refused: verifier-timeout")  # unreachable: the loop returns on every path
+    return _refuse(str(Refusal("verifier-timeout", "retries exhausted")))  # unreachable: the loop returns on every path
 
 
 def _log_verifier_retry(flow_path: Path, detail: str) -> None:
@@ -533,7 +536,7 @@ def _resume_locked(resolved_path: Path, redo_step: Optional[str]) -> int:
     try:
         with mutating(resolved_path) as locked:
             if locked.state is None:
-                return _refuse(f"refused: no-state: flow {resolved_path.name} has no state.json; run init first")
+                return _refuse(str(no_state_refusal(resolved_path.name)))
 
             # Gather facts for resume
             facts = ResumeFacts(
@@ -559,11 +562,11 @@ def _resume_locked(resolved_path: Path, redo_step: Optional[str]) -> int:
     except VerifierTimeout:
         raise
     except Refusal as exc:
-        return _refuse(f"refused: {exc.refusal_class}: {exc.detail}")
+        return _refuse(str(exc))
     except StateSchemaError as exc:
-        return _refuse(f"refused: schema-invalid: {exc}")
+        return _refuse(str(Refusal("schema-invalid", str(exc))))
     except CascadeExhausted as exc:
-        return _refuse(f"refused: cascade-exhausted: {exc}")
+        return _refuse(str(Refusal("cascade-exhausted", str(exc))))
     except OSError as exc:
         return _refuse(f"error: {type(exc).__name__}: {exc}")
 

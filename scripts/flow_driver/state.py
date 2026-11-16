@@ -97,6 +97,9 @@ RefusalClass = Literal[
     "no-state",
     "exists",
     "verifier-timeout",
+    "v2-owned",
+    "not-skeleton",
+    "cascade-exhausted",
 ]
 
 STEPS: Tuple[Step, ...] = get_args(Step)  # type: ignore[assignment]
@@ -667,18 +670,30 @@ class LockedFlow:
         self._open = False
 
 
+def v1_owned_refusal(name: str) -> Refusal:
+    return Refusal("v1-owned", f"flow {name} is a v1 flow and is read-only to the v2 driver")
+
+
+def v2_owned_refusal(name: str) -> Refusal:
+    return Refusal("v2-owned", f"flow {name} is a v2 flow; use init/resume")
+
+
+def no_state_refusal(name: str) -> Refusal:
+    return Refusal("no-state", f"flow {name} has no state.json; run init first")
+
+
 def _refuse_for_write(owned: Owned, flow_dir: Path, create: Optional[InitSpec]) -> None:
     """Refuse every ownership the driver must not write to. Used before the lock and again under it."""
     name = flow_dir.name
     if isinstance(owned, V1Foreign):
-        raise Refusal("v1-owned", f"flow {name} is a v1 flow and is read-only to the v2 driver")
+        raise v1_owned_refusal(name)
     if isinstance(owned, SkeletonForeign):
         raise Refusal("skeleton-owned", f'flow {name} has driver_format "skeleton"')
     if isinstance(owned, InvalidState):
         raise Refusal("schema-invalid", f"{owned.field}: {owned.reason}")
     if isinstance(owned, NoState):
         if create is None:
-            raise Refusal("no-state", f"flow {name} has no state.json; run init first")
+            raise no_state_refusal(name)
         return
     if isinstance(owned, V2Owned):
         if create is not None:
