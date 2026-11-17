@@ -235,8 +235,9 @@ def step_prompt_path(flow: Path, step: str, attempt: int, nonce: str) -> Path:
     return flow / "prompts" / f"{step}-a{attempt}-{nonce}.md"
 
 
-def directive_file_path(flow: Path, step: str, attempt: int, nonce: str) -> Path:
-    return flow / "directives" / f"{step}-a{attempt}-{nonce}.json"
+def directive_file_path(flow: Path, step: str, attempt: int, nonce: str, verb: str) -> Path:
+    """The directive file for one emitted verb. The verb is in the name, so a SPAWN and a WAIT of one attempt never share it."""
+    return flow / "directives" / f"{verb.lower()}-{step}-a{attempt}-{nonce}.json"
 
 
 def question_file_path(flow: Path, step: str, attempt: int) -> Path:
