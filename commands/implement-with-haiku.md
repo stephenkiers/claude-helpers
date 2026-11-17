@@ -806,7 +806,23 @@ On success with nothing pending, skip Steps 4a–4d and proceed directly to the 
 
 When no non-test Round 1 work remains once test requirements are set aside, do not invent a unit to satisfy `MIN_UNITS`. Stop with Reason `test-only-plan: no Round 1 work; tests are a Round 2 deliverable`.
 
-When a plan step or a review action-plan item (fix step) requires changing an existing test's assertion or removing a test (work Round 1 may not do and Round 2 cannot do), stop with Reason `existing-test-edit: <step or finding id> <path>`. A finding that asks for a *new* test is not a stop; it goes to Round 2 through the plan text.
+When a plan step requires changing an existing test's assertion or removing a test (work Round 1 may not do and Round 2 cannot do), stop with Reason `existing-test-edit: <step or finding id> <path>`. In the `implement` step this stop is unconditional. In the `fix` step (a review action-plan item) the stop is replaced by the set-aside rules below and applies only when no Round 1 work is left. A finding that asks for a *new* test is not a stop; it goes to Round 2 through the plan text.
+
+**Fix step: existing-test-edit items (set aside; only human-approved edits are applied).** This block runs only when `STEP_NAME` is `fix`. Run its items in order, before `init` (item 3) and before any drafting or asking:
+
+a. **Classify.** Sort each Doing-it item `D<n>` that needs an existing test changed into `TEST_EDIT_ITEMS`. Each entry is `edit` (an existing assertion changes) or `removal` (an existing test or test file is deleted). An entry is `coupled` when the same item also changes non-test code. Ordinary items stay Round 1 work.
+b. **No Round 1 work left.** This check runs before any drafting or asking. If no Round 1 work remains once `TEST_EDIT_ITEMS` and the test requirements are set aside, stop with Reason `existing-test-edit: <finding id> <path>`, as the `implement` step does. Do not stop with `test-only-plan`. Otherwise a test-edit item never stops the step while ordinary units remain; it is set aside and the step continues.
+c. **Coupled items are set aside whole.** A coupled item's code half is withheld from `units.json`. It is never drafted or asked about, and it is reported `OUTSTANDING: D<n> (test-edit-coupled: <path>)`.
+d. **Removals are set aside.** A `removal` item is never asked about. It is reported `OUTSTANDING: D<n> (test-removal: <path>)`.
+e. **Units.** The test-edit worker is never a unit. No `TEST_EDIT_ITEMS` path enters `units.json`; the `plan-test-paths.py units` preflight (item 6b) already rejects test paths in `owned_files`. `UNITS:` counts ordinary units only.
+f. **Draft pure edits.** For each `edit` item the coordinator works directly, with no subagent and no unit, as Round 4 does. It drafts the change as a unified diff saved to `<SCRATCH_PATH>/test-edits/<finding id>.patch`, checks it with `git apply --check`, and leaves the worktree untouched. A draft that does not pass the check is set aside as `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>)` and is not asked about.
+g. **Ask, before Round 1.** Ask one question per drafted `edit` item through the Ask block (`~/.claude/prompts/flow-reference.md`), header `Test edit`, batched up to four per question set. Outside a flow it is a plain `AskUserQuestion`; in a flow the Ask block relays it, and in `/expert-fleet` the Ask block parks it. Each question's text embeds the finding id, the path and the full patch text, so `PRIOR_ANSWERS` reuse matches exactly (a changed diff is a new question). Its `brief` carries the action-plan item text. The options are exactly these two, in this order, neither marked recommended and none pre-selected:
+   - `Decline — leave OUTSTANDING`
+   - `Approve edit: <finding id> <path>`
+
+   A missing, free-text or unmappable answer counts as declined. A declined item is reported `OUTSTANDING: D<n> (test-edit-declined: <path>)`.
+h. **Fix now (`--only-units`).** A run with `--only-units` never drafts, asks or applies a test edit, so it never asks a test-edit question. Every `TEST_EDIT_ITEMS` entry is reported `OUTSTANDING: D<n> (test-edit-not-approvable-in-fix-now: <path>)`, and the `fix-now` scan keeps `test-removed` armed.
+i. **Misclassification.** An item classified ordinary whose change turns an existing test red reaches the Integration Gate step 4 or Final check fix-loop stop `planned-change-breaks-test: <path>` (extracted from the implementer's `NEEDS_TEST_UPDATE` line). It is never `gate-not-converged` with no path.
 
 **3. Call `unit-progress.py init`.** Once the split is decided (basis, units, owned-files):
 
@@ -2452,6 +2468,24 @@ On a `--resume-after-round1` run, the skipped rounds' hygiene and overlap fields
 (`round4_deleted` and `round4_relocated` default to `0` when `round4.md` is absent), and `layout_names_given` is
 `false` when the flag file is absent.
 
+### 4.7 Approval commit: human-approved test edits (fix step only)
+
+Runs once per fix step, after Round 4's last commit (or at the point Round 4 would have run), and only when at least one test edit was approved at Step 3. It runs whether or not Round 4 ran. When no edit was approved, or every approved patch was skipped, make no commit and emit `TEST_EDIT: none` in the receipt.
+
+1. **Apply.** Apply each approved patch from `<SCRATCH_PATH>/test-edits/<finding id>.patch` unchanged with `git apply --3way`. If a patch conflicts, restore its path with `git checkout HEAD -- <path>`, skip that patch, and keep the others. The skipped item is reported `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>) [self-report]`. An apply conflict never stops the step.
+2. **Check the staged set.** Stage the paths that applied (`git add -- <path> ...`). `git diff --cached --name-status` must list exactly those paths, each with status `M`. A mismatch stops the step FAILED with Reason `existing-test-edit: <finding id> <path>` and `FAILURE_CLASS: other`.
+3. **Commit.** Commit with the subject `test: apply human-approved existing-test edits (#<finding ids>)`. The body has one line per applied edit: its finding id, its path and `answers/fix-<SEQ>.json`. Record the new HEAD as `<APPROVAL_COMMIT>`.
+4. **Scan the approval commit alone.** Run this scan on this one commit, with the exact-path allowlist:
+
+```bash
+python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <TICKET_WT_PATH> --base <APPROVAL_COMMIT>^ --head <APPROVAL_COMMIT> --profile implement --allow-test-edit <path> ...
+```
+
+   Repeat `--allow-test-edit <path>` for each applied path, using the exact repo-relative path. The flag suppresses the `test-edit` reason for those exact paths and nothing else. `test-removed` stays armed, and every other rule runs unchanged. The flag is passed to this one-commit scan only: Gate step 2's range scan and any scan over a `ROUND2_START_SHA..HEAD` range never receive it. A scan `fail` stops the step FAILED with Reason `existing-test-edit: <finding id> <path>` and `FAILURE_CLASS: other`.
+5. **Ledger.** The orchestrator, not this step, appends the `answer` ledger record that pins `answers/fix-<SEQ>.json` (`commands/expert-flow.md`, relay step 4a). This step never writes `human.jsonl`.
+
+The receipt cites each applied edit's answers file on its `TEST_EDIT:` line (see the flow receipt in the Final summary).
+
 ---
 
 ## Final check (orchestrator-run, once per step, after the last commit)
@@ -2461,8 +2495,8 @@ The integration gate proves the build and type-check only. It does not prove the
 resolved minimum check exactly once per step, through the existing Python runner, on the tree the step hands on.
 A receipt naming the resolved full check command is also accepted (a full pass satisfies a minimum request).
 
-**When it runs.** Exactly once per step, after the step's last commit. It is never skippable.
-- When Round 4 runs: after 4.6's `git commit` and the `round4` ledger row.
+**When it runs.** Exactly once per step, after the step's last commit. When an approval commit lands (4.7), that commit is the step's last commit. It is never skippable.
+- When Round 4 runs: after 4.6's `git commit` and the `round4` ledger row, or after the approval commit when one lands (4.7).
 - When round sizing skips Round 4 (`mechanical`), or the step otherwise reaches the Final summary: immediately before the Final summary, whether or not the step made commits.
 - A step that made zero commits (for example, the zero-commit carve-out for a fix with no *Doing it* items) still runs the Final check. It checks HEAD as it stands, writes the same CHECK key lines, and records the same outcome. One rule covers every OK receipt, and a no-op step on an unchanged HEAD still gets a real pass or fail.
 
@@ -2835,6 +2869,9 @@ SPEC-BLIND DISAGREEMENTS (register: <SCRATCH_PATH>/disagreements.json)
   Round 3 spec questions: <count>   Fence violations restored: <count>   Support-edit flips: <count>
 BINDING EDITS (from fence output, one per line)
   <id>: <line> — <import | callee name | argument count>
+HUMAN-APPROVED TEST EDITS (fix step; print `none` in the implement step)
+  <finding id> <path> — answers/fix-<SEQ>.json   (one line per edit applied at 4.7, or none)
+  Set aside, not applied: <finding id> (<reason>: <path>)   (or none)
 DELETED TESTS (round4-deletions.md, human-ruled rows included)
   <id> — class <duplicate | no-op | judgment | human-spec-wrong> — reason — survivor or proof kind
 MERGED TESTS (spec-derived)
@@ -2904,7 +2941,7 @@ union (the union of the agent's self-report `INCOMPLETE_STEPS:` block with the d
 labeled `[self-report|heuristic|both]`). Extract only the `[self-report]` and `[both]` entries. For each,
 emit one line `OUTSTANDING: <step id> (<reason>) [self-report|both]`. When no entries remain, emit
 `OUTSTANDING: none`. Drop heuristic-only entries (a silent miss stays silent for the verifier to classify
-as `uncovered`). Then write:
+as `uncovered`). In the fix step, each set-aside test-edit item that was not applied at 4.7 adds one more line, `OUTSTANDING: D<n> (<reason>: <path>) [self-report]`, with reason `test-edit-declined`, `test-edit-coupled`, `test-edit-apply-conflict`, `test-removal` or `test-edit-not-approvable-in-fix-now`. Then write:
 
 ```
 ATTEMPT: <k>
@@ -2923,8 +2960,12 @@ RUN_KEY: <RUN_KEY>
 RECEIPT_CONTRACT: 1
 OUTSTANDING: <line>
 Addressed: <line>
+TEST_EDIT: <finding id> <path> answers/fix-<SEQ>.json
+TEST_EDIT_COMMIT: <40-hex sha>
 <!-- step-end -->
 ```
+
+**Test-edit lines (fix step only).** The `TEST_EDIT:` and `TEST_EDIT_COMMIT:` lines sit after `Addressed:`. Emit one `TEST_EDIT: <finding id> <path> answers/fix-<SEQ>.json` line per applied edit, and `TEST_EDIT_COMMIT: <sha>` with the 40-hex approval commit from 4.7. When no edit was applied, emit `TEST_EDIT: none` and no `TEST_EDIT_COMMIT` line. The `implement` step omits both lines. `UNITS:` counts ordinary units only (Step 3, fix-step items e).
 
 **Header block.** The verifier reads `CHECK`, `CHECK_EXIT`, `CHECK_SOURCE`, `CHECK_SHA`, `ATTEMPT`, `Decision`, `Reason`, `RUN_KEY`, `RECEIPT_CONTRACT` and
 `OUTSTANDING` only up to the first blank line, so write the receipt as one contiguous block with no blank line from the first
