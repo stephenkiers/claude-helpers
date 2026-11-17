@@ -207,7 +207,9 @@ walking skeleton sits between Layer 0 and Layer 1.
   never a skip and never an automatic re-push. A `gh` error is a STOP. This runs only in mutating commands.
 - **No merge in Layer 2.** A PR already MERGED advances the flow to done. Every other arrival at the merge step is a STOP
   with the reason "merge gate not built (Layer 3)". `--auto-merge` is refused at flow start.
-- **Driver-side preflight (#407).**
+- **Driver-side preflight (#407).** Recorded in the ADR-0026 Layer 2 amendment (2026-11-17): one derived hook-registration
+  check, "v2 half done, v1 still open". The Layer 2 amendment also records the divergences from this section, including
+  the retention rule, which is open.
 - **Commands.** `--list` covers both roots, labels v1 flows "v1, finish with /expert-flow", and stays cheap over hundreds of
   directories. A retention rule caps archives and logs. `--abandon` and `--retro` are in this layer.
 - **Stub.** Grows to the single-ticket path up to and including ship. Under 150 lines. Never writes `state.json`,
