@@ -323,4 +323,61 @@ def accept_answer(flow: Path, text: str, note: Optional[str]) -> Tuple[bool, str
                 # Log but don't fail - the answer was written
                 pass
 
+        # For review-step answers, call review-ruling.py if applicable
+        if parked.kind == "step" and parked.step == "review":
+            # The review step records its ruling through scripts/review-ruling.py
+            try:
+                invoke_review_ruling(flow, parked, stripped_text, note)
+            except Exception:
+                # Log but don't fail - the answer was written
+                pass
+
         return True, f"answer recorded: {target}"
+
+
+def invoke_review_ruling(flow: Path, parked: ParkedQuestion, text: str, note: Optional[str]) -> None:
+    """
+    Invoke scripts/review-ruling.py decide to record a review-step ruling.
+
+    For review-step questions, the recorded ruling goes through scripts/review-ruling.py
+    instead of a direct file write.
+
+    Args:
+        flow: Path to the flow directory
+        parked: The parked review question
+        text: The answer text (the option label or custom text)
+        note: Optional note text
+
+    Raises:
+        RuntimeError: if the script invocation fails (non-zero exit)
+    """
+    from .preflight import run_command
+
+    # Determine the review-dir and item from the flow structure
+    # For a review step question, the item number is the NN
+    item_num = parked.nn
+
+    # Build the command: scripts/review-ruling.py decide --review-dir <dir> --item <n> (--option <label> | --custom <text>)
+    script_path = flow.parent.parent / "scripts" / "review-ruling.py"
+    if not script_path.exists():
+        # Script not available; skip
+        return
+
+    cmd = ["python3", str(script_path), "decide", "--review-dir", str(flow), "--item", str(item_num)]
+
+    # Determine if this is an option or custom text
+    # Try to match against known options first
+    if text in ("", "continue", "accept"):
+        # Standard option
+        cmd.extend(["--option", text])
+    else:
+        # Custom text
+        cmd.extend(["--custom", text])
+
+    # Add note if provided
+    if note:
+        cmd.extend(["--note", note])
+
+    result = run_command(cmd)
+    if result.returncode != 0:
+        raise RuntimeError(f"review-ruling.py failed: {result.stderr.strip().split(chr(10))[0]}")
