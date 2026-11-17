@@ -209,7 +209,8 @@ walking skeleton sits between Layer 0 and Layer 1.
   with the reason "merge gate not built (Layer 3)". `--auto-merge` is refused at flow start.
 - **Driver-side preflight (#407).** Recorded in the ADR-0026 Layer 2 amendment (2026-11-17): one derived hook-registration
   check, "v2 half done, v1 still open". The Layer 2 amendment also records the divergences from this section, including
-  the retention rule, which is open.
+  the retention rule, which is a selective prune (prompts, directives and stale archives; questions, answers and the driver
+  log only once `retro.md` exists; `state.json`, `human.jsonl`, `steps/` and receipts never removed).
 - **Commands.** `--list` covers both roots, labels v1 flows "v1, finish with /expert-flow", and stays cheap over hundreds of
   directories. A retention rule caps archives and logs. `--abandon` and `--retro` are in this layer.
 - **Stub.** Grows to the single-ticket path up to and including ship. Under 150 lines. Never writes `state.json`,

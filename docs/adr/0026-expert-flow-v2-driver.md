@@ -383,13 +383,22 @@ exits 1 with a logged line, and there is no backoff. The stub does not retry a l
 naming `clear-live`. It is never another WAIT. An event attributed to a stale nonce is archived and logged, never
 landed. The directive is WAIT while the record is live, and otherwise the current directive again.
 
-**Retention (Q5 A, with the Carl change). Built differently from the plan.** The age is `RETENTION_DAYS = 30`. The sweep
-runs only from `start`, only over the started flow's repo under `flows-v2`, and only for flows with status `done` or
-`abandoned` and an `updated` stamp older than 30 days. It then removes each expired flow directory whole. This
-diverges from the plan's Step 9, which keeps `state.json`, the driver log, `steps/` and `questions/`, and never prunes
-`human.jsonl` or `steps/` before a retro is run. Layer 2 has no retro, so no retro-input exclusion exists. **Open and
-must be fixed before any real ticket uses v2:** the whole-directory removal can delete a ledger and the step receipts
-of a finished flow. v1 is untouched, and #357 stays open.
+**Retention (Q5 A, with the Carl change). Selective prune, not whole-directory removal.** The age is
+`RETENTION_DAYS = 30`. The sweep runs only from `start`, only over the started flow's repo under `flows-v2`, and only
+for flows with status `done` or `abandoned` and an `updated` stamp older than 30 days. The flow `start` was asked to
+open is never swept, and live flows (running, failed, awaiting, initializing) are never swept. Each candidate is pruned
+under its own lock, with its status and age re-checked inside the lock. Pruning never removes the flow directory itself.
+
+What the sweep removes (`scripts/flow_driver/retention.py`, `_prune`):
+
+- Always: the `prompts/` and `directives/` directories, and the stale-receipt archives (`archive/*/a*.stale.*.md`).
+- Only once `retro.md` exists: the `questions/` and `answers/` directories and the driver log. Layer 2 has no retro
+  (`retro --flow` exits 3), so in practice `retro.md` does not exist yet and these survive.
+
+What survives every sweep: `state.json`, `retro.md`, `human.jsonl`, `steps/` and the step receipts. The plan's Step 9
+intent to keep the driver log and `questions/` holds only while `retro.md` is absent; after a retro they are removed
+by design. Live flows and v1 flows (under `~/.claude/flows/`, which the sweep never reads) are spared. A survival
+test is planned as a separate round, not part of this amendment. #357 stays open.
 
 **Recovery commands.** `recover --choice retry` (after a FAILED receipt, at most two per step, counted from `retried`)
 and `recover --choice take-over` are built. `recover --choice keep-previous` is refused, because it needs a redo
@@ -417,8 +426,9 @@ Neither defect is fixed here, and no new remediation is added. Divergence status
 **Step 6 (flows-root compatibility).** The human ruled yes on the `prompts/flow-reference.md` question. That ruling is
 the reason for the ADR-0018 reciprocal amendment. This amendment does not confirm that real step commands write receipts
 into a v2 flow. Until a test shows that, the stub treats real-step completion as unproven, and its Ask-block note stays
-in place. The in-flow `FLOWS_ROOT` defines in `commands/expert-plan.md` and `commands/expert-review.md` stay pinned to
-the v1 root until separately ruled.
+in place. The in-flow `FLOWS_ROOT` edits in `commands/expert-plan.md` and `commands/expert-review.md` are kept. This is the
+human ruling B on the 2026-11-17 expert-review of this PR (issue #486), which records the decision to keep those edits
+and not pin them to the v1 root. The edits are part of this PR and are not a separate change.
 
 **Layer 2 scope.** The stub runs worktree through ship and then stops at the merge-not-built STOP. It refuses
 `--auto-merge`. No merge directive exists in Layer 2.

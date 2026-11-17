@@ -125,6 +125,10 @@ rule the human approved for the `/expert-flow` v2 driver (ADR-0026, Layer 2 #486
 fourth prefix: flow-directory files only, and only the receipt, marker and question files the driver names in the step
 prompt. The fourth prefix is otherwise unchanged. Its `~/.claude/flows/` path still covers v1 flows.
 
+**Conditionality.** This grant is conditional on ADR-0026 acceptance. It takes effect only with that acceptance, and
+no hook change accompanies it: no PreToolUse hook is added, widened or re-pointed for `~/.claude/flows-v2/`. Until a
+hook is configured, the prefix is enforced by the prompt only, as for the fourth prefix.
+
 - **Scope is the same as the fourth prefix.** Step agents write receipts under `<FLOW_DIR>/steps/`. The driver writes
   the question, answer, `state.json` and `fleet-ask.json` files, and step agents never write them.
 - **`Write` stays prompt-scoped, not tool-scoped.** As for the other prefixes, the residual risk is unchanged
