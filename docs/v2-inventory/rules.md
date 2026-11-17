@@ -286,6 +286,7 @@ Headings marked `###` are amendment-tagged subsection headings. The subsection `
 | 38 | Amendment (2026-11-04) — Unknown-skill auto-retry is a fifth bounded exception | One automatic retry on an Unknown skill failure, `skill_retries[STEP]`, once per step | Layer 3 | port, pinned by test |
 | 39 | Amendment (2026-11-02): resolved File-cell basenames and script-anchored already-done for unknown fix rows (#435) | Resolved File-cell basenames; script-anchored already-done for unknown fix rows | Layer 3 | port, pinned by test |
 | 40 | Amendment (2026-11-05, #462): force-push gates run the minimum check; the merge gate is authoritative | Force-push gates run the minimum check; the merge gate runs the full check and is authoritative | Layer 3 | port, pinned by test |
+| 41 | Amendment (2026-11-17): human-approved existing-test edits in the fix step (#497) | The fix step sets aside existing-test-edit items, asks per item, and applies approved edits in one approval commit scanned with `--allow-test-edit`; the verifier cross-checks the sha256-pinned answers file | Layer 3 | port, pinned by test |
 
 Reference for the one `###` section-level amendment tag outside the amendment list:
 
