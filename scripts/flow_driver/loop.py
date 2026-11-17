@@ -726,23 +726,20 @@ def run_answer(flow: Path, text: str, note: Optional[str] = None) -> str:
         LoopRefusal: the record is not parked-awaiting-answer, or an answer file already exists.
         Refusal: the flow is locked or its state.json is missing or invalid.
     """
-    with mutating(flow) as locked:
-        state = locked.require_state()
-        pending = state.pending_spawn
-        if pending is None or pending.state != "parked-awaiting-answer":
-            raise LoopRefusal("answer refused: the record is not parked-awaiting-answer")
-        # For Layer 2 step questions, construct a temporary ParkedQuestion for path resolution
-        from .state import ParkedQuestion
-        parked = ParkedQuestion(step=pending.step, attempt=pending.attempt, nn=pending.attempt, kind="step")
-        target = relay.answer_path(flow, parked)
-        if target.exists():
-            raise LoopRefusal(f"answer refused: {target} already exists")
-        payload = {"attempt": pending.attempt, "step": pending.step, "text": text, "answered_utc": _stamp(_utc_now())}
-        if note is not None:
-            payload["note"] = note
-        _write(target, json.dumps(payload, indent=2, sort_keys=True) + "\n")
-        locked.log("answer", step=pending.step, attempt=pending.attempt, nonce=pending.nonce)
-        return f"answer recorded: {target}"
+    try:
+        success, message = relay.accept_answer(flow, text, note)
+        if success:
+            # Log the answer
+            with mutating(flow) as locked:
+                state = locked.require_state()
+                pending = state.pending_spawn
+                if pending is not None:
+                    locked.log("answer", step=pending.step, attempt=pending.attempt, nonce=pending.nonce)
+            return message
+        else:
+            raise LoopRefusal(message)
+    except relay.AnswerRefused as exc:
+        raise LoopRefusal(str(exc))
 
 
 def run_clear_live(flow: Path, reason: str) -> str:
