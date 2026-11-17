@@ -694,7 +694,7 @@ upstream branch (a one-read fast-forward check). These are verified with read-on
 symbolic-ref -q HEAD`, `git rev-parse --verify --quiet @{upstream}`, and `git merge-base --is-ancestor`.
 Every probe is three-valued: success (exit 0), explicit no-match (exit 1), or error (any other exit,
 timeout, or exception). Errors are reported as exit 2 and Receipt `Reason: primary-checkout-drift:
-head-probe-failed` (distinct from the missing-baseline case; see D1 below). This check **complements
+head-probe-failed` (distinct from the missing-baseline case; see the three-valued probes paragraph below). This check **complements
 but does not replace** the existing per-path status drift detection; an INFO line never masks a planned-path
 FAIL.
 
@@ -704,15 +704,18 @@ the exit code. The detector stays report-only: no fetch, pull, or ref writes.
 
 **Legacy baseline rule:** Baselines recorded before this change (no optional `branch` field) keep the
 strict rule: any HEAD change is `FAIL <primary> head-moved` and exit 1. Switching branches on the same
-SHA now fails (Q2 ruling), regardless of baseline vintage.
+SHA now fails, regardless of baseline vintage (a decision recorded on #495). A run that straddles the
+install (a baseline recorded before this change, checked after it) gets `FAIL <primary> head-moved`, and
+there is no documented recovery for that case.
 
 **Three-valued probes and exit-2 Reason:** Every new probe (`git symbolic-ref`, `@{upstream}`, two
-`merge-base --is-ancestor` calls) is three-valued. D1 decision: an inconclusive probe (timeout, exit 128,
+`merge-base --is-ancestor` calls) is three-valued. Decision recorded on #495: an inconclusive probe (timeout, exit 128,
 or any exception) is exit 2 with Receipt Reason `primary-checkout-drift: head-probe-failed`. This is
 returned even when the compare's other sub-checks (status drift, planned-path overlap) would have reported
-exit 0. The fail Receipt Reason differs from the baseline-unavailable case per-the fail subcommand's
-`--reason` flag acceptance (Step 3 implementation), but no other `fail` behaviour changes: stderr remains
-`FAILED: primary-checkout-drift baseline unavailable` for both cases.
+exit 0. The decision (recorded on #495) is that this Receipt Reason must differ from the baseline-unavailable
+case, so the `fail` subcommand accepts a `--reason` flag; no other `fail` behaviour changes. On stderr, a
+head-probe failure prints `head probe failed`, while the baseline-unavailable case keeps
+`FAILED: primary-checkout-drift baseline unavailable`.
 
 **Optional `branch` field in snapshot:** Each non-skipped checkout entry records `"branch": "<ref>"|null`
 (a ref string when on a branch, null when detached). Skipped entries have no `branch` key. The baseline
@@ -721,17 +724,18 @@ version stays 1; existing code that ignores the new field continues to work.
 **Residuals and mitigations:** 
 - The upstream ref can lag the primary (a local merge without pushing does not update the tracking ref);
   this is a residual of ADR-0008's report-only design (no fetch). Mitigation: documented and accepted
-  per Q1 = B; the primary advance still fails as before.
+  (decision recorded on #495); the primary advance still fails as before.
 - A commit made in the primary and then pushed upstream passes this check. Mitigation: pushes are guarded
   by the flow Bash guard, commits by `plan-implementer-git-guard.py`. This check is the backstop, not
-  the primary control (Carl, ADR-0008 2026-10-26 amendment item 6).
-- A branch switch at the same SHA now fails (Q2 ruling). Mitigation: a switch in the primary mid-step is
-  what the barrier exists to report.
+  the primary control (the contrarian reviewer's point in ADR-0008 2026-10-26 amendment item 6).
+- A branch switch at the same SHA now fails (decision recorded on #495). Mitigation: a switch in the primary
+  mid-step is what the barrier exists to report.
 - An old baseline with no `branch` key keeps the strict legacy rule. Mitigation: deliberate design; a
-  baseline is per-run scratch. A run that straddles the install is rare; documented recovery in
-  `/implement-with-haiku.md`.
+  baseline is per-run scratch. A run that straddles the install gets `head-moved` with no documented
+  recovery; this is accepted as rare.
 
 **Benefits (why this matters):** When other PRs merge and the primary fast-forwards (via `cleanup.py`'s
-`pull --ff-only -- origin main`), the barrier no longer burns one of the two restart attempts as a
-`cwd-drift` halt. A measured test run (session ID removed per CLAUDE.md) showed 2–3 false positives per
-real run on this exact scenario — zero when this check is in effect.
+`pull --ff-only -- origin main`), the barrier no longer reports that fast-forward as a `head-moved` failure,
+which previously could burn one of the two restart attempts as a `cwd-drift` halt on a run that did nothing
+wrong. The motivating reports are #475 and #495. The frequency of these false positives has not been
+measured, so no rate is claimed here.
