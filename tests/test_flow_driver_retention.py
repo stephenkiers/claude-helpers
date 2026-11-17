@@ -186,6 +186,37 @@ def test_sweep_spares_v1_root_flows() -> None:
         expect((v1 / "prompts").exists(), "a v1 flow's files were pruned")
 
 
+def test_sweep_boundary_age_is_expired() -> None:
+    """A flow exactly `days` old is expired; one a second younger is not."""
+    with tempfile.TemporaryDirectory() as tmp:
+        home = make_home(Path(tmp))
+        now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        exact = _make_flow(home, "6-exact-aaa111", "done", "2026-01-30T00:00:00Z")
+        younger = _make_flow(home, "7-younger-bbb222", "done", "2026-01-30T00:00:01Z")
+        for flow in (exact, younger):
+            _populate(flow)
+        pruned = retention.sweep(exact.parent, now, days=30)
+        expect(pruned == [exact], f"sweep pruned {pruned}, expected only the exactly-30-day-old flow")
+        expect(not (exact / "prompts").exists(), "the boundary-age flow was not pruned")
+        expect((younger / "prompts").exists(), "a flow younger than the boundary was pruned")
+
+
+def test_sweep_unreadable_repo_dir_prunes_nothing() -> None:
+    """An OSError while listing the repo dir prunes nothing and does not raise (D22)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_dir = Path(tmp) / "repo"
+        repo_dir.mkdir()
+        (repo_dir / "1-x-aaa").mkdir()
+        os.chmod(repo_dir, 0)
+        try:
+            if os.access(repo_dir, os.R_OK):
+                return  # running as a user that ignores permissions; cannot simulate
+            pruned = retention.sweep(repo_dir, datetime(2026, 3, 1, tzinfo=timezone.utc), days=30)
+        finally:
+            os.chmod(repo_dir, 0o700)
+        expect(pruned == [], f"sweep returned {pruned} for an unreadable dir")
+
+
 SECTIONS = [
     ("[Retention basic behavior]", [
         ("1: expired_flows returns list", test_expired_flows_returns_list),
@@ -195,6 +226,8 @@ SECTIONS = [
         ("5: retro inputs kept until retro.md exists", test_sweep_keeps_retro_inputs_before_retro_exists),
         ("6: live, failed, recent and kept flows spared", test_sweep_spares_live_recent_and_kept_flows),
         ("7: v1-root flows spared", test_sweep_spares_v1_root_flows),
+        ("8: a flow exactly at the retention age is pruned, one second younger is not", test_sweep_boundary_age_is_expired),
+        ("9: an unreadable repo dir prunes nothing", test_sweep_unreadable_repo_dir_prunes_nothing),
     ]),
 ]
 
