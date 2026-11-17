@@ -11,7 +11,8 @@ Subcommands:
     - Skip when a checkout's realpath equals orchestrator cwd's realpath
     - Probe with: git -C <path> --no-optional-locks status --porcelain=v1 -z --untracked-files=all
     - Parse NUL-separated records, including rename/copy form (R/C entry + original path)
-    - Write JSON: {"version":1,"checkouts":{"<realpath>":{"skipped":false|"primary-is-orchestrator-cwd","head":"<sha>","status":{"<path>":"XY"}}}}
+    - Write JSON: {"version":1,"checkouts":{"<realpath>":{"skipped":false|"primary-is-orchestrator-cwd","head":"<sha>","branch":"<ref>"|null,"status":{"<path>":"XY"}}}}
+    - The optional "branch" field is present on all non-skipped entries: a ref string (e.g., "refs/heads/main") when on a branch, null when detached
     - Exit 0 if snapshot succeeds, 2 on error (git fails, path not a repo, unreadable output)
 
   compare --baseline <file> --ticket-wt <path> --start-sha <sha> --planned <file>
@@ -19,8 +20,10 @@ Subcommands:
     - Compute planned set: paths from --planned file + git diff --name-only <start-sha> + uncommitted/untracked in ticket-wt
     - Classify each new/changed path: FAIL (planned) or WARN (unplanned)
     - Print lines: FAIL|WARN|INFO|SKIP <path> [ticket-match|ticket-differs|ticket-absent]
-    - Exit 0 clean, 1 drift (FAIL including head-moved), 2 error
-    - ERROR lines to stdout: baseline-unavailable, probe-failed, planned-set-unavailable
+    - HEAD movement rule: branch changed, non-ancestor move, no resolvable upstream, move not reachable from upstream, or move against baseline without "branch" key is FAIL <primary> head-moved
+    - A fast-forward reachable from the upstream is INFO <primary> head-advanced <old>..<new>, exit 0
+    - Exit 0 clean, 1 drift, 2 error (probe failed including head-probe)
+    - ERROR lines to stdout: baseline-unavailable, probe-failed, probe-failed head-probe, planned-set-unavailable
 
   fail --compare-exit <1|2> [--label <text>] [--receipt <path>] [--attempt <k>]
        [--implementer-model <m>] [--units <n>] [--max-turns <n>] [--fail-paths <a,b>]
@@ -29,12 +32,16 @@ Subcommands:
        [--overlap-files <a,b>] [--patch-path <p>] [--drifted-files <a,b>] [--untracked-files <a,b>]
     - Multi-unit sites: --overlap-files writes OVERLAP_FILES; --patch-path/--drifted-files/
       --untracked-files write PATCH_PATH/DRIFTED_FILES/UNTRACKED_FILES plus the standard NOTE
-    - The single shared drift-barrier failure mechanism (F4/F20 of #336): prints the stderr
+    - The single shared drift-barrier failure mechanism: prints the stderr
       FAILED line, best-effort emits run-metrics.py command-end (failure-class cwd_drift),
       and writes the FAILED receipt (ending with <!-- step-end -->) only when --receipt is given
-    - --compare-exit 1 = drift (Reason: primary-checkout-drift: <fail paths>), 2 = baseline
-      unavailable (Reason: primary-checkout-drift: baseline-unavailable)
+    - --compare-exit 1 = drift (Reason: primary-checkout-drift: <fail paths>), 2 = error (baseline unavailable or head probe failed); --reason applies to both
     - Always exits 1 (the code every barrier uses); telemetry or receipt problems never change it
+
+The detector never fetches or refreshes any ref; it is report-only and read-only. The benign fast-forward path
+only helps where the primary's branch has a tracked upstream. Commits in the primary are primarily prevented
+by scripts/plan-implementer-git-guard.py, with this check as the backstop (a commit that is also pushed upstream
+would pass, and pushes are guarded separately).
 
 Exit codes: 0 clean, 1 drift, 2 error (missing evidence, probe failures, etc.)
 """
@@ -44,7 +51,10 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set
+
+# Outcome of classify_head_move(): how HEAD moved relative to the baseline.
+HeadOutcome = Literal["clean", "advanced", "fail", "error"]
 
 # Exit code constants
 EXIT_CLEAN = 0
@@ -102,6 +112,78 @@ def escape_control_chars(s: str) -> str:
     return "".join(result)
 
 
+def git_symbolic_ref_head(checkout_path: str) -> str:
+    """
+    Get the symbolic ref for HEAD. Returns the ref string (e.g., "refs/heads/main") on exit 0,
+    "detached" on exit 1, and "probe-failed" on any other exit, timeout, or OS error (the cause is
+    printed to stderr).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", checkout_path, "symbolic-ref", "-q", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        elif result.returncode == 1:
+            return "detached"
+        else:
+            return "probe-failed"
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"Failed to read symbolic-ref HEAD in {checkout_path}: {e}", file=sys.stderr)
+        return "probe-failed"
+
+
+def git_is_ancestor(checkout_path: str, ancestor: str, descendant: str) -> Literal["ancestor", "not-ancestor", "probe-failed"]:
+    """
+    Check if ancestor is an ancestor of descendant, three-valued:
+    Returns "ancestor" (exit 0), "not-ancestor" (exit 1), or "probe-failed" (any other exit, timeout,
+    or OS error; the cause is printed to stderr).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", checkout_path, "merge-base", "--is-ancestor", ancestor, descendant],
+            capture_output=True,
+            timeout=GIT_TIMEOUT,
+        )
+        if result.returncode == 0:
+            return "ancestor"
+        elif result.returncode == 1:
+            return "not-ancestor"
+        else:
+            return "probe-failed"
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"Failed to check ancestry in {checkout_path}: {e}", file=sys.stderr)
+        return "probe-failed"
+
+
+def git_resolve_upstream(checkout_path: str) -> Optional[str]:
+    """
+    Resolve @{upstream} for the current branch. Returns the upstream SHA (exit 0), None for no
+    upstream (exit 1), or the string "probe-failed" for any other exit, timeout, or OS error
+    (the cause is printed to stderr). The "probe-failed" sentinel is a str, so callers must check
+    it before using the value as a SHA.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", checkout_path, "rev-parse", "--verify", "--quiet", "@{upstream}"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        elif result.returncode == 1:
+            return None
+        else:
+            return "probe-failed"
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"Failed to resolve upstream in {checkout_path}: {e}", file=sys.stderr)
+        return "probe-failed"
+
+
 def git_status_porcelain(checkout_path: str) -> Optional[Dict[str, str]]:
     """Probe git status with -z format, return dict of path -> XY status, or None on error."""
     try:
@@ -146,7 +228,7 @@ def git_status_porcelain(checkout_path: str) -> Optional[Dict[str, str]]:
 
             # For R/C (rename/copy), there's an additional path (the "from" path)
             if xy.startswith("R") or xy.startswith("C"):
-                # Record the original path too (F18)
+                # Record the original path too
                 path_end2 = output.find(b"\0", i)
                 if path_end2 == -1:
                     break
@@ -192,9 +274,20 @@ def cmd_snapshot(checkout_paths: List[str], orchestrator_cwd: str, out_file: str
             print("ERROR probe-failed", file=sys.stdout)
             return EXIT_ERROR
 
+        # Get branch (symbolic ref)
+        branch = git_symbolic_ref_head(checkout_path)
+        if branch == "probe-failed":
+            print("ERROR probe-failed", file=sys.stdout)
+            return EXIT_ERROR
+
+        # branch is either a ref string or "detached" (probe-failed was handled above).
+        # Convert "detached" to null for JSON
+        branch_value: Optional[str] = None if branch == "detached" else branch
+
         checkouts[checkout_real] = {
             "skipped": False,
             "head": head_sha,
+            "branch": branch_value,
             "status": status_map,
         }
 
@@ -279,6 +372,69 @@ def build_planned_set(planned_file: str, ticket_wt: str, start_sha: str) -> Opti
     return planned_set
 
 
+def classify_head_move(
+    checkout_real: str, baseline_entry: Dict[str, Any], baseline_head: str, current_head: str
+) -> HeadOutcome:
+    """Classify how HEAD moved since the baseline. Returns "clean", "advanced", "fail", or "error".
+
+    Decision table (rows are checked top to bottom; the first match wins):
+
+    | baseline entry              | observation                                          | outcome  |
+    |-----------------------------|------------------------------------------------------|----------|
+    | no "branch" key (legacy)    | HEAD differs from baseline                           | fail     |
+    | no "branch" key (legacy)    | HEAD unchanged                                       | clean    |
+    | has "branch" key            | HEAD's symbolic ref cannot be probed                 | error    |
+    | has "branch" key            | branch differs (ref vs ref, or detached vs ref)      | fail     |
+    | has "branch" key            | HEAD unchanged                                       | clean    |
+    | has "branch" key            | ancestry probe errors                                | error    |
+    | has "branch" key            | baseline HEAD is not an ancestor (reset, rewrite)    | fail     |
+    | has "branch" key            | upstream probe errors                                | error    |
+    | has "branch" key            | no upstream configured                               | fail     |
+    | has "branch" key            | reachability probe from upstream errors              | error    |
+    | has "branch" key            | current HEAD reachable from upstream (fast-forward)  | advanced |
+    | has "branch" key            | current HEAD not reachable from upstream             | fail     |
+
+    The caller prints the lines: "fail" becomes FAIL <path> head-moved, "advanced" becomes
+    INFO <path> head-advanced, and "error" becomes ERROR probe-failed head-probe (exit 2).
+    """
+    if "branch" not in baseline_entry:
+        return "clean" if current_head == baseline_head else "fail"
+
+    current_branch = git_symbolic_ref_head(checkout_real)
+    if current_branch == "probe-failed":
+        return "error"
+
+    # Convert "detached" to None for comparison
+    current_branch_value: Optional[str] = None if current_branch == "detached" else current_branch
+    baseline_branch_value: Optional[str] = baseline_entry.get("branch")
+    if current_branch_value != baseline_branch_value:
+        return "fail"
+
+    if current_head == baseline_head:
+        return "clean"
+
+    is_ancestor_result = git_is_ancestor(checkout_real, baseline_head, current_head)
+    if is_ancestor_result == "probe-failed":
+        return "error"
+    if is_ancestor_result == "not-ancestor":
+        return "fail"
+
+    # Upstream is read from the checkout's own config. Pushes are guarded by the flow Bash guard,
+    # so this reachability check is the backstop; a snapshot-recorded upstream is out of scope.
+    upstream_sha = git_resolve_upstream(checkout_real)
+    if upstream_sha == "probe-failed":
+        return "error"
+    if upstream_sha is None:
+        return "fail"
+
+    reachable_result = git_is_ancestor(checkout_real, current_head, upstream_sha)
+    if reachable_result == "probe-failed":
+        return "error"
+    if reachable_result == "ancestor":
+        return "advanced"
+    return "fail"
+
+
 def cmd_compare(
     baseline_file: str, ticket_wt: str, start_sha: str, planned_file: str
 ) -> int:
@@ -318,12 +474,25 @@ def cmd_compare(
             return EXIT_ERROR
 
         baseline_head = baseline_entry.get("head")
+        if not isinstance(baseline_head, str) or not baseline_head:
+            print("ERROR baseline-unavailable", file=sys.stdout)
+            return EXIT_ERROR
 
-        # Check for HEAD movement (F10: this is now a FAIL)
-        if current_head != baseline_head:
-            escaped_checkout = escape_control_chars(checkout_real)
-            print(f"FAIL {escaped_checkout} head-moved")
-            fail_paths.add(escaped_checkout)
+        # P is the escaped checkout path
+        P = escape_control_chars(checkout_real)
+
+        head_outcome = classify_head_move(checkout_real, baseline_entry, baseline_head, current_head)
+        if head_outcome == "error":
+            print("ERROR probe-failed head-probe", file=sys.stdout)
+            return EXIT_ERROR
+        if head_outcome == "fail":
+            print(f"FAIL {P} head-moved")
+            fail_paths.add(P)
+        elif head_outcome == "advanced":
+            # Fast-forward reachable from upstream. Escaping is per character, so escaping each
+            # SHA on its own equals escaping the whole INFO line once (P is already escaped).
+            print(f"INFO {P} head-advanced "
+                  f"{escape_control_chars(baseline_head)}..{escape_control_chars(current_head)}")
 
         # Check for new or changed paths
         baseline_status = baseline_entry.get("status", {})
@@ -390,7 +559,7 @@ def cmd_compare(
                     print(f"WARN pre-dirty-planned {escaped_path}")
 
     if fail_paths:
-        # Print REASON line with collected FAIL paths (F17: reuse first-pass FAIL set)
+        # Print REASON line with collected FAIL paths (reuse first-pass FAIL set)
         reason_paths = ",".join(sorted(fail_paths))
         print(f"ERROR primary-checkout-drift {reason_paths}", file=sys.stdout)
         return EXIT_DRIFT
@@ -473,8 +642,18 @@ def cmd_fail(args: argparse.Namespace) -> int:
         print(f"FAILED: primary-checkout-drift detected \u2014 cwd drift found{suffix}", file=sys.stderr)
         reason = args.reason or f"{REASON_PREFIX} {_one_line(args.fail_paths) or 'unknown'}"
     else:
-        print("FAILED: primary-checkout-drift baseline unavailable", file=sys.stderr)
-        reason = f"{REASON_PREFIX} baseline-unavailable"
+        # Exit 2: baseline unavailable or head probe failed
+        if args.reason:
+            # Use the provided reason (e.g., from head-probe failure)
+            reason = args.reason
+            if args.reason.startswith("primary-checkout-drift: head-probe-failed"):
+                print("FAILED: primary-checkout-drift head probe failed", file=sys.stderr)
+            else:
+                print("FAILED: primary-checkout-drift baseline unavailable", file=sys.stderr)
+        else:
+            print("FAILED: primary-checkout-drift baseline unavailable", file=sys.stderr)
+            reason = f"{REASON_PREFIX} baseline-unavailable"
+
     if not reason.startswith(REASON_PREFIX):
         print(f"fail: --reason must start with '{REASON_PREFIX}'", file=sys.stderr)
         reason = f"{REASON_PREFIX} {_one_line(reason)}"
@@ -511,7 +690,7 @@ def main() -> int:
 
     fail_parser = subparsers.add_parser("fail", help="Shared drift-barrier failure (telemetry + receipt)")
     fail_parser.add_argument("--compare-exit", type=int, choices=[EXIT_DRIFT, EXIT_ERROR], required=True,
-                             help="Exit code the compare (or snapshot) returned: 1 drift, 2 baseline unavailable")
+                             help="Exit code the compare (or snapshot) returned: 1 drift, 2 baseline unavailable or head probe failed")
     fail_parser.add_argument("--label", default="", help="Barrier label appended to the stderr line")
     fail_parser.add_argument("--receipt", default="", help="Receipt path; omit to write no receipt")
     fail_parser.add_argument("--attempt", default="1")

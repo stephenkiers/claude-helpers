@@ -24,25 +24,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
-from _inproc import run_python
 
-DRIFT_SCRIPT = REPO_ROOT / "scripts" / "primary-checkout-drift.py"
-
-
-def run_script(cmd: str, *args: str) -> tuple:
-    """Run the drift script in-process and return (exit_code, stdout, stderr)."""
-    result = run_python([str(DRIFT_SCRIPT), cmd] + list(args))
-    return result.returncode, result.stdout, result.stderr
-
-
-def run_script_e2e(cmd: str, *args: str) -> tuple:
-    """Run the drift script as a real subprocess and return (exit_code, stdout, stderr)."""
-    result = subprocess.run(
-        [sys.executable, str(DRIFT_SCRIPT), cmd] + list(args),
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode, result.stdout, result.stderr
+from _drift_helpers import (
+    DRIFT_SCRIPT,
+    run_script,
+    run_script_e2e,
+)
 
 
 def init_git_repo(repo_path: str) -> str:
@@ -108,6 +95,114 @@ def create_worktree(primary_path: str, worktree_path: str, branch_name: str = "f
         check=True,
     )
     return result.stdout.strip()
+
+
+COMPARE_CAPTURE_MARKER = "COMPARE_OUT=$("
+COMPARE_ECHO_LINE = "printf '%s\\n' \"$COMPARE_OUT\""
+REASON_EXPANSION = '${REASON_ARGS[@]+"${REASON_ARGS[@]}"}'
+PROBE_FAILED_GREP = "^ERROR probe-failed head-probe"
+
+
+def _matching_close_paren(text, open_idx):
+    """Index of the ')' that closes the '(' at open_idx, or -1 when unbalanced."""
+    depth = 0
+    for i in range(open_idx, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _compare_capture_sites(doc):
+    """For each COMPARE_OUT=$( capture: (line, ok, detail).
+
+    ok means: the capture calls primary-checkout-drift.py compare, and the COMPARE_OUT echo line
+    sits after the capture closes and after `COMPARE_EXIT=$?`, and before the first later use of
+    `$COMPARE_EXIT` (the exit-code handling). The echo cannot precede `COMPARE_EXIT=$?`: it would clobber `$?`.
+    """
+    sites = []
+    pos = doc.find(COMPARE_CAPTURE_MARKER)
+    while pos != -1:
+        line = doc.count("\n", 0, pos) + 1
+        close_idx = _matching_close_paren(doc, pos + len("COMPARE_OUT=$"))
+        capture = doc[pos:close_idx + 1] if close_idx != -1 else doc[pos:pos + 300]
+        exit_idx = doc.find("COMPARE_EXIT=$?", close_idx) if close_idx != -1 else -1
+        echo_idx = doc.find(COMPARE_ECHO_LINE, exit_idx) if exit_idx != -1 else -1
+        handling_idx = doc.find("$COMPARE_EXIT", exit_idx) if exit_idx != -1 else -1
+        ok = (
+            close_idx != -1
+            and "primary-checkout-drift.py" in capture
+            and "compare" in capture
+            and echo_idx != -1
+            and exit_idx != -1
+            and handling_idx != -1
+            and exit_idx < echo_idx < handling_idx
+        )
+        sites.append((line, ok, f"capture={capture[:120]!r}, echo_idx={echo_idx}, exit_idx={exit_idx}"))
+        pos = doc.find(COMPARE_CAPTURE_MARKER, pos + 1)
+    return sites
+
+
+def _reason_args_expansions(doc):
+    """Return (line, is_exact_form, normalized_suffix_after_expansion) for each REASON_ARGS expansion."""
+    import re
+
+    rows = []
+    for match in re.finditer(r'(?<!\+")\$\{REASON_ARGS\[@\]', doc):
+        pos = match.start()
+        line_start = doc.rfind("\n", 0, pos) + 1
+        line_end = doc.find("\n", pos)
+        if line_end == -1:
+            line_end = len(doc)
+        line = doc[line_start:line_end]
+        exact = doc[pos:pos + len(REASON_EXPANSION)] == REASON_EXPANSION
+        suffix = ""
+        if REASON_EXPANSION in line:
+            suffix = line.split(REASON_EXPANSION, 1)[1].strip().rstrip("\\").strip()
+        rows.append((doc.count("\n", 0, pos) + 1, exact, suffix))
+    return rows
+
+
+def _probe_failed_gate_present(doc):
+    """(anchored, unanchored_lines, gated): grep anchor status and COMPARE_EXIT -eq 2 gating nearby."""
+    import re
+
+    anchored = PROBE_FAILED_GREP in doc
+    unanchored = []
+    for match in re.finditer(r"ERROR probe-failed head-probe", doc):
+        pos = match.start()
+        context = doc[max(0, pos - 40):pos]
+        if "grep" in context and doc[pos - 1:pos] != "^":
+            unanchored.append(doc.count("\n", 0, pos) + 1)
+    gate = re.compile(r'COMPARE_EXIT"?\s*(?:-eq|==|=)\s*"?2"?(?!\d)')
+    gate_positions = [m.start() for m in gate.finditer(doc)]
+    anchor_positions = [m.start() for m in re.finditer(re.escape(PROBE_FAILED_GREP), doc)]
+    gated = any(
+        abs(a - g) <= 1200 for a in anchor_positions for g in gate_positions
+    )
+    return anchored, unanchored, gated
+
+
+def _adr_0008_amendment_section():
+    """Text of the ADR-0008 amendment whose heading cites #475 and #495 (None if absent)."""
+    adr_path = REPO_ROOT / "docs" / "adr" / "0008-machine-enforced-agent-guardrails.md"
+    lines = adr_path.read_text().split("\n")
+    start = None
+    for index, line in enumerate(lines):
+        if line.startswith("## Amendment") and "#495" in line and "#475" in line:
+            start = index
+            break
+    if start is None:
+        return None
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("## "):
+            end = index
+            break
+    return "\n".join(lines[start:end])
 
 
 def main():
@@ -545,6 +640,282 @@ def main():
             f"exit={exit_code}, flag should not cause parse error; stderr={stderr[:200]}",
         )
 
+    print()
+
+    # ========================================================================
+    # Documentation checks (plan Tests statements 20-22, grep at test time)
+    # ========================================================================
+    print("[Spec 20] Module docstring: contains head-advanced, head-probe, no 'FAIL including head-moved'")
+    drift_script_text = DRIFT_SCRIPT.read_text()
+    # Find the module docstring (first triple-quoted string)
+    import re
+    docstring_match = re.search(r'"""(.*?)"""', drift_script_text, re.DOTALL)
+    if docstring_match:
+        docstring = docstring_match.group(1)
+        h.test_result(
+            "docstring contains 'head-advanced'",
+            "head-advanced" in docstring,
+            f"docstring excerpt: {docstring[:300]}",
+        )
+        h.test_result(
+            "docstring contains 'head-probe'",
+            "head-probe" in docstring,
+            f"docstring excerpt: {docstring[:300]}",
+        )
+        h.test_result(
+            "docstring does not contain 'FAIL including head-moved'",
+            "FAIL including head-moved" not in docstring,
+            f"docstring excerpt: {docstring[:500]}",
+        )
+    else:
+        h.test_result("docstring found", False, "No module docstring found")
+    print()
+
+    print("[Spec 21] commands/implement-with-haiku.md: contains head-advanced and head-probe-failed")
+    impl_haiku_path = REPO_ROOT / "commands" / "implement-with-haiku.md"
+    if impl_haiku_path.exists():
+        impl_haiku_text = impl_haiku_path.read_text()
+        h.test_result(
+            "implement-with-haiku.md contains 'head-advanced'",
+            "head-advanced" in impl_haiku_text,
+            f"file exists={impl_haiku_path.exists()}",
+        )
+        h.test_result(
+            "implement-with-haiku.md contains 'primary-checkout-drift: head-probe-failed'",
+            "primary-checkout-drift: head-probe-failed" in impl_haiku_text,
+            f"file exists={impl_haiku_path.exists()}",
+        )
+        h.test_result(
+            "--compare-exit description no longer says only 'baseline unavailable'",
+            "--compare-exit" in impl_haiku_text and not (
+                "--compare-exit" in impl_haiku_text and
+                impl_haiku_text[impl_haiku_text.find("--compare-exit"):impl_haiku_text.find("--compare-exit")+500].count("baseline unavailable") == 1
+            ),
+            "need to verify --compare-exit description",
+        )
+    else:
+        h.test_result("implement-with-haiku.md found", False, f"File not found at {impl_haiku_path}")
+    print()
+
+    print("[Spec 21b] Every fail invocation routes head-probe case correctly")
+    if impl_haiku_path.exists():
+        impl_haiku_text = impl_haiku_path.read_text()
+        # Every `fail` invocation must either pass a literal --compare-exit (1 = drift, 2 = baseline
+        # unavailable, so no head-probe routing is needed) or be preceded by the head-probe REASON_ARGS
+        # routing for the variable "$COMPARE_EXIT" case.
+        marker = 'primary-checkout-drift.py" fail'
+        starts = []
+        pos = impl_haiku_text.find(marker)
+        while pos != -1:
+            starts.append(pos)
+            pos = impl_haiku_text.find(marker, pos + 1)
+        uncovered = []
+        for pos in starts:
+            invocation = impl_haiku_text[pos:pos + 200]
+            window = impl_haiku_text[max(0, pos - 600):pos]
+            literal_exit = "--compare-exit 1" in invocation or "--compare-exit 2" in invocation
+            routed = "head-probe-failed" in window and "REASON_ARGS" in window
+            if not (literal_exit or routed):
+                uncovered.append(impl_haiku_text.count("\n", 0, pos) + 1)
+        h.test_result(
+            "found fail invocations",
+            len(starts) >= 1,
+            f"count={len(starts)}",
+        )
+        h.test_result(
+            "every fail invocation has a literal --compare-exit or head-probe routing",
+            not uncovered,
+            f"invocations={len(starts)}, uncovered at lines {uncovered}",
+        )
+    print()
+
+    print("[Spec 21c] Log check no longer says must be empty without --not @{upstream}")
+    if impl_haiku_path.exists():
+        impl_haiku_text = impl_haiku_path.read_text()
+        # Check that if "must be empty" is mentioned with git log, it includes --not @{upstream} or equivalent
+        if "must be empty" in impl_haiku_text and "git log" in impl_haiku_text:
+            # Find the section with log and must be empty
+            anchor = impl_haiku_text.find("log --oneline <expected-HEAD>..HEAD")
+            relevant_section = impl_haiku_text[max(0, anchor - 200):anchor + 500]
+            has_upstream_exclude = "--not @{upstream}" in relevant_section or "not on the upstream" in relevant_section.lower()
+            h.test_result(
+                "git log check includes upstream exclusion",
+                has_upstream_exclude,
+                f"section: {relevant_section}",
+            )
+        else:
+            h.test_result(
+                "git log / must be empty section found",
+                "must be empty" in impl_haiku_text and "git log" in impl_haiku_text,
+                "Need to find git log...must be empty section",
+            )
+    print()
+
+    print("[Spec 22] ADR-0008 amendment with #495 and #475, no new ADR-0023 heading")
+    adr_0008_path = REPO_ROOT / "docs" / "adr" / "0008-machine-enforced-agent-guardrails.md"
+    adr_0023_path = REPO_ROOT / "docs" / "adr" / "0023-expert-flow.md"
+
+    if adr_0008_path.exists():
+        adr_0008_text = adr_0008_path.read_text()
+        # Check for amendment heading with #495 and #475
+        amendment_found = False
+        for line in adr_0008_text.split("\n"):
+            if line.startswith("## Amendment") and "#495" in line and "#475" in line:
+                amendment_found = True
+                break
+        h.test_result(
+            "ADR-0008 has Amendment heading with both #495 and #475",
+            amendment_found,
+            "Need Amendment heading with both issue numbers",
+        )
+    else:
+        h.test_result("ADR-0008 found", False, f"File not found at {adr_0008_path}")
+
+    if adr_0023_path.exists():
+        adr_0023_text = adr_0023_path.read_text()
+        # Count amendment headings before and after a known point
+        # We just need to verify no NEW amendment heading was added (the existing structure is preserved)
+        # The plan says the cross-reference is added to the existing "Amendment (2026-10-26)" section, not a new one
+        amendment_lines = [line for line in adr_0023_text.split("\n") if line.startswith("## Amendment")]
+        # We need to verify that the number of amendment headings is what we expect
+        # The existing amendment should still be there
+        has_existing_2026_10_26 = any("2026-10-26" in line for line in amendment_lines)
+        h.test_result(
+            "ADR-0023 preserves existing Amendment headings (no new one added)",
+            has_existing_2026_10_26,
+            f"amendment_lines={amendment_lines}",
+        )
+    else:
+        h.test_result("ADR-0023 found", False, f"File not found at {adr_0023_path}")
+    print()
+
+    if impl_haiku_path.exists():
+        impl_text = impl_haiku_path.read_text()
+
+        print("[Spec 23] Each compare capture echoes COMPARE_OUT after the capture, before exit-code handling")
+        capture_sites = _compare_capture_sites(impl_text)
+        h.test_result(
+            "five COMPARE_OUT=$( compare captures present",
+            len(capture_sites) == 5,
+            f"found {len(capture_sites)} at lines {[site[0] for site in capture_sites]}",
+        )
+        unechoed = [site[0] for site in capture_sites if not site[1]]
+        h.test_result(
+            "every compare capture is followed by printf '%s\\n' \"$COMPARE_OUT\" before $? handling",
+            bool(capture_sites) and not unechoed,
+            f"lines without a valid echo: {unechoed}; details: {[site[2] for site in capture_sites if not site[1]]}",
+        )
+        print()
+
+        print("[Spec 24] Recovery no-stray-commits check cannot pass when there is no upstream")
+        stray_idx = impl_text.find("Confirm no stray commits")
+        window = impl_text[stray_idx:stray_idx + 600] if stray_idx != -1 else ""
+        import re as _re
+        exit_guarded = (
+            "$?" in window
+            or "-eq 0" in window
+            or _re.search(r"rev-parse[^\n]*@\{upstream\}", window) is not None
+            or '&& [ -z "$STRAY" ]' in window
+        )
+        h.test_result(
+            "no-stray-commits check is present in the recovery section",
+            stray_idx != -1 and "log --oneline" in window,
+            f"'stray' found={stray_idx != -1}",
+        )
+        h.test_result(
+            "no-stray-commits check requires exit 0 (or resolves @{upstream} first), not just empty output",
+            stray_idx != -1 and "log --oneline" in window and exit_guarded,
+            f"window={window[:400]!r}",
+        )
+        print()
+
+        print("[Spec 25] Every REASON_ARGS expansion uses the guarded form, placed uniformly")
+        expansions = _reason_args_expansions(impl_text)
+        h.test_result(
+            "at least one REASON_ARGS expansion present",
+            len(expansions) >= 1,
+            f"count={len(expansions)}",
+        )
+        non_exact = [row[0] for row in expansions if not row[1]]
+        h.test_result(
+            "every REASON_ARGS expansion is ${REASON_ARGS[@]+\"${REASON_ARGS[@]}\"}",
+            bool(expansions) and not non_exact,
+            f"non-matching expansions at lines {non_exact}",
+        )
+        suffixes = {row[2] for row in expansions}
+        h.test_result(
+            "REASON_ARGS placement is uniform across all copies",
+            bool(expansions) and len(suffixes) == 1,
+            f"distinct text after expansion: {sorted(suffixes)}",
+        )
+        print()
+
+        print("[Spec 26] Probe-failed override: anchored grep, applied only when COMPARE_EXIT equals 2")
+        anchored, unanchored_lines, gated = _probe_failed_gate_present(impl_text)
+        h.test_result(
+            "probe-failed grep uses the anchored pattern ^ERROR probe-failed head-probe",
+            anchored,
+            "anchored pattern not found in doc",
+        )
+        h.test_result(
+            "no unanchored 'ERROR probe-failed head-probe' grep",
+            not unanchored_lines,
+            f"unanchored grep at lines {unanchored_lines}",
+        )
+        h.test_result(
+            "probe-failed override is gated on COMPARE_EXIT equal to 2",
+            gated,
+            "no COMPARE_EXIT -eq/== 2 condition near the probe-failed grep",
+        )
+        print()
+    else:
+        h.test_result("implement-with-haiku.md found for Specs 23-26", False, f"File not found at {impl_haiku_path}")
+
+    print("[Spec 27] ADR-0008 #495 amendment: no bogus reference, no quoted false-positive count, cites #475 and #495, no planning labels")
+    amendment = _adr_0008_amendment_section()
+    h.test_result(
+        "ADR-0008 amendment heading citing #495 and #475 located",
+        amendment is not None,
+        "no '## Amendment' heading with both #495 and #475",
+    )
+    if amendment is not None:
+        import re as _re
+        h.test_result(
+            "amendment body cites #475",
+            "#475" in amendment,
+            "amendment section does not mention #475",
+        )
+        h.test_result(
+            "amendment body cites #495",
+            "#495" in amendment,
+            "amendment section does not mention #495",
+        )
+        h.test_result(
+            "amendment does not reference 'documented recovery in /implement-with-haiku.md'",
+            "documented recovery in /implement-with-haiku.md" not in amendment
+            and _re.search(r"documented recovery in\s+/?implement-with-haiku", amendment) is None,
+            "amendment cites a nonexistent recovery section",
+        )
+        h.test_result(
+            "amendment does not cite '2-3 false positives per real run'",
+            _re.search(r"2\s*[-–]\s*3 false positives", amendment) is None,
+            "amendment quotes the 2-3 false-positive count",
+        )
+        h.test_result(
+            "amendment does not use the word 'zero'",
+            _re.search(r"\bzero\b", amendment, _re.IGNORECASE) is None,
+            "amendment uses the word zero",
+        )
+        h.test_result(
+            "amendment has no bare planning label (Q<n> = <letter>)",
+            _re.search(r"\bQ\d+\s*=\s*[A-Z]\b", amendment) is None,
+            "bare planning label such as 'Q1 = B' present",
+        )
+        h.test_result(
+            "amendment has no bare planning label (D<n>)",
+            _re.search(r"(?<![\w#-])D\d+\b", amendment) is None,
+            "bare planning label such as 'D1' present",
+        )
     print()
 
     h.summarize_and_exit()

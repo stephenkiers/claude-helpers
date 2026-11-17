@@ -177,6 +177,108 @@ def main() -> None:
                   "stop and write the FAILED receipt" not in doc and "siblings are terminal, write the FAILED receipt" not in doc)
     h.test_result("fail block documents the subcommand", "primary-checkout-drift.py fail" in doc.split("### Drift barrier failure block", 1)[1].split("## Step 4d", 1)[0])
 
+    # Spec statements 18-19: fail with new Reason values
+    print("[Test 10] Spec stmt 18: fail --compare-exit 2 with head-probe-failed reason")
+    with tempfile.TemporaryDirectory() as tmp:
+        rec = Path(tmp) / "rec.txt"
+        os.environ["REC"] = str(rec)
+        script = make_script_dir(tmp, RECORD)
+        receipt = Path(tmp) / "receipt.md"
+
+        code, out, err = run_fail_e2e(
+            script, "--compare-exit", "2", "--receipt", str(receipt),
+            "--reason", "primary-checkout-drift: head-probe-failed",
+            "--attempt", "1", "--implementer-model", "sonnet", "--units", "1", "--max-turns", "20")
+        text = receipt.read_text()
+
+        h.test_result(
+            "fail exit 1",
+            code == 1,
+            f"exit={code}",
+        )
+        h.test_result(
+            "receipt contains head-probe-failed reason",
+            "Reason: primary-checkout-drift: head-probe-failed\n" in text,
+            f"text={text}",
+        )
+        h.test_result(
+            "receipt has FAILURE_CLASS cwd-drift",
+            "FAILURE_CLASS: cwd-drift\n" in text,
+            f"text={text}",
+        )
+    print()
+
+    print("[Test 11] Spec stmt 19: fail --compare-exit 2 without --reason (baseline-unavailable)")
+    with tempfile.TemporaryDirectory() as tmp:
+        rec = Path(tmp) / "rec.txt"
+        os.environ["REC"] = str(rec)
+        script = make_script_dir(tmp, RECORD)
+        receipt = Path(tmp) / "receipt.md"
+
+        code, out, err = run_fail(
+            script, "--compare-exit", "2", "--receipt", str(receipt),
+            "--attempt", "1", "--implementer-model", "haiku", "--units", "1", "--max-turns", "20")
+        text = receipt.read_text()
+
+        h.test_result(
+            "fail exit 1",
+            code == 1,
+            f"exit={code}",
+        )
+        h.test_result(
+            "receipt still contains baseline-unavailable (default for exit 2)",
+            "Reason: primary-checkout-drift: baseline-unavailable\n" in text,
+            f"text={text}",
+        )
+    print()
+
+    print("[Test 12] head-probe fail: stderr says 'head probe failed' (fail exits 1, as Tests 1-11)")
+    with tempfile.TemporaryDirectory() as tmp:
+        rec = Path(tmp) / "rec.txt"
+        os.environ["REC"] = str(rec)
+        script = make_script_dir(tmp, RECORD)
+        receipt = Path(tmp) / "receipt.md"
+
+        code, out, err = run_fail_e2e(
+            script, "--compare-exit", "2", "--receipt", str(receipt),
+            "--reason", "primary-checkout-drift: head-probe-failed",
+            "--attempt", "1", "--implementer-model", "sonnet", "--units", "1", "--max-turns", "20")
+
+        h.test_result(
+            "head-probe fail: stderr contains 'head probe failed'",
+            "head probe failed" in err,
+            f"stderr={err!r}",
+        )
+        h.test_result(
+            "head-probe fail: exit 1",
+            code == 1,
+            f"exit={code}",
+        )
+    print()
+
+    print("[Test 13] baseline-unavailable fail: stderr keeps 'FAILED: primary-checkout-drift baseline unavailable'")
+    with tempfile.TemporaryDirectory() as tmp:
+        rec = Path(tmp) / "rec.txt"
+        os.environ["REC"] = str(rec)
+        script = make_script_dir(tmp, RECORD)
+        receipt = Path(tmp) / "receipt.md"
+
+        code, out, err = run_fail_e2e(
+            script, "--compare-exit", "2", "--receipt", str(receipt),
+            "--attempt", "1", "--implementer-model", "haiku", "--units", "1", "--max-turns", "20")
+
+        h.test_result(
+            "baseline-unavailable fail: stderr has exact FAILED line",
+            "FAILED: primary-checkout-drift baseline unavailable" in err,
+            f"stderr={err!r}",
+        )
+        h.test_result(
+            "baseline-unavailable fail: exit 1",
+            code == 1,
+            f"exit={code}",
+        )
+    print()
+
     h.summarize_and_exit()
 
 

@@ -856,7 +856,7 @@ This amendment closes the gap where an implement or fix step could report a pass
 
 **Primary-checkout drift is a hard stop, never auto-remediated.** When any agent's execution causes a write outside its assigned ticket worktree (drift into the primary checkout), the orchestrator detects it via `primary-checkout-drift.py compare` at serial barriers and logs a `FAILED` receipt with Reason `primary-checkout-drift: <cause>` and failure class `cwd-drift` (receipt convention; telemetry uses `cwd_drift`). The hard stop offers Retry / Take over / Abort and nothing else; there is no auto-salvage. The failure is caused by an agent logic error (deriving absolute paths from git output) and is prevented by the agent instructions in `agents/plan-implementer.md`. The baseline snapshot and barrier detects (`#336`) work in concert with the timeout fix (`#338`, a separate independent fix to `just check`) to make drift visible and addressable.
 
-**Reference.** See ADR-0008 amendment 2026-10-26 for the full detection and prevention contract, cause class (d), and known gaps.
+**Reference.** See ADR-0008 amendment 2026-10-26 for the full detection and prevention contract, cause class (d), and known gaps; ADR-0008 amendment 2026-11-16 (#495, #475) refines the head-movement rule to allow fast-forwards reachable from the upstream without failing.
 
 ## Amendment (2026-11-05): verify, implement and fix check gates run the minimum check (#387)
 
