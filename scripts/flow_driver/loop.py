@@ -102,6 +102,7 @@ STEP_COMMANDS: Dict[str, str] = {
     "merge": "/merge-and-cleanup {worktree}",
 }
 # A step prompt never carries a `<UPPER_CASE>` placeholder: a leftover one fails the render (D6).
+_NOT_RECORDED = "(not recorded in the landed receipt)"
 _LEFTOVER_PLACEHOLDER = re.compile(r"<[A-Za-z_ ]+>")
 # A landed OK receipt of these steps carries its Addressed line forward (ADR-0026 ledger carry-forward).
 CARRY_STEPS = frozenset(("plan", "implement", "review", "fix"))
@@ -395,20 +396,16 @@ def _landed_header(flow: Path, state: V2State, step: Step, header: str) -> Optio
 def _step_inputs(flow: Path, state: V2State, step: Step) -> Union[Dict[str, str], str]:
     """
     The values a step command names beyond the issue: PLAN_PATH for implement (the landed plan's FINAL_PLAN_PATH) and
-    REVIEW_DIR for fix (the landed review's REVIEW_DIR). A value the receipts do not carry is returned as the detail of
-    a step-failed STOP, so no prompt is ever rendered with a placeholder in it.
+    REVIEW_DIR for fix (the landed review's REVIEW_DIR). A value the receipts do not carry resolves to the documented stub
+    `_NOT_RECORDED`, so no prompt is ever rendered with a `<...>` placeholder in it (D6: pinned stub, never a STOP).
     """
     inputs: Dict[str, str] = {"plan_path": "", "review_dir": ""}
     if step == "implement":
         plan_path = _landed_header(flow, state, "plan", "FINAL_PLAN_PATH")
-        if plan_path is None:
-            return "implement needs PLAN_PATH: the landed plan receipt does not name FINAL_PLAN_PATH"
-        inputs["plan_path"] = plan_path
+        inputs["plan_path"] = plan_path if plan_path is not None else _NOT_RECORDED
     if step == "fix":
         review_dir = _landed_header(flow, state, "review", "REVIEW_DIR")
-        if review_dir is None:
-            return "fix needs REVIEW_DIR: the landed review receipt does not name REVIEW_DIR"
-        inputs["review_dir"] = review_dir
+        inputs["review_dir"] = review_dir if review_dir is not None else _NOT_RECORDED
     return inputs
 
 

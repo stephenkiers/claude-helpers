@@ -27,6 +27,7 @@ Run with: python3 tests/test_flow_driver_loop.py
 
 import json
 import re
+import subprocess
 import sys
 import tempfile
 import typing
@@ -77,6 +78,12 @@ def fresh(base: Path) -> Path:
     return Path(tempfile.mkdtemp(dir=str(base)))
 
 
+def worktree_head(home: Path) -> str:
+    """The real HEAD of the fixture worktree: the SHA a ship guard cross-check compares against."""
+    out = subprocess.run(["git", "-C", str(home / "wt"), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+    return out.stdout.strip()
+
+
 def gh_open_env(gh: FakeGh, head: str) -> Dict[str, str]:
     gh.json_file.write_text(
         json.dumps({"number": 7, "state": "OPEN", "headRefOid": head}), encoding="utf-8"
@@ -96,7 +103,7 @@ def test_01_happy_path_reaches_ship_then_merge_stop(base: Path) -> None:
     flow, first = start_flow(home, extra_env=env)
 
     def open_pr_before_final_next() -> None:
-        env.update(gh_open_env(gh, CLOSED_HEAD))
+        env.update(gh_open_env(gh, worktree_head(home)))
 
     verb, directive, spawned = drive_happy_path(
         home, flow, first, env, before_next={"ship": open_pr_before_final_next}
@@ -237,7 +244,7 @@ def test_12_receipt_for_cleared_attempt_is_never_landed(base: Path) -> None:
 
 def _ship_guard_case(base: Path, mode: str, json_text: str) -> Any:
     home = make_home(base)
-    gh = FakeGh(base, mode=mode, json_text=json_text)
+    gh = FakeGh(base, mode=mode, json_text=json_text.replace(CLOSED_HEAD, worktree_head(home)))
     env = gh.env()
     flow, first = start_flow(home, extra_env=env)
 
