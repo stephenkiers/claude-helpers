@@ -334,7 +334,7 @@ def _advance(state: V2State, facts: Facts, landed: Step) -> Tuple[V2State, Direc
         return _stop(state, facts, "step-failed", f"step {landed} landed outside the Layer 2 happy path")
     if landed == "ship":
         cleared = dataclasses.replace(state, pending_spawn=None, live=None)
-        return _stop(cleared, facts, "merge-not-built", "ship landed; the merge step is not built in Layer 2")
+        return _stop(cleared, facts, "merge-not-built", "ship landed; merge gate not built (Layer 3)")
     return _spawn(state, facts, HAPPY_PATH[HAPPY_PATH.index(landed) + 1])
 
 

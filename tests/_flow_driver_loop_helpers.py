@@ -138,7 +138,13 @@ def make_home(base: Path) -> Path:
     agents = REPO_ROOT / "agents"
     if agents.is_dir():
         os.symlink(str(agents), str(home / ".claude" / "agents"))
+    prompts = REPO_ROOT / "prompts"
+    if prompts.is_dir():
+        os.symlink(str(prompts), str(home / ".claude" / "prompts"))
     (home / "wt").mkdir()
+    git_env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    for git_args in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "init"]):
+        subprocess.run(["git", "-C", str(home / "wt"), *git_args], check=True, capture_output=True, env=git_env)
     return home
 
 

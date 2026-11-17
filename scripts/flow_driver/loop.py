@@ -319,7 +319,7 @@ def _ship_guard(state: V2State, flow: Path) -> Optional[Outcome]:
         skipped = dataclasses.replace(
             state, heads=Heads(verify=state.heads.verify, ship=state.heads.verify), pending_spawn=None, live=None
         )
-        return _halt(skipped, flow, "merge-not-built", f"ship skipped; {sg.describe_ship_guard(pr)}; the merge step is not built in Layer 2")
+        return _halt(skipped, flow, "merge-not-built", f"ship skipped; {sg.describe_ship_guard(pr)}; merge gate not built (Layer 3)")
     return None
 
 
