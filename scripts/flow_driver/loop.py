@@ -390,6 +390,7 @@ def _landed_header(flow: Path, state: V2State, step: Step, header: str) -> Optio
     for line in text.split("\n"):
         if line.startswith(f"{header}:"):
             value = line.split(":", 1)[1].strip()
+            break
     return value or None
 
 

@@ -13,14 +13,15 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from _test_harness import REPO_ROOT, Harness  # noqa: E402
+from _flow_driver_loop_helpers import make_home, run_cli  # noqa: E402
+from _test_harness import Harness  # noqa: E402
 
 from scripts.flow_driver import retention  # noqa: E402
 
@@ -98,18 +99,109 @@ def test_retention_survives_missing_flows_dir() -> None:
             raise AssertionError(f"sweep crashed on missing flows dir: {exc}")
 
 
+def _make_flow(home: Path, name: str, status: str, updated: str) -> Path:
+    """A real v2 flow dir (created by the CLI's init) with its state.json status and `updated` stamp forced."""
+    flow = home / ".claude" / "flows-v2" / "owner_name" / name
+    code, _, err = run_cli(home, "init", "--flow", str(flow), "--worktree", str(home / "wt"), "--repo", "owner/name")
+    expect(code == 0, f"init exited {code}: {err}")
+    state_path = flow / "state.json"
+    data = json.loads(state_path.read_text(encoding="utf-8"))
+    data["status"] = status
+    data["updated"] = updated
+    state_path.write_text(json.dumps(data), encoding="utf-8")
+    return flow
+
+
+def _populate(flow: Path) -> None:
+    for rel in ("prompts/p.md", "directives/d.json", "questions/q.json", "answers/a.json", "driver-log.jsonl",
+                "human.jsonl", "steps/03-implement.md", "receipt.md", "retro.md"):
+        target = flow / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x", encoding="utf-8")
+
+
+def test_sweep_prunes_expired_but_keeps_human_steps_and_receipts() -> None:
+    """An expired done flow loses prompts/directives (and, with retro.md, questions/answers/log); human.jsonl, steps/, retro.md and state.json survive."""
+    with tempfile.TemporaryDirectory() as tmp:
+        home = make_home(Path(tmp))
+        flow = _make_flow(home, "1-old-aaa111", "done", "2026-01-01T00:00:00Z")
+        _populate(flow)
+        pruned = retention.sweep(flow.parent, datetime(2026, 3, 1, tzinfo=timezone.utc), days=30)
+        expect(pruned == [flow], f"sweep pruned {pruned}, expected [{flow}]")
+        for gone in ("prompts", "directives", "questions", "answers", "driver-log.jsonl"):
+            expect(not (flow / gone).exists(), f"{gone} survived the prune")
+        for kept in ("state.json", "human.jsonl", "steps/03-implement.md", "retro.md", "receipt.md"):
+            expect((flow / kept).exists(), f"{kept} was pruned")
+        again = retention.sweep(flow.parent, datetime(2026, 3, 1, tzinfo=timezone.utc), days=30)
+        expect((flow / "human.jsonl").exists(), "a second sweep pruned human.jsonl")
+        expect(isinstance(again, list), "second sweep did not return a list")
+
+
+def test_sweep_keeps_retro_inputs_before_retro_exists() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        home = make_home(Path(tmp))
+        flow = _make_flow(home, "1-old-bbb222", "abandoned", "2026-01-01T00:00:00Z")
+        _populate(flow)
+        (flow / "retro.md").unlink()
+        retention.sweep(flow.parent, datetime(2026, 3, 1, tzinfo=timezone.utc), days=30)
+        expect(not (flow / "prompts").exists(), "prompts survived")
+        for kept in ("questions/q.json", "answers/a.json", "driver-log.jsonl"):
+            expect((flow / kept).exists(), f"{kept} was pruned before retro.md existed")
+
+
+def test_sweep_spares_live_recent_and_kept_flows() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        home = make_home(Path(tmp))
+        now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        live = _make_flow(home, "2-live-ccc333", "running", "2026-01-01T00:00:00Z")
+        failed = _make_flow(home, "3-failed-ddd444", "failed", "2026-01-01T00:00:00Z")
+        recent = _make_flow(home, "4-recent-eee555", "done", "2026-02-27T00:00:00Z")
+        kept = _make_flow(home, "5-kept-fff666", "done", "2026-01-01T00:00:00Z")
+        for flow in (live, failed, recent, kept):
+            _populate(flow)
+        pruned = retention.sweep(live.parent, now, days=30, keep=kept)
+        expect(pruned == [], f"sweep pruned {pruned}, expected nothing")
+        for flow in (live, failed, recent, kept):
+            expect((flow / "prompts").exists(), f"{flow.name} was pruned")
+
+
+def test_sweep_spares_v1_root_flows() -> None:
+    """A flow under the v1 flows root is never swept, even when its state says done and old."""
+    with tempfile.TemporaryDirectory() as tmp:
+        home = make_home(Path(tmp))
+        v1 = home / ".claude" / "flows" / "owner_name" / "9-v1-aaa999"
+        v1.mkdir(parents=True)
+        (v1 / "state.json").write_text(json.dumps({"status": "done", "updated": "2026-01-01T00:00:00Z"}), encoding="utf-8")
+        (v1 / "prompts").mkdir()
+        old = os.environ.get("HOME")
+        os.environ["HOME"] = str(home)
+        try:
+            pruned = retention.sweep(v1.parent, datetime(2026, 3, 1, tzinfo=timezone.utc), days=30)
+        finally:
+            if old is None:
+                del os.environ["HOME"]
+            else:
+                os.environ["HOME"] = old
+        expect(pruned == [], f"sweep pruned a v1 flow: {pruned}")
+        expect((v1 / "prompts").exists(), "a v1 flow's files were pruned")
+
+
 SECTIONS = [
     ("[Retention basic behavior]", [
         ("1: expired_flows returns list", test_expired_flows_returns_list),
         ("2: sweep returns deleted paths", test_sweep_returns_deleted_paths),
         ("3: retention handles missing flows directory", test_retention_survives_missing_flows_dir),
+        ("4: expired flow pruned, human.jsonl/steps/receipts/state survive", test_sweep_prunes_expired_but_keeps_human_steps_and_receipts),
+        ("5: retro inputs kept until retro.md exists", test_sweep_keeps_retro_inputs_before_retro_exists),
+        ("6: live, failed, recent and kept flows spared", test_sweep_spares_live_recent_and_kept_flows),
+        ("7: v1-root flows spared", test_sweep_spares_v1_root_flows),
     ]),
 ]
 
 
 def main() -> None:
     h = Harness("FLOW DRIVER RETENTION")
-    with tempfile.TemporaryDirectory(prefix="flow-driver-retention-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="flow-driver-retention-"):
         for title, checks in SECTIONS:
             print(title)
             for name, fn in checks:

@@ -16,7 +16,7 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from _test_harness import REPO_ROOT, Harness  # noqa: E402
+from _test_harness import Harness  # noqa: E402
 
 from scripts.flow_driver import recovery  # noqa: E402
 
@@ -114,7 +114,7 @@ SECTIONS = [
 
 def main() -> None:
     h = Harness("FLOW DRIVER RECOVERY")
-    with tempfile.TemporaryDirectory(prefix="flow-driver-recovery-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="flow-driver-recovery-"):
         for title, checks in SECTIONS:
             print(title)
             for name, fn in checks:

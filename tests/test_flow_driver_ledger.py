@@ -16,7 +16,7 @@ from typing import Callable, Sequence
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from _test_harness import REPO_ROOT, Harness  # noqa: E402
+from _test_harness import Harness  # noqa: E402
 
 from scripts.flow_driver import ledger, preflight  # noqa: E402
 
@@ -132,6 +132,58 @@ def test_ensure_snapshot_returns_snapshot_or_error() -> None:
         )
 
 
+def _fake_ledger(pending_seqs: Sequence[int]):
+    """A fake flow-ledger Runner: `list` prints the still-pending direction records, `mark` removes one. Returns (runner, calls)."""
+    import json as _json
+    pending = list(pending_seqs)
+    calls = []
+
+    def run(argv: Sequence[str]) -> "preflight.CommandResult":
+        verb = argv[2]
+        calls.append(list(argv))
+        if verb == "list":
+            rows = [{"seq": n, "ts": "t", "step": "plan", "attempt": 1, "kind": "direction", "text": "x",
+                     "transcript": None, "status": "pending", "addressed_by": None, "supersedes": None} for n in pending]
+            return preflight.CommandResult(0, _json.dumps(rows), "")
+        if verb == "mark":
+            pending.remove(int(argv[argv.index("--seq") + 1]))
+            return preflight.CommandResult(0, "", "")
+        return preflight.CommandResult(1, "", "unexpected verb")
+
+    return run, calls
+
+
+def test_close_out_marks_each_pending_once_and_is_idempotent() -> None:
+    run, calls = _fake_ledger([3, 5])
+    first = ledger.close_out_directions(Path("/nonexistent-flow"), "steps/06-verify.md", run)
+    expect(isinstance(first, ledger.CloseOut) and first.marked == (3, 5), f"first close-out was {first}")
+    marks_after_first = [c for c in calls if c[2] == "mark"]
+    expect(len(marks_after_first) == 2, f"expected 2 mark calls, got {len(marks_after_first)}")
+    second = ledger.close_out_directions(Path("/nonexistent-flow"), "steps/06-verify.md", run)
+    expect(isinstance(second, ledger.CloseOut) and second.marked == (), f"second close-out marked {second}")
+    expect(len([c for c in calls if c[2] == "mark"]) == 2, "the second close-out wrote a mark")
+
+
+def test_close_out_failed_mark_is_ledger_error_and_stops() -> None:
+    def run(argv: Sequence[str]) -> "preflight.CommandResult":
+        if argv[2] == "list":
+            row = {"seq": 1, "ts": "t", "step": "plan", "attempt": 1, "kind": "direction", "text": "x",
+                   "transcript": None, "status": "pending", "addressed_by": None, "supersedes": None}
+            return preflight.CommandResult(0, __import__("json").dumps([row]), "")
+        return preflight.CommandResult(2, "", "boom")
+
+    result = ledger.close_out_directions(Path("/nonexistent-flow"), "steps/06-verify.md", run)
+    expect(isinstance(result, ledger.LedgerError), f"a failed mark returned {result}")
+
+
+def test_close_out_rejects_unsafe_artifact_path() -> None:
+    run, calls = _fake_ledger([1])
+    for bad in ("/abs/path.md", "../escape.md"):
+        result = ledger.close_out_directions(Path("/nonexistent-flow"), bad, run)
+        expect(isinstance(result, ledger.LedgerError), f"{bad} was accepted: {result}")
+    expect(calls == [], "a rejected path still ran the ledger")
+
+
 SECTIONS = [
     ("[Ledger typed results]", [
         ("1: close_out_directions returns CloseOut or LedgerError", test_close_out_directions_returns_typed_result),
@@ -139,13 +191,16 @@ SECTIONS = [
         ("3: list_records returns list or LedgerError", test_list_records_returns_list_or_error),
         ("4: carry_forward returns typed result", test_carry_forward_returns_typed_result),
         ("5: ensure_snapshot returns Snapshot or LedgerError", test_ensure_snapshot_returns_snapshot_or_error),
+        ("6: close-out marks each pending once, second run writes nothing", test_close_out_marks_each_pending_once_and_is_idempotent),
+        ("7: a failed mark is a LedgerError", test_close_out_failed_mark_is_ledger_error_and_stops),
+        ("8: unsafe artifact path refused before any ledger call", test_close_out_rejects_unsafe_artifact_path),
     ]),
 ]
 
 
 def main() -> None:
     h = Harness("FLOW DRIVER LEDGER")
-    with tempfile.TemporaryDirectory(prefix="flow-driver-ledger-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="flow-driver-ledger-"):
         for title, checks in SECTIONS:
             print(title)
             for name, fn in checks:

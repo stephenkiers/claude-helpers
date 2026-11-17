@@ -11,12 +11,11 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Callable, Sequence
-from subprocess import TimeoutExpired
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from _test_harness import REPO_ROOT, Harness  # noqa: E402
+from _test_harness import Harness  # noqa: E402
 
 from scripts.flow_driver import preflight  # noqa: E402
 
@@ -69,7 +68,7 @@ def test_timeout_does_not_raise() -> None:
         return preflight.CommandResult(returncode=preflight.CANNOT_START, stdout="", stderr="timeout")
 
     result = timeout_runner([])
-    expect(result.returncode == preflight.CANNOT_START, f"Timeout did not map to CANNOT_START")
+    expect(result.returncode == preflight.CANNOT_START, "Timeout did not map to CANNOT_START")
 
 
 def test_oserror_handling() -> None:
@@ -100,7 +99,7 @@ SECTIONS = [
 
 def main() -> None:
     h = Harness("FLOW DRIVER PREFLIGHT")
-    with tempfile.TemporaryDirectory(prefix="flow-driver-preflight-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="flow-driver-preflight-"):
         for title, checks in SECTIONS:
             print(title)
             for name, fn in checks:
