@@ -146,23 +146,55 @@ def newest_attempt_start(log_path: Path, step: str) -> Optional[str]:
     return stamp
 
 
+FLOWS_V2_DRIVER_FORMAT = 2
+
+
+def _is_v2_flow_dir(real: str, flows_v2_root: str) -> bool:
+    """True when real lies strictly under the flows-v2 root and its state.json has driver_format 2.
+
+    state.json must be a regular file that is not a symlink. Any read or parse failure counts as not a v2 flow dir.
+    """
+    try:
+        rel = Path(real).relative_to(flows_v2_root)
+    except ValueError:
+        return False
+    if not rel.parts:
+        return False
+    state = Path(real) / "state.json"
+    if state.is_symlink() or not state.is_file():
+        return False
+    try:
+        with open(str(state), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    fmt = data.get("driver_format")
+    return type(fmt) is int and fmt == FLOWS_V2_DRIVER_FORMAT
+
+
 def validate_flow_dir(path: str) -> Path:
     """Return the realpath of a flow directory, or raise FlowLogError.
 
-    The value must be absolute, its realpath must lie strictly under realpath(~/.claude/flows), and it
-    must contain a regular-file log.md that is not a symlink. This follows the validity rule in
-    prompts/flow-reference.md, without the state.json status check (the audit does not need it).
+    The value must be absolute and its realpath must lie strictly under realpath(~/.claude/flows), or under
+    realpath(~/.claude/flows-v2) with a state.json whose driver_format is 2. It must contain a regular-file
+    log.md that is not a symlink. This follows the validity rule in prompts/flow-reference.md, without the
+    state.json status check (the audit does not need it).
     """
     if not os.path.isabs(path):
         raise FlowLogError("flow dir must be an absolute path")
     real = os.path.realpath(path)
     flows_root = os.path.realpath(os.path.expanduser("~/.claude/flows"))
+    flows_v2_root = os.path.realpath(os.path.expanduser("~/.claude/flows-v2"))
     try:
         rel = Path(real).relative_to(flows_root)
     except ValueError:
-        raise FlowLogError("flow dir is outside ~/.claude/flows")
-    if not rel.parts:
-        raise FlowLogError("flow dir must be a flow directory under ~/.claude/flows")
+        if not _is_v2_flow_dir(real, flows_v2_root):
+            raise FlowLogError("flow dir is outside ~/.claude/flows")
+    else:
+        if not rel.parts:
+            raise FlowLogError("flow dir must be a flow directory under ~/.claude/flows")
     log = Path(real) / "log.md"
     if log.is_symlink() or not log.is_file():
         raise FlowLogError("log.md is missing, a symlink, or not a regular file")
