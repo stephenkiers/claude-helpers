@@ -23,11 +23,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from . import retention
 from .flowdir import FlowPathError, flows_v2_root, open_flow_dir, repo_key as _repo_key, resolve_read_flow_dir, validate_v2_flow_path
-from .loop import LoopRefusal, run_answer, run_clear_live, run_next, run_start
+from .loop import LoopRefusal, run_abandon, run_answer, run_clear_live, run_next, run_recover, run_start
 from .model import MODES, WAIT_MODES, assert_never
 from .receipts import VerifierTimeout
 from .resume import CascadeExhausted, ResumeFacts, decide as resume_decide
+from .steps import stop_reason
 from .state import (
     InitSpec,
     InvalidState,
@@ -91,10 +93,17 @@ def _run_loop(call: Callable[[], str], *, to_stdout: bool) -> int:
 
 
 def _cmd_start(args: argparse.Namespace) -> int:
-    """start --flow: the first `next` of an initialized v2 flow. Creating a flow dir is `init`'s job (Layer 2, D8)."""
+    """
+    start --flow: the first `next` of an initialized v2 flow. Creating a flow dir is `init`'s job (Layer 2, D8).
+    Only start sweeps retention, and only the flows of this repo; the started flow is never swept.
+    """
     if args.flow is None:
         raise UsageError("start needs --flow: create the flow with init, then start it")
+    if args.auto_merge:
+        print(f"STOP {stop_reason('auto-merge-refused', 'the v2 driver does not run auto-merge; the human merge gate always fires')}", file=sys.stderr)
+        return 1
     flow = _v2_flow(args)
+    retention.sweep(flow.parent, _now(), keep=flow)
     return _run_loop(lambda: run_start(flow), to_stdout=True)
 
 
@@ -102,6 +111,32 @@ def _cmd_next(args: argparse.Namespace) -> int:
     """next: one mutating loop step. Single-caller invariant: the orchestrator runs one next at a time."""
     flow = _v2_flow(args)
     return _run_loop(lambda: run_next(flow, args.after), to_stdout=True)
+
+
+def _cmd_recover(args: argparse.Namespace) -> int:
+    """recover --choice: the human's answer to a hard stop (retry, take-over or keep-previous)."""
+    flow = _v2_flow(args)
+    return _run_loop(lambda: run_recover(flow, args.choice), to_stdout=False)
+
+
+def _cmd_abandon(args: argparse.Namespace) -> int:
+    flow = _v2_flow(args)
+    return _run_loop(lambda: run_abandon(flow), to_stdout=False)
+
+
+def _cmd_retro(args: argparse.Namespace) -> int:
+    """
+    retro --flow: refused for v1 flows (v1-owned). The v2 retro SPAWN (purpose retro) is not built in Layer 2,
+    so it exits 3 (not-yet-built), the same convention `resume` uses for rules that are not built yet.
+    """
+    try:
+        owner_type, resolved_path = resolve_read_flow_dir(Path.home(), Path(args.flow))
+    except FlowPathError as exc:
+        return _usage_error(f"error: {exc}")
+    if owner_type == "v1":
+        return _refuse(str(v1_owned_refusal(resolved_path.name)))
+    print("not-yet-built: retro SPAWN (purpose retro) is not built in Layer 2", file=sys.stderr)
+    return 3
 
 
 def _cmd_answer(args: argparse.Namespace) -> int:
@@ -388,12 +423,14 @@ def build_parser() -> argparse.ArgumentParser:
     lst.add_argument("--repo", help="filter by OWNER/NAME")
 
     # Skeleton driver commands (unchanged)
-    start = sub.add_parser("start", help="create a flow dir (or open --flow) and perform one next")
-    start.add_argument("--repo", required=True, help="OWNER/NAME")
-    start.add_argument("--mode", required=True, choices=list(MODES))
-    start.add_argument("--wait-mode", required=True, choices=list(WAIT_MODES))
-    start.add_argument("--step-minutes", required=True, type=int)
-    start.add_argument("--flow", help="absolute path of an existing flow dir to resume")
+    start = sub.add_parser("start", help="perform the first next of an initialized v2 flow")
+    start.add_argument("--flow", help="absolute flow dir (created by init)")
+    start.add_argument("--auto-merge", action="store_true", help="refused: the v2 driver never auto-merges")
+    # Skeleton-only flags, optional and ignored by the v2 start (kept so old invocations still parse)
+    start.add_argument("--repo", help="OWNER/NAME (skeleton only, ignored by v2 start)")
+    start.add_argument("--mode", choices=list(MODES), help="skeleton only, ignored by v2 start")
+    start.add_argument("--wait-mode", choices=list(WAIT_MODES), help="skeleton only, ignored by v2 start")
+    start.add_argument("--step-minutes", type=int, help="skeleton only, ignored by v2 start")
 
     nxt = sub.add_parser("next", help="decide the next directive and print one NEXT line")
     nxt.add_argument("--flow", required=True, help="absolute flow dir")
@@ -406,6 +443,16 @@ def build_parser() -> argparse.ArgumentParser:
     clear = sub.add_parser("clear-live", help="clear a spawned or resumed record (logged)")
     clear.add_argument("--flow", required=True, help="absolute flow dir")
     clear.add_argument("--reason", required=True)
+
+    rec = sub.add_parser("recover", help="answer a hard stop: retry, take-over or keep-previous")
+    rec.add_argument("--flow", required=True, help="absolute flow dir")
+    rec.add_argument("--choice", required=True, choices=["retry", "take-over", "keep-previous"])
+
+    aband = sub.add_parser("abandon", help="abandon a flow (refused while a record is live)")
+    aband.add_argument("--flow", required=True, help="absolute flow dir")
+
+    retro = sub.add_parser("retro", help="run the retro grader (v2 not built in Layer 2; v1 refused)")
+    retro.add_argument("--flow", required=True, help="absolute flow dir")
     return parser
 
 
@@ -430,6 +477,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             return _cmd_answer(args)
         if args.command == "clear-live":
             return _cmd_clear_live(args)
+        if args.command == "recover":
+            return _cmd_recover(args)
+        if args.command == "abandon":
+            return _cmd_abandon(args)
+        if args.command == "retro":
+            return _cmd_retro(args)
         return 2
     except (FlowPathError, UsageError) as exc:
         print(f"error: {exc}", file=sys.stderr)
