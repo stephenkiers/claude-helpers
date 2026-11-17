@@ -1,12 +1,15 @@
 """
-Ship guard for the v2 /expert-flow driver (Layer 2 Step 4, ADR-0026, plan-doc Q4, sessions D2 and Q2 of Step 4).
+Ship guard for the v2 /expert-flow driver (Layer 2 Step 4 and Layer 3; ADR-0026, plan-doc Q4, sessions D2 and Q2 of Step 4).
 
-Two edge adapters parse `gh` and `git` output at the boundary into typed values:
+Three edge adapters parse `gh` and `git` output at the boundary into typed values:
 
   check_pr: runs `gh pr view <branch> --json number,state,headRefOid` and compares the PR head with an
     expected SHA. The caller passes heads.verify before ship, and heads.ship after the ship receipt lands.
     MERGED is Merged and CLOSED is Closed (session D2), each only when its headRefOid equals the expected SHA
     (D4 cross-check; a mismatch is GhError); OPEN compares the head.
+  check_pr_by_number: runs `gh pr view <number> -R <repo> --json state,mergedAt,headRefOid` by PR number and repo
+    (Layer 3, Session W1), and compares the head. MERGED requires state == MERGED, non-null mergedAt, and
+    headRefOid == expected. Returns MergeVerdict: Merged, NotMerged, HeadMismatch or GhError.
   check_local_head / read_head: `git -C <worktree> rev-parse HEAD`, the driver-owned HEAD source (heads.verify
     when a verify receipt lands OK, heads.ship when the ship receipt lands).
 
@@ -88,6 +91,26 @@ class GhError:
 
 
 ShipGuardResult = Union[NoPr, SameHead, HeadDiffers, Closed, Merged, GhError]
+
+
+@dataclass(frozen=True)
+class NotMerged:
+    """The PR exists but is not merged (state is OPEN or CLOSED). By-number check (Layer 3)."""
+
+    number: int
+    state: str
+
+
+@dataclass(frozen=True)
+class HeadMismatch:
+    """The PR head differs from the expected SHA. By-number check (Layer 3)."""
+
+    number: int
+    expected: Sha
+    actual: Sha
+
+
+MergeVerdict = Union[Merged, NotMerged, HeadMismatch, GhError]
 
 
 @dataclass(frozen=True)
@@ -201,6 +224,51 @@ def read_head(worktree: str, run: Runner = run_command) -> Union[Sha, GitError]:
     return sha
 
 
+def check_pr_by_number(number: int, repo: str, expected: Sha, run: Runner = run_command) -> MergeVerdict:
+    """
+    Ask gh for the PR by number and repo, and check if it is merged with the expected head.
+
+    repo must be OWNER/NAME, and number must be > 0. MERGED requires state == "MERGED", a non-null
+    mergedAt, and headRefOid == expected. Any state outside OPEN/CLOSED/MERGED, unparseable JSON, a
+    non-zero exit or timeout is GhError. This is the post-merge check (Layer 3, Session W1): never
+    derives a branch from the worktree.
+    """
+    if number <= 0:
+        return GhError(f"invalid PR number {number!r}")
+    if not repo or repo.startswith("-"):
+        return GhError(f"invalid repo {repo!r}")
+    argv: List[str] = ["gh", "pr", "view", str(number), "-R", repo, "--json", "state,mergedAt,headRefOid"]
+    result = run(argv)
+    if result.returncode != 0:
+        first = result.stderr.strip().splitlines()[0] if result.stderr.strip() else f"exit {result.returncode}"
+        if result.returncode == CANNOT_START:
+            return GhError(first)
+        return GhError(f"gh pr view failed: {first}")
+    try:
+        raw: object = json.loads(result.stdout)
+    except ValueError:
+        return GhError("gh pr view returned output that is not JSON")
+    if not isinstance(raw, dict):
+        return GhError("gh pr view returned a JSON value that is not an object")
+    state = raw.get("state")
+    merged_at = raw.get("mergedAt")
+    head = raw.get("headRefOid")
+    if not isinstance(state, str) or state not in _PR_STATE_VALUES:
+        return GhError(f"gh pr view: state {state!r} is not OPEN, CLOSED or MERGED")
+    if not isinstance(head, str):
+        return GhError("gh pr view: headRefOid is missing or not a string")
+    sha = parse_sha(head)
+    if sha is None:
+        return GhError("gh pr view: headRefOid is not a full 40- or 64-character lowercase hex SHA")
+    if state == "MERGED":
+        if merged_at is None:
+            return GhError("gh pr view: PR is MERGED but mergedAt is null")
+        if sha != expected:
+            return HeadMismatch(number=number, expected=expected, actual=sha)
+        return Merged(number=number)
+    return NotMerged(number=number, state=state)
+
+
 def check_local_head(worktree: str, expected: Sha, run: Runner = run_command) -> LocalHeadResult:
     """Compare the worktree HEAD with expected (heads.verify before ship). Pure reads; takes no lock itself."""
     head = read_head(worktree, run)
@@ -223,6 +291,19 @@ def describe_ship_guard(result: ShipGuardResult) -> str:
         return f"PR #{result.number} closed unmerged"
     if isinstance(result, Merged):
         return f"PR #{result.number} is merged"
+    if isinstance(result, GhError):
+        return result.detail
+    assert_never(result)
+
+
+def describe_merge_verdict(result: MergeVerdict) -> str:
+    """A one-line description for the driver log and the STOP detail. Every case of the union is handled."""
+    if isinstance(result, Merged):
+        return f"PR #{result.number} is merged"
+    if isinstance(result, NotMerged):
+        return f"PR #{result.number} is {result.state}"
+    if isinstance(result, HeadMismatch):
+        return f"PR #{result.number} head {result.actual} differs from expected {result.expected}"
     if isinstance(result, GhError):
         return result.detail
     assert_never(result)

@@ -17,7 +17,7 @@ DRIVER_FORMAT = "skeleton"
 RUNNER_PREFIX = 'python3 "$HOME/.claude/scripts/flow_driver/__main__.py"'
 GENERAL_PURPOSE_AGENT = "general-purpose"
 
-Verb = Literal["SPAWN", "RESUME", "WAIT", "ASK", "PARK", "STOP", "DONE"]
+Verb = Literal["SPAWN", "RESUME", "WAIT", "ASK", "PARK", "STOP", "DONE", "MERGE"]
 VERBS: Tuple[Verb, ...] = get_args(Verb)
 _VERB_BY_NAME: Dict[str, Verb] = {verb: verb for verb in VERBS}
 

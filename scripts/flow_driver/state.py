@@ -97,7 +97,7 @@ Step = Literal["worktree", "plan", "track", "implement", "review", "fix", "verif
 Status = Literal["running", "awaiting", "paused", "failed", "done", "abandoned"]
 StopSource = Literal["receipt", "validation", "audit", "tree"]
 PendingState = Literal["spawned", "parked-awaiting-answer", "resumed", "receipt-landed"]
-Purpose = Literal["step", "rebase", "heal", "retro"]
+Purpose = Literal["step", "rebase", "heal", "retro", "audit"]
 AttemptOutcome = Literal[
     "receipt-landed",
     "cleared",
@@ -212,6 +212,9 @@ _KNOWN_KEYS: FrozenSet[str] = frozenset(
         "applied",
         "recovery",
         "heads",
+        "step_gates",
+        "parked",
+        "merge_gate",
     }
 )
 _TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
@@ -292,6 +295,27 @@ class Heads:
     ship: Optional[Sha] = None
 
 
+@dataclass(frozen=True)
+class ParkedQuestion:
+    """A question parked mid-flow by the driver or a step agent (Layer 3, Session D1)."""
+
+    step: Step
+    attempt: int
+    nn: int
+    kind: Literal["step", "gate", "merge-gate", "audit", "assess"]
+    item: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class MergeGateRecord:
+    """The merge gate decision point: PR identity and approved head (Layer 3, Session W1)."""
+
+    pr_number: int
+    approved_head: Sha
+    repo: str
+    answer: Optional[Literal["Merge", "Hold", "Take over"]] = None
+
+
 class TransitionKey(NamedTuple):
     run_id: str
     step: Step
@@ -322,6 +346,9 @@ class V2State:
     extra: Mapping[str, object]
     recovery: Recovery = Recovery()
     heads: Heads = Heads()
+    step_gates: bool = False
+    parked: Optional[ParkedQuestion] = None
+    merge_gate: Optional[MergeGateRecord] = None
 
 
 @dataclass(frozen=True)
@@ -544,6 +571,48 @@ def _load_heads(fields: _Fields) -> Heads:
     )
 
 
+def _load_parked(value: object, field: str) -> Optional[ParkedQuestion]:
+    """An absent field loads as None (Layer 3, absent in earlier files)."""
+    if value is None:
+        return None
+    fields = _Fields(_as_object(field, value), f"{field}.")
+    kind_value = fields.raw("kind")
+    kind_text = _as_text(fields.field("kind"), kind_value)
+    if kind_text not in ("step", "gate", "merge-gate", "audit", "assess"):
+        raise StateSchemaError(fields.field("kind"), f"must be one of step, gate, merge-gate, audit, assess")
+    kind: Literal["step", "gate", "merge-gate", "audit", "assess"] = kind_text  # type: ignore
+    return ParkedQuestion(
+        step=fields.pick("step", _STEP_BY_NAME),
+        attempt=fields.integer("attempt", 1),
+        nn=fields.integer("nn", 0),
+        kind=kind,
+        item=fields.optional_text("item"),
+    )
+
+
+def _load_merge_gate(value: object, field: str) -> Optional[MergeGateRecord]:
+    """An absent field loads as None (Layer 3, absent in earlier files)."""
+    if value is None:
+        return None
+    fields = _Fields(_as_object(field, value), f"{field}.")
+    answer_value = fields.raw_or_none("answer")
+    answer: Optional[Literal["Merge", "Hold", "Take over"]] = None
+    if answer_value is not None:
+        answer_text = _as_text(fields.field("answer"), answer_value)
+        if answer_text not in ("Merge", "Hold", "Take over"):
+            raise StateSchemaError(fields.field("answer"), "must be Merge, Hold or Take over")
+        answer = answer_text  # type: ignore
+    approved_head_text = fields.text("approved_head")
+    if _GIT_SHA.fullmatch(approved_head_text) is None:
+        raise StateSchemaError(fields.field("approved_head"), "must be 40 or 64 lowercase hex characters")
+    return MergeGateRecord(
+        pr_number=fields.integer("pr_number", 1),
+        approved_head=Sha(approved_head_text),
+        repo=fields.text("repo"),
+        answer=answer,
+    )
+
+
 def _step_map(fields: _Fields, key: str, check: Callable[[str, object], _T]) -> Dict[Step, _T]:
     out: Dict[Step, _T] = {}
     for name, value in fields.mapping(key).items():
@@ -631,6 +700,9 @@ def load_v2_state(raw: object) -> V2State:
         extra={key: value for key, value in obj.items() if key not in _KNOWN_KEYS},
         recovery=_load_recovery(fields),
         heads=_load_heads(fields),
+        step_gates=fields.boolean("step_gates") if fields.present("step_gates") else False,
+        parked=_load_parked(fields.raw_or_none("parked"), "parked"),
+        merge_gate=_load_merge_gate(fields.raw_or_none("merge_gate"), "merge_gate"),
     )
     if state.live != _project_live(state.pending_spawn):
         raise StateSchemaError("live", "must be null unless pending_spawn is spawned or resumed, then a copy of it")
@@ -674,6 +746,29 @@ def _live_to_dict(live: Optional[LiveRecord]) -> Optional[Dict[str, object]]:
     return {"step": live.step, "attempt": live.attempt, "nonce": live.nonce}
 
 
+def _parked_to_dict(parked: Optional[ParkedQuestion]) -> Optional[Dict[str, object]]:
+    if parked is None:
+        return None
+    return {
+        "step": parked.step,
+        "attempt": parked.attempt,
+        "nn": parked.nn,
+        "kind": parked.kind,
+        "item": parked.item,
+    }
+
+
+def _merge_gate_to_dict(merge_gate: Optional[MergeGateRecord]) -> Optional[Dict[str, object]]:
+    if merge_gate is None:
+        return None
+    return {
+        "pr_number": merge_gate.pr_number,
+        "approved_head": merge_gate.approved_head,
+        "repo": merge_gate.repo,
+        "answer": merge_gate.answer,
+    }
+
+
 def v2_state_to_dict(state: V2State) -> Dict[str, object]:
     """The JSON object for a V2State, with keys sorted and the preserved extra keys merged back in."""
     attempt_log: Dict[str, Dict[str, str]] = {
@@ -708,6 +803,9 @@ def v2_state_to_dict(state: V2State) -> Dict[str, object]:
                 "retros": state.recovery.retros,
             },
             "heads": {"verify": state.heads.verify, "ship": state.heads.ship},
+            "step_gates": state.step_gates,
+            "parked": _parked_to_dict(state.parked),
+            "merge_gate": _merge_gate_to_dict(state.merge_gate),
         }
     )
     return dict(sorted(data.items()))

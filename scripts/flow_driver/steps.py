@@ -1,11 +1,11 @@
 """
 Typed stop codes, the closed Event and Directive unions, and the pure transition for the v2 driver
-(Layer 2 Step 2; ADR-0026; sessions D8 and W1).
+(Layer 2 Step 2 and Layer 3; ADR-0026; sessions D8 and W1).
 
 transition() performs no I/O and takes no lock. loop.py gathers the facts at the edge, under the flow lock, calls
 transition, commits the returned state, then writes the directive file and prints one NEXT line. Every dispatch over a
-closed union ends in assert_never. The directive set is exactly SPAWN, RESUME, WAIT, ASK, PARK, STOP and DONE; no
-merge directive exists in Layer 2.
+closed union ends in assert_never. The directive set is SPAWN, RESUME, WAIT, ASK, PARK, STOP, DONE and MERGE (Layer 3
+adds MERGE).
 
 Python 3.8 floor: typing.Literal, get_args, Optional, Union and Tuple only.
 """
@@ -43,6 +43,19 @@ StopCode = Literal[
     "take-over",
     "ledger-error",
     "wait-timeout",
+    "merge-not-merged",
+    "merge-head-mismatch",
+    "merge-held",
+    "gate-paused",
+    "gate-aborted",
+    "audit-rejected",
+    "audit-error",
+    "assess-error",
+    "plan-test-paths",
+    "test-path-in-units",
+    "test-only-plan",
+    "existing-test-edit",
+    "planned-change-breaks-test",
 ]
 STOP_CODES: Tuple[StopCode, ...] = get_args(StopCode)
 _STOP_BY_NAME: Dict[str, StopCode] = {code: code for code in STOP_CODES}
@@ -220,7 +233,18 @@ class DoneDirective:
     next_command: str
 
 
-Directive = Union[SpawnDirective, ResumeDirective, WaitDirective, AskDirective, ParkDirective, StopDirective, DoneDirective]
+@dataclass(frozen=True)
+class MergeDirective:
+    verb: ClassVar[Literal["MERGE"]] = "MERGE"
+    next_command: str
+    agent_type: AgentType
+    prompt_file: str
+    step: Step
+    attempt: int
+    nonce: str
+
+
+Directive = Union[SpawnDirective, ResumeDirective, WaitDirective, AskDirective, ParkDirective, StopDirective, DoneDirective, MergeDirective]
 
 
 def directive_to_dict(directive: Directive) -> Dict[str, object]:
