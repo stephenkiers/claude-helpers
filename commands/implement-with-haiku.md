@@ -925,10 +925,11 @@ COMPARE_OUT=$(python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare 
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt" 2>&1)
 COMPARE_EXIT=$?
+printf '%s\n' "$COMPARE_OUT"
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
   REASON_ARGS=()
-  if printf '%s' "$COMPARE_OUT" | grep -q "ERROR probe-failed head-probe"; then
+  if [[ $COMPARE_EXIT -eq 2 ]] && printf '%s' "$COMPARE_OUT" | grep -q '^ERROR probe-failed head-probe'; then
     REASON_ARGS=("--reason" "primary-checkout-drift: head-probe-failed")
   fi
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
@@ -938,7 +939,7 @@ if [[ $COMPARE_EXIT -ne 0 ]]; then
     --detail --warn-paths "<comma-separated WARN paths or empty>" \
     --ticket-match "<path>:<ticket-match|ticket-differs|ticket-absent>" \
     --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>" \
-    "${REASON_ARGS[@]}"
+    ${REASON_ARGS[@]+"${REASON_ARGS[@]}"}
   exit $?
 fi
 ```
@@ -1133,7 +1134,8 @@ printf '%s DONE round1 %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round1-<unit-id>-report
 
 When a drifted agent's work is in the primary checkout (not the unit's own worktree):
 
-1. **Confirm no stray commits:** `git -C "$PRIMARY_CHECKOUT" log --oneline <expected-HEAD>..HEAD --not @{upstream}` must be empty
+1. **Confirm no stray commits:** `STRAY=$(git -C "$PRIMARY_CHECKOUT" log --oneline <expected-HEAD>..HEAD --not @{upstream}) && [ -z "$STRAY" ]` must succeed:
+   exit 0 and empty output. A non-zero exit (for example, no upstream configured) is a stop, not a pass.
    (cwd drift creates uncommitted changes only, never new commits; this excludes commits merged from the upstream).
 2. **Scope the dirt:** `git -C "$PRIMARY_CHECKOUT" status --porcelain` must touch **only this unit's owned files**.
    Any overlap with other units' owned files → **stop** and make the shared `fail` call (see Drift barrier failure
@@ -1275,7 +1277,7 @@ the fix for the nested-worktree hook-resolution failures seen historically.
 
 ### Drift barrier failure block
 
-When a primary-checkout-drift compare returns exit 1 (FAIL) or exit 2 (ERROR), or the baseline snapshot fails, every barrier makes the **same single call** to `primary-checkout-drift.py fail`. The logic lives in the script, not in this doc, because a shell function cannot be shared across separate Bash calls and the near-identical heredocs used to drift apart. When the compare's stdout contains `ERROR probe-failed head-probe`, pass `--reason "primary-checkout-drift: head-probe-failed"` with `--compare-exit 2`; otherwise use the default reason. The call:
+When a primary-checkout-drift compare returns exit 1 (FAIL) or exit 2 (ERROR), or the baseline snapshot fails, every barrier makes the **same single call** to `primary-checkout-drift.py fail`. The logic lives in the script, not in this doc, because a shell function cannot be shared across separate Bash calls and the near-identical heredocs used to drift apart. When `COMPARE_EXIT` is 2 and a line of the compare's stdout starts with `ERROR probe-failed head-probe`, pass `--reason "primary-checkout-drift: head-probe-failed"` with `--compare-exit 2`; otherwise use the default reason. The call:
 
 1. prints the stderr `FAILED:` line (`--label` names the barrier);
 2. best-effort emits `run-metrics.py command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift` (a telemetry error never changes the result);
@@ -1320,17 +1322,18 @@ COMPARE_OUT=$(python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare 
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt" 2>&1)
 COMPARE_EXIT=$?
+printf '%s\n' "$COMPARE_OUT"
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
   REASON_ARGS=()
-  if printf '%s' "$COMPARE_OUT" | grep -q "ERROR probe-failed head-probe"; then
+  if [[ $COMPARE_EXIT -eq 2 ]] && printf '%s' "$COMPARE_OUT" | grep -q '^ERROR probe-failed head-probe'; then
     REASON_ARGS=("--reason" "primary-checkout-drift: head-probe-failed")
   fi
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
     --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "none" \
     ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
     --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \
-    "${REASON_ARGS[@]}"
+    ${REASON_ARGS[@]+"${REASON_ARGS[@]}"}
   exit $?
 fi
 ```
@@ -1853,10 +1856,11 @@ COMPARE_OUT=$(python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare 
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt" 2>&1)
 COMPARE_EXIT=$?
+printf '%s\n' "$COMPARE_OUT"
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
   REASON_ARGS=()
-  if printf '%s' "$COMPARE_OUT" | grep -q "ERROR probe-failed head-probe"; then
+  if [[ $COMPARE_EXIT -eq 2 ]] && printf '%s' "$COMPARE_OUT" | grep -q '^ERROR probe-failed head-probe'; then
     REASON_ARGS=("--reason" "primary-checkout-drift: head-probe-failed")
   fi
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
@@ -1866,8 +1870,8 @@ if [[ $COMPARE_EXIT -ne 0 ]]; then
     --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \
     --detail --warn-paths "<comma-separated WARN paths or empty>" \
     --ticket-match "<path>:<ticket-match|ticket-differs|ticket-absent>" \
-    "${REASON_ARGS[@]}" \
-    --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>"
+    --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>" \
+    ${REASON_ARGS[@]+"${REASON_ARGS[@]}"}
   exit $?
 fi
 ```
@@ -2206,21 +2210,22 @@ COMPARE_OUT=$(python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare 
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt" 2>&1)
 COMPARE_EXIT=$?
+printf '%s\n' "$COMPARE_OUT"
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
   REASON_ARGS=()
-  if printf '%s' "$COMPARE_OUT" | grep -q "ERROR probe-failed head-probe"; then
+  if [[ $COMPARE_EXIT -eq 2 ]] && printf '%s' "$COMPARE_OUT" | grep -q '^ERROR probe-failed head-probe'; then
     REASON_ARGS=("--reason" "primary-checkout-drift: head-probe-failed")
   fi
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
     --split-basis "$SPLIT_BASIS" --min-units "$MIN_UNITS" --prior-split-basis "${PRIOR_SPLIT_BASIS:-none}" \
-    "${REASON_ARGS[@]}" \
     --label "in Round 3 follow-up" \
     ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
     --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \
     --detail --warn-paths "<comma-separated WARN paths or empty>" \
     --ticket-match "<path>:<ticket-match|ticket-differs|ticket-absent>" \
-    --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>"
+    --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>" \
+    ${REASON_ARGS[@]+"${REASON_ARGS[@]}"}
   exit $?
 fi
 ```
@@ -2730,10 +2735,11 @@ COMPARE_OUT=$(python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare 
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt" 2>&1)
 COMPARE_EXIT=$?
+printf '%s\n' "$COMPARE_OUT"
 # See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
 if [[ $COMPARE_EXIT -ne 0 ]]; then
   REASON_ARGS=()
-  if printf '%s' "$COMPARE_OUT" | grep -q "ERROR probe-failed head-probe"; then
+  if [[ $COMPARE_EXIT -eq 2 ]] && printf '%s' "$COMPARE_OUT" | grep -q '^ERROR probe-failed head-probe'; then
     REASON_ARGS=("--reason" "primary-checkout-drift: head-probe-failed")
   fi
   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
@@ -2744,7 +2750,7 @@ if [[ $COMPARE_EXIT -ne 0 ]]; then
     --detail --warn-paths "<comma-separated WARN paths or empty>" \
     --ticket-match "<path>:<ticket-match|ticket-differs|ticket-absent>" \
     --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>" \
-    "${REASON_ARGS[@]}"
+    ${REASON_ARGS[@]+"${REASON_ARGS[@]}"}
   exit $?
 fi
 ```
