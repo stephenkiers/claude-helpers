@@ -120,7 +120,8 @@ def _compare_capture_sites(doc):
     """For each COMPARE_OUT=$( capture: (line, ok, detail).
 
     ok means: the capture calls primary-checkout-drift.py compare, and the COMPARE_OUT echo line
-    sits after the capture closes and before the next `$?` (the exit-code handling).
+    sits after the capture closes and after `COMPARE_EXIT=$?`, and before the first later use of
+    `$COMPARE_EXIT` (the exit-code handling). The echo cannot precede `COMPARE_EXIT=$?`: it would clobber `$?`.
     """
     sites = []
     pos = doc.find(COMPARE_CAPTURE_MARKER)
@@ -128,15 +129,17 @@ def _compare_capture_sites(doc):
         line = doc.count("\n", 0, pos) + 1
         close_idx = _matching_close_paren(doc, pos + len("COMPARE_OUT=$"))
         capture = doc[pos:close_idx + 1] if close_idx != -1 else doc[pos:pos + 300]
-        exit_idx = doc.find("$?", close_idx) if close_idx != -1 else -1
-        echo_idx = doc.find(COMPARE_ECHO_LINE, close_idx) if close_idx != -1 else -1
+        exit_idx = doc.find("COMPARE_EXIT=$?", close_idx) if close_idx != -1 else -1
+        echo_idx = doc.find(COMPARE_ECHO_LINE, exit_idx) if exit_idx != -1 else -1
+        handling_idx = doc.find("$COMPARE_EXIT", exit_idx) if exit_idx != -1 else -1
         ok = (
             close_idx != -1
             and "primary-checkout-drift.py" in capture
             and "compare" in capture
             and echo_idx != -1
             and exit_idx != -1
-            and echo_idx < exit_idx
+            and handling_idx != -1
+            and exit_idx < echo_idx < handling_idx
         )
         sites.append((line, ok, f"capture={capture[:120]!r}, echo_idx={echo_idx}, exit_idx={exit_idx}"))
         pos = doc.find(COMPARE_CAPTURE_MARKER, pos + 1)
@@ -148,7 +151,7 @@ def _reason_args_expansions(doc):
     import re
 
     rows = []
-    for match in re.finditer(r"\$\{REASON_ARGS\[@\]", doc):
+    for match in re.finditer(r'(?<!\+")\$\{REASON_ARGS\[@\]', doc):
         pos = match.start()
         line_start = doc.rfind("\n", 0, pos) + 1
         line_end = doc.find("\n", pos)
@@ -805,22 +808,23 @@ def main():
         print()
 
         print("[Spec 24] Recovery no-stray-commits check cannot pass when there is no upstream")
-        stray_idx = impl_text.find("stray")
-        window = impl_text[max(0, stray_idx - 600):stray_idx + 600] if stray_idx != -1 else ""
+        stray_idx = impl_text.find("Confirm no stray commits")
+        window = impl_text[stray_idx:stray_idx + 600] if stray_idx != -1 else ""
         import re as _re
         exit_guarded = (
             "$?" in window
             or "-eq 0" in window
             or _re.search(r"rev-parse[^\n]*@\{upstream\}", window) is not None
+            or '&& [ -z "$STRAY" ]' in window
         )
         h.test_result(
             "no-stray-commits check is present in the recovery section",
-            stray_idx != -1 and "git log" in window,
+            stray_idx != -1 and "log --oneline" in window,
             f"'stray' found={stray_idx != -1}",
         )
         h.test_result(
             "no-stray-commits check requires exit 0 (or resolves @{upstream} first), not just empty output",
-            stray_idx != -1 and "git log" in window and exit_guarded,
+            stray_idx != -1 and "log --oneline" in window and exit_guarded,
             f"window={window[:400]!r}",
         )
         print()
