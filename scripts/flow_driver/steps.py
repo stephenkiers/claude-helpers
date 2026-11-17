@@ -176,6 +176,7 @@ class WaitDirective:
     next_command: str
     receipt_file: str
     clear_live_command: str
+    nonce: str  # the live record's nonce, so a re-rendered WAIT file names the same attempt (Q1 = A)
 
 
 @dataclass(frozen=True)
@@ -295,6 +296,7 @@ def _wait(state: V2State, facts: Facts, pending: PendingSpawn) -> Tuple[V2State,
         next_command=driver.next_command(facts.flow),
         receipt_file=str(receipts.receipt_path(facts.flow, pending.step)),
         clear_live_command=driver.clear_live_command(facts.flow),
+        nonce=pending.nonce,
     )
     return state, wait
 
@@ -355,6 +357,9 @@ def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Dir
     The one pure transition. Returns the state to commit and the directive to emit. Replaying an event against the
     state it produced returns the same directive and allocates no new nonce or attempt (a WAIT keeps the live nonce).
     """
+    if state.status in ("done", "abandoned"):
+        # A finished flow never revives: no event, however odd, flips it to failed.
+        return state, DoneDirective(next_command=driver.next_command(facts.flow))
     if isinstance(event, UnknownEvent):
         return _stop(state, facts, "unknown-event", f"label {event.label!r} is not a stub event")
     if isinstance(event, ResumeFailed):
@@ -368,11 +373,9 @@ def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Dir
     else:
         assert_never(event)
 
-    if state.status == "failed":
+    if state.status in ("failed", "paused"):
         reason = state.stop_reason.get(state.step, stop_reason("step-failed", "the flow is failed"))
         return state, StopDirective(next_command=driver.next_command(facts.flow), reason=reason)
-    if state.status in ("done", "abandoned"):
-        return state, DoneDirective(next_command=driver.next_command(facts.flow))
     if facts.receipt == "malformed-cap":
         return _stop(
             state,

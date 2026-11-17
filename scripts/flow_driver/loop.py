@@ -34,7 +34,7 @@ from . import preflight as pf
 from . import receipts
 from . import recovery as rc
 from . import shipguard as sg
-from .model import assert_never
+from .model import GENERAL_PURPOSE_AGENT, assert_never
 from .recovery import Stop as RecoveryStop
 from .recovery import malformed_rerun
 from .state import (
@@ -59,6 +59,7 @@ from .steps import (
     ReceiptFact,
     SpawnDirective,
     StopDirective,
+    WaitDirective,
     answer_file_path,
     directive_file_path,
     directive_to_dict,
@@ -74,8 +75,9 @@ from .steps import (
 # notification says the step's subagent is gone. Measured across invocations from the injected clock.
 RERUN_QUIET_SECONDS = 60
 _TS = "%Y-%m-%dT%H:%M:%SZ"
-# Clear-live is the human's way out of a wait-timeout or resume-failed STOP; these codes reopen the step.
-_CLEARABLE_STOPS = ("wait-timeout", "resume-failed")
+# Clear-live is the human's way out of a wait-timeout STOP; this code reopens the step. A resume-failed STOP is never
+# reopened by clear-live: the W1 re-spawn allowlist is empty (session D3), so every failed RESUME stays a STOP.
+_CLEARABLE_STOPS = ("wait-timeout",)
 # Steps whose agent carries the restricted guard hooks (flow-plan, flow-implement, flow-review, flow-ship).
 RESTRICTED_STEPS = frozenset(("plan", "implement", "review", "fix", "ship"))
 # Steps that run the North Star files preflight before they spawn (ADR-0003 2026-10-09 amendment).
@@ -158,12 +160,14 @@ def _quiet_elapsed(first_seen: str, now: datetime) -> bool:
 def _malformed_gate(locked: LockedFlow, pending: PendingSpawn, notified: bool, now: datetime) -> ReceiptFact:
     """The D4 rerun gate and the D5 cap for a malformed receipt."""
     state = locked.require_state()
-    if pending.receipt_first_seen is None:
-        stamped = dataclasses.replace(pending, receipt_first_seen=_stamp(now))
-        locked.commit(dataclasses.replace(state, pending_spawn=stamped))
-        return "gate-hold"
-    if not (notified or _quiet_elapsed(pending.receipt_first_seen, now)):
-        return "gate-hold"
+    if not notified:
+        # D4: only a gone subagent (a notification) satisfies the gate at once; otherwise the quiet interval applies.
+        if pending.receipt_first_seen is None:
+            stamped = dataclasses.replace(pending, receipt_first_seen=_stamp(now))
+            locked.commit(dataclasses.replace(state, pending_spawn=stamped))
+            return "gate-hold"
+        if not _quiet_elapsed(pending.receipt_first_seen, now):
+            return "gate-hold"
     previous = state.attempt_log.get(pending.step, {}).get(pending.attempt - 1)
     decision = malformed_rerun(pending.step, pending.attempt, previous == "receipt-malformed")
     if isinstance(decision, RecoveryStop):
@@ -183,6 +187,14 @@ def _settle_receipt(locked: LockedFlow, notified: bool, now: datetime) -> Receip
     key = TransitionKey(state.run_id, pending.step, pending.attempt)
     classified = receipts.classify(locked, pending)
     if isinstance(classified, receipts.Absent):
+        # A crash between an archive move and its state commit leaves the receipt gone and the archive present:
+        # finish that move here, so `next` and `resume` roll forward the same way.
+        forward = receipts.roll_forward(locked, key, pending)
+        if forward == "rerun":
+            return "rerun"
+        if forward == "receipt-landed":
+            landed = locked.require_state().pending_spawn
+            return "failed" if landed is not None and _archived_landed_failed(locked, landed) else "none"
         return "none"
     if isinstance(classified, receipts.InProgress):
         if pending.receipt_seen != classified.fingerprint:
@@ -298,6 +310,16 @@ def _ship_guard(state: V2State, flow: Path) -> Optional[Outcome]:
         return _halt(state, flow, "gh-error", pr.detail)
     if isinstance(pr, sg.Merged):
         return _done(state, flow)
+    if isinstance(pr, sg.SameHead):
+        # A PR is already OPEN at the verified head: skip ship (plan Step 4), close the directions out, and stop at
+        # the merge that Layer 2 does not build.
+        closed = lg.close_out_directions(flow, by=_verify_receipt_name(flow))
+        if isinstance(closed, lg.LedgerError):
+            return _halt(state, flow, "ledger-error", closed.detail)
+        skipped = dataclasses.replace(
+            state, heads=Heads(verify=state.heads.verify, ship=state.heads.verify), pending_spawn=None, live=None
+        )
+        return _halt(skipped, flow, "merge-not-built", f"ship skipped; {sg.describe_ship_guard(pr)}; the merge step is not built in Layer 2")
     return None
 
 
@@ -414,6 +436,38 @@ def _snapshot_for_spawn(flow: Path, directive: SpawnDirective, before: V2State, 
     return stamped, lg.human_ledger_line(snap), None
 
 
+def _replay_spawn(
+    flow: Path, state: V2State, pending: PendingSpawn
+) -> Optional[Tuple[Optional[V2State], Directive, str, str]]:
+    """
+    A live spawned record whose step prompt is missing means the crash window between the state commit and the files.
+    Re-render the SPAWN from the committed record, with the same nonce, the ledger snapshot re-rendered from the stored
+    seq, and the preflight lines. Returns (a failed state when a preflight or the ledger now stops it, directive,
+    ledger line, extra lines), or None when the prompt exists and a WAIT is right.
+    """
+    if step_prompt_path(flow, pending.step, pending.attempt, pending.nonce).exists():
+        return None
+    ledger_line = ""
+    if pending.ledger_seq is not None:
+        snap = lg.ensure_snapshot(flow, pending.step, pending.attempt, pending.ledger_seq)  # type: ignore[arg-type]
+        if isinstance(snap, lg.LedgerError):
+            failed, stop = _halt(state, flow, "ledger-error", snap.detail)
+            return failed, stop, "", ""
+        ledger_line = lg.human_ledger_line(snap)
+    stopped, extra = _preflight(state, flow, pending.step, False)
+    if stopped is not None:
+        return stopped[0], stopped[1], "", ""
+    spawn = SpawnDirective(
+        next_command=driver.next_command(flow),
+        agent_type=GENERAL_PURPOSE_AGENT,
+        prompt_file=str(step_prompt_path(flow, pending.step, pending.attempt, pending.nonce)),
+        step=pending.step,
+        attempt=pending.attempt,
+        nonce=pending.nonce,
+    )
+    return None, spawn, ledger_line, extra
+
+
 def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: datetime, headless: bool) -> str:
     event = event_from_label(event_label)
     notified = isinstance(event, Notification)
@@ -442,6 +496,14 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
         locked.commit(new_state)  # the state replace is the first write of the commit order
     committed = locked.require_state()
     pending = committed.pending_spawn
+    if isinstance(directive, WaitDirective) and pending is not None and pending.state == "spawned":
+        replayed = _replay_spawn(flow, committed, pending)
+        if replayed is not None:
+            halted, directive, ledger_line, extra = replayed
+            if halted is not None:
+                locked.commit(halted)
+                committed = locked.require_state()
+                pending = committed.pending_spawn
     file_nonce = "none" if pending is None else pending.nonce
     attempt = committed.attempts.get(committed.step, 0) if pending is None else pending.attempt
     step = committed.step if pending is None else pending.step
@@ -566,7 +628,7 @@ def run_recover(flow: Path, choice: str) -> str:
             return f"recovered: retry {step} (attempt {attempt} is retried; the next next spawns a new attempt)"
         if choice == "take-over":
             reasons[step] = stop_reason("take-over", f"step {step} was taken over by hand")  # type: ignore[arg-type]
-            locked.commit(dataclasses.replace(state, stop_reason=reasons))
+            locked.commit(dataclasses.replace(state, status="paused", stop_reason=reasons))
             locked.log("recover", step=step, attempt=attempt, choice="take-over")
             return f"recovered: take-over of {step} recorded; the driver will not spawn it again"
         if choice == "keep-previous":
@@ -579,7 +641,7 @@ def run_abandon(flow: Path) -> str:
     with mutating(flow) as locked:
         state = locked.require_state()
         if state.status in ("done", "abandoned"):
-            raise LoopRefusal(f"abandon refused: the flow is already {state.status}")
+            raise LoopRefusal(f"flow already {state.status}")
         pending = state.pending_spawn
         if pending is not None and pending.state in ("spawned", "resumed"):
             raise LoopRefusal(

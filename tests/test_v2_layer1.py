@@ -741,8 +741,8 @@ def test_22_schema_invalid_refused():
         h.test_result("22d: nothing on stdout", out == "", out)
 
 
-def test_23_skeleton_subcommands_refused_on_v2():
-    """Test 23: skeleton subcommands (next, answer, clear-live) are refused on a v2 flow, exit 1, v2-owned."""
+def test_23_loop_subcommands_on_v2():
+    """Test 23: next, answer and clear-live run the Layer 2 loop on a v2 flow (they were refused in Layer 1)."""
     with temp_home() as tmp:
         home = Path(tmp)
         flow = cli_flow(home)
@@ -750,15 +750,20 @@ def test_23_skeleton_subcommands_refused_on_v2():
         h.test_result("23a: init exits 0", rc == 0, f"rc={rc} err={err!r}")
         before = (flow / "state.json").read_text()
 
-        for label, args in (
-            ("next", ("next", "--flow", str(flow))),
-            ("answer", ("answer", "--flow", str(flow), "--text", "x")),
-            ("clear-live", ("clear-live", "--flow", str(flow), "--reason", "r")),
-        ):
-            rc, out, err = run_cli(home, *args)
-            h.test_result(f"23b: {label} exits 1", rc == 1, f"rc={rc} err={err!r}")
-            h.test_result(f"23b: {label} refusal line", "refused: v2-owned" in err, err)
-        h.test_result("23c: state.json unchanged", (flow / "state.json").read_text() == before)
+        rc, out, err = run_cli(home, "answer", "--flow", str(flow), "--text", "x")
+        h.test_result("23b: answer exits 1", rc == 1, f"rc={rc} err={err!r}")
+        h.test_result("23b: answer refusal line", "refused: answer refused" in err, err)
+        h.test_result("23c: a refused answer leaves state.json unchanged", (flow / "state.json").read_text() == before)
+
+        rc, out, err = run_cli(home, "next", "--flow", str(flow))
+        h.test_result("23b: next exits 0", rc == 0, f"rc={rc} err={err!r}")
+        h.test_result("23b: next prints one NEXT line", len(out.splitlines()) == 1 and out.startswith("NEXT: "), out)
+        h.test_result("23c: next changed state.json", (flow / "state.json").read_text() != before)
+
+        rc, out, err = run_cli(home, "clear-live", "--flow", str(flow), "--reason", "r")
+        h.test_result("23b: clear-live exits 0 on the live record", rc == 0, f"rc={rc} err={err!r}")
+        h.test_result("23b: clear-live reports the cleared record", "cleared live record" in err, err)
+        h.test_result("23c: the live record is gone", json.loads((flow / "state.json").read_text())["live"] is None)
 
 
 def test_24_readonly_commands_leave_unchanged():
@@ -1565,7 +1570,7 @@ if __name__ == "__main__":
     test_20_resume_no_state_refused()
     test_21_double_init_refused()
     test_22_schema_invalid_refused()
-    test_23_skeleton_subcommands_refused_on_v2()
+    test_23_loop_subcommands_on_v2()
     test_24_readonly_commands_leave_unchanged()
     test_25_list_shows_v1_and_initializing()
     test_26_status_json_readonly()
