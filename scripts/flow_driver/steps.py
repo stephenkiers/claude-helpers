@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import ClassVar, Dict, Literal, Optional, Tuple, Union, get_args
 
 from . import driver, receipts
-from .model import GENERAL_PURPOSE_AGENT, assert_never, parse_after
+from .model import AFTER_EVENTS, GENERAL_PURPOSE_AGENT, AfterEvent, assert_never, parse_after
 from .state import ALLOWED_TRANSITIONS, LiveRecord, PendingSpawn, Step, V2State
 
 # The Layer 2 happy path. Ship is the last step the driver spawns; a landed ship stops at merge-not-built.
@@ -127,7 +127,7 @@ Event = Union[
     UnknownEvent,
 ]
 
-_EVENT_BY_LABEL: Dict[str, Event] = {
+_EVENT_BY_LABEL: Dict[AfterEvent, Event] = {
     "start": Start(),
     "spawn-launched": SpawnLaunched(),
     "resume-sent": ResumeSent(),
@@ -137,6 +137,9 @@ _EVENT_BY_LABEL: Dict[str, Event] = {
     "notification": Notification(),
     "human-continue": HumanContinue(),
 }
+# The map is keyed by AfterEvent; a label added to or removed from the model without a matching entry fails at import.
+if set(_EVENT_BY_LABEL) != set(AFTER_EVENTS):
+    raise RuntimeError("_EVENT_BY_LABEL keys do not match model.AFTER_EVENTS")
 
 
 def event_from_label(label: Optional[str]) -> Event:
@@ -150,13 +153,20 @@ def event_from_label(label: Optional[str]) -> Event:
 
 
 # Directives. The closed union; the verb is a class constant, never a field.
+AgentType = Literal["general-purpose"]
+_SPAWN_AGENT: AgentType = "general-purpose"
+# The spawn agent type is a Literal here so the directive is typed; it must equal the model constant.
+if _SPAWN_AGENT != GENERAL_PURPOSE_AGENT:
+    raise RuntimeError("steps._SPAWN_AGENT does not match model.GENERAL_PURPOSE_AGENT")
+
+
 @dataclass(frozen=True)
 class SpawnDirective:
     verb: ClassVar[Literal["SPAWN"]] = "SPAWN"
     next_command: str
-    agent_type: str
+    agent_type: AgentType
     prompt_file: str
-    step: str
+    step: Step
     attempt: int
     nonce: str
 
@@ -165,7 +175,7 @@ class SpawnDirective:
 class ResumeDirective:
     verb: ClassVar[Literal["RESUME"]] = "RESUME"
     next_command: str
-    step: str
+    step: Step
     attempt: int
     answer_file: str
 
@@ -282,7 +292,7 @@ def _spawn(state: V2State, facts: Facts, step: Step) -> Tuple[V2State, Directive
     new_state = dataclasses.replace(_with_pending(state, pending), step=step, attempts=attempts)
     spawn = SpawnDirective(
         next_command=driver.next_command(facts.flow),
-        agent_type=GENERAL_PURPOSE_AGENT,
+        agent_type=_SPAWN_AGENT,
         prompt_file=str(step_prompt_path(facts.flow, step, attempt, facts.nonce)),
         step=step,
         attempt=attempt,
@@ -386,6 +396,16 @@ def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Dir
     if facts.receipt == "failed":
         # A FAILED landing has no automatic recovery in Layer 2 (Retry, Redo and Heal are not wired yet).
         return _stop(state, facts, "step-failed", f"step {state.step} landed a FAILED receipt")
+    if facts.receipt == "rerun":
+        # D5: the malformed rerun is already recorded; the dispatch below opens the next attempt once no record is live.
+        pass
+    elif facts.receipt == "gate-hold":
+        # D4: the malformed receipt is held by the gate; the dispatch below keeps the live record waiting.
+        pass
+    elif facts.receipt == "none":
+        pass
+    else:
+        assert_never(facts.receipt)
 
     pending = state.pending_spawn
     if pending is None:
@@ -405,9 +425,14 @@ def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Dir
             )
             return _with_pending(state, resumed), resume
         return state, _ask_or_park(facts, pending)
-    # spawned or resumed: a live record. An awaiting question parks a spawned record; everything else waits.
-    if pending.state == "spawned" and facts.question == "awaiting":
-        parked = dataclasses.replace(pending, state="parked-awaiting-answer")
-        _allowed(pending, parked)
-        return _with_pending(state, parked), _ask_or_park(facts, pending)
-    return _wait(state, facts, pending)
+    if pending.state == "spawned":
+        # A live spawned record: an awaiting question parks it; everything else waits.
+        if facts.question == "awaiting":
+            parked = dataclasses.replace(pending, state="parked-awaiting-answer")
+            _allowed(pending, parked)
+            return _with_pending(state, parked), _ask_or_park(facts, pending)
+        return _wait(state, facts, pending)
+    if pending.state == "resumed":
+        # A live resumed record: the step agent is running, so wait for its receipt.
+        return _wait(state, facts, pending)
+    assert_never(pending.state)
