@@ -44,7 +44,7 @@ def check(h: Harness, name: str, fn: Callable[[], None]) -> None:
 
 
 def test_expired_flows_returns_list() -> None:
-    """expired_flows() returns a list, handling old flows when found."""
+    """expired_flows() returns a list, handling old flows when found. [WEAK_ASSERTION]"""
     with tempfile.TemporaryDirectory() as tmp:
         repo_dir = Path(tmp)
 
@@ -52,19 +52,22 @@ def test_expired_flows_returns_list() -> None:
         flows_dir = repo_dir / "flows"
         flows_dir.mkdir()
 
-        # Create an old flow
+        # Create an old flow with proper state
         old_flow = flows_dir / "old-flow"
         old_flow.mkdir()
-        (old_flow / "state.json").write_text(json.dumps({"ts": "2026-01-01T00:00:00Z"}))
+        (old_flow / "state.json").write_text(json.dumps({"updated": "2026-01-01T00:00:00Z", "status": "done"}))
 
         now = datetime(2026, 2, 15, tzinfo=timezone.utc)
         result = retention.expired_flows(repo_dir, now, days=30)
 
         expect(isinstance(result, list), f"expired_flows returned {type(result).__name__}, not list")
+        # Strengthen: verify that result elements are Path objects when non-empty
+        for item in result:
+            expect(isinstance(item, Path), f"expired_flows list contains {type(item).__name__}, not Path")
 
 
 def test_sweep_returns_deleted_paths() -> None:
-    """sweep() returns a list of paths that were deleted."""
+    """sweep() returns a list of paths that were deleted. [WEAK_ASSERTION]"""
     with tempfile.TemporaryDirectory() as tmp:
         repo_dir = Path(tmp)
 
@@ -75,17 +78,20 @@ def test_sweep_returns_deleted_paths() -> None:
         # Create an old flow with minimal structure
         old_flow = flows_dir / "old-flow"
         old_flow.mkdir()
-        (old_flow / "state.json").write_text(json.dumps({}))
+        (old_flow / "state.json").write_text(json.dumps({"updated": "2026-01-01T00:00:00Z", "status": "done"}))
         (old_flow / "some-file.txt").write_text("test")
 
         now = datetime(2026, 2, 15, tzinfo=timezone.utc)
         result = retention.sweep(repo_dir, now, days=30)
 
         expect(isinstance(result, list), f"sweep returned {type(result).__name__}, not list")
+        # Strengthen: verify that result elements are Path objects when returned
+        for item in result:
+            expect(isinstance(item, Path), f"sweep returned {type(item).__name__}, not Path")
 
 
 def test_retention_survives_missing_flows_dir() -> None:
-    """retention.sweep() handles missing flows directory without crashing."""
+    """retention.sweep() handles missing flows directory without crashing. [WEAK_ASSERTION]"""
     with tempfile.TemporaryDirectory() as tmp:
         repo_dir = Path(tmp)
         # No flows directory
@@ -95,6 +101,8 @@ def test_retention_survives_missing_flows_dir() -> None:
         try:
             result = retention.sweep(repo_dir, now, days=30)
             expect(isinstance(result, list), f"sweep returned {type(result).__name__}, not list")
+            # Strengthen: verify that missing flows dir returns empty list
+            expect(result == [], f"sweep returned {result} for missing flows dir, expected []")
         except Exception as exc:
             raise AssertionError(f"sweep crashed on missing flows dir: {exc}")
 

@@ -38,16 +38,19 @@ def check(h: Harness, name: str, fn: Callable[[], None]) -> None:
 
 
 def test_hook_preflight_returns_typed_result() -> None:
-    """check_hook_preflight() returns Ok or Stop, not an exception."""
+    """check_hook_preflight() returns Ok or Stop, not an exception. [WEAK_ASSERTION]"""
     result = preflight.check_hook_preflight(agents_dir=None, scripts_dir=None)
     expect(
         isinstance(result, (preflight.Ok, preflight.Stop)),
         f"check_hook_preflight returned {type(result).__name__}, not Ok or Stop"
     )
+    # Strengthen: verify that Stop has a detail attribute if returned
+    if isinstance(result, preflight.Stop):
+        expect(hasattr(result, "detail"), "Stop result missing 'detail' attribute")
 
 
 def test_north_star_preflight_returns_typed_result() -> None:
-    """check_north_star_files() returns Ok, Warn, or Stop, not an exception."""
+    """check_north_star_files() returns Ok, Warn, or Stop, not an exception. [WEAK_ASSERTION]"""
     # Pass a no-op runner to avoid actual subprocess calls
     def mock_run(argv: Sequence[str]) -> preflight.CommandResult:
         return preflight.CommandResult(returncode=0, stdout="", stderr="")
@@ -57,10 +60,13 @@ def test_north_star_preflight_returns_typed_result() -> None:
         isinstance(result, (preflight.Ok, preflight.Warn, preflight.Stop)),
         f"check_north_star_files returned {type(result).__name__}, not Ok, Warn, or Stop"
     )
+    # Strengthen: verify non-Ok results have detail
+    if isinstance(result, (preflight.Warn, preflight.Stop)):
+        expect(hasattr(result, "detail"), f"{type(result).__name__} missing 'detail' attribute")
 
 
 def test_timeout_does_not_raise() -> None:
-    """run_command() with a short timeout returns a result, not raising TimeoutExpired."""
+    """run_command() with a short timeout returns a result, not raising TimeoutExpired. [WEAK_ASSERTION]"""
     # Create a runner that simulates timeout behavior
     def timeout_runner(argv: Sequence[str]) -> preflight.CommandResult:
         # This should simulate a timeout scenario but return a CommandResult
@@ -68,11 +74,13 @@ def test_timeout_does_not_raise() -> None:
         return preflight.CommandResult(returncode=preflight.CANNOT_START, stdout="", stderr="timeout")
 
     result = timeout_runner([])
-    expect(result.returncode == preflight.CANNOT_START, "Timeout did not map to CANNOT_START")
+    expect(isinstance(result, preflight.CommandResult), "timeout_runner did not return a CommandResult")
+    expect(result.returncode == preflight.CANNOT_START, f"Timeout returned {result.returncode}, not {preflight.CANNOT_START}")
+    expect(isinstance(result.returncode, int), "returncode is not an int")
 
 
 def test_oserror_handling() -> None:
-    """preflight functions handle OSError without crashing."""
+    """preflight functions handle OSError without crashing. [WEAK_ASSERTION]"""
     # Mock a function that would raise OSError
     def failing_runner(argv: Sequence[str]) -> preflight.CommandResult:
         # In a real scenario, the preflight code should catch OSError
@@ -83,6 +91,9 @@ def test_oserror_handling() -> None:
     try:
         result = failing_runner([])
         expect(isinstance(result, preflight.CommandResult), "Should return a CommandResult")
+        expect(hasattr(result, "returncode"), "CommandResult missing returncode")
+        expect(hasattr(result, "stdout"), "CommandResult missing stdout")
+        expect(hasattr(result, "stderr"), "CommandResult missing stderr")
     except OSError:
         raise AssertionError("preflight should handle OSError without raising")
 

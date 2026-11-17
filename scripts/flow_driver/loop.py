@@ -458,9 +458,6 @@ def _spawn_edges(flow: Path, state: V2State, spawn: Step, event_is_start: bool) 
         guarded = _ship_guard(state, flow)
         if guarded is not None:
             return guarded, ""
-    inputs = _step_inputs(flow, state, spawn)
-    if isinstance(inputs, str):
-        return _halt(state, flow, "step-failed", inputs), ""
     stopped, extra = _preflight(state, flow, spawn, event_is_start)
     if stopped is not None:
         return stopped, ""
