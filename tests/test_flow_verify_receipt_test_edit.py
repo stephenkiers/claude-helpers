@@ -220,7 +220,7 @@ def main():
                                fix_receipt(head, test_edit="TEST_EDIT: D5 tests/test_z.py answers/fix-02.json",
                                            test_edit_commit=approval, outstanding=[DECLINED_D5]))
         h.test_result("unapproved path: TEST_EDIT for a declined question is rejected",
-                      rc != 0 and not passed_fix(rc, out) and "tests/test_z.py" in combined(out, err),
+                      rc != 0 and not passed_fix(rc, out) and "path not approved: tests/test_z.py" in combined(out, err),
                       combined(out, err))
 
     with tempfile.TemporaryDirectory() as td:
@@ -232,7 +232,8 @@ def main():
                                fix_receipt(head, test_edit="TEST_EDIT: D5 tests/test_x.py answers/fix-02.json",
                                            test_edit_commit=approval, outstanding=[DECLINED_D5]))
         h.test_result("approval bound to finding id: TEST_EDIT for D5 on the approved path is rejected naming D5",
-                      rc != 0 and not passed_fix(rc, out) and "D5" in combined(out, err), combined(out, err))
+                      rc != 0 and not passed_fix(rc, out) and "finding D5 is not approved for tests/test_x.py" in combined(out, err),
+                      combined(out, err))
         rc, out, err = run_fix(flow, home, repo, base, review_dir,
                                fix_receipt(head, test_edit="TEST_EDIT: D3 tests/test_x.py answers/fix-02.json",
                                            test_edit_commit=approval, outstanding=[DECLINED_D5]))
@@ -248,7 +249,8 @@ def main():
                                fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
                                            outstanding=[DECLINED_D5]))
         h.test_result("sha256 mismatch: answers file rewritten after the ledger record is rejected naming sha256",
-                      rc != 0 and not passed_fix(rc, out) and "sha256" in combined(out, err), combined(out, err))
+                      rc != 0 and not passed_fix(rc, out) and "does not match answers/fix-02.json (sha256 mismatch)" in combined(out, err),
+                      combined(out, err))
 
     with tempfile.TemporaryDirectory() as td:
         repo, base, approval, head = build_scenario(td)
@@ -258,7 +260,7 @@ def main():
                                fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
                                            outstanding=[DECLINED_D5]))
         h.test_result("no ledger record: approved edit without the ledger record is rejected naming answers/fix-02.json",
-                      rc != 0 and not passed_fix(rc, out) and "answers/fix-02.json" in combined(out, err),
+                      rc != 0 and not passed_fix(rc, out) and "no ledger record for answers/fix-02.json" in combined(out, err),
                       combined(out, err))
 
     print()
@@ -273,7 +275,8 @@ def main():
                                fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
                                            outstanding=[DECLINED_D5]))
         h.test_result("commit set: approval commit that also modifies src/app.py is rejected",
-                      rc != 0 and not passed_fix(rc, out), combined(out, err))
+                      rc != 0 and not passed_fix(rc, out) and "changes paths not approved: src/app.py" in combined(out, err),
+                      combined(out, err))
 
     with tempfile.TemporaryDirectory() as td:
         deletion = ({}, ("tests/test_x.py",), "approval deletes the test")
@@ -284,7 +287,8 @@ def main():
                                fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
                                            outstanding=[DECLINED_D5]))
         h.test_result("commit set: approval commit that deletes tests/test_x.py is rejected",
-                      rc != 0 and not passed_fix(rc, out), combined(out, err))
+                      rc != 0 and not passed_fix(rc, out) and "tests/test_x.py has status D" in combined(out, err),
+                      combined(out, err))
 
     with tempfile.TemporaryDirectory() as td:
         later = ({"tests/test_x.py": "def test_x():\n    assert 2 == 2\n"}, (), "later edit to the same test")
@@ -321,7 +325,7 @@ def main():
                 h.test_result("assess answer_ref: a step-assess ledger record satisfies it (control)", rc == 0, text)
             else:
                 h.test_result("assess answer_ref: a step-fix ledger record never satisfies an assess answer_ref",
-                              rc != 0, text)
+                              rc != 0 and "no ledger record for answers/assess-01.json" in text, text)
 
     with tempfile.TemporaryDirectory() as td:
         home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED, ledger_step="assess")
@@ -331,8 +335,56 @@ def main():
                                fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
                                            outstanding=[DECLINED_D5]))
         h.test_result("fix TEST_EDIT ref: a step-assess ledger record never satisfies a fix answers ref",
-                      rc != 0 and not passed_fix(rc, out) and "answers/fix-02.json" in combined(out, err),
+                      rc != 0 and not passed_fix(rc, out) and "no ledger record for answers/fix-02.json" in combined(out, err),
                       combined(out, err))
+
+    print()
+    print("[Non-ASCII approved path]")
+    with tempfile.TemporaryDirectory() as td:
+        cafe = "tests/café_test.py"
+        created = ({cafe: "def test_cafe():\n    assert True\n", "src/app.py": 'VALUE = "new"\n'},
+                   (), "units add a non-ASCII test file")
+        approve_cafe = ({cafe: "def test_cafe():\n    assert 1 == 1\n"}, (), "approved non-ASCII test edit")
+        repo, shas = build_repo(td, [created, approve_cafe])
+        base, approval, head = shas[0], shas[2], shas[-1]
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, [("q1", "D3", cafe, True), ("q2", "D5", "tests/test_z.py", False)])
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit=f"TEST_EDIT: D3 {cafe} answers/fix-02.json",
+                                           test_edit_commit=approval, outstanding=[DECLINED_D5]))
+        h.test_result("non-ASCII approved path: approval commit touching only the quoted-UTF-8 path passes",
+                      passed_fix(rc, out), combined(out, err))
+
+    print()
+    print("[Coverage mode: set-aside rows]")
+    with tempfile.TemporaryDirectory() as td:
+        repo, base, approval, head = build_scenario(td)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        plan = Path(td) / "claude-action-plan.md"
+        plan.write_text("\n".join([
+            "## Doing it: 2",
+            "",
+            "| # | Severity | Finding | File | Raised by | Fix |",
+            "|---|----------|---------|------|-----------|-----|",
+            "| 1 | HIGH | D3 edit | tests/test_x.py | ariadne | Tighten the assertion |",
+            "| 2 | HIGH | D5 edit | tests/test_z.py | ariadne | Tighten the assertion |",
+            "",
+        ]))
+        receipt = Path(td) / "05-fix.md"
+        receipt.write_text(fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
+                                       outstanding=["D2 (test-edit-declined: tests/test_z.py) [self-report]"]))
+        cmd = [sys.executable, str(VERIFIER), "--step", "fix", "--coverage", "--plan", str(plan),
+               "--receipt", str(receipt), "--repo", repo, "--branch", "HEAD", "--base", base]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env_for(home))
+        rows = {}
+        for line in result.stdout.splitlines():
+            parts = line.split(" | ", 2)
+            if len(parts) == 3 and parts[0].startswith("D"):
+                rows[parts[0]] = parts[1]
+        h.test_result("coverage: the approved D1 row on tests/test_x.py is covered by the diff",
+                      result.returncode == 0 and rows.get("D1") == "covered", result.stdout + result.stderr)
+        h.test_result("coverage: the set-aside D2 row is declared, not uncovered",
+                      rows.get("D2") == "declared", result.stdout + result.stderr)
 
     print()
     print("[Apply conflict]")

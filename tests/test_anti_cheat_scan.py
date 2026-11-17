@@ -282,6 +282,23 @@ def allow_test_edit_checks(h):
         h.test_result("other rules stay armed: allowed test edit plus '|| true' in package.json fails with 'neutered-verification'",
                       failed_with(rc, data, "neutered-verification"), detail(rc, data))
 
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = new_repo(tmp)
+        base = commit(repo, {"tests/sub/test_x.py": "def test_sub():\n    assert True\n"}, "base")
+        head = commit(repo, {"tests/sub/test_x.py": "def test_sub():\n    assert 1 == 1\n"}, "head")
+        rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", "tests/test_x.py"])
+        h.test_result("exact path: allowlisting tests/test_x.py does not suppress a same-basename tests/sub/test_x.py",
+                      "test-edit: tests/sub/test_x.py" in data.get("reasons", []), detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        accented = "tests/café_test.py"
+        repo = new_repo(tmp)
+        base = commit(repo, {accented: "def test_c():\n    assert True\n"}, "base")
+        head = commit(repo, {accented: "def test_c():\n    assert 1 == 1\n"}, "head")
+        rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", accented])
+        h.test_result("non-ASCII path: an allowlisted edit to a non-ASCII test path passes (raw -z path matches exactly)",
+                      passed(rc, data), detail(rc, data))
+
 
 def main():
     h = Harness("ANTI-CHEAT SCAN TEST SUITE")

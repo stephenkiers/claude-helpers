@@ -231,7 +231,7 @@ def test_fix_test_edit_doc_contract(h):
     h.test_result("call-site: the flagged --base is neither $START_SHA nor $ROUND2_START_SHA",
                   base_token not in ("", "$START_SHA", "$ROUND2_START_SHA"), f"base={base_token!r}")
     h.test_result("call-site: the flagged --base names the approval commit's parent",
-                  any(marker in base_token.lower() for marker in ("^", "~", "parent")), f"base={base_token!r}")
+                  base_token.endswith("^") and "<APPROVAL_COMMIT>" in base_token, f"base={base_token!r}")
     h.test_result("call-site: the flagged invocation sits after '### 4.6b' and before '## Final check'",
                   heading >= 0 and final > (flagged[0] if flagged else -1) > heading,
                   f"heading={heading} flagged={flagged} final={final}")
@@ -274,26 +274,28 @@ def test_fix_test_edit_doc_contract(h):
 
     # Relay record: expert-flow relay step 4a appends the pinned answer_ref with --step fix.
     flow_lines = flow_doc.splitlines()
-    ref_hits = [i for i, line in enumerate(flow_lines) if "answer_ref: answers/fix-<SEQ>.json" in line]
-    h.test_result("relay record: step 4a appends answer_ref: answers/fix-<SEQ>.json with --step fix",
-                  any("--step fix" in " ".join(flow_lines[i:i + 11])
-                      and any("4a" in flow_lines[j] for j in range(max(0, i - 30), i + 1))
-                      for i in ref_hits),
-                  f"hits={ref_hits}")
+    # Checks the bash block itself: the command line that precedes each answer_ref line must append with
+    # --kind answer --step fix (prose elsewhere in the doc does not satisfy it).
+    ref_lines = [i for i, line in enumerate(flow_lines) if line.strip() == "answer_ref: answers/fix-<SEQ>.json"]
+    relay_cmds = [" ".join(flow_lines[max(0, i - 3):i]) for i in ref_lines]
+    h.test_result("relay record: the step 4a command block appends answer_ref with --kind answer --step fix",
+                  any("flow-ledger.py" in cmd and "append" in cmd and "--kind answer" in cmd and "--step fix" in cmd
+                      for cmd in relay_cmds),
+                  f"relay_cmds={relay_cmds}")
 
     # Set aside without stopping; UNITS counts ordinary units; the no-Round-1-work check runs first.
     h.test_result("set aside: a test-edit item is set aside without stopping the step while ordinary units remain",
-                  _te_para_re(impl, r"set aside", r"not stop|does not stop|without stopping"))
+                  _te_para_re(impl, r"set aside", r"never stops the step while ordinary units remain"))
     h.test_result("set aside: UNITS: counts ordinary units only",
-                  _te_para_re(impl, r"UNITS:", r"ordinary"))
+                  _te_para_re(impl, r"UNITS:` counts ordinary units only"))
     h.test_result("set aside: the no-Round-1-work check runs before any drafting or asking",
-                  _te_para_re(impl, r"no[- ]round[- ]1[- ]work", r"before", r"drafting|asking"))
+                  _te_para_re(impl, r"no[- ]round[- ]1[- ]work", r"runs before any drafting or asking"))
 
     # Coupled item withheld from units.json and reported.
     h.test_result("coupled: a coupled item's code half is withheld from units.json",
-                  _te_para_re(impl, r"withheld", r"units\.json", r"test-edit-coupled"))
-    h.test_result("coupled: a coupled item is not asked about",
-                  _te_para_re(impl, r"test-edit-coupled", r"not ask"))
+                  _te_para_re(impl, r"code half is withheld from", r"units\.json", r"test-edit-coupled"))
+    h.test_result("coupled: a coupled item is never drafted or asked about",
+                  _te_para_re(impl, r"test-edit-coupled", r"never drafted or asked about"))
 
     # Fail-closed answer mapping.
     h.test_result("fail closed: a missing, free-text or unmappable answer counts as declined",

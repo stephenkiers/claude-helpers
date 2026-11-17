@@ -2850,7 +2850,7 @@ def _test_edit_commit_reason(repo: str, commit: str, paths: Set[str]) -> Optiona
     """The approval commit must change exactly the TEST_EDIT paths, each with status M (#497)."""
     try:
         result = subprocess.run(
-            ["git", "-C", repo, "diff", "--name-status", "--no-renames", "--end-of-options", f"{commit}^", commit],
+            ["git", "-C", repo, "diff", "--name-status", "--no-renames", "-z", "--end-of-options", f"{commit}^", commit],
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT_SECS,
@@ -2859,11 +2859,13 @@ def _test_edit_commit_reason(repo: str, commit: str, paths: Set[str]) -> Optiona
         return f"test-edit: cannot diff TEST_EDIT_COMMIT {commit}"
     if result.returncode != 0:
         return f"test-edit: cannot diff TEST_EDIT_COMMIT {commit} (unknown commit or no parent)"
+    # -z: NUL-separated status/path pairs, so git never C-quotes a path (non-ASCII, tabs, quotes).
+    fields = [f for f in result.stdout.split("\0") if f]
+    if len(fields) % 2:
+        return f"test-edit: cannot parse diff of TEST_EDIT_COMMIT {commit}"
     changed: Dict[str, str] = {}
-    for line in result.stdout.splitlines():
-        status, _, path = line.partition("\t")
-        if path:
-            changed[path] = status
+    for status, path in zip(fields[0::2], fields[1::2]):
+        changed[path] = status
     for path in sorted(changed):
         if changed[path] != "M":
             return f"test-edit: {path} has status {changed[path]} in TEST_EDIT_COMMIT {commit}, expected M"
@@ -2887,6 +2889,7 @@ def _check_test_edits(receipt: str, repo: str, flow_dir: Optional[Path]) -> Opti
     """
     edit_values: List[str] = []
     commit_values: List[str] = []
+    # Whole-receipt scan on purpose: a TEST_EDIT line outside the header block is still checked (stricter than the header-only fields).
     for line in receipt.split("\n"):
         if line.startswith("TEST_EDIT_COMMIT:"):
             commit_values.append(line[len("TEST_EDIT_COMMIT:"):].strip())

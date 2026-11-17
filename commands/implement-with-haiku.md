@@ -804,7 +804,7 @@ On success with nothing pending, skip Steps 4a–4d and proceed directly to the 
 - Every **shared file** (barrel/index exports, `package.json`, route registries, migration registries) must be assigned to **exactly one** unit — never left unassigned.
 - **Units never own test files.** Test requirements found in the plan go in no unit; they reach Round 2 through the plan text, including the plan's "Tests (written spec-blind in Round 2)" section when one exists.
 
-When no non-test Round 1 work remains once test requirements are set aside, do not invent a unit to satisfy `MIN_UNITS`. Stop with Reason `test-only-plan: no Round 1 work; tests are a Round 2 deliverable`.
+In the `implement` step, when no non-test Round 1 work remains once test requirements are set aside, do not invent a unit to satisfy `MIN_UNITS`. Stop with Reason `test-only-plan: no Round 1 work; tests are a Round 2 deliverable`. The `fix` step does not stop with `test-only-plan`; item b below governs it.
 
 When a plan step requires changing an existing test's assertion or removing a test (work Round 1 may not do and Round 2 cannot do), stop with Reason `existing-test-edit: <step or finding id> <path>`. In the `implement` step this stop is unconditional. In the `fix` step (a review action-plan item) the stop is replaced by the set-aside rules below and applies only when no Round 1 work is left. A finding that asks for a *new* test is not a stop; it goes to Round 2 through the plan text.
 
@@ -815,13 +815,13 @@ b. **No Round 1 work left.** This check runs before any drafting or asking. If n
 c. **Coupled items are set aside whole.** A coupled item's code half is withheld from `units.json`. It is never drafted or asked about, and it is reported `OUTSTANDING: D<n> (test-edit-coupled: <path>)`.
 d. **Removals are set aside.** A `removal` item is never asked about. It is reported `OUTSTANDING: D<n> (test-removal: <path>)`.
 e. **Units.** The test-edit worker is never a unit. No `TEST_EDIT_ITEMS` path enters `units.json`; the `plan-test-paths.py units` preflight (item 6b) already rejects test paths in `owned_files`. `UNITS:` counts ordinary units only.
-f. **Draft pure edits.** For each `edit` item the coordinator works directly, with no subagent and no unit, as Round 4 does. It drafts the change as a unified diff saved to `<SCRATCH_PATH>/test-edits/<finding id>.patch`, checks it with `git apply --check`, and leaves the worktree untouched. A draft that does not pass the check is set aside as `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>)` and is not asked about.
+f. **Draft pure edits.** For each `edit` item the coordinator works directly, with no subagent and no unit, as Round 4 does. It drafts the change as a unified diff saved to `<SCRATCH_PATH>/test-edits/<finding id>.patch`. The patch is produced with `git diff --full-index` after the coordinator's own edit to the worktree copy, so it carries the preimage blob ids that `git apply --3way` needs. The file is then restored with `git checkout HEAD -- <path>`, so the worktree ends untouched. The patch is checked with `git apply --check`. A draft that does not pass the check is set aside as `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>)` and is not asked about.
 g. **Ask, before Round 1.** Ask one question per drafted `edit` item through the Ask block (`~/.claude/prompts/flow-reference.md`), header `Test edit`, batched up to four per question set. Outside a flow it is a plain `AskUserQuestion`; in a flow the Ask block relays it, and in `/expert-fleet` the Ask block parks it. Each question's text embeds the finding id, the path and the full patch text, so `PRIOR_ANSWERS` reuse matches exactly (a changed diff is a new question). Its `brief` carries the action-plan item text. The options are exactly these two, in this order, neither marked recommended and none pre-selected:
    - `Decline — leave OUTSTANDING`
    - `Approve edit: <finding id> <path>`
 
    A missing, free-text or unmappable answer counts as declined. A declined item is reported `OUTSTANDING: D<n> (test-edit-declined: <path>)`.
-h. **Fix now (`--only-units`).** A run with `--only-units` never drafts, asks or applies a test edit, so it never asks a test-edit question. Every `TEST_EDIT_ITEMS` entry is reported `OUTSTANDING: D<n> (test-edit-not-approvable-in-fix-now: <path>)`, and the `fix-now` scan keeps `test-removed` armed.
+h. **Fix now (`--only-units`).** A run with `--only-units` never drafts, asks or applies a test edit, so it never asks a test-edit question. Each `TEST_EDIT_ITEMS` entry is reported with its own reason: a coupled item `OUTSTANDING: D<n> (test-edit-coupled: <path>)`, a removal `OUTSTANDING: D<n> (test-removal: <path>)`, and a pure edit `OUTSTANDING: D<n> (test-edit-not-approvable-in-fix-now: <path>)`. The `fix-now` scan keeps `test-removed` armed.
 i. **Misclassification.** An item classified ordinary whose change turns an existing test red reaches the Integration Gate step 4 or Final check fix-loop stop `planned-change-breaks-test: <path>` (extracted from the implementer's `NEEDS_TEST_UPDATE` line). It is never `gate-not-converged` with no path.
 
 **3. Call `unit-progress.py init`.** Once the split is decided (basis, units, owned-files):
@@ -2472,13 +2472,13 @@ On a `--resume-after-round1` run, the skipped rounds' hygiene and overlap fields
 
 Runs once per fix step, after Round 4's last commit (or at the point Round 4 would have run), and only when at least one test edit was approved at Step 3. It runs whether or not Round 4 ran. When no edit was approved, or every approved patch was skipped, make no commit and emit `TEST_EDIT: none` in the receipt.
 
-1. **Apply.** Apply each approved patch from `<SCRATCH_PATH>/test-edits/<finding id>.patch` unchanged with `git apply --3way`. If a patch conflicts, restore its path with `git checkout HEAD -- <path>`, skip that patch, and keep the others. The skipped item is reported `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>) [self-report]`. An apply conflict never stops the step.
-2. **Check the staged set.** Stage the paths that applied (`git add -- <path> ...`). `git diff --cached --name-status` must list exactly those paths, each with status `M`. A mismatch stops the step FAILED with Reason `existing-test-edit: <finding id> <path>` and `FAILURE_CLASS: other`.
+1. **Apply.** Apply each approved patch from `<SCRATCH_PATH>/test-edits/<finding id>.patch` unchanged, with one `git apply --3way` invocation per patch, in finding-id order, so one conflict never aborts the others. If a patch conflicts, restore its path with `git checkout HEAD -- <path>`, skip that patch, and keep the others. The skipped item is reported `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>) [self-report]`. An apply conflict never stops the step.
+2. **Check the staged set.** Stage the paths that applied (`git add -- <path> ...`). `git diff --cached --no-renames --name-status` must list exactly those paths, each with status `M`. A mismatch stops the step FAILED with Reason `existing-test-edit: <finding id> <path>` and `FAILURE_CLASS: other`.
 3. **Commit.** Commit with the subject `test: apply human-approved existing-test edits (#<finding ids>)`. The body has one line per applied edit: its finding id, its path and `answers/fix-<SEQ>.json`. Record the new HEAD as `<APPROVAL_COMMIT>`.
 4. **Scan the approval commit alone.** Run this scan on this one commit, with the exact-path allowlist:
 
 ```bash
-python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <TICKET_WT_PATH> --base <APPROVAL_COMMIT>^ --head <APPROVAL_COMMIT> --profile implement --allow-test-edit <path> ...
+python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <TICKET_WT_PATH> --base <APPROVAL_COMMIT>^ --head <APPROVAL_COMMIT> --profile implement --allow-test-edit <path1> --allow-test-edit <path2> ...
 ```
 
    Repeat `--allow-test-edit <path>` for each applied path, using the exact repo-relative path. The flag suppresses the `test-edit` reason for those exact paths and nothing else. `test-removed` stays armed, and every other rule runs unchanged. The flag is passed to this one-commit scan only: Gate step 2's range scan and any scan over a `ROUND2_START_SHA..HEAD` range never receive it. A scan `fail` stops the step FAILED with Reason `existing-test-edit: <finding id> <path>` and `FAILURE_CLASS: other`.
