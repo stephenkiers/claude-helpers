@@ -32,6 +32,7 @@ from typing import Callable, Dict, Mapping, Optional, Tuple, Union
 from scripts.workflow.fsutil import atomic_write_text
 
 from . import driver
+from . import gates
 from . import ledger as lg
 from . import preflight as pf
 from . import receipts
@@ -45,6 +46,7 @@ from .state import (
     AttemptOutcome,
     Heads,
     LockedFlow,
+    ParkedQuestion,
     PendingSpawn,
     Refusal,
     Step,
@@ -59,6 +61,13 @@ from .steps import (
     Directive,
     DoneDirective,
     Facts,
+    GateAdvance,
+    GateAsk,
+    GateDone,
+    GateFact,
+    GateMerge,
+    GateStop,
+    MergeDirective,
     Notification,
     QuestionFact,
     ReceiptFact,
@@ -82,8 +91,8 @@ _TS = "%Y-%m-%dT%H:%M:%SZ"
 # Clear-live is the human's way out of a wait-timeout STOP; this code reopens the step. A resume-failed STOP is never
 # reopened by clear-live: the W1 re-spawn allowlist is empty (session D3), so every failed RESUME stays a STOP.
 _CLEARABLE_STOPS = ("wait-timeout",)
-# Steps whose agent carries the restricted guard hooks (flow-plan, flow-implement, flow-review, flow-ship).
-RESTRICTED_STEPS = frozenset(("plan", "implement", "review", "fix", "ship"))
+# Steps whose agent carries the restricted guard hooks (flow-plan, flow-implement, flow-review, flow-ship, flow-merge).
+RESTRICTED_STEPS = frozenset(("plan", "implement", "review", "fix", "ship", "merge"))
 # Steps that run the North Star files preflight before they spawn (ADR-0003 2026-10-09 amendment).
 NORTH_STAR_STEPS = frozenset(("plan", "review"))
 # The command each step runs, named in its prompt. Mirrors the Steps table of commands/expert-flow.md. Every
@@ -306,26 +315,44 @@ def _branch_of(worktree: Optional[str]) -> Union[str, sg.GitError]:
     return name
 
 
-def _ship_arrival(state: V2State, flow: Path) -> Optional[Outcome]:
-    """A landed ship receipt: MERGED on GitHub is done; a closed or moved PR is a STOP; anything else is merge-not-built."""
-    if state.heads.ship is None:
-        return None
-    branch = _branch_of(state.worktree)
-    if isinstance(branch, sg.GitError):
-        return _halt(state, flow, "gh-error", f"could not read the ticket branch for the merge check: {branch.detail}")
-    result = sg.check_pr(branch, state.heads.ship)
-    if isinstance(result, sg.Merged):
+def _merge_arrival(state: V2State, flow: Path) -> Outcome:
+    """
+    A landed merge receipt: the PR is re-read by number against the approved head (never a branch from the worktree).
+    MERGED is done; anything else is a STOP naming the receipt's claim and what GitHub says.
+    """
+    record = state.merge_gate
+    if record is None:
+        return _halt(state, flow, "gh-error", "the merge receipt landed but no merge gate is recorded to check it against")
+    verdict = sg.check_pr_by_number(record.pr_number, record.repo, record.approved_head)
+    if isinstance(verdict, sg.Merged):
         return _done(state, flow)
-    if isinstance(result, sg.GhError):
-        return _halt(state, flow, "gh-error", result.detail)
-    if isinstance(result, sg.Closed):
-        return _halt(state, flow, "ship-pr-closed", sg.describe_ship_guard(result))
-    if isinstance(result, sg.HeadDiffers):
-        return _halt(state, flow, "ship-head-differs", sg.describe_ship_guard(result))
-    return None
+    if isinstance(verdict, sg.NotMerged):
+        return _halt(
+            state,
+            flow,
+            "merge-not-merged",
+            f"the merge receipt claims success (Decision: OK) but PR #{verdict.number} is {verdict.state} on GitHub, not merged",
+        )
+    if isinstance(verdict, sg.HeadMismatch):
+        return _halt(
+            state,
+            flow,
+            "merge-head-mismatch",
+            f"PR #{verdict.number} head {verdict.actual} differs from the approved head {verdict.expected}",
+        )
+    if isinstance(verdict, sg.GhError):
+        return _halt(state, flow, "gh-error", verdict.detail)
+    assert_never(verdict)
 
 
-def _ship_guard(state: V2State, flow: Path) -> Optional[Outcome]:
+class _SkipShip:
+    """The ship guard found a PR already OPEN at the verified head: ship is skipped and the merge gate is next."""
+
+    def __init__(self, skipped: V2State) -> None:
+        self.skipped = skipped
+
+
+def _ship_guard(state: V2State, flow: Path) -> Union[Outcome, _SkipShip, None]:
     """Before ship spawns: the worktree HEAD and the PR head must still be the verified HEAD (ADR-0026 ship guard)."""
     if state.worktree is None or state.heads.verify is None:
         return None
@@ -347,15 +374,19 @@ def _ship_guard(state: V2State, flow: Path) -> Optional[Outcome]:
     if isinstance(pr, sg.Merged):
         return _done(state, flow)
     if isinstance(pr, sg.SameHead):
-        # A PR is already OPEN at the verified head: skip ship (plan Step 4), close the directions out, and stop at
-        # the merge that Layer 2 does not build. The skip is certain here, so the close-out runs now.
+        # A PR is already OPEN at the verified head: skip ship (plan Step 4) and close the directions out. The skip is
+        # certain here, so the close-out runs now. The caller then takes the same merge-gate path a landed ship takes.
         closed = lg.close_out_directions(flow, by=_verify_receipt_name(flow))
         if isinstance(closed, lg.LedgerError):
             return _halt(state, flow, "ledger-error", closed.detail)
         skipped = dataclasses.replace(
-            state, heads=Heads(verify=state.heads.verify, ship=state.heads.verify), pending_spawn=None, live=None
+            state,
+            heads=Heads(verify=state.heads.verify, ship=state.heads.verify),
+            step="ship",
+            pending_spawn=None,
+            live=None,
         )
-        return _halt(skipped, flow, "merge-not-built", f"ship skipped; {sg.describe_ship_guard(pr)}; merge gate not built (Layer 3)")
+        return _SkipShip(skipped)
     return None
 
 
@@ -415,7 +446,7 @@ def _step_inputs(flow: Path, state: V2State, step: Step) -> Union[Dict[str, str]
 def _record_landed_edges(locked: LockedFlow, flow: Path, state: V2State, receipt_fact: ReceiptFact) -> Optional[Outcome]:
     """
     The edges of a landed receipt that run before the transition: the heads are recorded and committed, a landed ship
-    may arrive at done, and a landed step's Addressed line carries its directions forward. Returns an outcome that
+    is verified against GitHub, and a landed step's Addressed line carries its directions forward. Returns an outcome that
     replaces the transition, or None to let the transition decide.
     """
     if state.status != "running":
@@ -423,7 +454,10 @@ def _record_landed_edges(locked: LockedFlow, flow: Path, state: V2State, receipt
     pending = state.pending_spawn
     if pending is None or pending.state != "receipt-landed" or receipt_fact == "failed":
         return None
-    if pending.step in ("verify", "ship") and state.worktree is not None:
+    if pending.step == "merge":
+        return _merge_arrival(state, flow)
+    # The heads are recorded once, when the landed step is first seen; a parked gate question means they already were.
+    if pending.step in ("verify", "ship") and state.worktree is not None and state.parked is None:
         head = sg.read_head(state.worktree)
         if isinstance(head, sg.GitError):
             return _halt(state, flow, "step-failed", head.detail)
@@ -433,10 +467,6 @@ def _record_landed_edges(locked: LockedFlow, flow: Path, state: V2State, receipt
             heads = Heads(verify=state.heads.verify, ship=head)
         locked.commit(dataclasses.replace(state, heads=heads))
         state = locked.require_state()
-    if pending.step == "ship":
-        arrived = _ship_arrival(state, flow)
-        if arrived is not None:
-            return arrived
     if pending.step in CARRY_STEPS and pending.ledger_seq is not None:
         text = _archived_landed_text(locked, pending)
         if text is not None:
@@ -451,15 +481,10 @@ def _record_landed_edges(locked: LockedFlow, flow: Path, state: V2State, receipt
 
 def _spawn_edges(flow: Path, state: V2State, spawn: Step, event_is_start: bool) -> Tuple[Optional[Outcome], str]:
     """
-    The edge checks for a SPAWN the transition chose, in order: the ship guard (its SameHead skip closes the directions
-    out itself), the input resolution, the hook and North Star preflights, then the ship ledger close-out. The close-out
-    runs last, so a ship spawn that a preflight refuses never closes the directions out. Returns (a stop outcome or
-    None, extra prompt lines).
+    The edge checks for a SPAWN or MERGE the transition chose, in order: the hook and North Star preflights, then the
+    ship ledger close-out (the ship guard runs before this, in _decide). The close-out runs last, so a ship spawn that
+    a preflight refuses never closes the directions out. Returns (a stop outcome or None, extra prompt lines).
     """
-    if spawn == "ship":
-        guarded = _ship_guard(state, flow)
-        if guarded is not None:
-            return guarded, ""
     stopped, extra = _preflight(state, flow, spawn, event_is_start)
     if stopped is not None:
         return stopped, ""
@@ -517,8 +542,15 @@ def render_step_prompt(
     )
 
 
-def _write_step_prompt(flow: Path, state: V2State, directive: SpawnDirective, ledger_line: str, extra: str) -> None:
-    """Write the prompt of a SPAWN. Its inputs were resolved before the spawn was committed, so a miss here is a defect."""
+def _write_step_prompt(
+    flow: Path, state: V2State, directive: Union[SpawnDirective, MergeDirective], ledger_line: str, extra: str
+) -> None:
+    """
+    Write the prompt of a SPAWN or MERGE. Its inputs were resolved before the spawn was committed, so a miss here is a
+    defect. A MERGE prompt also names the PR and the approved head the merge gate recorded.
+    """
+    if isinstance(directive, MergeDirective) and state.merge_gate is not None:
+        extra = f"{extra}PR_NUMBER={state.merge_gate.pr_number}\nAPPROVED_HEAD={state.merge_gate.approved_head}\n"
     inputs = _step_inputs(flow, state, directive.step)
     if isinstance(inputs, str):
         raise RuntimeError(f"step prompt for {directive.step}: {inputs}")
@@ -537,7 +569,9 @@ def _write_step_prompt(flow: Path, state: V2State, directive: SpawnDirective, le
     _write(step_prompt_path(flow, directive.step, directive.attempt, directive.nonce), prompt)
 
 
-def _snapshot_for_spawn(flow: Path, directive: SpawnDirective, before: V2State, new_state: V2State) -> Tuple[V2State, str, Optional[Outcome]]:
+def _snapshot_for_spawn(
+    flow: Path, directive: Union[SpawnDirective, MergeDirective], before: V2State, new_state: V2State
+) -> Tuple[V2State, str, Optional[Outcome]]:
     """Take the ledger snapshot for a new spawn; a ledger error replaces the spawn with a ledger-error STOP."""
     snap = lg.snapshot_at_spawn(flow, directive.step, directive.attempt)
     if isinstance(snap, lg.LedgerError):
@@ -554,15 +588,32 @@ def _legacy_directive_path(flow: Path, pending: PendingSpawn) -> Path:
     return flow / "directives" / f"{pending.step}-a{pending.attempt}-{pending.nonce}.json"
 
 
+def _spawn_verb(step: Step) -> str:
+    """The verb a live attempt of this step was emitted with: the merge step is a MERGE, every other step a SPAWN."""
+    return "MERGE" if step == "merge" else "SPAWN"
+
+
 def _spawn_directive_present(flow: Path, pending: PendingSpawn) -> bool:
-    """True when the SPAWN directive file of the live attempt exists, under its verb-named or legacy name."""
-    if directive_file_path(flow, pending.step, pending.attempt, pending.nonce, "SPAWN").exists():
+    """True when the SPAWN (or MERGE) directive file of the live attempt exists, under its verb-named or legacy name."""
+    verb = _spawn_verb(pending.step)
+    if directive_file_path(flow, pending.step, pending.attempt, pending.nonce, verb).exists():
         return True
     try:
         legacy = json.loads(_legacy_directive_path(flow, pending).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(legacy, dict) and legacy.get("verb") == "SPAWN"
+    return isinstance(legacy, dict) and legacy.get("verb") == verb
+
+
+def _merge_directive_again(flow: Path, state: V2State, pending: PendingSpawn) -> MergeDirective:
+    """
+    The MERGE directive of a live merge attempt, rebuilt for a re-render. MergeDirective is constructed only in gates.py,
+    so this asks gates for it with the attempt counter wound back one (gates numbers the next attempt) and the live nonce.
+    """
+    attempts: Dict[Step, int] = dict(state.attempts)
+    attempts["merge"] = pending.attempt - 1
+    wound = dataclasses.replace(state, attempts=attempts)
+    return gates._build_merge_directive(wound, gates.GateFacts(flow=flow, nonce=pending.nonce, landed="merge"))
 
 
 def _replay_spawn(
@@ -571,9 +622,9 @@ def _replay_spawn(
     """
     A live spawned record whose SPAWN files are missing means the crash window between the state commit and the files.
     Re-render the SPAWN from the committed record, with the same nonce, the ledger snapshot re-rendered from the stored
-    seq, and the preflight lines. The SPAWN files are the step prompt and the SPAWN-named directive. Returns (a failed
-    state when a preflight or the ledger now stops it, directive, ledger line, extra lines), or None when the SPAWN is
-    already on disk and a WAIT is right.
+    seq, and the preflight lines. The SPAWN files are the step prompt and the SPAWN-named directive (a live merge
+    attempt re-renders as a MERGE, never a second one). Returns (a failed state when a preflight or the ledger now stops
+    it, directive, ledger line, extra lines), or None when the files are already on disk and a WAIT is right.
     """
     if step_prompt_path(flow, pending.step, pending.attempt, pending.nonce).exists() and _spawn_directive_present(flow, pending):
         return None
@@ -591,6 +642,8 @@ def _replay_spawn(
     stopped, extra = _preflight(state, flow, pending.step, False)
     if stopped is not None:
         return stopped[0], stopped[1], "", ""
+    if pending.step == "merge":
+        return None, _merge_directive_again(flow, state, pending), ledger_line, extra
     spawn = SpawnDirective(
         next_command=driver.next_command(flow),
         agent_type=_SPAWN_AGENT,
@@ -602,13 +655,163 @@ def _replay_spawn(
     return None, spawn, ledger_line, extra
 
 
+_MERGE_GATE_STEPS = ("ship", "merge")
+
+
+def _gate_landed(state: V2State, receipt_fact: ReceiptFact, forced: Optional[Step]) -> Optional[Step]:
+    """
+    The step the gate stage decides for, or None when no gate stage applies to this call. A parked gate or merge-gate
+    question always re-enters its gate; a freshly landed gate step, a skipped ship and a flow re-entered at the merge
+    step go through gates.decide too, so PR state is read first on every path to a MERGE.
+    """
+    if forced is not None:
+        return forced
+    if state.status != "running":
+        return None
+    parked = state.parked
+    if parked is not None and parked.kind == "gate":
+        return parked.step
+    if parked is not None and parked.kind == "merge-gate":
+        return "ship"
+    pending = state.pending_spawn
+    if pending is not None and pending.state == "receipt-landed" and receipt_fact != "failed":
+        if pending.step in gates.STEP_GATE_STEPS or pending.step == "ship":
+            return pending.step
+    if pending is None and state.step == "merge":
+        return "merge"
+    return None
+
+
+def _gate_attempt(state: V2State, landed: Step) -> int:
+    """The attempt a gate question and its answer file are named by: stable across every re-entry of the gate."""
+    if landed in _MERGE_GATE_STEPS:
+        return max(state.attempts.get("ship", 0), 1)
+    if state.parked is not None and state.parked.kind == "gate":
+        return state.parked.attempt
+    pending = state.pending_spawn
+    if pending is not None and pending.step == landed:
+        return pending.attempt
+    return max(state.attempts.get(landed, 0), 1)
+
+
+def _read_answer(flow: Path, probe: ParkedQuestion) -> Tuple[Optional[str], Optional[str]]:
+    """The (text, note) of the answer file for a parked question, or (None, None) when absent or unreadable."""
+    try:
+        data = json.loads(relay.answer_path(flow, probe).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    text = data.get("text")
+    note = data.get("note")
+    return (text if isinstance(text, str) else None), (note if isinstance(note, str) else None)
+
+
+def _park_question(locked: LockedFlow, flow: Path, spec: gates.QuestionSpec) -> GateAsk:
+    """Commit the parked question first (relay.park), then write its question file if it is not there yet."""
+    parked = relay.park(locked, flow, spec.step, spec.attempt, spec.kind, nn=1)
+    question = relay.question_path(flow, parked)
+    if not question.exists():
+        options = list(spec.options)
+        payload = {
+            "summary": spec.question,
+            "brief": spec.brief,
+            "question": spec.question,
+            "options": options,
+            "questions": [
+                {
+                    "id": spec.kind,
+                    "question": spec.question,
+                    "brief": spec.brief,
+                    "options": [{"label": option} for option in options],
+                }
+            ],
+        }
+        _write(question, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return GateAsk(options=spec.options)
+
+
+def _gate_effects(
+    locked: LockedFlow, flow: Path, state: V2State, outcome: gates.GateOutcome
+) -> Tuple[Optional[GateFact], Optional[Outcome]]:
+    """Perform what a gate outcome needs (park, record the merge gate, redo) and turn it into the fact transition reads."""
+    if isinstance(outcome, gates.Advance):
+        return GateAdvance(), None
+    if isinstance(outcome, gates.Park):
+        return _park_question(locked, flow, outcome.spec), None
+    if isinstance(outcome, gates.RecordMergeGate):
+        locked.commit(dataclasses.replace(state, merge_gate=outcome.record))
+        return _park_question(locked, flow, outcome.park.spec), None
+    if isinstance(outcome, gates.Stop):
+        return GateStop(code=outcome.code, detail=outcome.detail, status=outcome.status), None
+    if isinstance(outcome, gates.MergeSpawn):
+        return GateMerge(outcome.directive), None
+    if isinstance(outcome, gates.MergeDone):
+        return GateDone(), None
+    if isinstance(outcome, gates.Redo):
+        pending = state.pending_spawn
+        if pending is None or pending.step != outcome.step or pending.state != "receipt-landed":
+            return None, _halt(state, flow, "step-failed", f"redo of {outcome.step} found no landed attempt to redo")
+        recorded = gates.record_redo_direction(flow, outcome.step, pending.attempt, outcome.note)
+        if isinstance(recorded, lg.LedgerError):
+            return None, _halt(state, flow, "ledger-error", recorded.detail)
+        outcomes = _copy_outcomes(state)
+        _set_outcome(outcomes, outcome.step, pending.attempt, "redone", replaces="receipt-landed")
+        locked.commit(
+            dataclasses.replace(
+                state, step=outcome.step, pending_spawn=None, live=None, parked=None, attempt_log=outcomes
+            )
+        )
+        return None, None
+    assert_never(outcome)
+
+
+def _gate_stage(
+    locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, nonce: str, forced: Optional[Step]
+) -> Tuple[Optional[GateFact], Optional[Outcome]]:
+    """
+    The gate stage of one call: gates.decide, then its effects. Returns (the gate fact, None), (None, None) when no gate
+    applies (or a redo reopened the step), or (None, a stop outcome). Under the flow lock.
+    """
+    state = locked.require_state()
+    landed = _gate_landed(state, receipt_fact, forced)
+    if landed is None:
+        return None, None
+    attempt = _gate_attempt(state, landed)
+    kind = "merge-gate" if landed in _MERGE_GATE_STEPS else "gate"
+    probe = ParkedQuestion(
+        step="merge" if kind == "merge-gate" else landed, attempt=attempt, nn=1, kind=kind  # type: ignore[arg-type]
+    )
+    answer, note = _read_answer(flow, probe)
+    branch = ""
+    if landed in _MERGE_GATE_STEPS and state.merge_gate is None:
+        found = _branch_of(state.worktree)
+        if isinstance(found, sg.GitError):
+            return None, _halt(state, flow, "gh-error", f"could not read the ticket branch for the merge gate: {found.detail}")
+        branch = found
+    facts = gates.GateFacts(flow=flow, nonce=nonce, landed=landed, attempt=attempt, answer=answer, note=note, branch=branch)
+    return _gate_effects(locked, flow, state, gates.decide(state, facts))
+
+
 def _decide(
-    locked: LockedFlow, flow: Path, event: object, event_is_start: bool, receipt_fact: ReceiptFact, nonce: str, headless: bool
+    locked: LockedFlow,
+    flow: Path,
+    event: object,
+    event_is_start: bool,
+    receipt_fact: ReceiptFact,
+    nonce: str,
+    headless: bool,
+    forced_gate: Optional[Step] = None,
 ) -> Tuple[V2State, Directive, str, str]:
     """
-    The pure transition for this call and, when it chose a SPAWN, the spawn edge checks and the ledger snapshot. Returns
-    (the state to commit, the directive, the ledger line, the extra prompt lines). A failed edge check replaces the spawn.
+    The gate stage, the pure transition for this call and, when it chose a SPAWN or MERGE, the spawn edge checks and the
+    ledger snapshot. Returns (the state to commit, the directive, the ledger line, the extra prompt lines). A failed
+    edge check replaces the spawn. A ship the guard skips (a PR is already open at the verified head) re-enters here
+    with the ship gate forced, so it converges with a landed ship on the same merge-gate path.
     """
+    gate, halted = _gate_stage(locked, flow, receipt_fact, nonce, forced_gate)
+    if halted is not None:
+        return halted[0], halted[1], "", ""
     before = locked.require_state()
     facts = Facts(
         flow=flow,
@@ -616,9 +819,17 @@ def _decide(
         receipt=receipt_fact,
         question=_question_fact(flow, before.pending_spawn),
         headless=headless,
+        gate=gate,
     )
     new_state, directive = transition(before, event, facts)  # type: ignore[arg-type]
-    if not isinstance(directive, SpawnDirective):
+    if isinstance(directive, SpawnDirective) and directive.step == "ship":
+        guarded = _ship_guard(before, flow)
+        if isinstance(guarded, _SkipShip):
+            locked.commit(guarded.skipped)
+            return _decide(locked, flow, event, event_is_start, receipt_fact, nonce, headless, forced_gate="ship")
+        if guarded is not None:
+            return guarded[0], guarded[1], "", ""
+    if not isinstance(directive, (SpawnDirective, MergeDirective)):
         return new_state, directive, "", ""
     edged, extra = _spawn_edges(flow, before, directive.step, event_is_start)
     if edged is not None:
@@ -677,7 +888,7 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
         locked.commit(new_state)  # the state replace is the first write of the commit order
     directive, ledger_line, extra = _replay_unwritten(locked, flow, directive, ledger_line, extra)
     committed = locked.require_state()
-    if isinstance(directive, SpawnDirective):
+    if isinstance(directive, (SpawnDirective, MergeDirective)):
         _write_step_prompt(flow, committed, directive, ledger_line, extra)
     dfile = _write_directive(flow, committed, directive)
     pending = committed.pending_spawn

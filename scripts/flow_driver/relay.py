@@ -302,26 +302,7 @@ def accept_answer(flow: Path, text: str, note: Optional[str]) -> Tuple[bool, str
         except Exception as e:
             raise AnswerRefused(f"answer refused: could not write answer: {e}")
 
-        # For Redo answers, also append to the ledger as a direction
-        if parked.kind == "gate" and stripped_text == "Redo with notes" and note is not None:
-            # Use flow-ledger.py to append a direction record
-            try:
-                from .preflight import run_command
-                result = run_command([
-                    "python3", str(lg.ledger_script()),
-                    "append",
-                    "--flow-dir", str(flow),
-                    "--step", parked.step,
-                    "--attempt", str(parked.attempt),
-                    "--kind", "direction",
-                    "--text", note,
-                ])
-                if result.returncode != 0:
-                    # Log but don't fail - the answer was written
-                    pass
-            except Exception:
-                # Log but don't fail - the answer was written
-                pass
+        # A Redo note reaches the ledger as a direction through gates.record_redo_direction, once, at the gate.
 
         # For review-step answers, call review-ruling.py if applicable
         if parked.kind == "step" and parked.step == "review":

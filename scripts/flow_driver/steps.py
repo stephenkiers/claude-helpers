@@ -19,7 +19,8 @@ from . import driver, receipts, relay
 from .model import AFTER_EVENTS, GENERAL_PURPOSE_AGENT, AfterEvent, assert_never, parse_after
 from .state import ALLOWED_TRANSITIONS, LiveRecord, ParkedQuestion, PendingSpawn, Step, V2State
 
-# The Layer 2 happy path. Ship is the last step the driver spawns; a landed ship stops at merge-not-built.
+# The happy path the driver spawns step by step. Ship is the last SPAWN; what follows it (the merge gate and MERGE) is
+# decided by gates.py in the loop and reaches transition() as a GateFact.
 HAPPY_PATH: Tuple[Step, ...] = ("worktree", "plan", "track", "implement", "review", "fix", "verify", "ship")
 
 StopCode = Literal[
@@ -209,6 +210,7 @@ class AskDirective:
     question_file: str
     answer_file: str
     answer_command: str
+    options: Tuple[str, ...] = ()  # the closed option labels of a driver question (gate, merge-gate); () for a step question
 
 
 @dataclass(frozen=True)
@@ -218,6 +220,7 @@ class ParkDirective:
     question_file: str
     answer_file: str
     answer_command: str
+    options: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -264,6 +267,44 @@ def directive_file_path(flow: Path, step: str, attempt: int, nonce: str, verb: s
     return flow / "directives" / f"{verb.lower()}-{step}-a{attempt}-{nonce}.json"
 
 
+# Gate outcomes, as facts. gates.py decides (and is imported only by loop.py, so transition stays pure); the loop
+# performs the effects the outcome needs (park the question, record the merge gate, redo), then hands the result here.
+@dataclass(frozen=True)
+class GateAdvance:
+    """No gate stands in the way (or the human chose Continue): open the next step."""
+
+
+@dataclass(frozen=True)
+class GateAsk:
+    """A gate question is parked (state.parked is set and committed): emit its ASK, or its PARK when headless."""
+
+    options: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GateStop:
+    """Stop with this code. Pause and Hold leave the flow `paused`; every other gate stop is `failed`."""
+
+    code: StopCode
+    detail: str
+    status: Literal["failed", "paused"] = "failed"
+
+
+@dataclass(frozen=True)
+class GateMerge:
+    """Emit this MERGE directive (built only by gates.py) and record its pending spawn."""
+
+    directive: MergeDirective
+
+
+@dataclass(frozen=True)
+class GateDone:
+    """The PR is merged: the flow is done."""
+
+
+GateFact = Union[GateAdvance, GateAsk, GateStop, GateMerge, GateDone]
+
+
 # Facts gathered at the edge. The receipt fact is the outcome of loop.py's receipt settling, under the lock.
 ReceiptFact = Literal["none", "gate-hold", "failed", "rerun", "malformed-cap"]
 QuestionFact = Literal["none", "awaiting", "answered"]
@@ -279,6 +320,7 @@ class Facts:
     receipt: ReceiptFact
     question: QuestionFact
     headless: bool  # PARK instead of ASK
+    gate: Optional[GateFact] = None  # the gate outcome for this call, or None when no gate stage applies
 
 
 def _live(pending: Optional[PendingSpawn]) -> Optional[LiveRecord]:
@@ -328,7 +370,9 @@ def _wait(state: V2State, facts: Facts, pending: PendingSpawn) -> Tuple[V2State,
     return state, wait
 
 
-def _ask_or_park(facts: Facts, state: V2State) -> Union[AskDirective, ParkDirective]:
+def _ask_or_park(
+    facts: Facts, state: V2State, options: Tuple[str, ...] = ()
+) -> Union[AskDirective, ParkDirective]:
     """Create an ASK or PARK directive using relay to map the parked question to its paths."""
     # For Layer 2 step questions, if state.parked is not set, construct a temporary one
     pending = state.pending_spawn
@@ -349,12 +393,14 @@ def _ask_or_park(facts: Facts, state: V2State) -> Union[AskDirective, ParkDirect
             question_file=question,
             answer_file=answer,
             answer_command=command,
+            options=options,
         )
     return AskDirective(
         next_command=driver.next_command(facts.flow),
         question_file=question,
         answer_file=answer,
         answer_command=command,
+        options=options,
     )
 
 
@@ -367,13 +413,43 @@ def _stop(state: V2State, facts: Facts, code: StopCode, detail: str) -> Tuple[V2
 
 
 def _advance(state: V2State, facts: Facts, landed: Step) -> Tuple[V2State, Directive]:
-    """The landed step's receipt is recorded; open the next step, or stop at the merge that Layer 2 does not build."""
+    """The landed step's receipt is recorded; open the next step. Ship is never advanced past here: the merge gate decides."""
     if landed not in HAPPY_PATH:
-        return _stop(state, facts, "step-failed", f"step {landed} landed outside the Layer 2 happy path")
+        return _stop(state, facts, "step-failed", f"step {landed} landed outside the happy path")
     if landed == "ship":
-        cleared = dataclasses.replace(state, pending_spawn=None, live=None)
-        return _stop(cleared, facts, "merge-not-built", "ship landed; merge gate not built (Layer 3)")
+        # The loop always supplies a GateFact for a landed ship (the merge gate); reaching here is a wiring defect.
+        raise RuntimeError("a landed ship reached the transition without a merge-gate fact")
     return _spawn(state, facts, HAPPY_PATH[HAPPY_PATH.index(landed) + 1])
+
+
+def _apply_gate(state: V2State, facts: Facts, gate: GateFact) -> Tuple[V2State, Directive]:
+    """Apply a gate outcome the loop decided. Parked state was committed by the loop before this call."""
+    pending = state.pending_spawn
+    if isinstance(gate, GateAdvance):
+        cleared = dataclasses.replace(state, parked=None)
+        if pending is not None and pending.state == "receipt-landed":
+            return _advance(cleared, facts, pending.step)
+        raise RuntimeError("a gate advance needs a landed step to advance from")
+    if isinstance(gate, GateAsk):
+        return state, _ask_or_park(facts, state, gate.options)
+    if isinstance(gate, GateStop):
+        reason = stop_reason(gate.code, gate.detail)
+        reasons: Dict[Step, str] = dict(state.stop_reason)
+        reasons[state.step] = reason
+        stopped = dataclasses.replace(state, status=gate.status, stop_reason=reasons, parked=None)
+        return stopped, StopDirective(next_command=driver.next_command(facts.flow), reason=reason)
+    if isinstance(gate, GateMerge):
+        merge = gate.directive
+        opened = PendingSpawn(step=merge.step, attempt=merge.attempt, nonce=merge.nonce, state="spawned", receipt_seen=None)
+        _allowed(pending, opened)
+        attempts: Dict[Step, int] = dict(state.attempts)
+        attempts[merge.step] = merge.attempt
+        merged = dataclasses.replace(_with_pending(state, opened), step=merge.step, attempts=attempts, parked=None)
+        return merged, merge
+    if isinstance(gate, GateDone):
+        done = dataclasses.replace(state, status="done", pending_spawn=None, live=None, parked=None)
+        return done, DoneDirective(next_command=driver.next_command(facts.flow))
+    assert_never(gate)
 
 
 def _wait_timed_out(state: V2State, facts: Facts) -> Optional[Tuple[V2State, Directive]]:
@@ -434,6 +510,9 @@ def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Dir
         pass
     else:
         assert_never(facts.receipt)
+
+    if facts.gate is not None:
+        return _apply_gate(state, facts, facts.gate)
 
     pending = state.pending_spawn
     if pending is None:
