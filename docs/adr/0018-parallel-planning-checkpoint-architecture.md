@@ -115,6 +115,29 @@ the `.claude/flow-run` marker or relay flag). The orchestrator itself writes flo
   rejected. The missing receipt leaves that step as the manifest's resume point, because VERIFY
   fails (the receipt check); the step stops visibly there instead of continuing with a gap.
 
+## Amendment — Fifth sanctioned write prefix for v2 flow dirs (2026-11-17)
+
+This is the reciprocal of ADR-0026 Decision 7, which cites an "ADR-0018 write-prefix amendment for v2". It records the
+rule the human approved for the `/expert-flow` v2 driver (ADR-0026, Layer 2 #486).
+
+**Decision: the fourth prefix also covers v2 flow directories.** Step agents spawned by the v2 driver may write to
+`~/.claude/flows-v2/<repo>/<issue>-<slug>-<id>/`, the v2 flow directory the driver creates. The rule is the same as the
+fourth prefix: flow-directory files only, and only the receipt, marker and question files the driver names in the step
+prompt. The fourth prefix is otherwise unchanged. Its `~/.claude/flows/` path still covers v1 flows.
+
+**Conditionality.** This grant is conditional on ADR-0026 acceptance. It takes effect only with that acceptance, and
+no hook change accompanies it: no PreToolUse hook is added, widened or re-pointed for `~/.claude/flows-v2/`. Until a
+hook is configured, the prefix is enforced by the prompt only, as for the fourth prefix.
+
+- **Scope is the same as the fourth prefix.** Step agents write receipts under `<FLOW_DIR>/steps/`. The driver writes
+  the question, answer, `state.json` and `fleet-ask.json` files, and step agents never write them.
+- **`Write` stays prompt-scoped, not tool-scoped.** As for the other prefixes, the residual risk is unchanged
+  (CLAUDE.md, "Panel agents are capability-restricted, not dialog-gated").
+- **v1 flow directories are unaffected.** The v1 root and v1 relay format do not change.
+
+**Scope of this amendment.** It widens the sanctioned prefix in writing. It does not by itself make a real step command
+resolve a v2 `FLOW_DIR`. That is the ADR-0026 Step 6 work, and ADR-0026's Layer 2 amendment records its status.
+
 ## Pointer — /expert-flow (2026-10-09)
 
 `--flow`/`--epic` handling, the orchestrator's `Write` scope, and the full-capability step agents are recorded in ADR-0023 (§1, §2, §2.1, §5).

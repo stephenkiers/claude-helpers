@@ -806,7 +806,7 @@ Replace the flow-branch completeness rule: the verifier no longer counts "brief 
 
 **Precedent block (display-only).** Run once per checkpoint when the decision index is ready. This block surfaces the human's past answers to similar pending questions as display-only annotations (ADR-0024). No decision logic reads the precedent file. Precedent never influences which option is offered, which is presented as recommended, or how options are ordered. The block runs regardless of the branch and is transparent when the digest is empty or Pat times out.
 
-Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-trace.txt` at step 10 (one of the closed-set reasons listed below); read it back at every subsequent step. Define `FLOWS_ROOT="$HOME/.claude/flows"`.
+Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-trace.txt` at step 10 (one of the closed-set reasons listed below); read it back at every subsequent step. Define `FLOWS_ROOT="$HOME/.claude/flows"`; when `FLOW_DIR` is set and lies under `$HOME/.claude/flows-v2/`, define `FLOWS_ROOT="$HOME/.claude/flows-v2"` instead.
 
 1. **Eligible questions.** Extract pending questions from the checkpoint work:
    - **Non-flow**: Read all `#### Q[n].` briefs from the checkpoint section as-built below (before any Ask is called).

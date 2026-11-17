@@ -46,20 +46,27 @@ Precedence, first match wins:
    file is a no-op.
 
 A target from rules 1–3 is valid only when **all** of these hold: it is an absolute path whose
-realpath lies under `$HOME/.claude/flows/`, it contains a `state.json`, and that `state.json`'s
+realpath lies under `$HOME/.claude/flows/` (or, for a flows-v2 flow, under `$HOME/.claude/flows-v2/` with
+`state.json`'s top-level `driver_format` equal to `2`), it contains a `state.json`, and that `state.json`'s
 top-level `status` is `running` or `awaiting`.
 
 ```bash
 # FLOW_ROOT: the canonical flows directory. Targets must resolve under it.
 FLOW_ROOT=$(python3 -c 'import os; print(os.path.realpath(os.path.join(os.environ["HOME"], ".claude", "flows")))')
+# FLOW_ROOT_V2: the flows-v2 directory. Targets under it are valid only with driver_format 2.
+FLOW_ROOT_V2=$(python3 -c 'import os; print(os.path.realpath(os.path.join(os.environ["HOME"], ".claude", "flows-v2")))')
 
-# flow_target <path>: prints the realpath if it is an absolute path under FLOW_ROOT containing
-# state.json; otherwise returns 1 and prints nothing.
+# flow_target <path>: prints the realpath if it is an absolute path under FLOW_ROOT (or FLOW_ROOT_V2 with
+# driver_format 2) containing state.json; otherwise returns 1 and prints nothing.
 flow_target() {
   local canon
   case "$1" in /*) ;; *) return 1 ;; esac
   canon=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1") || return 1
-  case "$canon" in "$FLOW_ROOT"/*) ;; *) return 1 ;; esac
+  case "$canon" in
+    "$FLOW_ROOT"/*) ;;
+    "$FLOW_ROOT_V2"/*) python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1], encoding="utf-8")).get("driver_format") == 2 else 1)' "$canon/state.json" 2>/dev/null || return 1 ;;
+    *) return 1 ;;
+  esac
   [ -f "$canon/state.json" ] || return 1
   printf '%s\n' "$canon"
 }

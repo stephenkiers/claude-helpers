@@ -125,17 +125,48 @@ def _fence(content: str) -> str:
     return "%s\n%s\n%s" % (fence, content, fence)
 
 
+def _v2_flow_dir_ok(flow_dir: str) -> bool:
+    """True when flow_dir/state.json is a regular, non-symlink file whose driver_format is 2."""
+    state = os.path.join(flow_dir, "state.json")
+    if os.path.islink(state) or not os.path.isfile(state):
+        return False
+    try:
+        with open(state, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    fmt = data.get("driver_format")
+    return type(fmt) is int and fmt == 2
+
+
+def _under_v2_flow(real: str, flows_v2_base: str) -> bool:
+    """True when real lies inside a driver_format 2 flow dir (<repo>/<flow>/...) under the flows-v2 root."""
+    try:
+        common = os.path.commonpath([real, flows_v2_base])
+    except ValueError:
+        return False
+    if common != flows_v2_base:
+        return False
+    parts = os.path.relpath(real, flows_v2_base).split(os.sep)
+    if len(parts) < 3 or ".." in parts:
+        return False
+    return _v2_flow_dir_ok(os.path.join(flows_v2_base, parts[0], parts[1]))
+
+
 def _read_context(path: Any, warnings: List[str]) -> Optional[str]:
     """Read a context file with containment check and size cap.
 
-    The realpath should be under ~/.claude/flows/ for production use.
+    The realpath should be under ~/.claude/flows/ (or inside a driver_format 2 flow dir under
+    ~/.claude/flows-v2/) for production use.
     Caps bytes read at 64 KiB and warns if truncated.
     """
     if not isinstance(path, str) or not path:
         warnings.append("no summary or brief, and context_path is null: no context shown")
         return None
 
-    # Validate containment: realpath should be under ~/.claude/flows/
+    # Validate containment: realpath should be under ~/.claude/flows/ or a v2 flow dir
     try:
         real = os.path.realpath(path)
         flows_base = os.path.realpath(os.path.expanduser("~/.claude/flows"))
@@ -146,6 +177,10 @@ def _read_context(path: Any, warnings: List[str]) -> Optional[str]:
         except ValueError:
             # Paths on different drives (Windows)
             is_contained = False
+
+        if not is_contained:
+            flows_v2_base = os.path.realpath(os.path.expanduser("~/.claude/flows-v2"))
+            is_contained = _under_v2_flow(real, flows_v2_base)
 
         if not is_contained:
             # Warn but skip reading (security boundary)

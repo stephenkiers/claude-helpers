@@ -328,5 +328,111 @@ written).
 
 ## Amendments
 
-None yet. Layer 3 amends ADR-0025 so that its auto-merge rejection covers `commands/expert-flow-v2.md`. The pointer to this ADR's Layer 5 supersession step will land at Layer 5 in ADR-0023. Layer 5
-finalizes this ADR (Decision 11, D3), amends ADR-0008 and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.
+### 2026-11-17 — Layer 2 (#486): step loop, recovery, ledger, stub, list/abandon/retro
+
+This amendment records what Layer 2 settles, and where the code does less than the plan said. The plan is
+`docs/plans/expert-flow-v2-driver.md` (Sub-issue 2), and its Layer 2 decisions are the session rulings D1 to D8, W1,
+and Q1 to Q5 in the Layer 2 plan. Those are recorded here by content, not by label. Anything marked **not built** is
+still open and is not a Layer 2 deliverable.
+
+**Counters and state (Q3 B).** Retry, redo and Unknown-skill counts derive from `attempt_log` outcomes (`retried`,
+`redone`, `unknown-skill-retried`, `receipt-malformed`). Flow-level one-shots live in a `recovery` block
+(`rebases`, `heals`, `retros`), written in the same atomic replace as the transition they gate. `healed` stays a
+top-level key. A `heads` block holds the ship guard's expected HEADs. Both blocks load with zeroed defaults from
+Layer 1 files. There is no `driver_format` bump. Older writers drop both blocks; Layer 1 has no real users, so this
+is accepted.
+
+**Re-spawn allowlist (D3).** `W1_ALLOWLIST` is an empty frozenset. Every failed RESUME is STOP `resume-failed`. A step
+joins the allowlist only with a test that shows it honours pre-written answers, recorded here in a new amendment.
+
+**Rerun gate and malformed cap (D4, D5).** A malformed receipt is re-run only after `subagent_gone` (a `notification`
+with no landed receipt) or after a quiet interval of 60 seconds (`RERUN_QUIET_SECONDS`), measured across invocations
+from the first-seen timestamp stored in state. The driver never sleeps. A malformed receipt is re-run once per attempt.
+A second malformed receipt in a row is STOP `malformed-cap`. Layer 2 consumes `rerun` through `record_spawn`, so the
+next attempt opens in the same replace.
+
+**North Star degrade (D1).** Before every `plan` and `review` spawn, the driver runs only the `files` phase of
+`scripts/north-star-preflight.py`, without `--allow-degraded`. The `files` phase applies to review in every case, since
+review picks its effort inside the step. On BLIND, the directive carries a `NORTH STAR BLIND:` line, records
+`allow_degraded: true`, and the step command gets `--allow-degraded`. A residual `north-star-preflight:` failure is
+STOP, never Retry.
+
+**Closed PR (D2).** A CLOSED unmerged PR is STOP `ship-pr-closed: PR #<N> closed unmerged`, whatever its head. Ship is
+never skipped and never re-run automatically.
+
+**Ship guard expected HEAD.** The driver records `heads.verify` from `git rev-parse HEAD` in the worktree when it lands
+an OK verify receipt. Before ship, a local HEAD that differs is STOP `expected-head-mismatch`, naming both SHAs. When
+the ship receipt lands, the driver records `heads.ship`. Every later guard check compares against `heads.ship`. A PR
+head that differs from the expected head is STOP `ship-head-differs`, with both full SHAs. `gh` errors are STOP
+`gh-error`. The check and the resulting state commit happen in one lock hold.
+
+**Hook preflight and #407 (D6).** One function derives the restricted flow agents from the installed agent definition
+files and checks the guard hooks v1's preflight checks. A miss is STOP `hook-preflight`, naming the hook. It runs at
+`start` and before any restricted spawn. #407 is "v2 half done, v1 still open". Nothing in v1 changed.
+
+**Fleet identity (D7).** `pending_spawn.fleet` exists in the schema and loads from state. No Layer 2 code path sets it,
+and nothing reads `FLEET_RUN_ID`. The automatic fleet clear-live is Layer 4 (#488).
+
+**Stop reasons (W1 session).** `StopCode` is a closed Literal. `stop_reason(code, detail)` builds the `"<code>: <detail>"`
+string, and `parse_stop_reason` parses it. The `state.json` field stays `str`. There is no schema change.
+
+**Sequential `next` (Q1 A).** The stub runs one `driver next` at a time, and the stub rule says so. A `locked` refusal
+exits 1 with a logged line, and there is no backoff. The stub does not retry a locked refusal.
+
+**Wait and stale events (Q4 B).** A `wait-timeout` with a live record and no landed receipt is STOP `wait-timeout`,
+naming `clear-live`. It is never another WAIT. An event attributed to a stale nonce is archived and logged, never
+landed. The directive is WAIT while the record is live, and otherwise the current directive again.
+
+**Retention (Q5 A, with the Carl change). Selective prune, not whole-directory removal.** The age is
+`RETENTION_DAYS = 30`. The sweep runs only from `start`, only over the started flow's repo under `flows-v2`, and only
+for flows with status `done` or `abandoned` and an `updated` stamp older than 30 days. The flow `start` was asked to
+open is never swept, and live flows (running, failed, awaiting, initializing) are never swept. Each candidate is pruned
+under its own lock, with its status and age re-checked inside the lock. Pruning never removes the flow directory itself.
+
+What the sweep removes (`scripts/flow_driver/retention.py`, `_prune`):
+
+- Always: the `prompts/` and `directives/` directories, and the stale-receipt archives (`archive/*/a*.stale.*.md`).
+- Only once `retro.md` exists: the `questions/` and `answers/` directories and the driver log. Layer 2 has no retro
+  (`retro --flow` exits 3), so in practice `retro.md` does not exist yet and these survive.
+
+What survives every sweep: `state.json`, `retro.md`, `human.jsonl`, `steps/` and the step receipts. The plan's Step 9
+intent to keep the driver log and `questions/` holds only while `retro.md` is absent; after a retro they are removed
+by design. Live flows and v1 flows (under `~/.claude/flows/`, which the sweep never reads) are spared. A survival
+test is planned as a separate round, not part of this amendment. #357 stays open.
+
+**Recovery commands.** `recover --choice retry` (after a FAILED receipt, at most two per step, counted from `retried`)
+and `recover --choice take-over` are built. `recover --choice keep-previous` is refused, because it needs a redo
+lineage, which Layer 2 does not build. **Not built:** keep-previous as a driver-rebuilt receipt, the redo path, and the
+`resume --redo` cap. `resume --redo` exits 3 (`rule-0-redo`, Layer 3).
+
+**Abandon.** A `spawned` or `resumed` record is refused and names `clear-live`. A `parked-awaiting-answer` record is not
+live under Decision 8, so it is not refused. Abandon sets `status: abandoned`, records `abandoned` for the open attempt,
+and deletes nothing.
+
+**Retro.** **Not built for v2.** `retro --flow` on a v2 flow exits 3 (`not-yet-built`), and on a v1 flow it is refused
+with the v1 label. The `retro` SPAWN and the `retro.md` mark do not exist yet.
+
+**Loop wiring. Not built.** The recovery table in `recovery.py` holds the Heal, AutoRebase, Redo, Unknown-skill retry and
+keep-previous decisions. The transition in `steps.py` does not call them. A FAILED landing is STOP `step-failed`.
+So a base-stale verify failure is not rebased automatically, a lint or test failure is not healed automatically, and
+Unknown-skill failures are not retried automatically. The directive file does not yet list the recovery choices with
+their exact commands, which the plan's Step 8 called for. These gaps are recorded here, and the stub documents them.
+
+**Assess.** Skipped until Layer 3. Layer 2 goes from verify to the ship guard, with no assess stage.
+
+**#439 and #327 (v1 Retry and take-over defects).** Layer 2 ports the v1 Retry and take-over semantics as they are.
+Neither defect is fixed here, and no new remediation is added. Divergence status: ported, not fixed.
+
+**Step 6 (flows-root compatibility).** The human ruled yes on the `prompts/flow-reference.md` question. That ruling is
+the reason for the ADR-0018 reciprocal amendment. This amendment does not confirm that real step commands write receipts
+into a v2 flow. Until a test shows that, the stub treats real-step completion as unproven, and its Ask-block note stays
+in place. The in-flow `FLOWS_ROOT` edits in `commands/expert-plan.md` and `commands/expert-review.md` are kept. This is the
+human ruling B on the 2026-11-17 expert-review of this PR (issue #486), which records the decision to keep those edits
+and not pin them to the v1 root. The edits are part of this PR and are not a separate change.
+
+**Layer 2 scope.** The stub runs worktree through ship and then stops at the merge-not-built STOP. It refuses
+`--auto-merge`. No merge directive exists in Layer 2.
+
+Layer 3 amends ADR-0025 so that its auto-merge rejection covers `commands/expert-flow-v2.md`. The pointer to this ADR's
+Layer 5 supersession step will land at Layer 5 in ADR-0023. Layer 5 finalizes this ADR (Decision 11, D3), amends ADR-0008
+and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.

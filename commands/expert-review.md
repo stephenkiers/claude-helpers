@@ -736,7 +736,7 @@ If `needs-you: 0`, skip the ruling loop entirely. Do not manufacture a question 
 
 **Precedent block (Step 12, display-only).** Run once per attempt when the action plan is ready. This block surfaces the human's past answers to similar *Needs you* items as display-only annotations (ADR-0024). No decision logic reads the precedent file. The block runs only in non-PR mode and when at least one *Needs you* item is pending. It is transparent when the digest is empty or Pat times out.
 
-Follow these steps in order. Persist the outcome to `${REVIEW_DIR}/precedent-trace.txt` at step 10 (one of the closed-set reasons listed below); read it back at every subsequent step. If `${REVIEW_DIR}/precedent-trace.txt` already exists (from a prior attempt or batch), skip the entire block (including telemetry) and reuse `${REVIEW_DIR}/precedent-lines.json` and `${REVIEW_DIR}/precedent-validated.json` in the batch rendering below. Define `FLOWS_ROOT="$HOME/.claude/flows"`.
+Follow these steps in order. Persist the outcome to `${REVIEW_DIR}/precedent-trace.txt` at step 10 (one of the closed-set reasons listed below); read it back at every subsequent step. If `${REVIEW_DIR}/precedent-trace.txt` already exists (from a prior attempt or batch), skip the entire block (including telemetry) and reuse `${REVIEW_DIR}/precedent-lines.json` and `${REVIEW_DIR}/precedent-validated.json` in the batch rendering below. Define `FLOWS_ROOT="$HOME/.claude/flows"`; when `FLOW_DIR` is set and lies under `$HOME/.claude/flows-v2/`, define `FLOWS_ROOT="$HOME/.claude/flows-v2"` instead.
 
 Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0`.
 
