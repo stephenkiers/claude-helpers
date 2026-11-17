@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Spec-blind harness cases for the v2 driver Layer 2 step loop (#486, ADR-0026).
+Harness cases for the v2 driver Layer 2 step loop (#486, ADR-0026).
 
 Covers the cases from the Layer 2 plan's Tests list that the CLI, the NEXT line, the directive files,
 state.json and driver.log can express without importing implementation internals:
@@ -387,7 +387,7 @@ SECTIONS = [
 
 
 def main() -> None:
-    h = Harness("FLOW DRIVER v2 LAYER 2 STEP LOOP (spec-blind cases)")
+    h = Harness("FLOW DRIVER v2 LAYER 2 STEP LOOP")
     with tempfile.TemporaryDirectory(prefix="flow-driver-loop-") as tmp:
         base = Path(tmp)
         for title, checks in SECTIONS:
