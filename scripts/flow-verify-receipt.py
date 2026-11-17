@@ -2807,6 +2807,145 @@ def check_implement(
     return None
 
 
+_TEST_EDIT_ANSWER_REF_RE = re.compile(r"answers/fix-(\d+)\.json")
+_TEST_EDIT_LINE_RE = re.compile(r"(\S+) (\S+) (answers/fix-\d+\.json)")
+_TEST_EDIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+_APPROVE_EDIT_RE = re.compile(r"Approve edit: (\S+) (\S+)")
+
+
+def _load_approved_test_edits(flow_dir: Path, answer_ref: str) -> Tuple[Optional[Set[Tuple[str, str]]], Optional[str]]:
+    """Return the (finding id, path) pairs approved in answers/fix-<SEQ>.json (#497).
+
+    Reads the answer values in the shape the relay writes (`"answers": {qid: label or [label, note]}`);
+    a list answer's first element is the label. Only a label of the form `Approve edit: <id> <path>` counts.
+    Fails closed on a ref that is not `answers/fix-<SEQ>.json`, a file outside FLOW_DIR, or unreadable JSON.
+    """
+    m = _TEST_EDIT_ANSWER_REF_RE.fullmatch(answer_ref)
+    if not m:
+        return (None, f"test-edit: invalid answer ref: {answer_ref}")
+    answers_file = flow_dir / "answers" / f"fix-{m.group(1)}.json"
+    if not _is_under_root(answers_file.resolve(), flow_dir.resolve()):
+        return (None, f"test-edit: answer file outside FLOW_DIR: {answer_ref}")
+    if not answers_file.is_file():
+        return (None, f"test-edit: answer file not found: {answer_ref}")
+    try:
+        data = json.loads(answers_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        return (None, f"test-edit: cannot read answers for {answer_ref}: {e}")
+    answers = data.get("answers") if isinstance(data, dict) else None
+    if not isinstance(answers, dict):
+        return (None, f"test-edit: answers file malformed for {answer_ref}")
+    approved: Set[Tuple[str, str]] = set()
+    for value in answers.values():
+        label = value[0] if isinstance(value, list) and value else value
+        if not isinstance(label, str):
+            continue
+        approve = _APPROVE_EDIT_RE.fullmatch(label)
+        if approve:
+            approved.add((approve.group(1), approve.group(2)))
+    return (approved, None)
+
+
+def _test_edit_commit_reason(repo: str, commit: str, paths: Set[str]) -> Optional[str]:
+    """The approval commit must change exactly the TEST_EDIT paths, each with status M (#497)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "diff", "--name-status", "--no-renames", "--end-of-options", f"{commit}^", commit],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECS,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return f"test-edit: cannot diff TEST_EDIT_COMMIT {commit}"
+    if result.returncode != 0:
+        return f"test-edit: cannot diff TEST_EDIT_COMMIT {commit} (unknown commit or no parent)"
+    changed: Dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        status, _, path = line.partition("\t")
+        if path:
+            changed[path] = status
+    for path in sorted(changed):
+        if changed[path] != "M":
+            return f"test-edit: {path} has status {changed[path]} in TEST_EDIT_COMMIT {commit}, expected M"
+    extra = sorted(set(changed) - paths)
+    if extra:
+        return f"test-edit: TEST_EDIT_COMMIT {commit} changes paths not approved: {', '.join(extra)}"
+    missing = sorted(paths - set(changed))
+    if missing:
+        return f"test-edit: TEST_EDIT_COMMIT {commit} does not change approved path: {', '.join(missing)}"
+    return None
+
+
+def _check_test_edits(receipt: str, repo: str, flow_dir: Optional[Path]) -> Optional[str]:
+    """Cross-check an OK fix receipt's TEST_EDIT lines against the approval record (#497). Return reason or None.
+
+    No TEST_EDIT or TEST_EDIT_COMMIT line: nothing to check. `TEST_EDIT: none` with no commit: nothing
+    further. Checks, for each cited answers file: (a) the ref is answers/fix-<SEQ>.json inside FLOW_DIR;
+    (b) a non-superseded fix-step ledger answer record pins its sha256; (c) each (finding id, path) pair is
+    an `Approve edit:` answer in that file; (d) the approval commit's name-status is exactly the approved
+    paths, all M.
+    """
+    edit_values: List[str] = []
+    commit_values: List[str] = []
+    for line in receipt.split("\n"):
+        if line.startswith("TEST_EDIT_COMMIT:"):
+            commit_values.append(line[len("TEST_EDIT_COMMIT:"):].strip())
+        elif line.startswith("TEST_EDIT:"):
+            edit_values.append(line[len("TEST_EDIT:"):].strip())
+    if not edit_values and not commit_values:
+        return None
+    if len(commit_values) > 1:
+        return "test-edit: more than one TEST_EDIT_COMMIT line"
+    commit = commit_values[0] if commit_values else None
+    if edit_values == ["none"]:
+        if commit is not None:
+            return f"test-edit: TEST_EDIT_COMMIT {commit} present with TEST_EDIT: none"
+        return None
+    if not edit_values:
+        return "test-edit: TEST_EDIT_COMMIT without a TEST_EDIT line"
+    if "none" in edit_values:
+        return "test-edit: TEST_EDIT: none mixed with approved edit lines"
+    if commit is None:
+        return "test-edit: TEST_EDIT lines without TEST_EDIT_COMMIT"
+    if not _TEST_EDIT_COMMIT_RE.fullmatch(commit):
+        return f"test-edit: malformed TEST_EDIT_COMMIT: {commit}"
+
+    edits: List[Tuple[str, str, str]] = []
+    for value in edit_values:
+        m = _TEST_EDIT_LINE_RE.fullmatch(value)
+        if not m:
+            return f"test-edit: malformed TEST_EDIT line: {value}"
+        edits.append((m.group(1), m.group(2), m.group(3)))
+
+    if flow_dir is None:
+        return "test-edit: cannot resolve FLOW_DIR for TEST_EDIT answers"
+    refs = {ref for _, _, ref in edits}
+    # (a) and (b): each cited ref is a fix answers file in FLOW_DIR, pinned by a fix-step ledger record.
+    for ref in sorted(refs):
+        if not _TEST_EDIT_ANSWER_REF_RE.fullmatch(ref):
+            return f"test-edit: invalid answer ref: {ref}"
+    ledger_reason = _check_ledger_records(flow_dir, refs, step="fix")
+    if ledger_reason:
+        return ledger_reason
+    # (c): every (finding id, path) pair is approved in the file its line cites.
+    approved_by_ref: Dict[str, Set[Tuple[str, str]]] = {}
+    for ref in sorted(refs):
+        approved, approved_err = _load_approved_test_edits(flow_dir, ref)
+        if approved is None:
+            return approved_err
+        approved_by_ref[ref] = approved
+    for finding_id, path, ref in edits:
+        approved = approved_by_ref[ref]
+        if (finding_id, path) in approved:
+            continue
+        if any(approved_path == path for _, approved_path in approved):
+            return f"test-edit: finding {finding_id} is not approved for {path} ({ref})"
+        return f"test-edit: path not approved: {path} (finding {finding_id}, {ref})"
+    # (d): the approval commit changes exactly the approved paths, each with status M.
+    paths = {path for _, path, _ in edits}
+    return _test_edit_commit_reason(repo, commit, paths)
+
+
 def check_fix(
     receipt_file: Path,
     repo: str,
@@ -2852,6 +2991,12 @@ def check_fix(
         ledger_reason = _check_ledger_in_receipt(receipt, flow_dir, "fix", step_ts)
         if ledger_reason:
             return ledger_reason
+
+    # #497: human-approved existing-test edits must join the approval record (no-op without TEST_EDIT lines)
+    if decision == "OK":
+        test_edit_reason = _check_test_edits(receipt, repo, flow_dir)
+        if test_edit_reason:
+            return test_edit_reason
 
     return None
 
@@ -4232,29 +4377,35 @@ def _parse_marker(text: str) -> Tuple[MarkerKind, Optional[AssessmentMode], List
     return ("v2", mode, dispositions, has_sentinel)
 
 
-def _check_ledger_records(flow_dir: Path, answer_refs: Set[str]) -> Optional[str]:
+def _check_ledger_records(flow_dir: Path, answer_refs: Set[str], step: str = "assess") -> Optional[str]:
     """F2: Check ledger records for human-answered dispositions.
 
-    For each answer_ref used by a disposition with by=human, verify:
-    - A ledger record exists with kind='answer', step='assess', status != 'superseded'
+    For each answer_ref used by a disposition with by=human (step 'assess'), or cited by a fix-step
+    TEST_EDIT line (step 'fix', #497), verify:
+    - A ledger record exists with kind='answer', step=<step>, status != 'superseded'
     - The record's text contains 'answer_ref: <ref>' and 'sha256: <hex>'
     - The sha256 matches the current bytes of <flow_dir>/<ref>
 
+    A record for one step never satisfies a ref of the other step, because the lookup filters on step.
     Returns an error message (via outstanding gate error path) or None if all checks pass.
     """
     if not answer_refs:
         return None
+    # Assess messages keep their original wording; other steps report under their own name.
+    prefix = "outstanding gate" if step == "assess" else "test-edit"
 
     ledger_load = load_ledger(flow_dir)
 
     if isinstance(ledger_load, LedgerAbsent):
         if answer_refs:
+            if step != "assess":
+                return f"{prefix}: no ledger record for {', '.join(sorted(answer_refs))}"
             return "outstanding gate: cannot read human ledger: file not found"
         return None
 
     if isinstance(ledger_load, LedgerUnreadable):
         if answer_refs:
-            return f"outstanding gate: cannot read human ledger: {ledger_load.detail}"
+            return f"{prefix}: cannot read human ledger: {ledger_load.detail}"
         return None
 
     if not isinstance(ledger_load, LedgerRecords):
@@ -4264,7 +4415,7 @@ def _check_ledger_records(flow_dir: Path, answer_refs: Set[str]) -> Optional[str
     ledger_sha256: Dict[str, str] = {}
     for record in ledger_load.records:
         # Check if this is an answer record we care about
-        if record.kind != "answer" or record.step != "assess" or record.status == "superseded":
+        if record.kind != "answer" or record.step != step or record.status == "superseded":
             continue
 
         text = record.text
@@ -4287,7 +4438,7 @@ def _check_ledger_records(flow_dir: Path, answer_refs: Set[str]) -> Optional[str
     # Verify each answer_ref has a matching record and valid sha256
     for ref in answer_refs:
         if ref not in ledger_sha256:
-            return f"outstanding gate: no ledger record for {ref}"
+            return f"{prefix}: no ledger record for {ref}"
 
         # Verify sha256 matches current file
         ref_path = flow_dir / ref
@@ -4295,10 +4446,10 @@ def _check_ledger_records(flow_dir: Path, answer_refs: Set[str]) -> Optional[str
             ref_bytes = ref_path.read_bytes()
             ref_sha256 = hashlib.sha256(ref_bytes).hexdigest()
         except (OSError, UnicodeDecodeError) as e:
-            return f"outstanding gate: cannot read answer file {ref}: {e}"
+            return f"{prefix}: cannot read answer file {ref}: {e}"
 
         if ref_sha256 != ledger_sha256[ref]:
-            return f"outstanding gate: ledger record does not match {ref} (sha256 mismatch)"
+            return f"{prefix}: ledger record does not match {ref} (sha256 mismatch)"
 
     return None
 
