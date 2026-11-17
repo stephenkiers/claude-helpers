@@ -55,7 +55,7 @@ from scripts.flow_driver.state import StateSchemaError, load_v2_state
 
 DOC = REPO_ROOT / "commands" / "expert-flow-v2.md"
 NOW = datetime(2026, 11, 11, 12, 0, 0, tzinfo=timezone.utc)
-NEXT_LINE_RE = re.compile(r"NEXT: (SPAWN|RESUME|WAIT|ASK|PARK|STOP|DONE) (/\S+)")
+NEXT_LINE_RE = re.compile(r"NEXT: (SPAWN|RESUME|WAIT|ASK|PARK|STOP|DONE|MERGE) (/\S+)")
 ACCEPT_LINE_RE = re.compile(r"NEXT: (\S+) (/\S+)")
 
 
@@ -135,6 +135,8 @@ def verb_label(verb: Verb) -> str:
         return "stop"
     if verb == "DONE":
         return "done"
+    if verb == "MERGE":
+        return "merge"
     assert_never(verb)
 
 

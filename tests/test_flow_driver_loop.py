@@ -5,7 +5,7 @@ Harness cases for the v2 driver Layer 2 step loop (#486, ADR-0026).
 Covers the cases from the Layer 2 plan's Tests list that the CLI, the NEXT line, the directive files,
 state.json and driver.log can express without importing implementation internals:
 
-- Test 1: happy path worktree..verify, ship SPAWN, then merge STOP once gh reports an OPEN PR.
+- Test 1: happy path worktree..verify, ship SPAWN, then the merge-gate question parks once gh reports an OPEN PR.
 - Test 2: double completion (a repeated next with no disk change) returns the same directive and nonce.
 - Test 3: a deleted directive file is recreated with the same nonce on the next call.
 - Test 4: dead agent: WAIT, then clear-live, then a SPAWN with a new attempt and nonce.
@@ -96,7 +96,7 @@ def gh_open_env(gh: FakeGh, head: str) -> Dict[str, str]:
 # Test 1: happy path to the merge STOP
 # ---------------------------------------------------------------------------
 
-def test_01_happy_path_reaches_ship_then_merge_stop(base: Path) -> None:
+def test_01_landed_ship_parks_the_merge_gate_question(base: Path) -> None:
     home = make_home(base)
     gh = FakeGh(base, mode="nopr")
     env = gh.env()
@@ -109,10 +109,11 @@ def test_01_happy_path_reaches_ship_then_merge_stop(base: Path) -> None:
         home, flow, first, env, before_next={"ship": open_pr_before_final_next}
     )
     expect(spawned == HAPPY_ORDER, f"steps spawned were {spawned}, expected {HAPPY_ORDER}")
-    expect(verb == "STOP", f"after ship the next directive was {verb}, expected STOP")
+    expect(verb == "ASK", f"after ship the next directive was {verb}, expected ASK")
     text = directive_text(directive)
-    expect("merge-not-built: " in text, "merge STOP reason does not start merge-not-built: ")
-    expect("merge gate not built (Layer 3)" in text, "merge STOP lacks the Layer 3 detail")
+    expect("merge-gate" in text, "landed ship did not park the merge-gate question")
+    for option in ["Merge", "Hold", "Take over"]:
+        expect(option in text, f"merge-gate question lacks option {option!r}")
     expect(not any("merge" in step for step in spawned), "a merge step was spawned")
 
 
@@ -365,7 +366,7 @@ def test_41_wait_timeout_is_stop_naming_clear_live_and_repeats(base: Path) -> No
 
 SECTIONS = [
     ("[Happy path and merge pin]", [
-        ("1: happy path worktree..ship, then merge-not-built STOP on OPEN PR", test_01_happy_path_reaches_ship_then_merge_stop),
+        ("1: happy path worktree..ship, then a landed ship parks the merge-gate question", test_01_landed_ship_parks_the_merge_gate_question),
     ]),
     ("[Double completion, crash re-render, dead agent]", [
         ("2: repeated next returns the same directive and nonce", test_02_repeated_next_returns_same_directive_and_nonce),
