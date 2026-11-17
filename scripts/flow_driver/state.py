@@ -30,6 +30,14 @@ kept verbatim in `extra` (Q5 = A):
   attempt_log        {step: {"<attempt>": receipt-landed, cleared, receipt-malformed or abandoned}}.
                      Kept separate from attempts so the fleet's attempts.plan keeps its meaning
   applied            the canonical transition keys already applied (see apply_transition)
+  recovery           {rebases, heals, retros}: flow-level one-shot counters (Layer 2, Q3 = B). Absent in a
+                     Layer 1 file, which loads as zeros. Written in the same replace as the transition it gates
+  heads              {verify, ship}: the driver-owned HEAD sources for the ship guard (Layer 2). Each is a
+                     40 or 64 lowercase hex SHA or null. Absent in a Layer 1 file, which loads as nulls
+
+  pending_spawn also carries (Layer 2, all optional on load): purpose (step, rebase, heal or retro), fleet
+  (null or {run_id}; recorded only, session D7), receipt_first_seen (null or a UTC timestamp, the D4 anchor)
+  and ledger_seq (null or the ledger high-water seq at spawn).
 
 Skeleton findings this schema answers (docs/v2-inventory/skeleton-findings.md):
   AC2-K1-kill, AC2-K2-kill, PHANTOM-LIVE: `live` is a projection of pending_spawn (D1), so a cleared
@@ -64,6 +72,7 @@ from typing import (
     Literal,
     Mapping,
     NamedTuple,
+    NewType,
     Optional,
     Set,
     Tuple,
@@ -88,7 +97,18 @@ Step = Literal["worktree", "plan", "track", "implement", "review", "fix", "verif
 Status = Literal["running", "awaiting", "paused", "failed", "done", "abandoned"]
 StopSource = Literal["receipt", "validation", "audit", "tree"]
 PendingState = Literal["spawned", "parked-awaiting-answer", "resumed", "receipt-landed"]
-AttemptOutcome = Literal["receipt-landed", "cleared", "receipt-malformed", "abandoned"]
+Purpose = Literal["step", "rebase", "heal", "retro"]
+AttemptOutcome = Literal[
+    "receipt-landed",
+    "cleared",
+    "receipt-malformed",
+    "abandoned",
+    "retried",
+    "redone",
+    "unknown-skill-retried",
+]
+# A git object name in heads.*: 40 hex (SHA-1) or 64 hex (SHA-256 repos).
+Sha = NewType("Sha", str)
 TransitionKind = Literal["once", "repeatable"]
 RefusalClass = Literal[
     "locked",
@@ -107,11 +127,13 @@ STEPS: Tuple[Step, ...] = get_args(Step)
 STATUSES: Tuple[Status, ...] = get_args(Status)
 STOP_SOURCES: Tuple[StopSource, ...] = get_args(StopSource)
 PENDING_STATES: Tuple[PendingState, ...] = get_args(PendingState)
+PURPOSES: Tuple[Purpose, ...] = get_args(Purpose)
 ATTEMPT_OUTCOMES: Tuple[AttemptOutcome, ...] = get_args(AttemptOutcome)
 _STEP_BY_NAME: Dict[str, Step] = {step: step for step in STEPS}
 _STATUS_BY_NAME: Dict[str, Status] = {status: status for status in STATUSES}
 _STOP_SOURCE_BY_NAME: Dict[str, StopSource] = {source: source for source in STOP_SOURCES}
 _PENDING_BY_NAME: Dict[str, PendingState] = {state: state for state in PENDING_STATES}
+_PURPOSE_BY_NAME: Dict[str, Purpose] = {purpose: purpose for purpose in PURPOSES}
 _OUTCOME_BY_NAME: Dict[str, AttemptOutcome] = {outcome: outcome for outcome in ATTEMPT_OUTCOMES}
 
 # Pending states whose live record exists (D1). parked-awaiting-answer and receipt-landed have none.
@@ -133,13 +155,24 @@ ALLOWED_TRANSITIONS: FrozenSet[Tuple[Optional[PendingState], Optional[PendingSta
         ("spawned", None),  # rerun_malformed, record_cleared
         ("resumed", None),
         ("receipt-landed", None),  # record_cleared after a landed receipt
+        ("receipt-landed", "spawned"),  # record_spawn replacing a landed record (Layer 2 rerun, recover)
     }
 )
 
 # Every transition name is declared exactly once here. "once" transitions run at most once per
 # (run_id, step, attempt). "repeatable" transitions also carry a content hash in their key.
 TransitionName = Literal[
-    "record_spawn", "land", "rerun_malformed", "record_cleared", "archive_stale", "store_fingerprint"
+    "record_spawn",
+    "land",
+    "rerun_malformed",
+    "record_cleared",
+    "archive_stale",
+    "store_fingerprint",
+    "park",
+    "resume",
+    "recover",
+    "restore_previous",
+    "abandon",
 ]
 
 TRANSITION_KINDS: Dict[TransitionName, TransitionKind] = {
@@ -149,6 +182,11 @@ TRANSITION_KINDS: Dict[TransitionName, TransitionKind] = {
     "record_cleared": "once",
     "archive_stale": "repeatable",
     "store_fingerprint": "repeatable",
+    "park": "once",
+    "resume": "once",
+    "recover": "once",
+    "restore_previous": "once",
+    "abandon": "once",
 }
 
 _KNOWN_KEYS: FrozenSet[str] = frozenset(
@@ -172,10 +210,13 @@ _KNOWN_KEYS: FrozenSet[str] = frozenset(
         "healed",
         "attempt_log",
         "applied",
+        "recovery",
+        "heads",
     }
 )
 _TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_GIT_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 _ATTEMPT_KEY = re.compile(r"[1-9][0-9]*")
 _MUTATING_TOKEN = object()
 _T = TypeVar("_T")
@@ -212,12 +253,40 @@ class ReceiptFingerprint:
 
 
 @dataclass(frozen=True)
+class FleetIdentity:
+    """The fleet run that launched a spawn (session D7). Recorded only; the automatic clear-live is Layer 4."""
+
+    run_id: str
+
+
+@dataclass(frozen=True)
 class PendingSpawn:
     step: Step
     attempt: int
     nonce: str
     state: PendingState
     receipt_seen: Optional[ReceiptFingerprint]
+    purpose: Purpose = "step"
+    fleet: Optional[FleetIdentity] = None
+    receipt_first_seen: Optional[str] = None  # UTC YYYY-MM-DDTHH:MM:SSZ, the D4 quiet-interval anchor
+    ledger_seq: Optional[int] = None  # the ledger high-water seq at spawn, used to re-render the snapshot
+
+
+@dataclass(frozen=True)
+class Recovery:
+    """Flow-level one-shot counters (Q3 = B). Each is written in the same replace as the transition it gates."""
+
+    rebases: int = 0
+    heals: int = 0
+    retros: int = 0
+
+
+@dataclass(frozen=True)
+class Heads:
+    """Driver-owned HEAD sources for the ship guard: verify's CHECK_SHA, and the HEAD when ship's receipt lands."""
+
+    verify: Optional[Sha] = None
+    ship: Optional[Sha] = None
 
 
 class TransitionKey(NamedTuple):
@@ -248,6 +317,8 @@ class V2State:
     attempt_log: Mapping[Step, Mapping[int, AttemptOutcome]]
     applied: Tuple[str, ...]
     extra: Mapping[str, object]
+    recovery: Recovery = Recovery()
+    heads: Heads = Heads()
 
 
 @dataclass(frozen=True)
@@ -302,6 +373,13 @@ class _Fields:
         if key not in self._obj:
             raise StateSchemaError(self.field(key), "missing")
         return self._obj[key]
+
+    def present(self, key: str) -> bool:
+        return key in self._obj
+
+    def raw_or_none(self, key: str) -> object:
+        """The raw value, or None when the key is absent. For Layer 2 keys that Layer 1 files lack."""
+        return self._obj[key] if key in self._obj else None
 
     def text(self, key: str) -> str:
         return _as_text(self.field(key), self.raw(key))
@@ -389,16 +467,77 @@ def _load_fingerprint(value: object, field: str) -> Optional[ReceiptFingerprint]
     return ReceiptFingerprint(sha256=sha256, size=fields.integer("size", 0))
 
 
+def _load_fleet(value: object, field: str) -> Optional[FleetIdentity]:
+    if value is None:
+        return None
+    fields = _Fields(_as_object(field, value), f"{field}.")
+    return FleetIdentity(run_id=_non_empty(fields, "run_id"))
+
+
+def _load_optional_timestamp(value: object, field: str) -> Optional[str]:
+    if value is None:
+        return None
+    text = _as_text(field, value)
+    if _TIMESTAMP.fullmatch(text) is None:
+        raise StateSchemaError(field, "must be YYYY-MM-DDTHH:MM:SSZ")
+    return text
+
+
 def _load_pending(value: object) -> Optional[PendingSpawn]:
     if value is None:
         return None
     fields = _Fields(_as_object("pending_spawn", value), "pending_spawn.")
+    purpose_value = fields.raw_or_none("purpose")
+    ledger_seq_value = fields.raw_or_none("ledger_seq")
     return PendingSpawn(
         step=fields.pick("step", _STEP_BY_NAME),
         attempt=fields.integer("attempt", 1),
         nonce=_non_empty(fields, "nonce"),
         state=fields.pick("state", _PENDING_BY_NAME),
         receipt_seen=_load_fingerprint(fields.raw("receipt_seen"), fields.field("receipt_seen")),
+        purpose="step" if purpose_value is None else _as_enum(fields.field("purpose"), purpose_value, _PURPOSE_BY_NAME),
+        fleet=_load_fleet(fields.raw_or_none("fleet"), fields.field("fleet")),
+        receipt_first_seen=_load_optional_timestamp(
+            fields.raw_or_none("receipt_first_seen"), fields.field("receipt_first_seen")
+        ),
+        ledger_seq=None if ledger_seq_value is None else _as_int(fields.field("ledger_seq"), ledger_seq_value, 0),
+    )
+
+
+def _optional_counter(block: _Fields, key: str) -> int:
+    value = block.raw_or_none(key)
+    return 0 if value is None else _as_int(block.field(key), value, 0)
+
+
+def _load_recovery(fields: _Fields) -> Recovery:
+    """An absent block loads as zeros, so a Layer 1 state.json needs no migration."""
+    if not fields.present("recovery"):
+        return Recovery()
+    block = _Fields(_as_object("recovery", fields.raw("recovery")), "recovery.")
+    return Recovery(
+        rebases=_optional_counter(block, "rebases"),
+        heals=_optional_counter(block, "heals"),
+        retros=_optional_counter(block, "retros"),
+    )
+
+
+def _load_head(value: object, field: str) -> Optional[Sha]:
+    if value is None:
+        return None
+    text = _as_text(field, value)
+    if _GIT_SHA.fullmatch(text) is None:
+        raise StateSchemaError(field, "must be 40 or 64 lowercase hex characters")
+    return Sha(text)
+
+
+def _load_heads(fields: _Fields) -> Heads:
+    """An absent block loads as nulls, so a Layer 1 state.json needs no migration."""
+    if not fields.present("heads"):
+        return Heads()
+    block = _Fields(_as_object("heads", fields.raw("heads")), "heads.")
+    return Heads(
+        verify=_load_head(block.raw_or_none("verify"), block.field("verify")),
+        ship=_load_head(block.raw_or_none("ship"), block.field("ship")),
     )
 
 
@@ -487,6 +626,8 @@ def load_v2_state(raw: object) -> V2State:
         attempt_log=_load_attempt_log(fields),
         applied=_load_applied(fields),
         extra={key: value for key, value in obj.items() if key not in _KNOWN_KEYS},
+        recovery=_load_recovery(fields),
+        heads=_load_heads(fields),
     )
     if state.live != _project_live(state.pending_spawn):
         raise StateSchemaError("live", "must be null unless pending_spawn is spawned or resumed, then a copy of it")
@@ -508,12 +649,19 @@ def _pending_to_dict(pending: Optional[PendingSpawn]) -> Optional[Dict[str, obje
     seen: Optional[Dict[str, object]] = None
     if pending.receipt_seen is not None:
         seen = {"sha256": pending.receipt_seen.sha256, "size": pending.receipt_seen.size}
+    fleet: Optional[Dict[str, object]] = None
+    if pending.fleet is not None:
+        fleet = {"run_id": pending.fleet.run_id}
     return {
         "step": pending.step,
         "attempt": pending.attempt,
         "nonce": pending.nonce,
         "state": pending.state,
         "receipt_seen": seen,
+        "purpose": pending.purpose,
+        "fleet": fleet,
+        "receipt_first_seen": pending.receipt_first_seen,
+        "ledger_seq": pending.ledger_seq,
     }
 
 
@@ -551,6 +699,12 @@ def v2_state_to_dict(state: V2State) -> Dict[str, object]:
             "healed": state.healed,
             "attempt_log": attempt_log,
             "applied": list(state.applied),
+            "recovery": {
+                "rebases": state.recovery.rebases,
+                "heals": state.recovery.heals,
+                "retros": state.recovery.retros,
+            },
+            "heads": {"verify": state.heads.verify, "ship": state.heads.ship},
         }
     )
     return dict(sorted(data.items()))
