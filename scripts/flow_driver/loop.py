@@ -315,6 +315,16 @@ def _branch_of(worktree: Optional[str]) -> Union[str, sg.GitError]:
     return name
 
 
+def _heal_commits(worktree: Optional[str]) -> Tuple[str, ...]:
+    """Subjects of the Flow-Heal commits on the ticket branch (merge gate context); () on any git failure."""
+    if not worktree:
+        return ()
+    result = pf.run_command(["git", "-C", worktree, "log", "--format=%s", "--grep=^Flow-Heal:", "origin/main..HEAD"])
+    if result.returncode != 0:
+        return ()
+    return tuple(line for line in result.stdout.splitlines() if line.strip())
+
+
 def _merge_arrival(state: V2State, flow: Path) -> Outcome:
     """
     A landed merge receipt: the PR is re-read by number against the approved head (never a branch from the worktree).
@@ -789,7 +799,10 @@ def _gate_stage(
         if isinstance(found, sg.GitError):
             return None, _halt(state, flow, "gh-error", f"could not read the ticket branch for the merge gate: {found.detail}")
         branch = found
-    facts = gates.GateFacts(flow=flow, nonce=nonce, landed=landed, attempt=attempt, answer=answer, note=note, branch=branch)
+    heals = _heal_commits(state.worktree) if landed in _MERGE_GATE_STEPS else ()
+    facts = gates.GateFacts(
+        flow=flow, nonce=nonce, landed=landed, attempt=attempt, answer=answer, note=note, branch=branch, heal_commits=heals
+    )
     return _gate_effects(locked, flow, state, gates.decide(state, facts))
 
 

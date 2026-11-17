@@ -122,6 +122,14 @@ def parse_audit_verdict(output: str) -> AuditVerdict:
     return AuditError(reason=f"malformed audit verdict: {first_line}")
 
 
+def audit_receipt_path(flow: Path, step: Step, attempt: int) -> Path:
+    """
+    Where the audit worker's receipt lives: steps/audit-<step>-a<attempt>.md. Distinct from
+    receipts.receipt_path(flow, step) (steps/NN-<step>.md), so an audit never overwrites the step receipt it audits.
+    """
+    return flow / "steps" / f"audit-{step}-a{attempt}.md"
+
+
 def import_flow_accept() -> Tuple[Optional[object], Optional[object]]:
     """
     Import scripts/flow-accept.py's ALLOWLIST and classify function via importlib.
@@ -130,7 +138,9 @@ def import_flow_accept() -> Tuple[Optional[object], Optional[object]]:
         (ALLOWLIST, classify) tuple, or (None, None) if import fails
     """
     try:
-        spec = importlib.util.spec_from_file_location("flow_accept", "scripts/flow-accept.py")
+        spec = importlib.util.spec_from_file_location(
+            "flow_accept", str(Path(__file__).resolve().parent.parent / "flow-accept.py")
+        )
         if spec is None or spec.loader is None:
             return None, None
 
