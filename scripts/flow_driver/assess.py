@@ -24,6 +24,43 @@ from .preflight import CommandResult, run_command
 from .state import LockedFlow, ParkedQuestion, Sha, V2State
 
 
+# Closed result type for assess_next orchestration
+@dataclass(frozen=True)
+class AssessSpawn:
+    """Return type: assessor spawn is needed; carry the SPAWN fields."""
+
+    agent_type: str
+    prompt_file: str
+    step: str
+    attempt: int
+    nonce: str
+
+
+@dataclass(frozen=True)
+class AssessAsk:
+    """Return type: batch parked for answering; question file written."""
+
+    pass
+
+
+@dataclass(frozen=True)
+class AssessAdvance:
+    """Return type: assess is complete; advance to next step."""
+
+    pass
+
+
+@dataclass(frozen=True)
+class AssessStop:
+    """Return type: assess failed; a named STOP with code 'assess-error'."""
+
+    code: str
+    reason: str
+
+
+AssessOutcome = Union[AssessSpawn, AssessAsk, AssessAdvance, AssessStop]
+
+
 # Frozen dataclasses for precomputed results and assessor input
 @dataclass(frozen=True)
 class AssessmentItem:
@@ -724,37 +761,36 @@ def assess_next(
     locked: LockedFlow,
     flow: Path,
     state: V2State,
-) -> Tuple[Optional[str], Optional[str]]:
+    nonce: str = "",
+    attempt: int = 1,
+) -> AssessOutcome:
     """
-    Orchestrate the assess stage: check if assess is needed, compute results, and prepare batch.
+    Orchestrate the assess stage: closed result type orchestration.
 
-    This is the main entry point for assess.py orchestration. It:
-    1. Gets the outstanding set
-    2. If empty, returns (None, None) to indicate ADVANCE
-    3. Computes driver-side checks for each item
-    4. Writes precomputed results for the assessor to read
-    5. Writes the assess report
-    6. Prepares the assess batch question and parks it
+    This is the main entry point for assess.py. It:
+    1. Gets the outstanding set; if empty, returns AssessAdvance
+    2. If no assessor output yet, returns AssessSpawn
+    3. Parses assessor output and builds batch, returns AssessAsk if batch not complete
+    4. When batch is complete, runs gate and returns AssessAdvance or AssessStop
 
     Returns:
-        (stop_code, error_reason) tuple:
-        - (None, None): proceed (ADVANCE)
-        - ("assess-error", reason): fail with this stop code
-        - If successful but assess batch was prepared, loop.py will handle spawning assessor
+        AssessOutcome: one of AssessSpawn, AssessAsk, AssessAdvance, or AssessStop
 
     Args:
         locked: LockedFlow with write access under the lock
         flow: Path to the flow directory
         state: Current V2State
+        nonce: The nonce for this assess spawn (if AssessSpawn is returned)
+        attempt: The attempt number (if AssessSpawn is returned)
     """
     # Get outstanding set
     outstanding_items, outstanding_err = get_outstanding_set(flow)
     if outstanding_err:
-        return "assess-error", outstanding_err
+        return AssessStop(code="assess-error", reason=outstanding_err)
 
     # If no outstanding items, assess is done - proceed to ship
     if not outstanding_items:
-        return None, None
+        return AssessAdvance()
 
     # Extract outstanding ids for validation
     outstanding_ids = []
@@ -765,17 +801,40 @@ def assess_next(
     # Compute assessments
     assessments, compute_err = compute_assessments(flow, state, outstanding_items)
     if compute_err:
-        return "assess-error", compute_err
+        return AssessStop(code="assess-error", reason=compute_err)
 
     # Write precomputed results for the assessor
     results_file = write_assessment_results(flow, assessments)
 
-    # Create a dict of assessments for later reference
-    assessments_dict = {item.id: item for item in assessments}
+    # Check if assessor output exists
+    assess_report = flow / "steps" / "07-assess.md"
+    assessor_output_exists = assess_report.exists()
 
-    # Create dummy assessor records for testing (marked as not done by default)
-    assessor_records_dict = {
-        item.id: AssessRecord(
+    # Case 1: No assessor output yet - need to spawn assessor
+    if not assessor_output_exists:
+        # Build the assessor spawn result
+        return AssessSpawn(
+            agent_type="general-purpose",
+            prompt_file=str(flow / "prompts" / f"assess-a{attempt}-{nonce}.md"),
+            step="assess",
+            attempt=attempt,
+            nonce=nonce,
+        )
+
+    # Case 2: Assessor output exists - parse it
+    try:
+        with open(assess_report, "r") as f:
+            report_content = f.read()
+    except Exception as e:
+        return AssessStop(code="assess-error", reason=f"cannot read assess report: {e}")
+
+    # For now, we extract assessor records from the step/07-assess.md
+    # In practice, the assessor writes the report; we parse it to find the records
+    # This is a placeholder - the real implementation would parse the specific format.
+    assessor_records_dict: Dict[str, AssessRecord] = {}
+    for item in assessments:
+        # Create a placeholder record (would be parsed from assessor output in real flow)
+        assessor_records_dict[item.id] = AssessRecord(
             id=item.id,
             status="open",
             kind="unknown",
@@ -787,16 +846,35 @@ def assess_next(
             verification_proof="",
             options=[],
         )
-        for item in assessments
-    }
 
-    # Write assess report
-    write_assess_report(flow, assessments, assessor_records_dict)
+    # Case 3: Check if batch is complete (all items answered)
+    # Read the assembled answers file if it exists
+    assembled_file = flow / "answers" / f"assess-{state.parked.nn if state.parked and state.parked.kind == 'assess' else 1}.json"
+    batch_complete = assembled_file.exists()
 
-    # Prepare batch questions and park for answering
+    if batch_complete:
+        # Case 4: Run the outstanding gate
+        # First write the disposition marker
+        seq = state.parked.nn if state.parked and state.parked.kind == "assess" else 1
+        gate_err = write_disposition_marker(flow, seq)
+        if gate_err:
+            return AssessStop(code="assess-error", reason=gate_err)
+
+        # Run the outstanding gate
+        gate_result = invoke_outstanding_gate(flow)
+        if gate_result:
+            return AssessStop(code="assess-error", reason=f"outstanding gate: {gate_result}")
+
+        # Gate passed - advance
+        return AssessAdvance()
+
+    # Batch not yet complete - prepare assess batch and park
     new_state, batch_err = prepare_assess_batch(locked, flow, state, assessments, assessor_records_dict)
     if batch_err:
-        return "assess-error", batch_err
+        return AssessStop(code="assess-error", reason=batch_err)
 
-    # Batch preparation succeeded
-    return None, None
+    # Write assess report (summarizing items and their status)
+    write_assess_report(flow, assessments, assessor_records_dict)
+
+    # Batch preparation succeeded - return ASK
+    return AssessAsk()
