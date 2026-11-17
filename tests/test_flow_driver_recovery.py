@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Spec-blind tests for scripts/flow_driver/recovery.py (Layer 2, Round 2).
+Tests for scripts/flow_driver/recovery.py.
 
 Tests the recovery bounds table: each bound is enforced, so a call past the bound
 is refused with a typed result, never silently allowed.

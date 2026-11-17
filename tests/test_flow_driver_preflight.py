@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Spec-blind tests for scripts/flow_driver/preflight.py (Layer 2, Round 2).
+Tests for scripts/flow_driver/preflight.py.
 
 Tests preflight behavior: a gh command timeout maps to CANNOT_START, and OSError likewise.
 

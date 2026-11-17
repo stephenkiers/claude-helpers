@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Spec-blind tests for scripts/flow_driver/ledger.py (Layer 2, Round 2).
+Tests for scripts/flow_driver/ledger.py.
 
 Tests ledger behavior: close_out_directions() is idempotent, and ledger errors map to typed
 LedgerError, not exceptions.

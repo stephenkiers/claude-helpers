@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Spec-blind tests for scripts/flow_driver/retention.py (Layer 2, Round 2).
+Tests for scripts/flow_driver/retention.py.
 
 Tests retention behavior: live flows are never deleted, v1-root flows are never deleted,
 expired flows are removed but human.jsonl, steps/, and receipts survive, and retention
@@ -41,53 +41,6 @@ def check(h: Harness, name: str, fn: Callable[[], None]) -> None:
         h.test_result(name, False, f"{type(exc).__name__}: {exc}")
     else:
         h.test_result(name, True)
-
-
-def test_expired_flows_returns_list() -> None:
-    """expired_flows() returns a list, handling old flows when found. [WEAK_ASSERTION]"""
-    with tempfile.TemporaryDirectory() as tmp:
-        repo_dir = Path(tmp)
-
-        # Create the flows directory structure
-        flows_dir = repo_dir / "flows"
-        flows_dir.mkdir()
-
-        # Create an old flow with proper state
-        old_flow = flows_dir / "old-flow"
-        old_flow.mkdir()
-        (old_flow / "state.json").write_text(json.dumps({"updated": "2026-01-01T00:00:00Z", "status": "done"}))
-
-        now = datetime(2026, 2, 15, tzinfo=timezone.utc)
-        result = retention.expired_flows(repo_dir, now, days=30)
-
-        expect(isinstance(result, list), f"expired_flows returned {type(result).__name__}, not list")
-        # Strengthen: verify that result elements are Path objects when non-empty
-        for item in result:
-            expect(isinstance(item, Path), f"expired_flows list contains {type(item).__name__}, not Path")
-
-
-def test_sweep_returns_deleted_paths() -> None:
-    """sweep() returns a list of paths that were deleted. [WEAK_ASSERTION]"""
-    with tempfile.TemporaryDirectory() as tmp:
-        repo_dir = Path(tmp)
-
-        # Create the flows directory structure
-        flows_dir = repo_dir / "flows"
-        flows_dir.mkdir()
-
-        # Create an old flow with minimal structure
-        old_flow = flows_dir / "old-flow"
-        old_flow.mkdir()
-        (old_flow / "state.json").write_text(json.dumps({"updated": "2026-01-01T00:00:00Z", "status": "done"}))
-        (old_flow / "some-file.txt").write_text("test")
-
-        now = datetime(2026, 2, 15, tzinfo=timezone.utc)
-        result = retention.sweep(repo_dir, now, days=30)
-
-        expect(isinstance(result, list), f"sweep returned {type(result).__name__}, not list")
-        # Strengthen: verify that result elements are Path objects when returned
-        for item in result:
-            expect(isinstance(item, Path), f"sweep returned {type(item).__name__}, not Path")
 
 
 def test_retention_survives_missing_flows_dir() -> None:
@@ -227,8 +180,6 @@ def test_sweep_unreadable_repo_dir_prunes_nothing() -> None:
 
 SECTIONS = [
     ("[Retention basic behavior]", [
-        ("1: expired_flows returns list", test_expired_flows_returns_list),
-        ("2: sweep returns deleted paths", test_sweep_returns_deleted_paths),
         ("3: retention handles missing flows directory", test_retention_survives_missing_flows_dir),
         ("4: expired flow pruned, human.jsonl/steps/receipts/state survive", test_sweep_prunes_expired_but_keeps_human_steps_and_receipts),
         ("5: retro inputs kept until retro.md exists", test_sweep_keeps_retro_inputs_before_retro_exists),
