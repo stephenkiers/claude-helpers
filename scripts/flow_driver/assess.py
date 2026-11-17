@@ -456,3 +456,347 @@ def prepare_assess_batch(
     )
 
     return locked.require_state(), None
+
+
+def assessor_spawn(
+    flow: Path,
+    attempt: int,
+    nonce: str,
+    results_file: Path,
+) -> str:
+    """
+    Build the assessor SPAWN prompt file content.
+
+    Args:
+        flow: Path to the flow directory
+        attempt: The assess attempt number
+        nonce: Unique nonce for this spawn
+        results_file: Path to the precomputed results file
+
+    Returns the prompt file content (a string to be written to the step prompt file).
+    """
+    # The assessor instructions are boilerplate; for now, return a simple prompt
+    # that tells the assessor what to do.
+    prompt = f"""# Assess Stage
+
+You are the assessor for this flow's outstanding items. Read the precomputed results and judge each item.
+
+**Precomputed results file:** {results_file}
+
+Your task:
+1. Read the precomputed results (range check, anchor check, already-done check)
+2. For each item, determine: status, kind, scope, leave_as_is_safe, cause, evidence, finish_plan, verification_proof, and options
+3. Output one record per line in this format:
+
+<id> | status=<status> | kind=<kind> | scope=<scope> | leave_as_is_safe=<bool> | cause=<cause> | evidence=<evidence> | finish_plan=<plan> | verification_proof=<proof> | options=<csv>
+
+Where:
+- status: "done", "open", "blocked", etc.
+- kind: item classification
+- scope: "isolated", "cross-file", etc.
+- leave_as_is_safe: "true" or "false"
+- cause: why it's outstanding
+- evidence: what was checked
+- finish_plan: how to finish
+- verification_proof: how to verify
+- options: comma-separated list of recommended options
+
+Do not write to files or edit code. Only read the results and output your assessment.
+"""
+    return prompt
+
+
+def save_item_answer(
+    flow: Path,
+    seq: int,
+    qid: str,
+    label: str,
+    note: Optional[str],
+    unanswered_qids: set,
+) -> Optional[str]:
+    """
+    Save an answer for one assess item, then advance state.parked.item to the next unanswered qid.
+
+    Args:
+        flow: Path to the flow directory
+        seq: The assess sequence number
+        qid: The question id
+        label: The answer label (option text)
+        note: Optional note (required for Drop)
+        unanswered_qids: Set of remaining unanswered question ids
+
+    Returns error reason if the answer is refused, else None.
+
+    Raises or returns error if:
+    - qid is not in the driver's outstanding set
+    - label is not a valid option for that question
+    - Drop without a note
+    - Leave-as-is where leave_as_is_safe != yes
+    """
+    from .state import mutating
+
+    # Validate the note requirement
+    if label == "Drop with a reason" and not note:
+        return "answer refused: Drop requires a note (--note)"
+
+    # Create per-item answer file: answers/assess-<SEQ>.d/<qid>.json
+    answer_dir = flow / "answers" / f"assess-{seq}.d"
+    answer_dir.mkdir(parents=True, exist_ok=True)
+    answer_file = answer_dir / f"{qid}.json"
+
+    # Use exclusive create (O_EXCL)
+    try:
+        fd = os.open(str(answer_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        try:
+            with os.fdopen(fd, "w") as f:
+                payload = {
+                    "qid": qid,
+                    "label": label,
+                }
+                if note:
+                    payload["note"] = note
+                json.dump(payload, f, indent=2, sort_keys=True)
+                f.write("\n")
+        except Exception:
+            os.close(fd)
+            answer_file.unlink(missing_ok=True)
+            raise
+    except FileExistsError:
+        return f"answer refused: {qid} already answered"
+    except Exception as e:
+        return f"answer refused: could not write answer: {e}"
+
+    # Advance state.parked.item to the next unanswered qid
+    if qid in unanswered_qids:
+        unanswered_qids.discard(qid)
+
+    # Find the next unanswered qid
+    next_item: Optional[str] = None
+    if unanswered_qids:
+        # Pick any remaining qid (order doesn't matter for now)
+        next_item = next(iter(unanswered_qids))
+
+    # Update state.parked.item under the lock
+    with mutating(flow) as locked:
+        state = locked.require_state()
+        if state.parked and state.parked.kind == "assess":
+            import dataclasses
+            new_parked = dataclasses.replace(state.parked, item=next_item)
+            new_state = dataclasses.replace(state, parked=new_parked)
+            locked.commit(new_state)
+
+    return None
+
+
+def assemble_answers(flow: Path, seq: int) -> Optional[str]:
+    """
+    Assemble all per-item answers into answers/assess-<SEQ>.json (exclusive create).
+
+    Returns error reason if any item is unanswered or if the file cannot be written, else None.
+    """
+    # Read the question file to get all question ids
+    question_file = flow / "questions" / f"assess-{seq}.json"
+    if not question_file.exists():
+        return f"assemble_answers: questions file not found: {question_file}"
+
+    try:
+        with open(question_file, "r") as f:
+            questions_data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        return f"assemble_answers: cannot read questions: {e}"
+
+    if not isinstance(questions_data, dict) or not isinstance(questions_data.get("questions"), list):
+        return "assemble_answers: questions file malformed"
+
+    # Build the set of question ids
+    question_ids = []
+    for q in questions_data["questions"]:
+        if isinstance(q, dict) and isinstance(q.get("id"), str):
+            question_ids.append(q["id"])
+
+    # Read all per-item answer files
+    answer_dir = flow / "answers" / f"assess-{seq}.d"
+    answers_map: Dict[str, str] = {}
+    annotations_map: Dict[str, Dict[str, str]] = {}
+
+    for qid in question_ids:
+        answer_file = answer_dir / f"{qid}.json"
+        if not answer_file.exists():
+            return f"assemble_answers: unanswered item {qid}"
+
+        try:
+            with open(answer_file, "r") as f:
+                answer_data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            return f"assemble_answers: cannot read answer for {qid}: {e}"
+
+        if not isinstance(answer_data, dict):
+            return f"assemble_answers: answer for {qid} malformed"
+
+        label = answer_data.get("label")
+        if not isinstance(label, str):
+            return f"assemble_answers: answer for {qid} missing label"
+
+        answers_map[qid] = label
+
+        # Include annotations if present (for Drop reason, etc.)
+        if "note" in answer_data:
+            annotations_map[qid] = {"notes": answer_data["note"]}
+
+    # Write the assembled answers file
+    assembled_file = flow / "answers" / f"assess-{seq}.json"
+    try:
+        fd = os.open(str(assembled_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        try:
+            with os.fdopen(fd, "w") as f:
+                payload = {
+                    "answers": answers_map,
+                    "annotations": annotations_map,
+                }
+                json.dump(payload, f, indent=2, sort_keys=True)
+                f.write("\n")
+        except Exception:
+            os.close(fd)
+            assembled_file.unlink(missing_ok=True)
+            raise
+    except FileExistsError:
+        return f"assemble_answers: answers file already exists"
+    except Exception as e:
+        return f"assemble_answers: cannot write answers: {e}"
+
+    return None
+
+
+def write_disposition_marker(flow: Path, seq: int) -> Optional[str]:
+    """
+    Write steps/08-ship.outstanding.md in v1 grammar with answer_ref.
+
+    Returns error reason if the file cannot be written, else None.
+    """
+    marker_file = flow / "steps" / "08-ship.outstanding.md"
+    marker_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write the v1-shaped marker with answer_ref
+    content = f"# Assess Disposition\n\n`answer_ref answers/assess-{seq}.json`\n"
+
+    try:
+        with open(marker_file, "w") as f:
+            f.write(content)
+    except Exception as e:
+        return f"write_disposition_marker: cannot write marker: {e}"
+
+    return None
+
+
+def validate_assessor_output(assessor_output: str, outstanding_ids: List[str]) -> Tuple[Optional[List[AssessRecord]], Optional[str]]:
+    """
+    Validate and parse assessor output.
+
+    Args:
+        assessor_output: The raw output from the assessor
+        outstanding_ids: List of valid outstanding item ids
+
+    Returns:
+        (records, error_reason) tuple. If error_reason is not None, records is None.
+    """
+    # Parse the assessor output
+    records, parse_err = parse_assessor_output(assessor_output)
+    if parse_err:
+        return None, parse_err
+
+    # Validate that all ids are in the outstanding set
+    outstanding_set = set(outstanding_ids)
+    for record in records:
+        if record.id not in outstanding_set:
+            return None, f"assessor record id {record.id} not in outstanding set"
+
+    # Check for duplicates (parse_assessor_output already checks this, but be sure)
+    seen_ids = set()
+    for record in records:
+        if record.id in seen_ids:
+            return None, f"duplicate assessor record id {record.id}"
+        seen_ids.add(record.id)
+
+    return records, None
+
+
+def assess_next(
+    locked: LockedFlow,
+    flow: Path,
+    state: V2State,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Orchestrate the assess stage: check if assess is needed, compute results, and prepare batch.
+
+    This is the main entry point for assess.py orchestration. It:
+    1. Gets the outstanding set
+    2. If empty, returns (None, None) to indicate ADVANCE
+    3. Computes driver-side checks for each item
+    4. Writes precomputed results for the assessor to read
+    5. Writes the assess report
+    6. Prepares the assess batch question and parks it
+
+    Returns:
+        (stop_code, error_reason) tuple:
+        - (None, None): proceed (ADVANCE)
+        - ("assess-error", reason): fail with this stop code
+        - If successful but assess batch was prepared, loop.py will handle spawning assessor
+
+    Args:
+        locked: LockedFlow with write access under the lock
+        flow: Path to the flow directory
+        state: Current V2State
+    """
+    # Get outstanding set
+    outstanding_items, outstanding_err = get_outstanding_set(flow)
+    if outstanding_err:
+        return "assess-error", outstanding_err
+
+    # If no outstanding items, assess is done - proceed to ship
+    if not outstanding_items:
+        return None, None
+
+    # Extract outstanding ids for validation
+    outstanding_ids = []
+    for item_dict in outstanding_items:
+        if isinstance(item_dict, dict) and isinstance(item_dict.get("id"), str):
+            outstanding_ids.append(item_dict["id"])
+
+    # Compute assessments
+    assessments, compute_err = compute_assessments(flow, state, outstanding_items)
+    if compute_err:
+        return "assess-error", compute_err
+
+    # Write precomputed results for the assessor
+    results_file = write_assessment_results(flow, assessments)
+
+    # Create a dict of assessments for later reference
+    assessments_dict = {item.id: item for item in assessments}
+
+    # Create dummy assessor records for testing (marked as not done by default)
+    assessor_records_dict = {
+        item.id: AssessRecord(
+            id=item.id,
+            status="open",
+            kind="unknown",
+            scope="unknown",
+            leave_as_is_safe=item.leave_as_is_safe,
+            cause="",
+            evidence="",
+            finish_plan="",
+            verification_proof="",
+            options=[],
+        )
+        for item in assessments
+    }
+
+    # Write assess report
+    write_assess_report(flow, assessments, assessor_records_dict)
+
+    # Prepare batch questions and park for answering
+    new_state, batch_err = prepare_assess_batch(locked, flow, state, assessments, assessor_records_dict)
+    if batch_err:
+        return "assess-error", batch_err
+
+    # Batch preparation succeeded
+    return None, None
