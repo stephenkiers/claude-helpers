@@ -122,7 +122,8 @@ def _cmd_start(args: argparse.Namespace) -> int:
         return 1
     flow = _v2_flow(args)
     retention.sweep(flow.parent, _now(), keep=flow)
-    return _run_loop(lambda: run_start(flow), stream="stdout")
+    step_gates = getattr(args, "gates", False)
+    return _run_loop(lambda: run_start(flow, step_gates=step_gates), stream="stdout")
 
 
 def _cmd_next(args: argparse.Namespace) -> int:
@@ -159,7 +160,8 @@ def _cmd_retro(args: argparse.Namespace) -> int:
 
 def _cmd_answer(args: argparse.Namespace) -> int:
     flow = _v2_flow(args)
-    return _run_loop(lambda: run_answer(flow, args.text), stream="stderr")
+    note = getattr(args, "note", None)
+    return _run_loop(lambda: run_answer(flow, args.text, note=note), stream="stderr")
 
 
 def _cmd_clear_live(args: argparse.Namespace) -> int:
@@ -444,6 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
     start = sub.add_parser("start", help="perform the first next of an initialized v2 flow")
     start.add_argument("--flow", help="absolute flow dir (created by init)")
     start.add_argument("--auto-merge", action="store_true", help="refused: the v2 driver never auto-merges")
+    start.add_argument("--gates", action="store_true", help="enable step gates (pauses after plan, implement, review, fix, verify)")
     # Skeleton-only flags, optional and ignored by the v2 start (kept so old invocations still parse)
     start.add_argument("--repo", help="OWNER/NAME (skeleton only, ignored by v2 start)")
     start.add_argument("--mode", choices=list(MODES), help="skeleton only, ignored by v2 start")
@@ -457,6 +460,7 @@ def build_parser() -> argparse.ArgumentParser:
     ans = sub.add_parser("answer", help="write the human's answer for the parked attempt")
     ans.add_argument("--flow", required=True, help="absolute flow dir")
     ans.add_argument("--text", required=True)
+    ans.add_argument("--note", help="optional note for Redo or Drop answers")
 
     clear = sub.add_parser("clear-live", help="clear a spawned or resumed record (logged)")
     clear.add_argument("--flow", required=True, help="absolute flow dir")

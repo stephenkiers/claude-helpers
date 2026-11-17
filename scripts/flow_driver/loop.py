@@ -53,6 +53,7 @@ from .state import (
     apply_transition,
     mutating,
 )
+from . import relay
 from .steps import (
     _SPAWN_AGENT,
     Directive,
@@ -65,12 +66,10 @@ from .steps import (
     StopCode,
     StopDirective,
     WaitDirective,
-    answer_file_path,
     directive_file_path,
     directive_to_dict,
     event_from_label,
     parse_stop_reason,
-    question_file_path,
     step_prompt_path,
     stop_reason,
     transition,
@@ -249,9 +248,12 @@ def _settle_receipt(locked: LockedFlow, notified: bool, now: datetime) -> Receip
 def _question_fact(flow: Path, pending: Optional[PendingSpawn]) -> QuestionFact:
     if pending is None:
         return "none"
-    if answer_file_path(flow, pending.step, pending.attempt).exists():
+    # For Layer 2 step questions, construct a temporary ParkedQuestion for path resolution
+    from .state import ParkedQuestion
+    parked = ParkedQuestion(step=pending.step, attempt=pending.attempt, nn=pending.attempt, kind="step")
+    if relay.answer_path(flow, parked).exists():
         return "answered"
-    if question_file_path(flow, pending.step, pending.attempt).exists():
+    if relay.question_path(flow, parked).exists():
         return "awaiting"
     return "none"
 
@@ -704,12 +706,19 @@ def run_next(flow: Path, after: Optional[str], *, now: Clock = _utc_now, headles
         raise
 
 
-def run_start(flow: Path, *, now: Clock = _utc_now) -> str:
+def run_start(flow: Path, *, step_gates: bool = False, now: Clock = _utc_now) -> str:
     """The first `next` of a v2 flow, sent as the `start` label. Raises what run_next raises."""
+    # Set step_gates on the initial state if requested
+    if step_gates:
+        with mutating(flow) as locked:
+            state = locked.require_state()
+            if state.step_gates != step_gates:
+                new_state = dataclasses.replace(state, step_gates=step_gates)
+                locked.commit(new_state)
     return run_next(flow, "start", now=now)
 
 
-def run_answer(flow: Path, text: str) -> str:
+def run_answer(flow: Path, text: str, note: Optional[str] = None) -> str:
     """
     Write the human's answer for the parked attempt. The next `next` resumes it. One answer per attempt.
 
@@ -722,10 +731,15 @@ def run_answer(flow: Path, text: str) -> str:
         pending = state.pending_spawn
         if pending is None or pending.state != "parked-awaiting-answer":
             raise LoopRefusal("answer refused: the record is not parked-awaiting-answer")
-        target = answer_file_path(flow, pending.step, pending.attempt)
+        # For Layer 2 step questions, construct a temporary ParkedQuestion for path resolution
+        from .state import ParkedQuestion
+        parked = ParkedQuestion(step=pending.step, attempt=pending.attempt, nn=pending.attempt, kind="step")
+        target = relay.answer_path(flow, parked)
         if target.exists():
             raise LoopRefusal(f"answer refused: {target} already exists")
         payload = {"attempt": pending.attempt, "step": pending.step, "text": text, "answered_utc": _stamp(_utc_now())}
+        if note is not None:
+            payload["note"] = note
         _write(target, json.dumps(payload, indent=2, sort_keys=True) + "\n")
         locked.log("answer", step=pending.step, attempt=pending.attempt, nonce=pending.nonce)
         return f"answer recorded: {target}"

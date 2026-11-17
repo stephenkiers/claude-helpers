@@ -15,9 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Dict, Literal, Optional, Tuple, Union, get_args
 
-from . import driver, receipts
+from . import driver, receipts, relay
 from .model import AFTER_EVENTS, GENERAL_PURPOSE_AGENT, AfterEvent, assert_never, parse_after
-from .state import ALLOWED_TRANSITIONS, LiveRecord, PendingSpawn, Step, V2State
+from .state import ALLOWED_TRANSITIONS, LiveRecord, ParkedQuestion, PendingSpawn, Step, V2State
 
 # The Layer 2 happy path. Ship is the last step the driver spawns; a landed ship stops at merge-not-built.
 HAPPY_PATH: Tuple[Step, ...] = ("worktree", "plan", "track", "implement", "review", "fix", "verify", "ship")
@@ -264,14 +264,6 @@ def directive_file_path(flow: Path, step: str, attempt: int, nonce: str, verb: s
     return flow / "directives" / f"{verb.lower()}-{step}-a{attempt}-{nonce}.json"
 
 
-def question_file_path(flow: Path, step: str, attempt: int) -> Path:
-    return flow / "questions" / f"{step}-a{attempt}.json"
-
-
-def answer_file_path(flow: Path, step: str, attempt: int) -> Path:
-    return flow / "answers" / f"{step}-a{attempt}.json"
-
-
 # Facts gathered at the edge. The receipt fact is the outcome of loop.py's receipt settling, under the lock.
 ReceiptFact = Literal["none", "gate-hold", "failed", "rerun", "malformed-cap"]
 QuestionFact = Literal["none", "awaiting", "answered"]
@@ -336,9 +328,20 @@ def _wait(state: V2State, facts: Facts, pending: PendingSpawn) -> Tuple[V2State,
     return state, wait
 
 
-def _ask_or_park(facts: Facts, pending: PendingSpawn) -> Union[AskDirective, ParkDirective]:
-    question = str(question_file_path(facts.flow, pending.step, pending.attempt))
-    answer = str(answer_file_path(facts.flow, pending.step, pending.attempt))
+def _ask_or_park(facts: Facts, state: V2State) -> Union[AskDirective, ParkDirective]:
+    """Create an ASK or PARK directive using relay to map the parked question to its paths."""
+    # For Layer 2 step questions, if state.parked is not set, construct a temporary one
+    pending = state.pending_spawn
+    if state.parked is None:
+        if pending is None or pending.state != "parked-awaiting-answer":
+            raise RuntimeError("_ask_or_park: no pending or state.parked")
+        # Layer 2: one question per attempt, so nn == attempt
+        parked = ParkedQuestion(step=pending.step, attempt=pending.attempt, nn=pending.attempt, kind="step")
+    else:
+        parked = state.parked
+
+    question = str(relay.question_path(facts.flow, parked))
+    answer = str(relay.answer_path(facts.flow, parked))
     command = driver.answer_command(facts.flow)
     if facts.headless:
         return ParkDirective(
@@ -442,20 +445,23 @@ def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Dir
         if facts.question == "answered":
             resumed = dataclasses.replace(pending, state="resumed")
             _allowed(pending, resumed)
+            # For Layer 2 step questions, construct a temporary ParkedQuestion for path resolution
+            parked_q = ParkedQuestion(step=pending.step, attempt=pending.attempt, nn=pending.attempt, kind="step")
             resume = ResumeDirective(
                 next_command=driver.next_command(facts.flow),
                 step=pending.step,
                 attempt=pending.attempt,
-                answer_file=str(answer_file_path(facts.flow, pending.step, pending.attempt)),
+                answer_file=str(relay.answer_path(facts.flow, parked_q)),
             )
             return _with_pending(state, resumed), resume
-        return state, _ask_or_park(facts, pending)
+        return state, _ask_or_park(facts, state)
     if pending.state == "spawned":
         # A live spawned record: an awaiting question parks it; everything else waits.
         if facts.question == "awaiting":
             parked = dataclasses.replace(pending, state="parked-awaiting-answer")
             _allowed(pending, parked)
-            return _with_pending(state, parked), _ask_or_park(facts, pending)
+            updated_state = _with_pending(state, parked)
+            return updated_state, _ask_or_park(facts, updated_state)
         return _wait(state, facts, pending)
     if pending.state == "resumed":
         # A live resumed record: the step agent is running, so wait for its receipt.
