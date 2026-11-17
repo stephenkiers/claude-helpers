@@ -21,7 +21,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from . import retention
 from .flowdir import FlowPathError, flows_v2_root, open_flow_dir, repo_key as _repo_key, resolve_read_flow_dir, validate_v2_flow_path
@@ -80,16 +80,31 @@ def _v2_flow(args: argparse.Namespace) -> Path:
     return open_flow_dir(_now_flow_root(), Path(args.flow))
 
 
-def _run_loop(call: Callable[[], str], *, to_stdout: bool) -> int:
-    """Run one loop call. A refusal exits 1 on stderr; a success prints its line (NEXT on stdout for next and start)."""
+def _run_loop(call: Callable[[], str], *, stream: Literal["stdout", "stderr"]) -> int:
+    """
+    Run one loop call. A refusal exits 1 on stderr. A success prints its line on the named stream: stdout for
+    the NEXT line of next and start, stderr for the quiet verbs (D24).
+    """
     try:
         text = call()
     except Refusal as exc:
         return _refuse(str(exc))
     except LoopRefusal as exc:
         return _refuse(f"refused: {exc}")
-    print(text, file=sys.stdout if to_stdout else sys.stderr)
+    except OSError as exc:
+        return _refuse(f"error: {type(exc).__name__}: {exc}")
+    print(text, file=sys.stdout if stream == "stdout" else sys.stderr)
     return 0
+
+
+# start flags that only the skeleton driver read. They still parse (old invocations keep working), but v2 start
+# ignores them, so each one that is given is named on stderr instead of being silently dropped (D24).
+_START_IGNORED_FLAGS: Tuple[Tuple[str, str], ...] = (
+    ("repo", "--repo"),
+    ("mode", "--mode"),
+    ("wait_mode", "--wait-mode"),
+    ("step_minutes", "--step-minutes"),
+)
 
 
 def _cmd_start(args: argparse.Namespace) -> int:
@@ -99,29 +114,32 @@ def _cmd_start(args: argparse.Namespace) -> int:
     """
     if args.flow is None:
         raise UsageError("start needs --flow: create the flow with init, then start it")
+    for attr, flag in _START_IGNORED_FLAGS:
+        if getattr(args, attr, None) is not None:
+            print(f"warning: {flag} is ignored by the v2 start", file=sys.stderr)
     if args.auto_merge:
         print(f"STOP {stop_reason('auto-merge-refused', 'the v2 driver does not run auto-merge; the human merge gate always fires')}", file=sys.stderr)
         return 1
     flow = _v2_flow(args)
     retention.sweep(flow.parent, _now(), keep=flow)
-    return _run_loop(lambda: run_start(flow), to_stdout=True)
+    return _run_loop(lambda: run_start(flow), stream="stdout")
 
 
 def _cmd_next(args: argparse.Namespace) -> int:
     """next: one mutating loop step. Single-caller invariant: the orchestrator runs one next at a time."""
     flow = _v2_flow(args)
-    return _run_loop(lambda: run_next(flow, args.after), to_stdout=True)
+    return _run_loop(lambda: run_next(flow, args.after), stream="stdout")
 
 
 def _cmd_recover(args: argparse.Namespace) -> int:
     """recover --choice: the human's answer to a hard stop (retry, take-over or keep-previous)."""
     flow = _v2_flow(args)
-    return _run_loop(lambda: run_recover(flow, args.choice), to_stdout=False)
+    return _run_loop(lambda: run_recover(flow, args.choice), stream="stderr")
 
 
 def _cmd_abandon(args: argparse.Namespace) -> int:
     flow = _v2_flow(args)
-    return _run_loop(lambda: run_abandon(flow), to_stdout=False)
+    return _run_loop(lambda: run_abandon(flow), stream="stderr")
 
 
 def _cmd_retro(args: argparse.Namespace) -> int:
@@ -141,12 +159,12 @@ def _cmd_retro(args: argparse.Namespace) -> int:
 
 def _cmd_answer(args: argparse.Namespace) -> int:
     flow = _v2_flow(args)
-    return _run_loop(lambda: run_answer(flow, args.text), to_stdout=False)
+    return _run_loop(lambda: run_answer(flow, args.text), stream="stderr")
 
 
 def _cmd_clear_live(args: argparse.Namespace) -> int:
     flow = _v2_flow(args)
-    return _run_loop(lambda: run_clear_live(flow, args.reason), to_stdout=False)
+    return _run_loop(lambda: run_clear_live(flow, args.reason), stream="stderr")
 
 
 def _cmd_init(args: argparse.Namespace) -> int:

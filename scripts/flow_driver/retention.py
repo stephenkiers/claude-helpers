@@ -85,10 +85,18 @@ def _prune(flow: Path, with_retro_inputs: bool) -> None:
 
 
 def sweep(repo_dir: Path, now: datetime, days: int = RETENTION_DAYS, keep: Optional[Path] = None) -> List[Path]:
-    """Prune the expired flow dirs under repo_dir and return the flows pruned. Called only from `start`."""
+    """
+    Prune the expired flow dirs under repo_dir and return the flows pruned. Called only from `start`.
+
+    An unreadable repo_dir (OSError while listing it) prunes nothing rather than failing the start (D22).
+    """
     pruned: List[Path] = []
     cutoff = now - timedelta(days=days)
-    for flow in expired_flows(repo_dir, now, days, keep):
+    try:
+        candidates = expired_flows(repo_dir, now, days, keep)
+    except OSError:
+        return pruned
+    for flow in candidates:
         try:
             with mutating(flow) as locked:
                 state = locked.state

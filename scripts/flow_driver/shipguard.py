@@ -5,7 +5,8 @@ Two edge adapters parse `gh` and `git` output at the boundary into typed values:
 
   check_pr: runs `gh pr view <branch> --json number,state,headRefOid` and compares the PR head with an
     expected SHA. The caller passes heads.verify before ship, and heads.ship after the ship receipt lands.
-    MERGED is Merged, CLOSED is Closed whatever the head (session D2), OPEN compares the head.
+    MERGED is Merged and CLOSED is Closed (session D2), each only when its headRefOid equals the expected SHA
+    (D4 cross-check; a mismatch is GhError); OPEN compares the head.
   check_local_head / read_head: `git -C <worktree> rev-parse HEAD`, the driver-owned HEAD source (heads.verify
     when a verify receipt lands OK, heads.ship when the ship receipt lands).
 
@@ -22,7 +23,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 from .model import assert_never
 from .preflight import CANNOT_START, Runner, run_command
@@ -144,16 +145,24 @@ def parse_pr_view(text: str) -> Union[PrView, GhError]:
     return PrView(number=number, state=state, head_ref_oid=sha)
 
 
-def check_pr(branch: str, expected: Sha, run: Runner = run_command) -> ShipGuardResult:
+def check_pr(branch: str, expected: Sha, run: Runner = run_command, repo: Optional[str] = None) -> ShipGuardResult:
     """
     Ask gh for the PR on branch and compare it with expected (heads.verify before ship, heads.ship after).
 
-    Order: MERGED first (Merged), then CLOSED (Closed, whatever the head), then OPEN compares the head.
-    No PR for the branch is NoPr. Any other gh failure, or an unparseable answer, is GhError.
+    repo, when given (OWNER/NAME), pins the query with `-R` so gh never resolves the branch in another repo (D4).
+    Order: MERGED first (Merged), then CLOSED (Closed), then OPEN compares the head. For MERGED and CLOSED the
+    headRefOid is cross-checked with expected; a mismatch is GhError, so the caller stops rather than trusting
+    a PR whose head is not the one that was verified (D4). No PR for the branch is NoPr. Any other gh failure,
+    including a timeout, or an unparseable answer, is GhError.
     """
     if not branch or branch.startswith("-"):
         return GhError(f"invalid branch name {branch!r}")
-    result = run(["gh", "pr", "view", branch, "--json", GH_PR_FIELDS])
+    argv: List[str] = ["gh", "pr", "view", branch, "--json", GH_PR_FIELDS]
+    if repo is not None:
+        if not repo or repo.startswith("-"):
+            return GhError(f"invalid repo {repo!r}")
+        argv += ["-R", repo]
+    result = run(argv)
     if result.returncode != 0:
         if _NO_PR_MARKER in result.stderr.lower():
             return NoPr()
@@ -164,6 +173,11 @@ def check_pr(branch: str, expected: Sha, run: Runner = run_command) -> ShipGuard
     parsed = parse_pr_view(result.stdout)
     if isinstance(parsed, GhError):
         return parsed
+    if parsed.state in ("MERGED", "CLOSED") and parsed.head_ref_oid != expected:
+        return GhError(
+            f"gh pr view: PR #{parsed.number} is {parsed.state} but its head {parsed.head_ref_oid} "
+            f"differs from expected {expected}"
+        )
     if parsed.state == "MERGED":
         return Merged(number=parsed.number)
     if parsed.state == "CLOSED":

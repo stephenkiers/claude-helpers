@@ -39,12 +39,21 @@ class CommandResult(NamedTuple):
 Runner = Callable[[Sequence[str]], CommandResult]
 
 CANNOT_START = -1
+# Every preflight subprocess runs while the flow lock is held (D5), so each one is bounded.
+COMMAND_TIMEOUT_SECS = 60.0
 
 
-def run_command(argv: Sequence[str]) -> CommandResult:
-    """Run argv as a list (no shell) and capture its text output. A start failure is returned, never raised."""
+def run_command(argv: Sequence[str], timeout: float = COMMAND_TIMEOUT_SECS) -> CommandResult:
+    """
+    Run argv as a list (no shell) and capture its text output, bounded by timeout seconds.
+
+    A start failure and a timeout are both returned as CANNOT_START, never raised, so the adapters map them to
+    their own Stop (a gh-error for gh calls).
+    """
     try:
-        completed = subprocess.run(list(argv), capture_output=True, text=True, check=False)
+        completed = subprocess.run(list(argv), capture_output=True, text=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return CommandResult(CANNOT_START, "", f"timed out after {timeout:g}s running {argv[0]}")
     except OSError as exc:
         return CommandResult(CANNOT_START, "", f"could not start {argv[0]}: {exc}")
     return CommandResult(completed.returncode, completed.stdout, completed.stderr)

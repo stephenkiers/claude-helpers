@@ -283,7 +283,10 @@ class Recovery:
 
 @dataclass(frozen=True)
 class Heads:
-    """Driver-owned HEAD sources for the ship guard: verify's CHECK_SHA, and the HEAD when ship's receipt lands."""
+    """
+    Driver-owned HEAD sources for the ship guard (ADR-0026 re-read design). verify is the worktree HEAD re-read
+    when the verify receipt lands OK; ship is the HEAD re-read when the ship receipt lands.
+    """
 
     verify: Optional[Sha] = None
     ship: Optional[Sha] = None
