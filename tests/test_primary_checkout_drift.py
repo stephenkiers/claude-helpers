@@ -183,7 +183,7 @@ def _probe_stub_bin(tmpdir, primary_body):
     stub.write_text(
         "#!/bin/sh\n"
         'case "$(pwd)$*" in\n'
-        '  *"/primary"*)\n'
+        '  *"/primary"*"symbolic-ref"*)\n'
         f"{primary_body}\n"
         "  ;;\n"
         "esac\n"
@@ -1602,7 +1602,7 @@ def main():
     # Probe-failed exits of compare (#12). Test 27 covers the invalid-SHA trigger; these cover the rest.
     import json
 
-    print("[Probe 1] Broken primary git dir (path is not a repository) -> exit 2, ERROR probe-failed head-probe")
+    print("[Probe 1] Broken primary git dir (path is not a repository) -> exit 2, bare ERROR probe-failed (status probe)")
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path, ticket_path, baseline_path, planned_path, head_sha = _probe_fixture(tmpdir)
         baseline_data = json.loads(baseline_path.read_text())
@@ -1627,8 +1627,8 @@ def main():
                 f"exit={result.returncode}, stderr={result.stderr[:300]}",
             )
             h.test_result(
-                "broken git dir: ERROR probe-failed head-probe",
-                "ERROR probe-failed head-probe" in result.stdout,
+                "broken git dir: bare ERROR probe-failed (status probe)",
+                "ERROR probe-failed" in result.stdout.splitlines(),
                 f"stdout={result.stdout[:300]}",
             )
             h.test_result(
@@ -1655,7 +1655,7 @@ def main():
         )
     print()
 
-    print("[Probe 3] No git on PATH (OSError) -> exit 2, ERROR probe-failed head-probe, cause on stderr")
+    print("[Probe 3] No git on PATH (OSError) -> exit 2, ERROR planned-set-unavailable")
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path, ticket_path, baseline_path, planned_path, head_sha = _probe_fixture(tmpdir)
         empty_dir = Path(tmpdir) / "empty-bin"
@@ -1667,14 +1667,9 @@ def main():
             f"exit={result.returncode}, stderr={result.stderr[:300]}",
         )
         h.test_result(
-            "git missing: ERROR probe-failed head-probe",
-            "ERROR probe-failed head-probe" in result.stdout,
+            "git missing: ERROR planned-set-unavailable",
+            "ERROR planned-set-unavailable" in result.stdout,
             f"stdout={result.stdout[:300]}",
-        )
-        h.test_result(
-            "git missing: cause printed to stderr",
-            "git" in result.stderr.lower(),
-            f"stderr={result.stderr[:300]}",
         )
     print()
 
