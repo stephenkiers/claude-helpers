@@ -32,7 +32,7 @@ Subcommands:
        [--overlap-files <a,b>] [--patch-path <p>] [--drifted-files <a,b>] [--untracked-files <a,b>]
     - Multi-unit sites: --overlap-files writes OVERLAP_FILES; --patch-path/--drifted-files/
       --untracked-files write PATCH_PATH/DRIFTED_FILES/UNTRACKED_FILES plus the standard NOTE
-    - The single shared drift-barrier failure mechanism (F4/F20 of #336): prints the stderr
+    - The single shared drift-barrier failure mechanism: prints the stderr
       FAILED line, best-effort emits run-metrics.py command-end (failure-class cwd_drift),
       and writes the FAILED receipt (ending with <!-- step-end -->) only when --receipt is given
     - --compare-exit 1 = drift (Reason: primary-checkout-drift: <fail paths>), 2 = error (baseline unavailable or head probe failed); --reason applies to both
@@ -228,7 +228,7 @@ def git_status_porcelain(checkout_path: str) -> Optional[Dict[str, str]]:
 
             # For R/C (rename/copy), there's an additional path (the "from" path)
             if xy.startswith("R") or xy.startswith("C"):
-                # Record the original path too (F18)
+                # Record the original path too
                 path_end2 = output.find(b"\0", i)
                 if path_end2 == -1:
                     break
@@ -559,7 +559,7 @@ def cmd_compare(
                     print(f"WARN pre-dirty-planned {escaped_path}")
 
     if fail_paths:
-        # Print REASON line with collected FAIL paths (F17: reuse first-pass FAIL set)
+        # Print REASON line with collected FAIL paths (reuse first-pass FAIL set)
         reason_paths = ",".join(sorted(fail_paths))
         print(f"ERROR primary-checkout-drift {reason_paths}", file=sys.stdout)
         return EXIT_DRIFT
