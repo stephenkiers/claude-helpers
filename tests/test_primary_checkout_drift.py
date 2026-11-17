@@ -15,12 +15,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
-from _inproc import run_python, RepoTemplate
+from _inproc import RepoTemplate
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import telemetry_schema
 
-DRIFT_SCRIPT = REPO_ROOT / "scripts" / "primary-checkout-drift.py"
+from _drift_helpers import (
+    _git,
+    attach_upstream,
+    land_commit_on_upstream,
+    run_script,
+)
 
 
 def _init_git_repo_uncached(root: Path) -> str:
@@ -97,57 +102,6 @@ def create_worktree(primary_path: str, worktree_path: str, branch_name: str = "f
     return result.stdout.strip()
 
 
-def _git(cwd, *args: str) -> str:
-    """Run a git command in cwd (check=True) and return stripped stdout."""
-    result = subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
-    )
-    return result.stdout.strip()
-
-
-def attach_upstream(primary_path, tmpdir) -> str:
-    """Give primary a bare origin, push its current branch, set it as upstream.
-
-    Returns the bare origin path (as a string).
-    """
-    origin = Path(tmpdir) / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(origin)], capture_output=True, check=True)
-    branch = _git(primary_path, "branch", "--show-current")
-    _git(primary_path, "remote", "add", "origin", str(origin))
-    _git(primary_path, "push", "-u", "origin", branch)
-    return str(origin)
-
-
-def land_commit_on_upstream(primary_path, origin: str, tmpdir) -> None:
-    """Commit in a second clone, push to origin, then fast-forward primary onto it."""
-    other = Path(tmpdir) / "other"
-    subprocess.run(["git", "clone", origin, str(other)], capture_output=True, check=True)
-    _git(other, "config", "user.email", "test@example.com")
-    _git(other, "config", "user.name", "Test User")
-    (other / "upstream.txt").write_text("landed upstream")
-    _git(other, "add", "upstream.txt")
-    _git(other, "commit", "-m", "upstream commit")
-    _git(other, "push", "origin", "HEAD")
-    branch = _git(primary_path, "branch", "--show-current")
-    _git(primary_path, "pull", "--ff-only", "origin", branch)
-
-
-def run_drift_script(cmd: str, *args: str) -> tuple:
-    """Run the drift script in-process and return (exit_code, stdout, stderr)."""
-    result = run_python([str(DRIFT_SCRIPT), cmd] + list(args))
-    return result.returncode, result.stdout, result.stderr
-
-
-def run_drift_script_e2e(cmd: str, *args: str) -> tuple:
-    """Run the drift script as a real subprocess and return (exit_code, stdout, stderr)."""
-    result = subprocess.run(
-        [sys.executable, str(DRIFT_SCRIPT), cmd] + list(args),
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode, result.stdout, result.stderr
-
-
 def check_git_index_lock(repo_path: str) -> bool:
     """Return True if .git/index.lock exists, False otherwise."""
     return Path(repo_path, ".git", "index.lock").exists()
@@ -195,7 +149,7 @@ def main():
         planned_path.write_text("")
 
         # Snapshot
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -208,7 +162,7 @@ def main():
         )
 
         # Compare
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -235,7 +189,7 @@ def main():
         planned_path.write_text("newfile.txt\n")
 
         # Snapshot
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -246,7 +200,7 @@ def main():
         Path(primary_path, "newfile.txt").write_text("new content")
 
         # Compare
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -277,7 +231,7 @@ def main():
         planned_path.write_text("samefile.txt\n")
 
         # Snapshot
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -288,7 +242,7 @@ def main():
         Path(primary_path, "samefile.txt").write_text("same content")
 
         # Compare
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -319,7 +273,7 @@ def main():
         planned_path.write_text("difffile.txt\n")
 
         # Snapshot
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -330,7 +284,7 @@ def main():
         Path(primary_path, "difffile.txt").write_text("different content in primary")
 
         # Compare
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -358,7 +312,7 @@ def main():
         planned_path.write_text("")
 
         # Snapshot
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -369,7 +323,7 @@ def main():
         Path(primary_path, "unplanned.txt").write_text("unplanned")
 
         # Compare
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -400,7 +354,7 @@ def main():
         planned_path.write_text("predirty.txt\n")
 
         # Snapshot (file already dirty)
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -411,7 +365,7 @@ def main():
         # (no change between snapshot and compare)
 
         # Compare
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -439,7 +393,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -450,7 +404,7 @@ def main():
         land_commit_on_upstream(primary_path, origin, tmpdir)
         new_sha = _git(primary_path, "rev-parse", "HEAD")
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -486,7 +440,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -498,7 +452,7 @@ def main():
         _git(primary_path, "add", "newcommit.txt")
         _git(primary_path, "commit", "-m", "new commit")
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -533,7 +487,7 @@ def main():
         planned_path.write_text("")
 
         # Snapshot with orchestrator_cwd == checkout
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(primary_path),
@@ -546,7 +500,7 @@ def main():
         )
 
         # Compare should also skip
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(primary_path),
@@ -573,7 +527,7 @@ def main():
         planned_path.write_text("")
 
         # Snapshot with symlink as orchestrator_cwd
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(symlink_path),
@@ -599,7 +553,7 @@ def main():
         planned_path.write_text("")
 
         # Compare with missing baseline
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -628,7 +582,7 @@ def main():
         planned_path.write_text("")
 
         # Compare with corrupt baseline
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -655,7 +609,7 @@ def main():
         planned_path.write_text("")
 
         # Snapshot
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -665,7 +619,7 @@ def main():
         lock_exists_after_snapshot = check_git_index_lock(str(primary_path))
 
         # Compare
-        run_drift_script(
+        run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -697,7 +651,7 @@ def main():
         initial_mtime = get_git_index_mtime(str(primary_path))
 
         # Snapshot
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -707,7 +661,7 @@ def main():
         mtime_after_snapshot = get_git_index_mtime(str(primary_path))
 
         # Compare
-        run_drift_script(
+        run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -750,7 +704,7 @@ def main():
         initial_status = get_git_status_output(str(primary_path))
 
         # Snapshot
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -760,7 +714,7 @@ def main():
         status_after_snapshot = get_git_status_output(str(primary_path))
 
         # Compare
-        run_drift_script(
+        run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -790,7 +744,7 @@ def main():
         init_git_repo(str(primary_path))
         create_worktree(str(primary_path), str(ticket_path))
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "snapshot",
             "--checkout", str(non_repo),
             "--orchestrator-cwd", str(ticket_path),
@@ -812,16 +766,17 @@ def main():
     print()
 
     # Snapshot branch recording (plan Tests statements 1-3)
-    print("[Test 17a] Snapshot records branch field: main branch -> 'refs/heads/main'")
+    print("[Test 17a] Snapshot records branch field: current branch -> 'refs/heads/<branch>'")
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path = Path(tmpdir) / "primary"
         ticket_path = Path(tmpdir) / "ticket"
         baseline_path = Path(tmpdir) / "baseline.json"
 
         head_sha = init_git_repo(str(primary_path))
+        primary_branch = _git(primary_path, "branch", "--show-current")
         create_worktree(str(primary_path), str(ticket_path))
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -857,8 +812,8 @@ def main():
                 f"entry={primary_entry}",
             )
             h.test_result(
-                "branch value is refs/heads/main",
-                primary_entry.get("branch") == "refs/heads/main",
+                "branch value is refs/heads/<current branch>",
+                primary_entry.get("branch") == f"refs/heads/{primary_branch}",
                 f"branch={primary_entry.get('branch')}",
             )
             h.test_result(
@@ -880,7 +835,7 @@ def main():
         # Detach HEAD in primary
         _git(primary_path, "checkout", "--detach")
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -898,8 +853,10 @@ def main():
         primary_path_resolved = str(primary_path.resolve())
         primary_entry = checkouts.get(primary_path_resolved)
         h.test_result(
-            "detached HEAD entry has branch null",
-            primary_entry and primary_entry.get("branch") is None,
+            "detached HEAD entry has branch key present and null",
+            primary_entry is not None
+            and "branch" in primary_entry
+            and primary_entry["branch"] is None,
             f"entry={primary_entry}",
         )
     print()
@@ -911,7 +868,7 @@ def main():
 
         init_git_repo(str(primary_path))
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(primary_path),
@@ -947,7 +904,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -955,7 +912,7 @@ def main():
         )
 
         # No changes - HEAD stays the same
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -991,7 +948,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -1003,7 +960,7 @@ def main():
         _git(primary_path, "add", "commit.txt")
         _git(primary_path, "commit", "-m", "local commit")
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -1039,9 +996,9 @@ def main():
         Path(primary_path, "extra.txt").write_text("extra")
         _git(primary_path, "add", "extra.txt")
         _git(primary_path, "commit", "-m", "extra")
-        _git(primary_path, "push", "origin", "main")
+        _git(primary_path, "push", "origin", _git(primary_path, "branch", "--show-current"))
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -1051,7 +1008,7 @@ def main():
         # Reset hard
         _git(primary_path, "reset", "--hard", "HEAD~1")
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -1083,7 +1040,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -1095,7 +1052,7 @@ def main():
         _git(primary_path, "add", "new.txt")
         _git(primary_path, "commit", "--amend", "-m", "amended")
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -1127,7 +1084,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -1140,7 +1097,7 @@ def main():
         _git(primary_path, "add", "other.txt")
         _git(primary_path, "commit", "-m", "other commit")
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -1177,7 +1134,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -1187,7 +1144,7 @@ def main():
         # Create new branch at same SHA and switch
         _git(primary_path, "checkout", "-b", "same_sha")
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -1219,7 +1176,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -1233,7 +1190,7 @@ def main():
         _git(primary_path, "add", "orphan.txt")
         _git(primary_path, "commit", "-m", "orphan commit")
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -1268,7 +1225,7 @@ def main():
         # Detach HEAD in primary before snapshot
         _git(primary_path, "checkout", "--detach")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -1276,7 +1233,7 @@ def main():
         )
 
         # Still detached at same SHA
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -1296,6 +1253,9 @@ def main():
     print()
 
     print("[Test 25b] Detached at baseline, then detached at descendant -> FAIL head-moved")
+    # The primary has an upstream configured, but a detached baseline records branch null, so the
+    # head-advanced (upstream fast-forward) rule never applies: this exercises the strict
+    # detached-baseline head-moved rule, not the upstream-reachability rule.
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path = Path(tmpdir) / "primary"
         ticket_path = Path(tmpdir) / "ticket"
@@ -1310,7 +1270,7 @@ def main():
         # Detach HEAD before snapshot
         _git(primary_path, "checkout", "--detach")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -1322,7 +1282,7 @@ def main():
         _git(primary_path, "add", "detached.txt")
         _git(primary_path, "commit", "-m", "detached commit")
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -1354,7 +1314,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -1373,7 +1333,7 @@ def main():
         # Fast-forward to upstream
         land_commit_on_upstream(primary_path, origin, tmpdir)
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -1410,7 +1370,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -1426,7 +1386,7 @@ def main():
             checkouts[primary_path_resolved]["head"] = "1111111111111111111111111111111111111111"
         baseline_path.write_text(json.dumps(baseline_data))
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -1468,7 +1428,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("driftfile.txt\n")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -1482,7 +1442,7 @@ def main():
         # Add drift file
         Path(primary_path, "driftfile.txt").write_text("drift")
 
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),
@@ -1524,7 +1484,7 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
         planned_path.write_text("")
 
-        run_drift_script(
+        run_script(
             "snapshot",
             "--checkout", str(primary_path),
             "--orchestrator-cwd", str(ticket_path),
@@ -1540,7 +1500,7 @@ def main():
         status_before = get_git_status_output(str(primary_path))
 
         # Run compare (should not modify primary)
-        exit_code, stdout, stderr = run_drift_script(
+        exit_code, stdout, stderr = run_script(
             "compare",
             "--baseline", str(baseline_path),
             "--ticket-wt", str(ticket_path),

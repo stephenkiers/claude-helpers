@@ -24,25 +24,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
-from _inproc import run_python
 
-DRIFT_SCRIPT = REPO_ROOT / "scripts" / "primary-checkout-drift.py"
-
-
-def run_script(cmd: str, *args: str) -> tuple:
-    """Run the drift script in-process and return (exit_code, stdout, stderr)."""
-    result = run_python([str(DRIFT_SCRIPT), cmd] + list(args))
-    return result.returncode, result.stdout, result.stderr
-
-
-def run_script_e2e(cmd: str, *args: str) -> tuple:
-    """Run the drift script as a real subprocess and return (exit_code, stdout, stderr)."""
-    result = subprocess.run(
-        [sys.executable, str(DRIFT_SCRIPT), cmd] + list(args),
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode, result.stdout, result.stderr
+from _drift_helpers import (
+    DRIFT_SCRIPT,
+    run_script,
+    run_script_e2e,
+)
 
 
 def init_git_repo(repo_path: str) -> str:
@@ -605,13 +592,32 @@ def main():
     print("[Spec 21b] Every fail invocation routes head-probe case correctly")
     if impl_haiku_path.exists():
         impl_haiku_text = impl_haiku_path.read_text()
-        # Check that there's conditional --reason for head-probe case OR shared block
-        has_conditional_reason = "head-probe" in impl_haiku_text and "--reason" in impl_haiku_text
-        has_shared_block = "### Drift barrier failure block" in impl_haiku_text
+        # Every `fail` invocation must either pass a literal --compare-exit (1 = drift, 2 = baseline
+        # unavailable, so no head-probe routing is needed) or be preceded by the head-probe REASON_ARGS
+        # routing for the variable "$COMPARE_EXIT" case.
+        marker = 'primary-checkout-drift.py" fail'
+        starts = []
+        pos = impl_haiku_text.find(marker)
+        while pos != -1:
+            starts.append(pos)
+            pos = impl_haiku_text.find(marker, pos + 1)
+        uncovered = []
+        for pos in starts:
+            invocation = impl_haiku_text[pos:pos + 200]
+            window = impl_haiku_text[max(0, pos - 600):pos]
+            literal_exit = "--compare-exit 1" in invocation or "--compare-exit 2" in invocation
+            routed = "head-probe-failed" in window and "REASON_ARGS" in window
+            if not (literal_exit or routed):
+                uncovered.append(impl_haiku_text.count("\n", 0, pos) + 1)
         h.test_result(
-            "fail invocations handle head-probe case (conditional --reason or shared block)",
-            has_conditional_reason or has_shared_block,
-            f"conditional={has_conditional_reason}, shared_block={has_shared_block}",
+            "found fail invocations",
+            len(starts) >= 1,
+            f"count={len(starts)}",
+        )
+        h.test_result(
+            "every fail invocation has a literal --compare-exit or head-probe routing",
+            not uncovered,
+            f"invocations={len(starts)}, uncovered at lines {uncovered}",
         )
     print()
 
