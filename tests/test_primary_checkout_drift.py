@@ -124,6 +124,75 @@ def get_git_status_output(repo_path: str) -> bytes:
     return result.stdout
 
 
+def _probe_fixture(tmpdir):
+    """Build a real primary plus ticket worktree, snapshot them, and return the paths and start SHA."""
+    primary_path = Path(tmpdir) / "primary"
+    ticket_path = Path(tmpdir) / "ticket"
+    baseline_path = Path(tmpdir) / "baseline.json"
+    planned_path = Path(tmpdir) / "planned.txt"
+
+    head_sha = init_git_repo(str(primary_path))
+    attach_upstream(primary_path, tmpdir)
+    create_worktree(str(primary_path), str(ticket_path))
+    planned_path.write_text("")
+
+    run_script(
+        "snapshot",
+        "--checkout", str(primary_path),
+        "--orchestrator-cwd", str(ticket_path),
+        "--out", str(baseline_path),
+    )
+    return primary_path, ticket_path, baseline_path, planned_path, head_sha
+
+
+def _probe_compare(baseline_path, ticket_path, head_sha, planned_path, path_env=None, path_prefix=None, timeout=300):
+    """Run the real compare subcommand as a subprocess.
+    path_env replaces PATH outright; path_prefix is searched before the inherited PATH."""
+    import os
+
+    env = dict(os.environ)
+    if path_env is not None:
+        env["PATH"] = path_env
+    if path_prefix is not None:
+        env["PATH"] = path_prefix + os.pathsep + env.get("PATH", "")
+    script = REPO_ROOT / "scripts" / "primary-checkout-drift.py"
+    return subprocess.run(
+        [
+            sys.executable, str(script), "compare",
+            "--baseline", str(baseline_path),
+            "--ticket-wt", str(ticket_path),
+            "--start-sha", head_sha,
+            "--planned", str(planned_path),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=timeout,
+    )
+
+
+def _probe_stub_bin(tmpdir, primary_body):
+    """Create a bin dir with a `git` stub. Calls run from or naming the primary checkout run
+    primary_body; every other git call is passed through to the real git."""
+    import shutil
+
+    real_git = shutil.which("git")
+    bin_dir = Path(tmpdir) / "stub-bin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "git"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'case "$(pwd)$*" in\n'
+        '  *"/primary"*)\n'
+        f"{primary_body}\n"
+        "  ;;\n"
+        "esac\n"
+        f'exec "{real_git}" "$@"\n'
+    )
+    stub.chmod(0o755)
+    return str(bin_dir)
+
+
 def main():
     h = Harness("PRIMARY-CHECKOUT-DRIFT TEST SUITE")
 
@@ -1528,6 +1597,146 @@ def main():
             status_before == status_after,
             f"before length={len(status_before)}, after length={len(status_after)}",
         )
+    print()
+
+    # Probe-failed exits of compare (#12). Test 27 covers the invalid-SHA trigger; these cover the rest.
+    import json
+
+    print("[Probe 1] Broken primary git dir (path is not a repository) -> exit 2, ERROR probe-failed head-probe")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path, ticket_path, baseline_path, planned_path, head_sha = _probe_fixture(tmpdir)
+        baseline_data = json.loads(baseline_path.read_text())
+        checkouts = baseline_data.get("checkouts", {})
+        entry = checkouts.pop(str(primary_path.resolve()), None)
+        h.test_result(
+            "broken git dir fixture: baseline has primary entry",
+            entry is not None,
+            f"keys={list(checkouts)}",
+        )
+        if entry is not None:
+            not_repo = Path(tmpdir) / "not-a-repo"
+            not_repo.mkdir()
+            checkouts[str(not_repo.resolve())] = entry
+            baseline_data["checkouts"] = checkouts
+            baseline_path.write_text(json.dumps(baseline_data))
+
+            result = _probe_compare(baseline_path, ticket_path, head_sha, planned_path)
+            h.test_result(
+                "broken git dir: exit 2",
+                result.returncode == 2,
+                f"exit={result.returncode}, stderr={result.stderr[:300]}",
+            )
+            h.test_result(
+                "broken git dir: ERROR probe-failed head-probe",
+                "ERROR probe-failed head-probe" in result.stdout,
+                f"stdout={result.stdout[:300]}",
+            )
+            h.test_result(
+                "broken git dir: no head-moved or head-advanced line",
+                "head-moved" not in result.stdout and "head-advanced" not in result.stdout,
+                f"stdout={result.stdout[:300]}",
+            )
+    print()
+
+    print("[Probe 2] git exits 128 on the primary head probe (stub prefix on PATH) -> exit 2, ERROR probe-failed head-probe")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path, ticket_path, baseline_path, planned_path, head_sha = _probe_fixture(tmpdir)
+        stub_dir = _probe_stub_bin(tmpdir, "echo 'fatal: stub git failure' >&2\nexit 128\n")
+        result = _probe_compare(baseline_path, ticket_path, head_sha, planned_path, path_prefix=stub_dir)
+        h.test_result(
+            "git exits 128: exit 2",
+            result.returncode == 2,
+            f"exit={result.returncode}, stderr={result.stderr[:300]}",
+        )
+        h.test_result(
+            "git exits 128: ERROR probe-failed head-probe",
+            "ERROR probe-failed head-probe" in result.stdout,
+            f"stdout={result.stdout[:300]}",
+        )
+    print()
+
+    print("[Probe 3] No git on PATH (OSError) -> exit 2, ERROR probe-failed head-probe, cause on stderr")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path, ticket_path, baseline_path, planned_path, head_sha = _probe_fixture(tmpdir)
+        empty_dir = Path(tmpdir) / "empty-bin"
+        empty_dir.mkdir()
+        result = _probe_compare(baseline_path, ticket_path, head_sha, planned_path, path_env=str(empty_dir))
+        h.test_result(
+            "git missing: exit 2",
+            result.returncode == 2,
+            f"exit={result.returncode}, stderr={result.stderr[:300]}",
+        )
+        h.test_result(
+            "git missing: ERROR probe-failed head-probe",
+            "ERROR probe-failed head-probe" in result.stdout,
+            f"stdout={result.stdout[:300]}",
+        )
+        h.test_result(
+            "git missing: cause printed to stderr",
+            "git" in result.stderr.lower(),
+            f"stderr={result.stderr[:300]}",
+        )
+    print()
+
+    print("[Probe 4] git hangs past the probe timeout -> exit 2, ERROR probe-failed head-probe, cause on stderr")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        primary_path, ticket_path, baseline_path, planned_path, head_sha = _probe_fixture(tmpdir)
+        # Absolute /bin/sleep: PATH holds only the stub directory, so a bare `sleep` would not resolve.
+        stub_dir = _probe_stub_bin(tmpdir, "exec /bin/sleep 600\n")
+        try:
+            result = _probe_compare(
+                baseline_path, ticket_path, head_sha, planned_path, path_prefix=stub_dir, timeout=300,
+            )
+        except subprocess.TimeoutExpired:
+            h.test_result(
+                "hanging git: compare returns within 300s",
+                False,
+                "compare did not return within 300s",
+            )
+        else:
+            h.test_result(
+                "hanging git: exit 2",
+                result.returncode == 2,
+                f"exit={result.returncode}, stderr={result.stderr[:300]}",
+            )
+            h.test_result(
+                "hanging git: ERROR probe-failed head-probe",
+                "ERROR probe-failed head-probe" in result.stdout,
+                f"stdout={result.stdout[:300]}",
+            )
+            stderr_lower = result.stderr.lower()
+            h.test_result(
+                "hanging git: cause (timeout) printed to stderr",
+                "timed out" in stderr_lower or "timeout" in stderr_lower,
+                f"stderr={result.stderr[:300]}",
+            )
+    print()
+
+    print("[Probe 5] Baseline head empty or not a string -> treated as unavailable (exit 2)")
+    for label, bad_head in (("empty string", ""), ("integer", 12345)):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            primary_path, ticket_path, baseline_path, planned_path, head_sha = _probe_fixture(tmpdir)
+            baseline_data = json.loads(baseline_path.read_text())
+            entry = baseline_data.get("checkouts", {}).get(str(primary_path.resolve()))
+            h.test_result(
+                f"baseline head {label} fixture: baseline has primary entry",
+                entry is not None,
+                f"keys={list(baseline_data.get('checkouts', {}))}",
+            )
+            if entry is not None:
+                entry["head"] = bad_head
+                baseline_path.write_text(json.dumps(baseline_data))
+                result = _probe_compare(baseline_path, ticket_path, head_sha, planned_path)
+                h.test_result(
+                    f"baseline head {label}: exit 2",
+                    result.returncode == 2,
+                    f"exit={result.returncode}, stderr={result.stderr[:300]}",
+                )
+                h.test_result(
+                    f"baseline head {label}: baseline-unavailable reported",
+                    "baseline-unavailable" in (result.stdout + result.stderr),
+                    f"stdout={result.stdout[:300]}, stderr={result.stderr[:300]}",
+                )
     print()
 
     h.summarize_and_exit()

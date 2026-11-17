@@ -232,6 +232,53 @@ def main() -> None:
         )
     print()
 
+    print("[Test 12] head-probe fail: stderr says 'head probe failed' (fail exits 1, as Tests 1-11)")
+    with tempfile.TemporaryDirectory() as tmp:
+        rec = Path(tmp) / "rec.txt"
+        os.environ["REC"] = str(rec)
+        script = make_script_dir(tmp, RECORD)
+        receipt = Path(tmp) / "receipt.md"
+
+        code, out, err = run_fail_e2e(
+            script, "--compare-exit", "2", "--receipt", str(receipt),
+            "--reason", "primary-checkout-drift: head-probe-failed",
+            "--attempt", "1", "--implementer-model", "sonnet", "--units", "1", "--max-turns", "20")
+
+        h.test_result(
+            "head-probe fail: stderr contains 'head probe failed'",
+            "head probe failed" in err,
+            f"stderr={err!r}",
+        )
+        h.test_result(
+            "head-probe fail: exit 1",
+            code == 1,
+            f"exit={code}",
+        )
+    print()
+
+    print("[Test 13] baseline-unavailable fail: stderr keeps 'FAILED: primary-checkout-drift baseline unavailable'")
+    with tempfile.TemporaryDirectory() as tmp:
+        rec = Path(tmp) / "rec.txt"
+        os.environ["REC"] = str(rec)
+        script = make_script_dir(tmp, RECORD)
+        receipt = Path(tmp) / "receipt.md"
+
+        code, out, err = run_fail_e2e(
+            script, "--compare-exit", "2", "--receipt", str(receipt),
+            "--attempt", "1", "--implementer-model", "haiku", "--units", "1", "--max-turns", "20")
+
+        h.test_result(
+            "baseline-unavailable fail: stderr has exact FAILED line",
+            "FAILED: primary-checkout-drift baseline unavailable" in err,
+            f"stderr={err!r}",
+        )
+        h.test_result(
+            "baseline-unavailable fail: exit 1",
+            code == 1,
+            f"exit={code}",
+        )
+    print()
+
     h.summarize_and_exit()
 
 
