@@ -12,9 +12,8 @@ import dataclasses
 import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Literal, Optional, Tuple, Union
+from typing import Callable, Dict, Optional, Tuple, Union
 
-from . import relay
 from .state import LockedFlow, ParkedQuestion, Step, V2State
 
 
@@ -234,7 +233,6 @@ def handle_audit_rejection(
     Returns:
         (new_state, error) tuple
     """
-    import dataclasses
 
     # Write the rejection state under the lock
     new_stop_reason = dict(state.stop_reason)
@@ -382,4 +380,4 @@ def audit_orchestrate(
         parked = ParkedQuestion(step=step, attempt=attempt, nn=1, kind="audit", item=None)
         return None, parked
 
-    return f"audit-error: unexpected verdict type", None
+    return "audit-error: unexpected verdict type", None

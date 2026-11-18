@@ -321,6 +321,8 @@ class Facts:
     question: QuestionFact
     headless: bool  # PARK instead of ASK
     gate: Optional[GateFact] = None  # the gate outcome for this call, or None when no gate stage applies
+    # a FAILED receipt whose Reason names one of the five test-path codes: (code, detail); None otherwise
+    failed_stop: Optional[Tuple[StopCode, str]] = None
 
 
 def _live(pending: Optional[PendingSpawn]) -> Optional[LiveRecord]:
@@ -498,7 +500,9 @@ def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Dir
             f"step {state.step} receipt is malformed again; the automatic rerun is capped at one",
         )
     if facts.receipt == "failed":
-        # A FAILED landing has no automatic recovery in Layer 2 (Retry, Redo and Heal are not wired yet).
+        # A test-path code is a named stop with no Retry offered (the retry guard needs step-failed).
+        if facts.failed_stop is not None:
+            return _stop(state, facts, facts.failed_stop[0], facts.failed_stop[1])
         return _stop(state, facts, "step-failed", f"step {state.step} landed a FAILED receipt")
     if facts.receipt == "rerun":
         # D5: the malformed rerun is already recorded; the dispatch below opens the next attempt once no record is live.

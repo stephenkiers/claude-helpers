@@ -187,6 +187,19 @@ def _landed_failed(locked: LockedFlow, pending: Optional[PendingSpawn]) -> bool:
     return pending is not None and pending.state == "receipt-landed" and _archived_landed_failed(locked, pending)
 
 
+def _failed_stop(locked: LockedFlow, pending: Optional[PendingSpawn]) -> Optional[Tuple[StopCode, str]]:
+    """The test-path stop a landed FAILED receipt names in its Reason, or None (a plain step-failed)."""
+    if pending is None:
+        return None
+    text = _archived_landed_text(locked, pending)
+    found = None if text is None else receipts.failed_test_path_stop(text)
+    if found is None:
+        return None
+    code, detail = found
+    parsed, _ = parse_stop_reason(f"{code}: {detail}")
+    return None if parsed is None else (parsed, detail)
+
+
 def _quiet_elapsed(first: datetime, now: datetime) -> bool:
     return now - first >= timedelta(seconds=RERUN_QUIET_SECONDS)
 
@@ -833,6 +846,7 @@ def _decide(
         question=_question_fact(flow, before.pending_spawn),
         headless=headless,
         gate=gate,
+        failed_stop=_failed_stop(locked, before.pending_spawn) if receipt_fact == "failed" else None,
     )
     new_state, directive = transition(before, event, facts)  # type: ignore[arg-type]
     if isinstance(directive, SpawnDirective) and directive.step == "ship":

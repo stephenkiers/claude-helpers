@@ -12,16 +12,13 @@ Python 3.8 floor: typing.Literal, Optional, Tuple, Dict, List, Union only.
 
 import json
 import os
-import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
-from . import relay, shipguard as sg
-from .model import assert_never
-from .preflight import CommandResult, run_command
-from .state import LockedFlow, ParkedQuestion, Sha, V2State
+from . import relay
+from .preflight import run_command
+from .state import LockedFlow, V2State
 
 
 # Closed result type for assess_next orchestration
@@ -483,7 +480,7 @@ def prepare_assess_batch(
         if isinstance(q_id, str):
             first_item_id = q_id
 
-    parked = relay.park(
+    relay.park(
         locked, flow,
         step="assess",
         attempt=1,
@@ -697,7 +694,7 @@ def assemble_answers(flow: Path, seq: int) -> Optional[str]:
             assembled_file.unlink(missing_ok=True)
             raise
     except FileExistsError:
-        return f"assemble_answers: answers file already exists"
+        return "assemble_answers: answers file already exists"
     except Exception as e:
         return f"assemble_answers: cannot write answers: {e}"
 
@@ -804,7 +801,7 @@ def assess_next(
         return AssessStop(code="assess-error", reason=compute_err)
 
     # Write precomputed results for the assessor
-    results_file = write_assessment_results(flow, assessments)
+    write_assessment_results(flow, assessments)
 
     # Check if assessor output exists
     assess_report = flow / "steps" / "07-assess.md"
@@ -824,7 +821,7 @@ def assess_next(
     # Case 2: Assessor output exists - parse it
     try:
         with open(assess_report, "r") as f:
-            report_content = f.read()
+            f.read()
     except Exception as e:
         return AssessStop(code="assess-error", reason=f"cannot read assess report: {e}")
 

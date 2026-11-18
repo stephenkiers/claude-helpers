@@ -579,7 +579,7 @@ def _load_parked(value: object, field: str) -> Optional[ParkedQuestion]:
     kind_value = fields.raw("kind")
     kind_text = _as_text(fields.field("kind"), kind_value)
     if kind_text not in ("step", "gate", "merge-gate", "audit", "assess"):
-        raise StateSchemaError(fields.field("kind"), f"must be one of step, gate, merge-gate, audit, assess")
+        raise StateSchemaError(fields.field("kind"), "must be one of step, gate, merge-gate, audit, assess")
     kind: Literal["step", "gate", "merge-gate", "audit", "assess"] = kind_text  # type: ignore
     return ParkedQuestion(
         step=fields.pick("step", _STEP_BY_NAME),
