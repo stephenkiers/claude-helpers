@@ -1055,6 +1055,37 @@ def _retry_locked(locked: LockedFlow, state: V2State, step: Step, attempt: int) 
     return new_state
 
 
+def _resume_held_gate(locked: LockedFlow, flow: Path, state: V2State) -> str:
+    """
+    Resume a flow the human paused at a step gate or held at the merge gate: archive the consumed answer, clear the stop
+    and set the flow running, so the next call re-asks the same gate (the answer file is gone, so decide parks it again).
+
+    Raises:
+        LoopRefusal: the flow is not paused on gate-paused or merge-held, or has no landed attempt to re-ask for.
+    """
+    step = state.step
+    code, _ = parse_stop_reason(state.stop_reason.get(step, ""))
+    if state.status != "paused" or code not in ("gate-paused", "merge-held"):
+        raise LoopRefusal(
+            f"recover refused: resume is offered only after a paused step gate or a held merge (status {state.status})"
+        )
+    pending = state.pending_spawn
+    if pending is None or pending.state != "receipt-landed":
+        raise LoopRefusal("recover refused: resume found no landed attempt to re-ask the gate for")
+    merge = code == "merge-held"
+    landed: Step = "ship" if merge else pending.step
+    probe = ParkedQuestion(
+        step="merge" if merge else landed, attempt=_gate_attempt(state, landed), nn=1, kind="merge-gate" if merge else "gate"
+    )
+    relay.archive_consumed(flow, probe)
+    reasons: Dict[Step, str] = dict(state.stop_reason)
+    reasons.pop(step, None)
+    stop_sources = {k: v for k, v in state.stop_source.items() if k != step}
+    locked.commit(dataclasses.replace(state, status="running", parked=None, stop_reason=reasons, stop_source=stop_sources))
+    locked.log("recover", step=step, attempt=probe.attempt, choice="resume")
+    return f"recovered: resume {step} ({code} cleared; the next next asks the gate again)"
+
+
 def run_recover(flow: Path, choice: str) -> str:
     """
     The human's answer to a hard stop: retry (a FAILED receipt, at most two times), take-over, or keep-previous.
@@ -1067,6 +1098,8 @@ def run_recover(flow: Path, choice: str) -> str:
     """
     with mutating(flow) as locked:
         state = locked.require_state()
+        if choice == "resume":
+            return _resume_held_gate(locked, flow, state)
         if state.status != "failed":
             raise LoopRefusal(f"recover refused: the flow is not stopped on a step (status {state.status})")
         step = state.step

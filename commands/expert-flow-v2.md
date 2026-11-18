@@ -35,7 +35,7 @@ points to, and obeys it. It never guesses a verb or a path, and it never writes 
 | `start --flow <dir> [--gates]` | The first `next` of an initialized flow. `--gates` turns on the step gates (an ASK after plan, implement, review, fix and verify). Also sweeps expired flows of this repo (see Retention). |
 | `next --flow <dir> [--after <label>]` | One loop step. With no `--after` it is a re-entry, which is how a later session resumes a parked flow. |
 | `answer --flow <dir> --text <answer> [--note <text>]` | Record the human's answer for a parked attempt. Prints to stderr. One answer per attempt. `--note` only for an option that takes a note (Redo, Drop). |
-| `recover --flow <dir> --choice retry\|take-over\|keep-previous` | Answer a stopped step. `retry` works only after a FAILED receipt and at most twice per step. `keep-previous` is refused in Layer 2. |
+| `recover --flow <dir> --choice retry\|take-over\|keep-previous\|resume` | Answer a stopped step. `retry` works only after a FAILED receipt or an audit rejection and at most twice per step. `resume` re-asks a step gate the human paused or a merge they held. `keep-previous` is refused in Layer 2. |
 | `clear-live --flow <dir> --reason <text>` | Clear a live record, logged with its nonce. Only for a `wait-timeout` or `resume-failed` STOP. |
 | `abandon --flow <dir>` | Mark the flow abandoned. Refused while an attempt is `spawned` or `resumed`, and the refusal names `clear-live`. Deletes nothing. |
 | `retro --flow <dir>` | Not built for v2: it exits 3 (`not-yet-built`). Refused for v1 flows. |

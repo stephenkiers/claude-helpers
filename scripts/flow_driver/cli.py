@@ -466,9 +466,9 @@ def build_parser() -> argparse.ArgumentParser:
     clear.add_argument("--flow", required=True, help="absolute flow dir")
     clear.add_argument("--reason", required=True)
 
-    rec = sub.add_parser("recover", help="answer a hard stop: retry, take-over or keep-previous")
+    rec = sub.add_parser("recover", help="answer a hard stop: retry, take-over or keep-previous; resume re-asks a paused or held gate")
     rec.add_argument("--flow", required=True, help="absolute flow dir")
-    rec.add_argument("--choice", required=True, choices=["retry", "take-over", "keep-previous"])
+    rec.add_argument("--choice", required=True, choices=["retry", "take-over", "keep-previous", "resume"])
 
     aband = sub.add_parser("abandon", help="abandon a flow (refused while a record is live)")
     aband.add_argument("--flow", required=True, help="absolute flow dir")
