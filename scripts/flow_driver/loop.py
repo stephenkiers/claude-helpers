@@ -1025,6 +1025,36 @@ def _count_outcome(state: V2State, step: Step, outcome: AttemptOutcome) -> int:
     return sum(1 for value in state.attempt_log.get(step, {}).values() if value == outcome)
 
 
+def _retry_locked(locked: LockedFlow, state: V2State, step: Step, attempt: int) -> V2State:
+    """
+    The single writer of a retry: the cap check (recovery.retry), the "retried" outcome on the attempt, the dropped
+    pending record and the cleared stop, in one commit under the lock. Every retry path (a FAILED receipt, an audit
+    rejection) goes through here so the cap counts one way.
+
+    Raises:
+        LoopRefusal: the step has used its retries (retry-cap).
+    """
+    decision = rc.retry(step, _count_outcome(state, step, "retried"))
+    if isinstance(decision, rc.Stop):
+        raise LoopRefusal(stop_reason(decision.code, decision.detail))
+    outcomes = _copy_outcomes(state)
+    _set_outcome(outcomes, step, attempt, "retried", replaces="receipt-landed")
+    reasons: Dict[Step, str] = dict(state.stop_reason)
+    reasons.pop(step, None)
+    stop_sources = {k: v for k, v in state.stop_source.items() if k != step}
+    new_state = dataclasses.replace(
+        state,
+        status="running",
+        pending_spawn=None,
+        parked=None,
+        stop_reason=reasons,
+        stop_source=stop_sources,
+        attempt_log=outcomes,
+    )
+    locked.commit(new_state)
+    return new_state
+
+
 def run_recover(flow: Path, choice: str) -> str:
     """
     The human's answer to a hard stop: retry (a FAILED receipt, at most two times), take-over, or keep-previous.
@@ -1045,23 +1075,12 @@ def run_recover(flow: Path, choice: str) -> str:
         attempt = state.attempts.get(step, 0) if pending is None else pending.attempt
         reasons: Dict[Step, str] = dict(state.stop_reason)
         if choice == "retry":
-            if code != "step-failed" or not _landed_failed(locked, pending):
-                raise LoopRefusal("recover refused: retry is offered only after a step landed a FAILED receipt")
-            decision = rc.retry(step, _count_outcome(state, step, "retried"))
-            if isinstance(decision, rc.Stop):
-                raise LoopRefusal(stop_reason(decision.code, decision.detail))
-            outcomes = _copy_outcomes(state)
-            _set_outcome(outcomes, step, attempt, "retried", replaces="receipt-landed")
-            reasons.pop(step, None)
-            locked.commit(
-                dataclasses.replace(
-                    state,
-                    status="running",
-                    pending_spawn=None,
-                    stop_reason=reasons,
-                    attempt_log=outcomes,
+            audit_rejected = code == "audit-rejected" and state.parked is not None and state.parked.kind == "audit"
+            if not audit_rejected and (code != "step-failed" or not _landed_failed(locked, pending)):
+                raise LoopRefusal(
+                    "recover refused: retry is offered only after a FAILED receipt or an audit rejection"
                 )
-            )
+            _retry_locked(locked, state, step, attempt)
             locked.log("recover", step=step, attempt=attempt, choice="retry")
             return f"recovered: retry {step} (attempt {attempt} is retried; the next next spawns a new attempt)"
         if choice == "take-over":
