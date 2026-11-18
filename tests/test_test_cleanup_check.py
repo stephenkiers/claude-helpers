@@ -17,6 +17,7 @@ Run with: python3 tests/test_test_cleanup_check.py
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1195,6 +1196,7 @@ def next_test():
 
     check_round2_gaps(h)
     check_round3_followups(h)
+    check_empty_suites(h)
 
     h.summarize_and_exit()
 
@@ -1426,6 +1428,377 @@ def check_round3_followups(h):
                                   "--flow-dir", str(flow), "--out", str(flow / "test-hygiene-fix.json")])
         h.test_result("hygiene-json --flow-dir allows an --out under the flow dir",
                       rc == 0 and (flow / "test-hygiene-fix.json").exists(), f"rc={rc} err={err!r}")
+
+
+# ---------------------------------------------------------------------------
+# empty-suites: read-only empty-suite detection (#498, round 2 spec-blind fixtures)
+# ---------------------------------------------------------------------------
+
+EMPTY_SUITE_NONEMPTY = 'describe("n", () => { it("t", () => {}); });\n'
+
+ACCEPT_1_TS = ('import { describe, it } from "vitest";\n'
+               'describe("a", () => {\n'
+               '});\n'
+               'describe("b", () => {\n'
+               '  it("keeps", () => {});\n'
+               '});\n')
+
+NESTED_TS = ('describe("outer", () => {\n'
+             '  describe("inner", () => {});\n'
+             '});\n'
+             + EMPTY_SUITE_NONEMPTY)
+
+# Fixture 2: the single-line and multi-line collapsed forms of an empty suite.
+BIOME_FORMS = [
+    'describe("x", () => {});',
+    'describe.skip("x", () => {});',
+    "describe.only('x', () => {});",
+    "describe(`x`, () => {});",
+    'describe("x", function () {});',
+    'describe("x", async () => {});',
+    'describe("x", () => { /* note */ });',
+    'describe("x", () => {\n});',
+]
+
+# Fixture 6: suites that must never be removed.
+KEPT_CASES = [
+    'describe("k", () => { it("t", () => {}); });',
+    'describe("k", () => { test("t", () => {}); });',
+    'describe("k", () => { it.skip("t", () => {}); });',
+    'describe("k", () => { it.todo("t"); });',
+    'describe("k", () => { it.each([1, 2])("t %i", () => {}); });',
+    'describe("k", () => { describe("n", () => { it("t", () => {}); }); });',
+    'describe("k", () => { it("has { brace and `tick", () => {}); });',
+    'describe("k", () => { for (const c of cases) { it(c, () => {}); } });',
+    'describe("k", () => { cases.forEach((c) => it(c, () => {})); });',
+]
+
+# Fixture 7: suites that are kept and reported as kept-suspicious (the last one is unparseable).
+SUSPICIOUS_CASES = [
+    'describe("k", () => { for (const c of cases) { register(c); } });',
+    'describe("k", () => { cases.forEach((c) => register(c)); });',
+    'describe.each([[1]])("k %i", () => {});',
+    'describe("k", () => { const helper = 1; });',
+    'describe("k", () => { registerSuite(); });',
+    'describe("k", () => { if (x) {',
+]
+
+
+def run_empty_suites(root, rels):
+    """Run `empty-suites --root <root> <rels...>` with cwd=root. Returns (rc, findings, stdout, stderr).
+    findings is the parsed top-level `findings` list, or None when stdout is not that JSON object."""
+    result = subprocess.run([sys.executable, str(CHECK), "empty-suites", "--root", str(root), *rels],
+                            cwd=str(root), capture_output=True, text=True)
+    try:
+        data = json.loads(result.stdout)
+    except ValueError:
+        data = None
+    findings = data.get("findings") if isinstance(data, dict) else None
+    if not isinstance(findings, list):
+        findings = None
+    return result.returncode, findings, result.stdout, result.stderr
+
+
+def of_kind(findings, kind):
+    return [f for f in (findings or []) if f.get("kind") == kind]
+
+
+def delete_spans(path, findings):
+    """Delete each finding's line..end_line span from path (bottom-up, so earlier line numbers hold)."""
+    lines = Path(path).read_text().splitlines(keepends=True)
+    for f in sorted(findings, key=lambda item: item["line"], reverse=True):
+        del lines[f["line"] - 1:f["end_line"]]
+    Path(path).write_text("".join(lines))
+
+
+def tree_snapshot(root):
+    """Every directory and file under root, with file bytes, for read-only checks."""
+    snap = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames:
+            snap[os.path.relpath(os.path.join(dirpath, name), root) + "/"] = None
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            snap[os.path.relpath(full, root)] = Path(full).read_bytes()
+    return snap
+
+
+def call_count(text):
+    """Count it(/test( call sites at the start of a line, including it.each-style modifiers."""
+    return len(re.findall(r"(?m)^\s*(?:it|test)(?:\.\w+)?\(", text))
+
+
+def check_empty_suites(h):
+    """empty-suites: read-only JS/TS, pytest and Go detection, run as a subprocess against temp trees."""
+    print("[Section empty-suites] read-only empty-suite detection")
+
+    # Fixture 1: the deleted-suite case, then the same tree after the reported span is removed.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {"src/a.test.ts": ACCEPT_1_TS})
+        rc, findings, out, err = run_empty_suites(root, ["src/a.test.ts"])
+        one = findings is not None and len(findings) == 1
+        f = findings[0] if one else {}
+        span_ok = (rc == 1 and one and f.get("kind") == "empty-suite" and f.get("name") == "a"
+                   and f.get("action") == "remove" and f.get("stack") == "js"
+                   and f.get("line") == 2 and f.get("end_line") == 3)
+        h.test_result("empty-suites fixture 1: the emptied suite is one remove finding at lines 2-3, exit 1",
+                      span_ok, f"rc={rc} findings={findings!r} err={err!r}")
+        keys_ok = (one and f.get("file") == "src/a.test.ts" and isinstance(f.get("imported_by"), list)
+                   and set(f) >= {"file", "line", "end_line", "stack", "kind", "name", "action",
+                                  "reason", "imported_by", "text"}
+                   and 'describe("a"' in str(f.get("text")))
+        h.test_result("empty-suites fixture 1: a finding carries the documented keys, file relative to root",
+                      keys_ok, f"finding={f!r}")
+        if span_ok:
+            delete_spans(root / "src/a.test.ts", findings)
+            rc2, findings2, out2, err2 = run_empty_suites(root, ["src/a.test.ts"])
+            h.test_result("empty-suites fixture 1: after deleting line..end_line the helper exits 0 with no findings",
+                          rc2 == 0 and findings2 == [], f"rc={rc2} findings={findings2!r} err={err2!r}")
+        else:
+            h.test_result("empty-suites fixture 1: after deleting line..end_line the helper exits 0 with no findings",
+                          False, "skipped: the reported span was not as specified")
+
+    # Fixture 2: every collapsed form is one remove finding next to a non-empty suite.
+    for form in BIOME_FORMS:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_files(root, {"src/x.test.ts": form + "\n" + EMPTY_SUITE_NONEMPTY})
+            rc, findings, out, err = run_empty_suites(root, ["src/x.test.ts"])
+            es = of_kind(findings, "empty-suite")
+            ok = (rc == 1 and findings is not None and len(findings) == 1 and len(es) == 1
+                  and es[0].get("name") == "x" and es[0].get("action") == "remove")
+            h.test_result(f"empty-suites fixture 2: collapsed empty suite is one remove finding: {form.splitlines()[0]}",
+                          ok, f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Fixture 3: nested empties report only the outermost suite; the result is stable and idempotent.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {"src/n.test.ts": NESTED_TS})
+        rc, findings, out, err = run_empty_suites(root, ["src/n.test.ts"])
+        one = findings is not None and len(findings) == 1 and findings[0].get("name") == "outer"
+        h.test_result("empty-suites fixture 3: nested empty suites yield exactly one finding, for outer",
+                      rc == 1 and one, f"rc={rc} findings={findings!r} err={err!r}")
+        _, _, out_again, _ = run_empty_suites(root, ["src/n.test.ts"])
+        h.test_result("empty-suites fixture 3: two runs on the same input give byte-identical stdout",
+                      out == out_again, f"first={out!r} second={out_again!r}")
+        if one:
+            delete_spans(root / "src/n.test.ts", findings)
+            rc2, findings2, out2, err2 = run_empty_suites(root, ["src/n.test.ts"])
+            h.test_result("empty-suites fixture 3: after deleting outer's span the helper exits 0",
+                          rc2 == 0 and findings2 == [], f"rc={rc2} findings={findings2!r} err={err2!r}")
+        else:
+            h.test_result("empty-suites fixture 3: after deleting outer's span the helper exits 0",
+                          False, "skipped: no single outer finding")
+
+    # Fixture 5: the helper is read-only, and removing the reported spans keeps every it/test call.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {"src/a.test.ts": ACCEPT_1_TS, "src/n.test.ts": NESTED_TS})
+        before = tree_snapshot(root)
+        exit_codes = []
+        unchanged = True
+        for rels in (["src/a.test.ts"], ["src/n.test.ts"], ["src/a.test.ts", "src/n.test.ts"]):
+            rc, _, _, _ = run_empty_suites(root, rels)
+            exit_codes.append(rc)
+            unchanged = unchanged and tree_snapshot(root) == before
+        h.test_result("empty-suites fixture 5: the helper writes nothing under --root, including on exit-1 runs",
+                      exit_codes == [1, 1, 1] and unchanged, f"exit_codes={exit_codes}")
+    for rel, text in (("src/a.test.ts", ACCEPT_1_TS), ("src/n.test.ts", NESTED_TS)):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_files(root, {rel: text})
+            rc, findings, out, err = run_empty_suites(root, [rel])
+            es = of_kind(findings, "empty-suite")
+            if not es:
+                h.test_result(f"empty-suites fixture 5: removing empty-suite spans from {rel} keeps every it/test call",
+                              False, f"no empty-suite finding to remove: rc={rc} findings={findings!r}")
+                continue
+            before_calls = call_count(text)
+            delete_spans(root / rel, es)
+            after_calls = call_count((root / rel).read_text())
+            h.test_result(f"empty-suites fixture 5: removing empty-suite spans from {rel} keeps every it/test call",
+                          before_calls >= 1 and before_calls == after_calls,
+                          f"before={before_calls} after={after_calls}")
+
+    # Fixture 6: kept suites are never removed; the helper exits 0 when the suite is the only content.
+    for case in KEPT_CASES:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_files(root, {"src/k.test.ts": case + "\n"})
+            rc, findings, out, err = run_empty_suites(root, ["src/k.test.ts"])
+            acted = [f for f in (findings or []) if f.get("action") in ("remove", "delete-file", "stop")]
+            h.test_result(f"empty-suites fixture 6: suite is kept, never removed, exit 0: {case}",
+                          findings is not None and rc == 0 and not acted,
+                          f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Fixture 7: suspicious suites are reported (kept-suspicious, report, exit 0), never removed.
+    for case in SUSPICIOUS_CASES:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_files(root, {"src/s.test.ts": EMPTY_SUITE_NONEMPTY + case + "\n"})
+            rc, findings, out, err = run_empty_suites(root, ["src/s.test.ts"])
+            ks = of_kind(findings, "kept-suspicious")
+            acted = [f for f in (findings or []) if f.get("action") in ("remove", "delete-file", "stop")]
+            h.test_result(f"empty-suites fixture 7: suspicious suite is kept-suspicious, report, exit 0: {case}",
+                          findings is not None and rc == 0 and len(ks) >= 1
+                          and all(f.get("action") == "report" for f in ks) and not acted,
+                          f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Fixture 8: a suite holding only a hook and a comment is empty, and the hook goes with it.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        hook_suite = 'describe("h", () => {\n  beforeEach(() => {});\n  // nothing here\n});\n'
+        write_files(root, {"src/h.test.ts": hook_suite + EMPTY_SUITE_NONEMPTY})
+        rc, findings, out, err = run_empty_suites(root, ["src/h.test.ts"])
+        es = of_kind(findings, "empty-suite")
+        h.test_result("empty-suites fixture 8: a hook-and-comment suite is one remove finding whose text holds beforeEach",
+                      findings is not None and len(findings) == 1 and len(es) == 1
+                      and es[0].get("name") == "h" and es[0].get("action") == "remove"
+                      and "beforeEach" in str(es[0].get("text")),
+                      f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Fixture 9: an emptied JS file with no importer is delete-file, and no suite finding is added.
+    emptied = 'import { describe } from "vitest";\ndescribe("x", () => {});\n'
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {"src/only.test.ts": emptied})
+        rc, findings, out, err = run_empty_suites(root, ["src/only.test.ts"])
+        f = findings[0] if findings and len(findings) == 1 else {}
+        h.test_result("empty-suites fixture 9: an emptied file with no importer is one delete-file finding",
+                      rc == 1 and findings is not None and len(findings) == 1
+                      and f.get("kind") == "empty-file" and f.get("action") == "delete-file"
+                      and f.get("imported_by") == [],
+                      f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Fixture 10: the same emptied file, imported by another test file, is a stop.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {"src/only.test.ts": emptied,
+                           "src/other.test.ts": 'import { helper } from "./only.test";\n'})
+        rc, findings, out, err = run_empty_suites(root, ["src/only.test.ts"])
+        f = findings[0] if findings and len(findings) == 1 else {}
+        h.test_result("empty-suites fixture 10: an emptied file imported elsewhere is empty-file-unsafe, stop, exit 1",
+                      rc == 1 and findings is not None and len(findings) == 1
+                      and f.get("kind") == "empty-file-unsafe" and f.get("action") == "stop"
+                      and f.get("imported_by") == ["src/other.test.ts"],
+                      f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Fixture 11: an emptied file that still holds top-level code is empty-file-unsafe, stop.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {"src/fx.test.ts": 'import { describe } from "vitest";\nexport const fixture = 1;\n'
+                                             'describe("x", () => {});\n'})
+        rc, findings, out, err = run_empty_suites(root, ["src/fx.test.ts"])
+        unsafe = of_kind(findings, "empty-file-unsafe")
+        h.test_result("empty-suites fixture 11: an emptied file with top-level code is empty-file-unsafe, stop",
+                      rc == 1 and len(unsafe) == 1 and unsafe[0].get("action") == "stop",
+                      f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Edge (Step 2 precedence): a kept-suspicious suite in an otherwise-emptied file is reported as is.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {"src/sus.test.ts": 'import { describe } from "vitest";\n'
+                                              'describe("x", () => { register(); });\n'})
+        rc, findings, out, err = run_empty_suites(root, ["src/sus.test.ts"])
+        kinds = {f.get("kind") for f in (findings or [])}
+        h.test_result("empty-suites: a kept-suspicious suite keeps its file out of empty-file and empty-file-unsafe",
+                      rc == 0 and findings is not None and "kept-suspicious" in kinds
+                      and not kinds & {"empty-file", "empty-file-unsafe"},
+                      f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Edge (Step 4 stack table): .tsx and .mjs are JS, and their emptied suites are remove findings.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        emptied_suite = 'describe("t", () => {});\n' + EMPTY_SUITE_NONEMPTY
+        write_files(root, {"src/c.tsx": emptied_suite, "src/d.mjs": emptied_suite})
+        rc, findings, out, err = run_empty_suites(root, ["src/c.tsx", "src/d.mjs"])
+        es = of_kind(findings, "empty-suite")
+        h.test_result("empty-suites: .tsx and .mjs files are stack js and report their empty suites",
+                      rc == 1 and len(es) == 2 and all(f.get("stack") == "js" for f in es),
+                      f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Fixture 12: a Test* class with only a docstring and pass is empty-class, report only.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {"tests/test_p.py": 'class TestEmpty:\n    """doc"""\n    pass\n'})
+        rc, findings, out, err = run_empty_suites(root, ["tests/test_p.py"])
+        ec = of_kind(findings, "empty-class")
+        f = ec[0] if len(ec) == 1 else {}
+        h.test_result("empty-suites fixture 12: an empty Test* class is one empty-class report, exit 0",
+                      rc == 0 and findings is not None and len(findings) == 1 and f.get("name") == "TestEmpty"
+                      and f.get("stack") == "python" and f.get("action") == "report",
+                      f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Fixture 13: classes that are not empty Test* classes produce no finding.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {"tests/test_neg.py": 'import unittest\n\n\n'
+                                                'class TestFull:\n    def test_a(self):\n        pass\n\n\n'
+                                                'class TestCaseLike(unittest.TestCase):\n    pass\n\n\n'
+                                                'class Helper:\n    pass\n'})
+        rc, findings, out, err = run_empty_suites(root, ["tests/test_neg.py"])
+        named = {"TestFull", "TestCaseLike", "Helper"}
+        h.test_result("empty-suites fixture 13: no finding for TestFull, a TestCase subclass, or Helper",
+                      findings is not None and not [f for f in findings if f.get("name") in named],
+                      f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Edge (Step 3): a Python file that cannot be parsed is one kept-suspicious report.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {"tests/test_broken.py": 'def test_x(:\n    pass\n'})
+        rc, findings, out, err = run_empty_suites(root, ["tests/test_broken.py"])
+        ks = of_kind(findings, "kept-suspicious")
+        h.test_result("empty-suites: an unparseable Python test file is one kept-suspicious report, exit 0",
+                      rc == 0 and len(ks) == 1 and ks[0].get("action") == "report" and ks[0].get("stack") == "python",
+                      f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Fixture 14: a _test.go file with only a helper is empty-go-test-file, report only.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {"pkg/x_test.go": 'package pkg\n\nfunc helper() int { return 1 }\n'})
+        rc, findings, out, err = run_empty_suites(root, ["pkg/x_test.go"])
+        f = findings[0] if findings and len(findings) == 1 else {}
+        h.test_result("empty-suites fixture 14: a _test.go file with no Test/Benchmark/Fuzz/Example is report-only",
+                      rc == 0 and f.get("kind") == "empty-go-test-file" and f.get("stack") == "go"
+                      and f.get("action") == "report",
+                      f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Fixture 15: _test.go files with a Test, TestMain or Benchmark function produce no finding.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {
+            "pkg/a_test.go": 'package pkg\n\nimport "testing"\n\nfunc TestA(t *testing.T) {}\n',
+            "pkg/m_test.go": 'package pkg\n\nimport "testing"\n\nfunc TestMain(m *testing.M) {}\n',
+            "pkg/b_test.go": 'package pkg\n\nimport "testing"\n\nfunc BenchmarkA(b *testing.B) {}\n',
+        })
+        rc, findings, out, err = run_empty_suites(root, ["pkg/a_test.go", "pkg/m_test.go", "pkg/b_test.go"])
+        h.test_result("empty-suites fixture 15: Test, TestMain and Benchmark files yield no finding",
+                      rc == 0 and findings == [], f"rc={rc} findings={findings!r} err={err!r}")
+
+    # Fixture 16: --help exits 0.
+    help_run = subprocess.run([sys.executable, str(CHECK), "empty-suites", "--help"],
+                              capture_output=True, text=True)
+    h.test_result("empty-suites fixture 16: --help exits 0", help_run.returncode == 0,
+                  f"rc={help_run.returncode} err={help_run.stderr!r}")
+
+    # Fixture 17: a FILE outside --root exits 2 with a message on stderr.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "root"
+        root.mkdir()
+        outside = Path(tmp) / "outside.test.ts"
+        outside.write_text(ACCEPT_1_TS)
+        rc, findings, out, err = run_empty_suites(root, [str(outside)])
+        h.test_result("empty-suites fixture 17: a FILE outside --root exits 2 with a stderr message",
+                      rc == 2 and err.strip() != "", f"rc={rc} err={err!r}")
+
+    # Fixture 18: a Markdown argument produces no finding and exits 0.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_files(root, {"docs/notes.md": 'describe("x", () => {});\n'})
+        rc, findings, out, err = run_empty_suites(root, ["docs/notes.md"])
+        h.test_result("empty-suites fixture 18: a .md argument produces no finding and exits 0",
+                      rc == 0 and findings == [], f"rc={rc} findings={findings!r} err={err!r}")
 
 
 if __name__ == "__main__":
