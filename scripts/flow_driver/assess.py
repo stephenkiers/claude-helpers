@@ -14,7 +14,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from . import relay
 from .preflight import run_command
@@ -319,7 +319,7 @@ def parse_assessor_output(assessor_text: str) -> Tuple[List[AssessRecord], Optio
     missing field does.
     """
     records: List[AssessRecord] = []
-    seen_ids: set = set()
+    seen_ids: Set[str] = set()
 
     for line in assessor_text.strip().split("\n"):
         if not line.strip():
@@ -546,7 +546,7 @@ def save_item_answer(
     qid: str,
     label: str,
     note: Optional[str],
-    unanswered_qids: set,
+    unanswered_qids: Set[str],
 ) -> Optional[str]:
     """
     Save an answer for one assess item, then advance state.parked.item to the next unanswered qid.

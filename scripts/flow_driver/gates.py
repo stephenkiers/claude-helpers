@@ -28,7 +28,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Literal, Optional, Tuple, Union
+from typing import Literal, Optional, Protocol, Tuple, Union
 
 from . import driver, recovery, shipguard as sg
 from .ledger import LedgerError, ledger_script
@@ -59,8 +59,18 @@ _MAX_CONTEXT_CHARS = 100
 _MAX_CONTEXT_ITEMS = 5
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
-PrReader = Callable[..., sg.ShipGuardResult]
-PrNumberReader = Callable[..., sg.MergeVerdict]
+class PrReader(Protocol):
+    """The by-branch PR check (shipguard.check_pr); tests inject a fake with this shape."""
+
+    def __call__(
+        self, branch: str, expected: Sha, run: Runner = run_command, repo: Optional[str] = None
+    ) -> sg.ShipGuardResult: ...
+
+
+class PrNumberReader(Protocol):
+    """The by-number PR check (shipguard.check_pr_by_number); tests inject a fake with this shape."""
+
+    def __call__(self, number: int, repo: str, expected: Sha, run: Runner = run_command) -> sg.MergeVerdict: ...
 
 
 @dataclass(frozen=True)
