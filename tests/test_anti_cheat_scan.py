@@ -28,7 +28,7 @@ GIT_ID = ["-c", "user.email=test@example.com", "-c", "user.name=Test", "-c", "co
 NAMED_REASONS = {
     "test-edit", "gate-config-edit", "added-suppression", "env-guard", "revert-to-pass",
     "test-removed", "neutered-verification", "stub-body", "bad-ref", "missing-revert-base",
-    "revert-base-not-allowed",
+    "revert-base-not-allowed", "allow-test-edit-not-allowed", "allow-test-edit-unmatched",
 }
 
 BASE_FILES = {
@@ -298,6 +298,17 @@ def allow_test_edit_checks(h):
         rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", accented])
         h.test_result("non-ASCII path: an allowlisted edit to a non-ASCII test path passes (raw -z path matches exactly)",
                       passed(rc, data), detail(rc, data))
+
+    for label, near_miss in (("trailing slash", "tests/test_x.py/"), ("leading ./", "./tests/test_x.py"),
+                             ("different case", "tests/Test_X.py"), ("glob", "tests/*.py"),
+                             ("absent path", "tests/test_missing.py")):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base, head = allow_fixture(tmp, ALLOW_X_EDIT)
+            rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", near_miss])
+            h.test_result(f"near-miss path ({label}): the edit is not suppressed and fails with 'test-edit'",
+                          rc == 1 and "test-edit: tests/test_x.py" in data.get("reasons", []), detail(rc, data))
+            h.test_result(f"near-miss path ({label}): the unmatched allowlist entry is reported",
+                          f"allow-test-edit-unmatched: {near_miss}" in data.get("reasons", []), detail(rc, data))
 
 
 def main():

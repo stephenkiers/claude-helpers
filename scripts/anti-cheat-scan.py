@@ -36,7 +36,8 @@ with allow-test-edit-not-allowed.
 
 Named reasons: test-edit, test-removed, gate-config-edit, added-suppression, env-guard,
 revert-to-pass, neutered-verification, stub-body, bad-ref, missing-revert-base,
-revert-base-not-allowed, allow-test-edit-not-allowed, diff-unreadable.
+revert-base-not-allowed, allow-test-edit-not-allowed, allow-test-edit-unmatched,
+diff-unreadable.
 """
 
 import argparse
@@ -373,6 +374,14 @@ def scan(
     revert_base: Optional[str],
     allow_test_edit: Optional[List[str]] = None,
 ) -> List[str]:
+    """Scan BASE..HEAD in REPO and return the unique named failure reasons (empty list = pass).
+
+    allow_test_edit (implement profile only): exact repo-relative test paths whose `test-edit` reason is
+    suppressed. The match is exact (no globs or normalisation) and applies to modified files (status M) only;
+    an added or deleted test path is never suppressed. An allowed path that never matched a modified test
+    path in the range is itself a failure, `allow-test-edit-unmatched: <path>`, so a typo or a stale path
+    cannot pass silently. Raises ScanError for an unusable profile combination or ref.
+    """
     reasons = []  # type: List[str]
     if profile == "heal" and not revert_base:
         raise ScanError("missing-revert-base", "--revert-base is required for profile heal")
@@ -392,6 +401,7 @@ def scan(
 
     files = changed_files(repo, base_sha, head_sha)
     hunk_cache: Dict[str, List[Hunk]] = {}
+    matched_allowed = set()  # type: Set[str]
 
     def hunks_for(p: str) -> List[Hunk]:
         if p not in hunk_cache:
@@ -412,7 +422,9 @@ def scan(
                     and status == "M"
                     and path in allowed_test_edits
                 )
-                if not suppressed:
+                if suppressed:
+                    matched_allowed.add(path)
+                else:
                     reasons.append("test-edit: %s" % path)
         if profile == "heal" and is_gate_path(path, repo):
             reasons.append("gate-config-edit: %s" % path)
@@ -431,6 +443,8 @@ def scan(
             if status == "A":
                 continue
             reasons.extend(check_revert_to_pass(repo, rb_sha, base_sha, path, hunks_for(path)))
+    for unmatched in sorted(allowed_test_edits - matched_allowed):
+        reasons.append("allow-test-edit-unmatched: %s" % unmatched)
     seen: Set[str] = set()
     unique = []  # type: List[str]
     for r in reasons:
