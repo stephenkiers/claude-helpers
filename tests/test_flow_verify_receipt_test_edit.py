@@ -387,7 +387,7 @@ def main():
                       rows.get("D2") == "declared", result.stdout + result.stderr)
 
     print()
-    print("[Apply conflict]")
+    print("[Approved edit skipped at apply time stays OUTSTANDING]")
     with tempfile.TemporaryDirectory() as td:
         repo, base, approval, head = build_scenario(td)
         write_check_cache(repo)
@@ -396,12 +396,96 @@ def main():
         rc, out, err = run_fix(flow, home, repo, base, review_dir,
                                fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
                                            outstanding=["D5 (test-edit-apply-conflict: tests/test_z.py) [self-report]"]))
-        h.test_result("apply conflict: D3 applied and D5 reported as apply-conflict passes",
+        h.test_result("approved-but-skipped: D3 applied and D5 (approved, skipped as apply-conflict) reported OUTSTANDING passes",
                       passed_fix(rc, out), combined(out, err))
         rc2, out2, err2 = outstanding_set(flow, home)
         _count, rows = parse_outstanding(out2)
-        h.test_result("apply conflict: outstanding-set lists fix:D5", rc2 == 0 and "fix:D5" in rows,
+        h.test_result("approved-but-skipped: outstanding-set lists the skipped item fix:D5", rc2 == 0 and "fix:D5" in rows,
                       combined(out2, err2))
+
+    print()
+    print("[Fail-closed receipt shapes (table-driven)]")
+    other_sha = "f" * 40
+    table = [
+        ("two TEST_EDIT_COMMIT lines", dict(test_edit=TEST_EDIT_D3, extra="TEST_EDIT_COMMIT: {approval}"),
+         "more than one TEST_EDIT_COMMIT"),
+        ("commit with TEST_EDIT: none", dict(test_edit="TEST_EDIT: none", test_edit_commit="{approval}"),
+         "present with TEST_EDIT: none"),
+        ("commit without a TEST_EDIT line", dict(test_edit="Addressed: none", test_edit_commit="{approval}"),
+         "TEST_EDIT_COMMIT without a TEST_EDIT line"),
+        ("none mixed with an edit line", dict(test_edit=TEST_EDIT_D3 + "\nTEST_EDIT: none", test_edit_commit="{approval}"),
+         "mixed with approved edit lines"),
+        ("edit line without commit", dict(test_edit=TEST_EDIT_D3), "without TEST_EDIT_COMMIT"),
+        ("malformed commit sha", dict(test_edit=TEST_EDIT_D3, test_edit_commit="abc123"), "malformed TEST_EDIT_COMMIT"),
+        ("malformed edit line", dict(test_edit="TEST_EDIT: D3 tests/test_x.py", test_edit_commit="{approval}"),
+         "malformed TEST_EDIT line"),
+        ("answers ref that is not a fix answers file",
+         dict(test_edit="TEST_EDIT: D3 tests/test_x.py answers/assess-02.json", test_edit_commit="{approval}"),
+         "malformed TEST_EDIT line"),
+        ("unknown commit", dict(test_edit=TEST_EDIT_D3, test_edit_commit=other_sha), "test-edit:"),
+    ]
+    with tempfile.TemporaryDirectory() as td:
+        repo, base, approval, head = build_scenario(td)
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        for name, spec, expected in table:
+            receipt = fix_receipt(head, test_edit=spec["test_edit"], test_edit_commit=(spec.get("test_edit_commit") or "").format(approval=approval) or None,
+                                  outstanding=[DECLINED_D5])
+            if spec.get("extra"):
+                receipt = receipt.replace("OUTSTANDING:", spec["extra"].format(approval=approval) + "\nOUTSTANDING:", 1)
+                receipt = receipt.replace(f"TEST_EDIT_COMMIT: {approval}\n", "", 0)
+                receipt = receipt.replace("UNITS: 3\n", "UNITS: 3\nTEST_EDIT_COMMIT: " + approval + "\n", 1)
+            rc, out, err = run_fix(flow, home, repo, base, review_dir, receipt)
+            h.test_result(f"fail closed: {name} is rejected with '{expected}'",
+                          rc != 0 and not passed_fix(rc, out) and expected in combined(out, err), combined(out, err))
+
+    print()
+    print("[Approval commit must lie in the fix range]")
+    with tempfile.TemporaryDirectory() as td:
+        repo, base, approval, head = build_scenario(td)
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        git(repo, "checkout", "-q", "-b", "side", base)
+        (Path(repo) / "tests" / "test_x.py").write_text("def test_x():\n    assert 1 == 1\n")
+        git(repo, "add", "tests")
+        git(repo, "commit", "-q", "-m", "side edit")
+        side = git(repo, "rev-parse", "HEAD")
+        git(repo, "checkout", "-q", "-")
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=side, outstanding=[DECLINED_D5]))
+        h.test_result("commit on another branch: rejected as not on the branch",
+                      rc != 0 and "is not on HEAD" in combined(out, err), combined(out, err))
+        rc, out, err = run_fix(flow, home, repo, approval, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval, outstanding=[DECLINED_D5]))
+        h.test_result("commit equal to the range base: rejected as the base",
+                      rc != 0 and "is the fix range base" in combined(out, err), combined(out, err))
+    with tempfile.TemporaryDirectory() as td:
+        repo, _base, approval, head = build_scenario(td, later=[OTHER_UNIT])
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        rc, out, err = run_fix(flow, home, repo, head, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval, outstanding=[DECLINED_D5]))
+        h.test_result("commit before the range base: rejected as not in the fix range",
+                      rc != 0 and "not in the fix range" in combined(out, err), combined(out, err))
+
+    print()
+    print("[Typed Other text and list answers never approve an edit]")
+    for label, value in (("typed text not offered by the question", "Approve edit: D3 tests/test_z.py"),
+                         ("list-shaped answer (multiSelect shape)", ["Approve edit: D3 tests/test_x.py", "note"])):
+        with tempfile.TemporaryDirectory() as td:
+            repo, base, approval, head = build_scenario(td)
+            write_check_cache(repo)
+            home, flow, review_dir = fix_flow(td)
+            write_fix_answers(flow, 2, [("q1", "D3", "tests/test_x.py", True)])
+            answer_file = flow / "answers" / "fix-02.json"
+            doc = json.loads(answer_file.read_text())
+            doc["answers"]["q1"] = value
+            answer_file.write_text(json.dumps(doc))
+            ledger_append(flow, home, f"answer_ref: answers/fix-02.json\nsha256: {hashlib.sha256(answer_file.read_bytes()).hexdigest()}")
+            rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                                   fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval))
+            h.test_result(f"{label}: the edit is rejected as not approved",
+                          rc != 0 and "not approved" in combined(out, err), combined(out, err))
 
     h.summarize_and_exit()
 
