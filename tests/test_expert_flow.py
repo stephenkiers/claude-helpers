@@ -246,9 +246,10 @@ def test_fix_test_edit_doc_contract(h):
 
     # The test-edit worker is never a unit; --only-units runs never ask a test-edit question.
     h.test_result("never a unit: implement-with-haiku states the test-edit worker is never a unit",
-                  _te_para_re(impl, r"test-edit", r"never (?:a |an )?unit"))
+                  _te_para_re(impl, r"The test-edit worker is never a unit"))
     h.test_result("--only-units: implement-with-haiku states such runs never ask a test-edit question",
-                  _te_para_re(impl, r"--only-units", r"test-edit", r"never[^.]*ask"))
+                  _te_para_re(impl, r"A run with `--only-units` never drafts, asks or applies a test edit",
+                                r"so it never asks a test-edit question"))
     fix_now_lines = [line for line in flow_doc.splitlines() if "anti-cheat-scan" in line and "--profile fix-now" in line]
     h.test_result("fix-now: expert-flow's Fix now scan line carries --profile fix-now",
                   len(fix_now_lines) >= 1, f"lines={fix_now_lines}")
@@ -258,7 +259,8 @@ def test_fix_test_edit_doc_contract(h):
 
     # Misclassification ends with planned-change-breaks-test.
     h.test_result("misclassification: an ordinary item whose change turns a test red ends with 'planned-change-breaks-test: <path>'",
-                  _te_para_re(impl, r"planned-change-breaks-test: <path>", r"ordinary"))
+                  _te_para_re(impl, r"An item classified ordinary whose change turns an existing test red",
+                                r"planned-change-breaks-test: <path>", r"never `gate-not-converged` with no path"))
 
     # Fleet parks, no default.
     labels = ("Decline — leave OUTSTANDING", "Approve edit: <finding id> <path>")
@@ -285,22 +287,35 @@ def test_fix_test_edit_doc_contract(h):
 
     # Set aside without stopping; UNITS counts ordinary units; the no-Round-1-work check runs first.
     h.test_result("set aside: a test-edit item is set aside without stopping the step while ordinary units remain",
-                  _te_para_re(impl, r"set aside", r"never stops the step while ordinary units remain"))
+                  _te_para_re(impl, r"a test-edit item never stops the step while ordinary units remain; it is set aside and the step continues"))
     h.test_result("set aside: UNITS: counts ordinary units only",
                   _te_para_re(impl, r"UNITS:` counts ordinary units only"))
     h.test_result("set aside: the no-Round-1-work check runs before any drafting or asking",
-                  _te_para_re(impl, r"no[- ]round[- ]1[- ]work", r"runs before any drafting or asking"))
+                  _te_para_re(impl, r"No Round 1 work left\.\*\* This check runs before any drafting or asking"))
 
     # Coupled item withheld from units.json and reported.
     h.test_result("coupled: a coupled item's code half is withheld from units.json",
-                  _te_para_re(impl, r"code half is withheld from", r"units\.json", r"test-edit-coupled"))
+                  _te_para_re(impl, r"A coupled item's code half is withheld from `units\.json`",
+                                r"reported `OUTSTANDING: D<n> \(test-edit-coupled: <path>\)`"))
     h.test_result("coupled: a coupled item is never drafted or asked about",
-                  _te_para_re(impl, r"test-edit-coupled", r"never drafted or asked about"))
+                  _te_para_re(impl, r"It is never drafted or asked about, and it is reported `OUTSTANDING: D<n> \(test-edit-coupled"))
 
     # Fail-closed answer mapping.
     h.test_result("fail closed: a missing, free-text or unmappable answer counts as declined",
-                  _te_para_re(combined, r"declined", r"missing", r"free[- ]text", r"unmappable|cannot be mapped|not map"),
+                  _te_para_re(impl, r"A missing, list-shaped, free-text or unmappable answer counts as declined"),
                   "no paragraph states the fail-closed mapping")
+
+    # Approval lifecycle across Retry and resume (ADR-0019 2026-11-17 amendment, plan ruling Q1 = A).
+    h.test_result("lifecycle: patches persist under the test-edit directory and are reloaded byte for byte",
+                  _te_para_re(impl, r"Reload first", r"<TEST_EDIT_DIR>/<finding id>\.patch", r"byte for byte"))
+    h.test_result("lifecycle: the re-ask cap is two asks per finding id",
+                  _te_para_re(impl, r"Re-ask cap", r"asked\.txt", r"two lines"))
+    h.test_result("lifecycle: Gate step 2 advances its base past a verified approval commit and never widens the flag",
+                  _te_para_re(impl, r"Retry or resume of a fix step that already landed an approval commit",
+                              r"Do not pass `--allow-test-edit` here, ever", r"use that commit as `--base`"))
+    h.test_result("lifecycle: a failed ledger write prints the exact append and mark commands",
+                  _te_para_re(flow_doc, r"the stop prints the exact commands still to run by hand",
+                              r"--by steps/<NN>-fix\.md"))
 
 
 def test_341_doc_facts(h):
