@@ -23,7 +23,7 @@ Disposition values: **port, pinned by test** (layer named) or **dropped, reason*
 | 1953-1993 | Deps precondition block (`deps ensure`, `commands.install`) | 2026-11-01 #417 | Layer 2 (Step 9) | port, pinned by test |
 | 1994-2328 | Per-step details (worktree, track, plan, implement, review, fix, verify, ship, merge) | ADR base text; many amendments (see index) | Layers 2 and 3 | port, pinned by test |
 | 2030-2034 | Check detection (`checks ensure-check`), marker and receipt written only after it | ADR base text; 2026-10-26 #338 | Layer 2 (Step 9) | port, pinned by test |
-| 2074-2100 | Plan-step question file, relay, persisted answer, ledger record, refusal line | 2026-10-15 plan checkpoint; 2026-10-30 #288 | Layer 3 (Step 10) | port, pinned by test |
+| 2074-2100 | Plan-step question file, relay, persisted answer, ledger record, refusal line | 2026-10-15 plan checkpoint; 2026-10-30 #288 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
 
 ### 1.2 `--resume` cascade (lines 506-664)
 
@@ -31,71 +31,71 @@ Order matters. Rule 1b (heal in progress) runs before rules 4 and 5, so a heal i
 
 | v1 lines | Rule | ADR section / amendment | Target layer | Disposition |
 |---|---|---|---|---|
-| 546 | Rule 0: redo entry (`--redo <STEP>` only), runs before rule 1 | 2026-10-20 #286 | Layer 3 (Step 10) | port, pinned by test |
+| 546 | Rule 0: redo entry (`--redo <STEP>` only), runs before rule 1 | 2026-10-20 #286 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
 | 547-555 | Rule 1: live step, a previous session's step agent still running | ADR base text; 2026-10-14 more human in the loop | Layer 1 (Step 8) | port, pinned by test (resume.py: rule 1 decision and receipts.classify outcomes) |
-| 556-602 | Rule 2: `status: paused` at a step gate (`plan`, `implement`, `review`, `fix`, `verify`) | 2026-10-16 third (step gates opt-in); 2026-10-16 second (`taken-over`) | Layer 3 (Step 10) | port, pinned by test |
-| 603-604 | Rule 2a: assess stage (`STEP` is `assess`, or `ship`/`merge` with no passing outstanding check) | 2026-10-27 #383 | Layer 3 (Step 10) | port, pinned by test |
+| 556-602 | Rule 2: `status: paused` at a step gate (`plan`, `implement`, `review`, `fix`, `verify`) | 2026-10-16 third (step gates opt-in); 2026-10-16 second (`taken-over`) | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 603-604 | Rule 2a: assess stage (`STEP` is `assess`, or `ship`/`merge` with no passing outstanding check) | 2026-10-27 #383 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
 | 605 | Rule 3: `status: done` prints `flow already done`; no telemetry | ADR base text | Layer 2 (Step 9) | port, pinned by test |
-| 606-608 | Rule 3a: `status: abandoned` asks once (fleet parks it as a `gate` ask) | ADR base text | Layer 3 (Step 10) | port, pinned by test |
+| 606-608 | Rule 3a: `status: abandoned` asks once (fleet parks it as a `gate` ask) | ADR base text | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
 | 609 | Rule 1a: pending human input (legacy file and human ledger) | 2026-10-14 #287 ledger; 2026-10-30 #288 binding | Layer 2 (Step 9) | port, pinned by test |
-| 610-616 | Rule 1b: heal in progress (`HEAL:` records); runs before rules 4 and 5 | 2026-10-29 #380; 2026-11-02 #425 | Layer 3 (Step 10) | port, pinned by test |
-| 617-618 | Rule 4: `status: failed` (aborted) re-runs the recorded step while `failures[STEP] < 2`, else Hard stop | ADR base text; 2026-10-20 #286 | Layer 3 (Step 10) | port, pinned by test |
+| 610-616 | Rule 1b: heal in progress (`HEAL:` records); runs before rules 4 and 5 | 2026-10-29 #380; 2026-11-02 #425 | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
+| 617-618 | Rule 4: `status: failed` (aborted) re-runs the recorded step while `failures[STEP] < 2`, else Hard stop | ADR base text; 2026-10-20 #286 | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
 | 619-635 | Rule 5: `awaiting`, `paused` or `running` with the step subagent gone | ADR base text; 2026-10-14 more human in the loop | Layer 2 (Step 9) | port, pinned by test |
-| 636-641 | Rule 3b: flow resume after a failed redo (before rule 4; `redo_archive`) | 2026-10-20 #286 | Layer 3 (Step 10) | port, pinned by test |
-| 642-646 | Rule 6: step `merge` checks the PR state first (`gh pr view --json state`) | 2026-11-05 #462 (merge gate authoritative); #476 | Layer 3 (Step 10) | port, pinned by test (driver PR/merge-state check, Q4) |
+| 636-641 | Rule 3b: flow resume after a failed redo (before rule 4; `redo_archive`) | 2026-10-20 #286 | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
+| 642-646 | Rule 6: step `merge` checks the PR state first (`gh pr view --json state`) | 2026-11-05 #462 (merge gate authoritative); #476 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
 | 647-650 | Rule 7: worktree needed by `implement`, `review`, `fix`, `verify`, `ship`, `merge` | ADR base text; 2026-10-14 worktree-first | Layer 2 (Step 9) | port, pinned by test |
 | 651 | Rule 8: epic flows resume the current sub-ticket's child flow | ADR base text (epic mode) | Layer 4 (Step 11) | port, pinned by test |
-| 652-658 | Rule 9: `flags.auto_merge` forced to `false` on resume; `flags.step_gates` restored; `healed` never reset | 2026-10-16 third; 2026-10-29 #380 | Layer 3 (Step 10) | port, pinned by test |
+| 652-658 | Rule 9: `flags.auto_merge` forced to `false` on resume; `flags.step_gates` restored; `healed` never reset | 2026-10-16 third; 2026-10-29 #380 | Layer 3 (Step 10) | refused by design (Q3 = A): v2 `start --auto-merge` stops `auto-merge-refused`; pinned by `tests/test_fleet_invariants.py` |
 | 659-664 | Rule 10: telemetry closes an open stage | ADR base text | Layer 2 (Step 9) | port, pinned by test |
 
 ### 1.3 Retry, take-over and hard-stop tree (lines 1625-1952)
 
 | v1 lines | Rule | ADR section / amendment | Target layer | Disposition |
 |---|---|---|---|---|
-| 1625-1648 | Redo note: raw note to a file, sanitised, echoed, recorded in the ledger, archived | 2026-10-20 #286 | Layer 3 (Step 10) | port, pinned by test |
-| 1649-1666 | Redo procedure (shared by the step-gate entry and `--redo`); cap of two redos, counted separately from the two failures | 2026-10-20 #286 | Layer 3 (Step 10) | port, pinned by test |
-| 1667-1678 | Hard stop: Retry (cap 2), Take over, Keep previous attempt, Abort; nothing else except the bounded exceptions | ADR base text; 2026-10-16 fourth | Layer 3 (Step 10) | port, pinned by test |
-| 1679-1684 | Rule 2a of the hard stop: auto-retry once for an Unknown skill, `skill_retries[STEP] = 1` | 2026-11-04 fifth bounded exception | Layer 3 (Step 10) | port, pinned by test |
-| 1685-1713 | Auto-rebase on verify base-stale failures: naive rebase, then `/expert-rebase` worker on conflicts; never a push | 2026-10-13 gated Rebase; 2026-10-14 automatic Rebase | Layer 3 (Step 10) | port, pinned by test |
-| 1714-1771 | Check heal (verify): one `flow-healer` heal per flow on `lint` or deterministic `test` only; healed run forces the merge gate | 2026-10-29 #380 | Layer 3 (Step 10) | port, pinned by test |
-| 1772-1783 | Auto-escalate on implementer shortfall (implement and fix) | 2026-10-16 fourth; 2026-10-25 #341 | Layer 3 (Step 10) | dropped: dormant in v1 (no turns source exists; the 2026-10-25 probe was never run). Manual `Retry with sonnet` is kept in the hard-stop menu |
-| 1784-1788 | Accept eligibility (plan, implement, review, fix, verify), human-only, only via `scripts/flow-accept.py` | 2026-10-29 #365 | Layer 3 (Step 10) | port, pinned by test |
-| 1789-1872 | Keep previous attempt (Recommended, offered first), Take over, Abort, Retry with sonnet, and `Retry, split finer` (only before escalation) | 2026-10-16 fourth; 2026-11-02 #419 | Layer 3 (Step 10) | port, pinned by test |
+| 1625-1648 | Redo note: raw note to a file, sanitised, echoed, recorded in the ledger, archived | 2026-10-20 #286 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 1649-1666 | Redo procedure (shared by the step-gate entry and `--redo`); cap of two redos, counted separately from the two failures | 2026-10-20 #286 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 1667-1678 | Hard stop: Retry (cap 2), Take over, Keep previous attempt, Abort; nothing else except the bounded exceptions | ADR base text; 2026-10-16 fourth | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 1679-1684 | Rule 2a of the hard stop: auto-retry once for an Unknown skill, `skill_retries[STEP] = 1` | 2026-11-04 fifth bounded exception | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
+| 1685-1713 | Auto-rebase on verify base-stale failures: naive rebase, then `/expert-rebase` worker on conflicts; never a push | 2026-10-13 gated Rebase; 2026-10-14 automatic Rebase | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
+| 1714-1771 | Check heal (verify): one `flow-healer` heal per flow on `lint` or deterministic `test` only; healed run forces the merge gate | 2026-10-29 #380 | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
+| 1772-1783 | Auto-escalate on implementer shortfall (implement and fix) | 2026-10-16 fourth; 2026-10-25 #341 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 1784-1788 | Accept eligibility (plan, implement, review, fix, verify), human-only, only via `scripts/flow-accept.py` | 2026-10-29 #365 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 1789-1872 | Keep previous attempt (Recommended, offered first), Take over, Abort, Retry with sonnet, and `Retry, split finer` (only before escalation) | 2026-10-16 fourth; 2026-11-02 #419 | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
 | 1873-1896 | Escalation telemetry | 2026-10-25 #341 | Layer 2 (Step 9) | port, pinned by test (log events only) |
-| 1929-1952 | Stop lines printed at a stop (`flow` log events, fleet `(fleet: parked)` suffix) | 2026-11-02 #421 | Layer 3 (Step 10) | port, pinned by test |
+| 1929-1952 | Stop lines printed at a stop (`flow` log events, fleet `(fleet: parked)` suffix) | 2026-11-02 #421 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
 | 1667-1872 (shared) | Takeover at the Hard stop and at the merge gate writes `taken-over`; the only record that a human chose it | 2026-10-16 second | Layer 1 (Step 8) | port, pinned by test |
 
 ### 1.4 Assess, verify, fidelity and relay
 
 | v1 lines | Rule | ADR section / amendment | Target layer | Disposition |
 |---|---|---|---|---|
-| 2180-2263 | Assess stage before ship: verify each outstanding unit; already-done reported; unfinished relayed with the assessor's options | 2026-10-27 #383 slice 1; 2026-11-02 #435 | Layer 3 (Step 10) | port, pinned by test (slice 2 automatic finishing stays out of scope) |
-| 2188-2191 | Fix-now carry rule (persisted in the answers file) | 2026-10-29 #380 | Layer 3 (Step 10) | port, pinned by test |
-| 2192-2216 | Range overlap check for `fix:unknown` items; script-anchored already-done | 2026-11-02 #435 | Layer 3 (Step 10) | port, pinned by test |
-| 2217-2218 | Already-done notice, always shown | 2026-10-27 #383 | Layer 3 (Step 10) | port, pinned by test |
-| 2219-2255 | Ask split into forms, per-form persistence; every item must have a disposition before ship and merge | 2026-10-27 #383 | Layer 3 (Step 10) | port, pinned by test |
-| 2256-2262 | Fixed is derived by re-running `--outstanding-set`, never self-reported | 2026-10-27 #383 | Layer 3 (Step 10) | port, pinned by test |
+| 2180-2263 | Assess stage before ship: verify each outstanding unit; already-done reported; unfinished relayed with the assessor's options | 2026-10-27 #383 slice 1; 2026-11-02 #435 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 2188-2191 | Fix-now carry rule (persisted in the answers file) | 2026-10-29 #380 | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
+| 2192-2216 | Range overlap check for `fix:unknown` items; script-anchored already-done | 2026-11-02 #435 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 2217-2218 | Already-done notice, always shown | 2026-10-27 #383 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 2219-2255 | Ask split into forms, per-form persistence; every item must have a disposition before ship and merge | 2026-10-27 #383 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 2256-2262 | Fixed is derived by re-running `--outstanding-set`, never self-reported | 2026-10-27 #383 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
 | 1200-1307 | Fidelity audit orchestration: the verifier owns counts, the audit owns judgment only | 2026-10-19 #318 | Layer 2 (Step 9) | port, pinned by test |
 | 1219-1221 | `fidelity audit failed: ledger unavailable` stop (unrecognised run-key source, or a failed locate) | 2026-10-19 #318 | Layer 2 (Step 9) | dropped: v2 re-renders the ledger snapshot from the run key instead of stopping (plan Layer 2 ledger bullet); a Layer 2 test pins the re-render |
 | 1328-1355 | Human ledger: per-step snapshot at spawn, fenced records only to allowed workers, `Addressed:` carry-forward, unaddressed-direction stop, ship-time close-out only | 2026-10-14 #287; 2026-10-30 #288 | Layer 2 (Step 9) | port, pinned by test |
-| 1356-1372 | Relaying a question (common rules) | 2026-10-14 more human in the loop | Layer 3 (Step 10) | port, pinned by test |
-| 1372-1447 | Report-kind questions (plan checkpoint, review checkpoint) | 2026-10-15 plan checkpoint; 2026-11-02 #421 | Layer 3 (Step 10) | port, pinned by test |
-| 1448-1516 | Form-kind questions (legacy path) | ADR base text | Layer 3 (Step 10) | port, pinned by test |
-| 1517-1558 | Prose interpreter: model-only, echoes the interpretation, verifies the answers file before resume | 2026-10-14 more human in the loop | Layer 3 (Step 10) | port, pinned by test |
-| 1559-1565 | Relay closing rules | 2026-10-14 more human in the loop | Layer 3 (Step 10) | port, pinned by test |
-| 1566-1624 | Step gate: opt-in (`flags.step_gates`); Continue, Redo with notes (plan, review), Pause, Abort | 2026-10-16 third; 2026-10-20 #286 | Layer 3 (Step 10) | port, pinned by test |
-| 2295-2298 | Verify budgets (`failures[verify]` bounds the check heal) and pre-merge comment check (`--trusted-only`) | 2026-10-29 #380; 2026-10-30 Ask-based relay | Layer 3 (Step 10) | port, pinned by test |
+| 1356-1372 | Relaying a question (common rules) | 2026-10-14 more human in the loop | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 1372-1447 | Report-kind questions (plan checkpoint, review checkpoint) | 2026-10-15 plan checkpoint; 2026-11-02 #421 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 1448-1516 | Form-kind questions (legacy path) | ADR base text | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 1517-1558 | Prose interpreter: model-only, echoes the interpretation, verifies the answers file before resume | 2026-10-14 more human in the loop | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
+| 1559-1565 | Relay closing rules | 2026-10-14 more human in the loop | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 1566-1624 | Step gate: opt-in (`flags.step_gates`); Continue, Redo with notes (plan, review), Pause, Abort | 2026-10-16 third; 2026-10-20 #286 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 2295-2298 | Verify budgets (`failures[verify]` bounds the check heal) and pre-merge comment check (`--trusted-only`) | 2026-10-29 #380; 2026-10-30 Ask-based relay | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
 
 ### 1.5 Merge gate and auto-merge
 
 | v1 lines | Rule | ADR section / amendment | Target layer | Disposition |
 |---|---|---|---|---|
-| 2299-2301 | Merge gate: check PR state first; if already `MERGED`, skip the gate | #476 | Layer 3 (Step 10) | port, pinned by test (driver PR/merge-state check, Q4) |
-| 2302-2307 | Healed run: the gate is always asked, even under `--auto-merge` (any `HEAL:` record, `healed: true`, or a `Flow-Heal:` commit) | 2026-10-29 #380 | Layer 3 (Step 10) | port, pinned by test (first test in Layer 3, per the plan) |
-| 2308-2316 | Merge gate question: Merge, Hold, Take over; fleet parks it as a `gate` ask | 2026-10-29 #380; 2026-11-02 #421 | Layer 3 (Step 10) | port, pinned by test |
-| 91-96 | `--auto-merge` per-run only; a healed run suspends it | 2026-10-29 #380 | Layer 3 (Step 10) | port, pinned by test |
-| 2467 | No stored default for `--auto-merge`; resume never restores it | ADR base text | Layer 3 (Step 10) | port, pinned by test (Rule 9: flags.auto_merge restoration) |
-| 97-103 | `--gates` stored per flow; inherited by epic children | 2026-10-16 third | Layer 3 (Step 10) | port, pinned by test |
+| 2299-2301 | Merge gate: check PR state first; if already `MERGED`, skip the gate | #476 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 2302-2307 | Healed run: the gate is always asked, even under `--auto-merge` (any `HEAL:` record, `healed: true`, or a `Flow-Heal:` commit) | 2026-10-29 #380 | Layer 3 (Step 10) | landed as: every merge asks, healed or not (Q3 = A) |
+| 2308-2316 | Merge gate question: Merge, Hold, Take over; fleet parks it as a `gate` ask | 2026-10-29 #380; 2026-11-02 #421 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written |
+| 91-96 | `--auto-merge` per-run only; a healed run suspends it | 2026-10-29 #380 | Layer 3 (Step 10) | refused by design (Q3 = A): v2 `start --auto-merge` stops `auto-merge-refused`; pinned by `tests/test_fleet_invariants.py` |
+| 2467 | No stored default for `--auto-merge`; resume never restores it | ADR base text | Layer 3 (Step 10) | refused by design (Q3 = A): v2 `start --auto-merge` stops `auto-merge-refused`; pinned by `tests/test_fleet_invariants.py` |
+| 97-103 | `--gates` stored per flow; inherited by epic children | 2026-10-16 third | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinning tests still to be written; epic inheritance is Layer 4 |
 | 2440-2451 | Exit paths (Hold at merge gate, Pause at step gate, Take over, Abort, Done) | ADR base text | Layer 2 (Step 9) | port, pinned by test |
 
 ### 1.6 Setup, fresh run, subcommands, epic and fleet

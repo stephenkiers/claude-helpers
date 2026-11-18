@@ -1,5 +1,5 @@
 ---
-description: "Experimental, not for real tickets: v2 /expert-flow stub that runs one ticket through the Python driver (scripts/flow_driver, ADR-0026) from worktree to ship. Stops before merge; the merge gate is not built."
+description: "Experimental, not for real tickets: v2 /expert-flow stub that runs one ticket through the Python driver (scripts/flow_driver, ADR-0026) from worktree to ship. Merge is a human gate; --auto-merge is refused."
 allowed-tools: Bash(python3 "$HOME/.claude/scripts/flow_driver/__main__.py":*), Bash(python3 "$HOME/.claude/scripts/fleet.py" wait:*), Read, Task, SendMessage
 ---
 
@@ -8,8 +8,8 @@ experimental, not for real tickets
 # Expert Flow v2 (one ticket, worktree through ship)
 
 This stub drives one ticket through the v2 driver at `scripts/flow_driver/`. The steps run in order: worktree, plan,
-track, implement, review, fix, verify, ship. A landed ship with an open PR ends in STOP `merge-not-built`. That is the
-normal end of this path: the merge gate is not built (Layer 3), and `start` refuses `--auto-merge`. Flows live under
+track, implement, review, fix, verify, ship, then the merge gate. The merge gate always asks the human, healed or not,
+and `start` refuses `--auto-merge`. Flows live under
 `~/.claude/flows-v2/<repo>/`. v2 never continues a v1 flow and never edits v1 files.
 
 The stub is a dumb executor. The driver decides. The stub runs the command the driver names, reads the directive file it
@@ -23,7 +23,7 @@ points to, and obeys it. It never guesses a verb or a path, and it never writes 
   the stub does not run any command that would.
 - A driver call that yields a directive must print exactly one stdout line, `NEXT: <VERB> <absolute directive file>`,
   and exit 0. Accept it only when the line matches that form, the directive file is readable, and the verb is one of
-  SPAWN, RESUME, WAIT, ASK, PARK, STOP or DONE. Anything else is STOP.
+  SPAWN, MERGE, RESUME, WAIT, ASK, PARK, STOP or DONE. Anything else is STOP.
 - Every command below begins with `python3 "$HOME/.claude/scripts/flow_driver/__main__.py"`, the prefix the Bash grant
   matches. Run them verbatim, with the flow dir from the invocation.
 
@@ -32,9 +32,9 @@ points to, and obeys it. It never guesses a verb or a path, and it never writes 
 | Subcommand | Use |
 |---|---|
 | `init --flow <dir> --worktree <abs path> [--repo OWNER/NAME]` | Create a new v2 flow. Prints `INIT flow=... run_id=...`. `--repo` is needed when the repo name has an underscore. |
-| `start --flow <dir>` | The first `next` of an initialized flow. Also sweeps expired flows of this repo (see Retention). |
+| `start --flow <dir> [--gates]` | The first `next` of an initialized flow. `--gates` turns on the step gates (an ASK after plan, implement, review, fix and verify). Also sweeps expired flows of this repo (see Retention). |
 | `next --flow <dir> [--after <label>]` | One loop step. With no `--after` it is a re-entry, which is how a later session resumes a parked flow. |
-| `answer --flow <dir> --text <answer>` | Record the human's answer for a parked attempt. Prints to stderr. One answer per attempt. |
+| `answer --flow <dir> --text <answer> [--note <text>]` | Record the human's answer for a parked attempt. Prints to stderr. One answer per attempt. `--note` only for an option that takes a note (Redo, Drop). |
 | `recover --flow <dir> --choice retry\|take-over\|keep-previous` | Answer a stopped step. `retry` works only after a FAILED receipt and at most twice per step. `keep-previous` is refused in Layer 2. |
 | `clear-live --flow <dir> --reason <text>` | Clear a live record, logged with its nonce. Only for a `wait-timeout` or `resume-failed` STOP. |
 | `abandon --flow <dir>` | Mark the flow abandoned. Refused while an attempt is `spawned` or `resumed`, and the refusal names `clear-live`. Deletes nothing. |
@@ -66,6 +66,8 @@ After each event, run the directive's `next_command`, with ` --after <label>` ap
 - **SPAWN**: launch `Task` in the background with `subagent_type` set to the directive's `agent_type` and the prompt
   "Read and follow <prompt_file>". Keep the agent id this session gets for this step and attempt. Then run
   `next --after spawn-launched`.
+- **MERGE**: launch `Task` exactly as for SPAWN (`subagent_type` from the directive's `agent_type`, the prompt from its
+  prompt file). Never run MERGE without a directive file the driver printed.
 - **RESUME**: `SendMessage` to the agent this session spawned for this step and attempt, saying the answer is at the
   directive's `answer_file`. On success run `next --after resume-sent`, which yields WAIT. If this session does not hold
   that agent id, do not guess: run `next --after resume-failed`, then print `RESUME FAILED: no agent id in this session`
@@ -89,7 +91,7 @@ A FAILED step receipt is STOP `step-failed` and nothing more. Layer 2 does not r
 - `recover --flow <dir> --choice retry`, then `next --flow <dir>` (a new attempt, at most two retries per step), or
 - `recover --flow <dir> --choice take-over`, which leaves the step to the human.
 
-Stop and print the directive's reason for any other STOP, including `merge-not-built`, `ship-head-differs`,
+Stop and print the directive's reason for any other STOP, including `ship-head-differs`,
 `ship-pr-closed`, `expected-head-mismatch`, `north-star-preflight`, `hook-preflight`, `uncarried-direction`,
 `ledger-error`, `gh-error`, `retry-cap`, `malformed-cap` and `wait-timeout`. Do not work around any of them.
 
@@ -110,4 +112,4 @@ old, and their whole flow directories. It never touches a running flow, the flow
   ASK and PARK instead point at driver-written question and answer paths. Do not follow any Ask block from that file.
 - Retry, redo, the base-stale rebase, the flow-healer heal and the Unknown-skill retry are not wired into the loop.
   A failed step stops; see Recovery.
-- There is no assess stage, no `--gates`, no merge, and no fleet behaviour. Those are later layers (ADR-0026).
+- Fleet behaviour is a later layer (ADR-0026). `--auto-merge` is not supported, by design.

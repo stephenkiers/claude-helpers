@@ -436,3 +436,24 @@ and not pin them to the v1 root. The edits are part of this PR and are not a sep
 Layer 3 amends ADR-0025 so that its auto-merge rejection covers `commands/expert-flow-v2.md`. The pointer to this ADR's
 Layer 5 supersession step will land at Layer 5 in ADR-0023. Layer 5 finalizes this ADR (Decision 11, D3), amends ADR-0008
 and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.
+
+### 2026-11-18 — Layer 3 (#487): relay, step gates, merge gate
+
+- **Decision 3 amended: eight verbs.** `MERGE` joins SPAWN, RESUME, WAIT, ASK, PARK, STOP and DONE. Only `gates.py` constructs
+  a `MergeDirective`; an AST test pins that. An unknown verb is still STOP, so a Layer 4 fleet reader that has not learned
+  MERGE fails closed. Layer 4 must learn it.
+- **Decision 4 superseded where it said Layer 2 never emits a merge directive.** Layer 3 adds the merge gate: a head-SHA
+  bound ask, a by-number post-merge check that the PR is MERGED, PR-state-first re-entry after a crash, and a re-verify path
+  when the head moved.
+- **`--auto-merge` stays refused (Q3 = A).** Every merge asks, healed or not. `driver start --auto-merge` prints
+  `STOP auto-merge-refused`. Fleet auto-merge is not adopted; it needs its own ADR-0025 section 3 amendment.
+- **The human merge gate is prompt-enforced (Q4 = A), like v1's AskUserQuestion.** The orchestrator model runs
+  `driver answer` and can answer its own gate. That residual is not eliminated. Head-SHA binding limits a forged answer to
+  the head shown.
+- **Additive state fields, no `driver_format` bump (Q2 = A).** Recovery wiring is partial (Q5 = A): Retry, Redo, Accept and
+  re-verify are the wired entries; the rest (auto-rebase, check heal, Unknown-skill retry, Retry with sonnet) are a follow-up.
+- **Test-path stops.** The Decision 12 test-path codes (`plan-test-paths`, `test-path-in-units`, `test-only-plan`,
+  `existing-test-edit`, `planned-change-breaks-test`) are carried as named stops from FAILED receipts and get no Retry.
+- **Audit and assess are opt-in** on `driver start` for now, so the approved Layer 2 loop tests are unchanged by default.
+  Audit rejections key on step and attempt; Accept is eligible only for allowlisted classes imported from `flow-accept.py`.
+- Folds #304, #408 and #476 (Session D3).
