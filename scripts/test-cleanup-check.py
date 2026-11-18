@@ -1791,6 +1791,28 @@ def _js_importers(root: str, target: str) -> List[str]:
     return sorted(found)
 
 
+def _js_suite_shares_line(masked: str, suite: JsSuite) -> bool:
+    """Check if the suite shares its start or end line with other code (non-whitespace, non-semicolon).
+    Uses masked text to ignore string contents."""
+    # Find the newline before suite.start
+    line_start = masked.rfind('\n', 0, suite.start) + 1
+    # Text before the callee on the start line
+    before = masked[line_start:suite.start].strip()
+    if before and before != ";":
+        return True
+
+    # Find the newline after suite.end
+    line_end = masked.find('\n', suite.end)
+    if line_end == -1:
+        line_end = len(masked)
+    # Text after the closing paren on the end line
+    after = masked[suite.end + 1:line_end].strip()
+    if after and after != ";":
+        return True
+
+    return False
+
+
 def _suite_finding(rel: str, src: str, lines: List[str], suite: JsSuite, kind: str, action: str,
                    reason: Optional[str]) -> Dict[str, Any]:
     line = _line_of(src, suite.start)
@@ -1840,7 +1862,12 @@ def _js_findings(root: str, rel: str, src: str) -> List[Dict[str, Any]]:
         findings.append(_suite_finding(rel, src, lines, suite, "kept-suspicious", "report",
                                        "body holds code that is not provably empty"))
     for suite in empties:
-        findings.append(_suite_finding(rel, src, lines, suite, "empty-suite", "remove", None))
+        # Check if the suite shares a line with other code
+        if _js_suite_shares_line(masked, suite):
+            findings.append(_suite_finding(rel, src, lines, suite, "kept-suspicious", "report",
+                                           "shares a line with other code"))
+        else:
+            findings.append(_suite_finding(rel, src, lines, suite, "empty-suite", "remove", None))
     return findings
 
 

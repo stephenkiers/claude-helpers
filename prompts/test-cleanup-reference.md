@@ -104,7 +104,7 @@ The loop runs for at most 3 rounds:
 3. Stop on any `stop` finding.
 4. Re-run the helper. Repeat until it exits 0.
 
-A `stop` finding, or a loop that is still not clean after 3 rounds, is handed back to the calling procedure's
+A `stop` finding, or a loop that is still not clean after 3 rounds, is handed back to the caller's
 own stop or rollback. A caller without the helper stops and says so.
 
 This runs before the post-deletion re-scan, so the re-scan and gate (c) describe the tree that is committed.
