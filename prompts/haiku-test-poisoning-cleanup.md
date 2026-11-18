@@ -63,6 +63,7 @@ Require `git status --porcelain` to be empty at the start; if it is not, stop an
    Use `file` granularity for Harness-style suites (for example `t("name", ...)` calls) and for anything whose ids cannot be found statically. This one `id_source` is used for targeting in both phases. Phase 2 re-scans with it for deletions and merges, and records the runner's collected ids separately as a cross-check (see Phase 2). The two id sets are never mixed in one comparison. Parametrised ids such as `test_parse[a]` are not statically checkable, so a `refactor` row never names one as a `to`.
 3. List every file with `git ls-files`. Find pass-named files with the pattern list in section 4.5 of the reference.
 4. Every test file is either inventoried or listed in `not_analysed` with a reason.
+5. Group the analysed test files by nearest workspace root. Detect the roots statically from `package.json` `workspaces`, `pnpm-workspace.yaml`, `go.work`/`go.mod`, `pyproject.toml`, and runner config files, read as text only. Never execute them. The result feeds `framework.uncovered_workspaces` (see the field meanings).
 
 **Classify.** Every test, or every file at file granularity, gets exactly one disposition:
 
@@ -93,7 +94,7 @@ Invariants, enforced before writing. If one fails, fix the row (for example, mov
   "reference": {"path": "~/.claude/prompts/test-cleanup-reference.md", "sha256": "<64-hex>"},
   "granularity": "test",
   "id_source": "static-python-ast",
-  "framework": {"name": "pytest", "convention": "test_*.py beside the module", "suggested_test_command": null},
+  "framework": {"name": "pytest", "convention": "test_*.py beside the module", "suggested_test_command": null, "uncovered_workspaces": []},
   "summary": {
     "total_tests": 0,
     "total_files": null,
@@ -154,7 +155,7 @@ Field meanings:
 - `repo`: `root`, `remote_url` (or null), `branch`, and `head_sha` (40 hex digits, from `git rev-parse HEAD`).
 - `reference`: `path` and `sha256` of the reference file.
 - `granularity`: `"test"` or `"file"`. `id_source`: `"static-python-ast"`, `"static-grep"` or `"file"`.
-- `framework`: `name`, `convention`, and `suggested_test_command` (or null). Record the command; never run it in Phase 1.
+- `framework`: `name`, `convention`, and `suggested_test_command` (or null). Record the command; never run it in Phase 1. `uncovered_workspaces` is required: a list of `{"path": ..., "reason": ...}`, one per workspace that holds analysed tests and is not covered by `suggested_test_command`. It is `[]` when every such workspace is covered. When `suggested_test_command` is null, every workspace with analysed tests is listed. When coverage cannot be known statically (for example, project lists defined in a code config), the entry's `reason` starts with `cannot determine:`. The key is additive, so `schema_version` stays `1`.
 - `summary`: `total_tests` (the static test count at test granularity, `null` at file granularity), `total_files` (the file count at file granularity, `null` at test granularity), `by_disposition` counts for all four dispositions, `judgment_candidates` and `not_analysed` as counts. The applicable total (`total_tests` or `total_files`) equals the sum of the four `by_disposition` counts; check that before writing.
 - `tests[]`: one entry per test, or per file at file granularity.
   - `id`: `path::name`; `path::Class::name` for a `Test*` class method; `path` at file granularity. `file` and `name` (or null) locate it.
@@ -223,9 +224,10 @@ Phase 2 is the only section that changes the repository. Start it only when the 
 5. `review.json` has exactly one verdict for every `delete` row, every verdict is `confirm` or `object`, and no id appears twice.
 6. Every named survivor file exists at HEAD (`git cat-file -e HEAD:<path>`). At test granularity, each `survivor.id` is still found by the static scan. If any named survivor file is missing, refuse.
 7. Every path passes the validation in "Paths and files".
-8. The test command is known: the report's `suggested_test_command` or a command the human supplies. Print the exact command verbatim and wait for an explicit "yes". A reply that does not say yes, or that changes the command, restarts this step. Test runners execute repository code (conftest files, plugins, package scripts), and repository git hooks can run on every commit and revert, so tell the human which hooks exist (`ls .git/hooks`, `git config core.hooksPath`). Run every git command that commits or reverts with `-c core.hooksPath=/dev/null` unless the human says to keep the hooks.
+8. The test command is known: the report's `suggested_test_command` or a command the human supplies. Print the exact command verbatim and wait for an explicit "yes". Print `framework.uncovered_workspaces` beside the command, before that question: a non-empty list is shown as the workspaces this command does not cover, and a report without the key (written before this change) prints `workspace coverage: not recorded`. A reply that does not say yes, or that changes the command, restarts this step. Test runners execute repository code (conftest files, plugins, package scripts), and repository git hooks can run on every commit and revert, so tell the human which hooks exist (`ls .git/hooks`, `git config core.hooksPath`). Run every git command that commits or reverts with `-c core.hooksPath=/dev/null` unless the human says to keep the hooks.
 9. No earlier attempt on this report is still open: if `execution.json` already exists in the run directory, refuse and tell the human to start from a fresh Phase 1 report; Phase 2 never resumes a partial run.
 10. The git guard is installed. Run `ls ~/.claude/scripts/test-cleanup-git-guard.py`; if it is absent, refuse and tell the human to run `/setup-local`. Then confirm the hook is registered: `jq '.hooks.PreToolUse' ~/.claude/settings.json` must list `test-cleanup-git-guard.py` under the `Bash` matcher. If it is not, show the human the entry to add (`{"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/scripts/test-cleanup-git-guard.py"}]}`) and stop until they have added it. The guard is inert except while Phase 2 is active: write the repository root to `~/.claude/test-cleanup/ACTIVE` as the first change this phase makes, and delete that file when the phase ends, whether it completed or stopped. While it exists, the guard denies destructive git (`switch -c`, `rm`, `revert`, `restore`, `reset`, `clean`, `checkout`) unless the current branch is `test-cleanup/*` (a `switch -c` must itself name a `test-cleanup/*` branch, and a plain `switch` to another branch is always denied), and always denies pushes, merges, rebases and stashes. It is a guard against a careless run, not a sandbox, and it covers Bash commands the model issues only.
+11. The empty-suite helper is installed. Run `python3 ~/.claude/scripts/test-cleanup-check.py empty-suites --help`; if it fails, refuse and tell the human to run `/setup-local`.
 
 **Throwaway branch.** `git switch -c test-cleanup/<UTC timestamp>` from the recorded HEAD. Never work on the default branch. Never push. Never merge.
 
@@ -255,14 +257,15 @@ Phase 2 is the only section that changes the repository. Start it only when the 
 **Deletion commit.**
 
 1. Delete only the `delete` rows whose verdict is `confirm`. At file granularity use `git rm -- <file>`. At test granularity remove the function. Judgment candidates and `object` rows are never deleted.
-2. Re-scan the post-deletion tree statically with the report's `id_source`, using the same rules as Phase 1. This re-scan is the only source of the static ids and of the static count. If the re-scanned set is empty, refuse: run the rollback recipe, record why, and stop.
-3. Run the checks against the re-scan:
+2. **Empty suites (test granularity only).** Run `python3 ~/.claude/scripts/test-cleanup-check.py empty-suites --root <repo> <every file step 1 edited>`, then apply the Empty suites loop in section 4.4 of the reference: remove each `remove` block by content, not by line number, `git rm -- <file>` each `delete-file` file, and stop on any `stop` finding. Re-run the helper after each round, at most 3 rounds, and it must end with exit 0 before step 3. If it is still not clean after 3 rounds, or any `stop` finding appears, run the rollback recipe, record why in `execution.json`, and stop. `report` findings are recorded and never removed. At file granularity this step is skipped, because whole-file deletions leave no partial suites.
+3. Re-scan the post-deletion tree statically with the report's `id_source`, using the same rules as Phase 1. This re-scan is the only source of the static ids and of the static count. If the re-scanned set is empty, refuse: run the rollback recipe, record why, and stop.
+4. Run the checks against the re-scan:
    - The helper `~/.claude/scripts/test-cleanup-check.py survivors` runs only when it is present and granularity is `test`. Invoke it as gate "(a) Named survivors" in the reference shows, with `--deletions` set to a table in the reference 4.4 format and `--collected` set to the re-scanned ids. `--merged` is an empty file at this commit.
    - When the helper is absent, or at file granularity, the prompt's own check runs instead: every survivor file and id named by a confirmed `delete` must be present in the re-scan.
-   - Gate "(c) Count", defined on the static re-scan: the re-scanned total equals `summary.total_tests` (or `summary.total_files` at file granularity) minus the confirmed deletions.
+   - Gate "(c) Count", defined on the static re-scan: the re-scanned total equals `summary.total_tests` (or `summary.total_files` at file granularity) minus the confirmed deletions. Emptied-file deletions and removed suites held no tests, so they do not enter this count.
    If any check fails, run the rollback recipe and stop before committing.
-4. Commit as `test: remove duplicate/no-op tests (<D> deleted)`. The body lists each deleted id with its survivor, or its proof.
-5. Rerun the suite and run the runner cross-check. If any test or suite that was green in the baseline is now red, or the cross-check fails, run the rollback recipe for the landed commit, record its rows as reverted, and stop.
+5. Commit as `test: remove duplicate/no-op tests (<D> deleted)`. The body lists each deleted id with its survivor, or its proof, and also lists removed suites (file and name), deleted emptied files, report-only findings, and files that may now hold unused imports. The staging set includes the emptied-file `git rm`s.
+6. Rerun the suite and run the runner cross-check. If any test or suite that was green in the baseline is now red, or the cross-check fails, run the rollback recipe for the landed commit, record its rows as reverted, and stop.
 
 **Clean up and refactor commit.**
 
@@ -277,6 +280,6 @@ Phase 2 is the only section that changes the repository. Start it only when the 
 5. Commit the changes.
 6. Rerun the suite and run the runner cross-check, as the substitute for gate "(g) Gate step 1". If the suite is red or the cross-check fails, run the rollback recipe for the landed commit, record its rows as reverted, and stop.
 
-**Write `execution.json`** into the run directory incrementally: create it right after the baseline, then rewrite it after every commit, revert and stop, so a stopped run still leaves a record. Shape: `{report_sha256, branch, status, baseline: {passed, failed, total, ids}, commits: [{sha, kind, rows[], reverted: bool}], final: {passed, failed, total}}`. `kind` is `"deletion"` or `"clean-up"`. `status` is `"completed"` or `"stopped:<reason>"`, and is `"stopped:<reason>"` until the phase finishes. `final` is `null` until the last suite rerun. Delete `~/.claude/test-cleanup/ACTIVE` as the last step, whatever the status.
+**Write `execution.json`** into the run directory incrementally: create it right after the baseline, then rewrite it after every commit, revert and stop, so a stopped run still leaves a record. Shape: `{report_sha256, branch, status, baseline: {passed, failed, total, ids}, commits: [{sha, kind, rows[], reverted: bool}], final: {passed, failed, total}, emptied_files: [], removed_suites: []}`. The deletion commit fills `emptied_files` and `removed_suites`. `kind` is `"deletion"` or `"clean-up"`. `status` is `"completed"` or `"stopped:<reason>"`, and is `"stopped:<reason>"` until the phase finishes. `final` is `null` until the last suite rerun. Delete `~/.claude/test-cleanup/ACTIVE` as the last step, whatever the status.
 
 **Final output.** Print a summary, the branch name, and the judgment list for manual removal. Tell the human to review the branch and open a pull request themselves; this prompt never pushes. Tell the human the run directory can be deleted once the pull request has merged. Stop.

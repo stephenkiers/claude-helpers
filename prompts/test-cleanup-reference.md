@@ -74,6 +74,44 @@ is Round 4's *only* machine-checked junk evidence, so a `Deleted (junk): 0` resu
 by the smoke," not "vetted and clean." Note in the summary whether the mutation smoke ran or was
 skipped (with reason) so a human can tell those two cases apart.
 
+#### Empty suites
+
+Once the per-test deletions are made, a suite, class or file can be left empty, and the next run then fails
+its gate (for example vitest's `No test suite found in file`). "Empty" means provably empty only: the body
+holds nothing but whitespace, comments and hooks (`beforeEach`, `afterEach`, `beforeAll`, `afterAll`), and
+suites that are themselves empty. A block is kept and reported, never removed, if its body holds any test-like
+call with any modifier, a `.each`, a `for` or `forEach` loop, a nested non-empty `describe`, an unrecognised
+call or statement, or text that cannot be parsed. The helper echoes the text of every removable or
+kept-suspicious block.
+
+| stack | unit | counts as empty | action |
+|---|---|---|---|
+| `js` (`.js .jsx .ts .tsx .mjs .cjs .mts .cts`) | `describe`/`suite` block (`empty-suite`); a test file left with no test-like call (`empty-file`) | a suite body with only whitespace, comments, hooks and empty suites; a file whose remaining code is imports, comments, whitespace and hooks | `empty-suite`: `remove`. `empty-file`: `delete-file`, only when no other JS/TS file under the root imports it. Otherwise `empty-file-unsafe`: `stop` |
+| `python` (`.py`) | `Test*` class (`empty-class`) | no `test*` method and no nested class; the body holds only a docstring, `pass`, fixtures or setup/teardown methods | `report` |
+| `go` (`_test.go`) | test file (`empty-go-test-file`) | no top-level `Test*`, `Benchmark*`, `Fuzz*` or `Example*` function (`TestMain` counts as present) | `report` |
+
+pytest and Go findings are report-only. They are hygiene, not gate fixes: neither case fails its runner's gate,
+and deleting a Go file that holds sibling helpers breaks compilation. Only the `js` rows are ever removed or
+deleted.
+
+Run the helper on every file the deletions touched:
+`python3 ~/.claude/scripts/test-cleanup-check.py empty-suites --root <repo> <touched files>`.
+It is read-only, writes no file, and exits 1 when any finding is `remove`, `delete-file` or `stop`.
+
+The loop runs for at most 3 rounds:
+1. Remove each `remove` block by content, using its echoed `text`, and not by line number. Hooks go with their suite.
+2. `git rm` each `delete-file` file.
+3. Stop on any `stop` finding.
+4. Re-run the helper. Repeat until it exits 0.
+
+A `stop` finding, or a loop that is still not clean after 3 rounds, is handed back to the calling procedure's
+own stop or rollback. A caller without the helper stops and says so.
+
+This runs before the post-deletion re-scan, so the re-scan and gate (c) describe the tree that is committed.
+Suites are not tests, so gate (c) is unchanged, and emptied files held zero tests, so they are recorded
+separately from the confirmed deletions. Files whose suites were removed may now hold unused imports. List
+them in the summary or commit body. The loop never prunes imports.
+
 ### 4.5 Relocate, rename and merge the survivors
 
 The **default for each Unique test (Exempt included) is to merge it into the module's normal test file**,
