@@ -1431,7 +1431,7 @@ def check_round3_followups(h):
 
 
 # ---------------------------------------------------------------------------
-# empty-suites: read-only empty-suite detection (#498, round 2 spec-blind fixtures)
+# empty-suites: read-only empty-suite detection (#498) fixtures
 # ---------------------------------------------------------------------------
 
 EMPTY_SUITE_NONEMPTY = 'describe("n", () => { it("t", () => {}); });\n'
