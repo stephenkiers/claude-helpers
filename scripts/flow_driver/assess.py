@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 
 from . import relay
 from .preflight import run_command
-from .state import LockedFlow, V2State
+from .state import LockedFlow, Step, V2State
 
 
 # Closed result type for assess_next orchestration
@@ -88,33 +88,47 @@ class AssessRecord:
     options: List[str]  # the assessor's recommended options
 
 
+_OUTSTANDING_STEPS: Tuple[Step, ...] = ("implement", "fix")
+
+
 def get_outstanding_set(flow: Path) -> Tuple[List[Dict[str, object]], Optional[str]]:
     """
-    Get the outstanding set from scripts/flow-verify-receipt.py --outstanding-set.
+    The v2 outstanding set: the declared OUTSTANDING items of every landed-OK implement and fix receipt.
 
-    Returns:
-        (items_list, error_reason) where items_list is the parsed JSON list of outstanding items,
-        or ([], error_reason) if the subprocess fails.
+    Derived from the step receipts alone (no log.md, which a v2 flow does not have, and no coverage tables,
+    which the v2 driver does not produce yet). Each item is {id: "<step>:<unit>", title, provenance, coverage}.
+    A missing receipt contributes nothing; an unreadable or malformed one is an error (fail closed).
     """
-    script_path = flow.parent.parent / "scripts" / "flow-verify-receipt.py"
-    if not script_path.exists():
-        return [], "outstanding script not found"
+    from . import receipts
 
-    result = run_command([
-        "python3", str(script_path), "--outstanding-set", "--flow-dir", str(flow)
-    ])
-
-    if result.returncode != 0:
-        reason = result.stderr.strip().split("\n")[0] if result.stderr.strip() else f"exit {result.returncode}"
-        return [], reason
-
-    try:
-        data = json.loads(result.stdout)
-        if not isinstance(data, list):
-            return [], "outstanding set is not a JSON list"
-        return data, None
-    except (json.JSONDecodeError, ValueError) as e:
-        return [], f"outstanding set parse error: {e}"
+    verifier = receipts._load_verifier()
+    iter_lines = getattr(verifier, "iter_outstanding_lines", None)
+    if not callable(iter_lines):
+        return [], "verifier has no iter_outstanding_lines"
+    items: List[Dict[str, object]] = []
+    seen: Set[str] = set()
+    for step in _OUTSTANDING_STEPS:
+        path = receipts.receipt_path(flow, step)
+        if not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            return [], f"cannot read {path.name}: {e}"
+        parsed = receipts.parse_receipt(step, text)
+        if parsed is None or parsed.decision != "OK":
+            continue
+        try:
+            declared = iter_lines(text)[0]
+        except ValueError as e:
+            return [], f"unparseable {path.name}: {e}"
+        for it in declared:
+            item_id = f"{step}:{it.unit_id}"
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+            items.append({"id": item_id, "title": it.reason, "provenance": it.provenance, "coverage": "declared"})
+    return items, None
 
 
 def _check_ref(ref: object) -> Optional[str]:
@@ -384,30 +398,55 @@ def write_assess_report(flow: Path, assessments: List[AssessmentItem], assessor_
         f.write("\n".join(lines))
 
 
-def invoke_outstanding_gate(flow: Path) -> Optional[str]:
+def invoke_outstanding_gate(flow: Path, seq: int = 1) -> Optional[str]:
     """
-    Invoke scripts/flow-verify-receipt.py --outstanding-gate.
-
-    Returns error reason if exit != 0, else None.
+    The v2 disposition gate: every item in the derived outstanding set has an answer in answers/assess-<seq>.json,
+    every answer label is a real option for it, and a Drop carries a note. Returns an error reason, else None.
     """
-    script_path = flow.parent.parent / "scripts" / "flow-verify-receipt.py"
-    if not script_path.exists():
-        return "outstanding-gate script not found"
-
-    outstanding_md = flow / "steps" / "08-ship.outstanding.md"
-
-    result = run_command([
-        "python3", str(script_path),
-        "--outstanding-gate",
-        "--flow-dir", str(flow),
-        "--receipt", str(outstanding_md),
-    ])
-
-    if result.returncode != 0:
-        reason = result.stderr.strip().split("\n")[0] if result.stderr.strip() else f"exit {result.returncode}"
-        return reason
-
+    items, err = get_outstanding_set(flow)
+    if err:
+        return err
+    answers_file = flow / "answers" / f"assess-{seq}.json"
+    try:
+        data = json.loads(answers_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return f"cannot read {answers_file.name}: {e}"
+    answers = data.get("answers") if isinstance(data, dict) else None
+    notes = data.get("annotations") if isinstance(data, dict) else None
+    if not isinstance(answers, dict):
+        return f"{answers_file.name} has no answers map"
+    ids = [str(i["id"]) for i in items]
+    questions = _read_questions(flow, seq)
+    for item_id in ids:
+        label = answers.get(item_id)
+        if not isinstance(label, str):
+            if item_id in questions:
+                return f"item {item_id} has no disposition"
+            continue  # already-done items are never asked
+        if item_id in questions and label not in questions[item_id]:
+            return f"item {item_id}: {label!r} is not one of its options"
+        if label == "Drop with a reason":
+            note = notes.get(item_id) if isinstance(notes, dict) else None
+            if not (isinstance(note, dict) and str(note.get("notes", "")).strip()):
+                return f"item {item_id}: Drop needs a reason"
+    asked_missing = [q for q in questions if q not in answers]
+    if asked_missing:
+        return f"item {asked_missing[0]} has no disposition"
     return None
+
+
+def _read_questions(flow: Path, seq: int) -> Dict[str, List[str]]:
+    """{question id: options} from questions/assess-<seq>.json; {} when absent or malformed."""
+    try:
+        data = json.loads((flow / "questions" / f"assess-{seq}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out: Dict[str, List[str]] = {}
+    qs = data.get("questions") if isinstance(data, dict) else None
+    for q in qs if isinstance(qs, list) else []:
+        if isinstance(q, dict) and isinstance(q.get("id"), str) and isinstance(q.get("options"), list):
+            out[q["id"]] = [str(o) for o in q["options"]]
+    return out
 
 
 def prepare_assess_batch(
@@ -492,6 +531,11 @@ def prepare_assess_batch(
     return locked.require_state(), None
 
 
+def assess_records_path(flow: Path) -> Path:
+    """Where the assessor writes its one-record-per-line output."""
+    return flow / "steps" / "07-assess-records.txt"
+
+
 def assessor_spawn(
     flow: Path,
     attempt: int,
@@ -520,7 +564,7 @@ You are the assessor for this flow's outstanding items. Read the precomputed res
 Your task:
 1. Read the precomputed results (range check, anchor check, already-done check)
 2. For each item, determine: status, kind, scope, leave_as_is_safe, cause, evidence, finish_plan, verification_proof, and options
-3. Output one record per line in this format:
+3. Write one record per line to the records file named below, in this format:
 
 <id> | status=<status> | kind=<kind> | scope=<scope> | leave_as_is_safe=<bool> | cause=<cause> | evidence=<evidence> | finish_plan=<plan> | verification_proof=<proof> | options=<csv>
 
@@ -535,7 +579,7 @@ Where:
 - verification_proof: how to verify
 - options: comma-separated list of recommended options
 
-Do not write to files or edit code. Only read the results and output your assessment.
+Write the records to {assess_records_path(flow)} and nothing else; do not edit code.
 """
     return prompt
 
@@ -790,10 +834,11 @@ def assess_next(
         return AssessAdvance()
 
     # Extract outstanding ids for validation
-    outstanding_ids = []
+    outstanding_ids: List[str] = []
     for item_dict in outstanding_items:
-        if isinstance(item_dict, dict) and isinstance(item_dict.get("id"), str):
-            outstanding_ids.append(item_dict["id"])
+        item_id = item_dict.get("id")
+        if isinstance(item_id, str):
+            outstanding_ids.append(item_id)
 
     # Compute assessments
     assessments, compute_err = compute_assessments(flow, state, outstanding_items)
@@ -803,13 +848,9 @@ def assess_next(
     # Write precomputed results for the assessor
     write_assessment_results(flow, assessments)
 
-    # Check if assessor output exists
-    assess_report = flow / "steps" / "07-assess.md"
-    assessor_output_exists = assess_report.exists()
-
-    # Case 1: No assessor output yet - need to spawn assessor
-    if not assessor_output_exists:
-        # Build the assessor spawn result
+    # The assessor writes its records (one line per item) to steps/07-assess-records.txt
+    records_file = assess_records_path(flow)
+    if not records_file.exists():
         return AssessSpawn(
             agent_type="general-purpose",
             prompt_file=str(flow / "prompts" / f"assess-a{attempt}-{nonce}.md"),
@@ -818,60 +859,47 @@ def assess_next(
             nonce=nonce,
         )
 
-    # Case 2: Assessor output exists - parse it
     try:
-        with open(assess_report, "r") as f:
-            f.read()
-    except Exception as e:
-        return AssessStop(code="assess-error", reason=f"cannot read assess report: {e}")
+        raw = records_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return AssessStop(code="assess-error", reason=f"cannot read assessor records: {e}")
+    records, parse_err = validate_assessor_output(raw, outstanding_ids)
+    if parse_err or records is None:
+        return AssessStop(code="assess-error", reason=parse_err or "assessor output invalid")
+    by_id = {r.id: r for r in records}
+    missing = [i for i in outstanding_ids if i not in by_id]
+    if missing:
+        return AssessStop(code="assess-error", reason=f"assessor gave no record for {missing[0]}")
+    write_assess_report(flow, assessments, by_id)
 
-    # For now, we extract assessor records from the step/07-assess.md
-    # In practice, the assessor writes the report; we parse it to find the records
-    # This is a placeholder - the real implementation would parse the specific format.
-    assessor_records_dict: Dict[str, AssessRecord] = {}
-    for item in assessments:
-        # Create a placeholder record (would be parsed from assessor output in real flow)
-        assessor_records_dict[item.id] = AssessRecord(
-            id=item.id,
-            status="open",
-            kind="unknown",
-            scope="unknown",
-            leave_as_is_safe=item.leave_as_is_safe,
-            cause="",
-            evidence="",
-            finish_plan="",
-            verification_proof="",
-            options=[],
-        )
+    seq = 1
+    questions_file = flow / "questions" / f"assess-{seq}.json"
+    answers_file = flow / "answers" / f"assess-{seq}.json"
+    unfinished = [i for i in assessments if by_id[i.id].status != "done"]
 
-    # Case 3: Check if batch is complete (all items answered)
-    # Read the assembled answers file if it exists
-    assembled_file = flow / "answers" / f"assess-{state.parked.nn if state.parked and state.parked.kind == 'assess' else 1}.json"
-    batch_complete = assembled_file.exists()
+    if unfinished and not questions_file.exists():
+        _, batch_err = prepare_assess_batch(locked, flow, state, assessments, by_id)
+        if batch_err:
+            return AssessStop(code="assess-error", reason=batch_err)
+        return AssessAsk()
 
-    if batch_complete:
-        # Case 4: Run the outstanding gate
-        # First write the disposition marker
-        seq = state.parked.nn if state.parked and state.parked.kind == "assess" else 1
-        gate_err = write_disposition_marker(flow, seq)
-        if gate_err:
-            return AssessStop(code="assess-error", reason=gate_err)
+    if unfinished and not answers_file.exists():
+        per_item = flow / "answers" / f"assess-{seq}.d"
+        asked = _read_questions(flow, seq)
+        if not asked or not all((per_item / f"{q}.json").exists() for q in asked):
+            return AssessAsk()
+        assemble_err = assemble_answers(flow, seq)
+        if assemble_err:
+            return AssessStop(code="assess-error", reason=assemble_err)
 
-        # Run the outstanding gate
-        gate_result = invoke_outstanding_gate(flow)
-        if gate_result:
-            return AssessStop(code="assess-error", reason=f"outstanding gate: {gate_result}")
+    if not unfinished and not answers_file.exists():
+        answers_file.parent.mkdir(parents=True, exist_ok=True)
+        answers_file.write_text(json.dumps({"answers": {}, "annotations": {}}, sort_keys=True) + "\n", encoding="utf-8")
 
-        # Gate passed - advance
-        return AssessAdvance()
-
-    # Batch not yet complete - prepare assess batch and park
-    new_state, batch_err = prepare_assess_batch(locked, flow, state, assessments, assessor_records_dict)
-    if batch_err:
-        return AssessStop(code="assess-error", reason=batch_err)
-
-    # Write assess report (summarizing items and their status)
-    write_assess_report(flow, assessments, assessor_records_dict)
-
-    # Batch preparation succeeded - return ASK
-    return AssessAsk()
+    marker_err = write_disposition_marker(flow, seq)
+    if marker_err:
+        return AssessStop(code="assess-error", reason=marker_err)
+    gate_err = invoke_outstanding_gate(flow, seq)
+    if gate_err:
+        return AssessStop(code="assess-error", reason=f"outstanding gate: {gate_err}")
+    return AssessAdvance()
