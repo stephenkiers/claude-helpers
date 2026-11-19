@@ -91,9 +91,27 @@ class AssessRecord:
 _OUTSTANDING_STEPS: Tuple[Step, ...] = ("implement", "fix")
 
 
+def _landed_receipt(flow: Path, step: Step) -> Optional[Path]:
+    """
+    The receipt text to read for a step: the live receipt when it is still in place, else the highest-attempt landed
+    archive (the loop moves a landed receipt to archive/<step>/a<k>.landed.md), else None.
+    """
+    from . import receipts
+
+    live = receipts.receipt_path(flow, step)
+    if live.exists():
+        return live
+    archived = []
+    for candidate in (flow / "archive" / step).glob("a*.landed.md"):
+        digits = candidate.name[1:].split(".", 1)[0]
+        if digits.isdigit():
+            archived.append((int(digits), candidate))
+    return max(archived)[1] if archived else None
+
+
 def get_outstanding_set(flow: Path) -> Tuple[List[Dict[str, object]], Optional[str]]:
     """
-    The v2 outstanding set: the declared OUTSTANDING items of every landed-OK implement and fix receipt.
+    The v2 outstanding set: the declared OUTSTANDING items of the latest landed-OK implement and fix receipt.
 
     Derived from the step receipts alone (no log.md, which a v2 flow does not have, and no coverage tables,
     which the v2 driver does not produce yet). Each item is {id: "<step>:<unit>", title, provenance, coverage}.
@@ -108,8 +126,8 @@ def get_outstanding_set(flow: Path) -> Tuple[List[Dict[str, object]], Optional[s
     items: List[Dict[str, object]] = []
     seen: Set[str] = set()
     for step in _OUTSTANDING_STEPS:
-        path = receipts.receipt_path(flow, step)
-        if not path.exists():
+        path = _landed_receipt(flow, step)
+        if path is None:
             continue
         try:
             text = path.read_text(encoding="utf-8")

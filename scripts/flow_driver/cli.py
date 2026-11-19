@@ -124,7 +124,8 @@ def _cmd_start(args: argparse.Namespace) -> int:
     retention.sweep(flow.parent, _now(), keep=flow)
     step_gates = getattr(args, "gates", False)
     audit = getattr(args, "audit", False)
-    return _run_loop(lambda: run_start(flow, step_gates=step_gates, audit=audit), stream="stdout")
+    assess = getattr(args, "assess", False)
+    return _run_loop(lambda: run_start(flow, step_gates=step_gates, audit=audit, assess=assess), stream="stdout")
 
 
 def _cmd_next(args: argparse.Namespace) -> int:
@@ -162,7 +163,7 @@ def _cmd_retro(args: argparse.Namespace) -> int:
 def _cmd_answer(args: argparse.Namespace) -> int:
     flow = _v2_flow(args)
     note = getattr(args, "note", None)
-    return _run_loop(lambda: run_answer(flow, args.text, note=note), stream="stderr")
+    return _run_loop(lambda: run_answer(flow, args.text, note=note, item=getattr(args, "item", None)), stream="stderr")
 
 
 def _cmd_clear_live(args: argparse.Namespace) -> int:
@@ -448,6 +449,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--flow", help="absolute flow dir (created by init)")
     start.add_argument("--auto-merge", action="store_true", help="refused: the v2 driver never auto-merges")
     start.add_argument("--audit", action="store_true", help="opt in to the fidelity audit after plan, implement, review and fix")
+    start.add_argument("--assess", action="store_true", help="opt in to the assess stage between verify and ship")
     start.add_argument("--gates", action="store_true", help="enable step gates (pauses after plan, implement, review, fix, verify)")
     # Skeleton-only flags, optional and ignored by the v2 start (kept so old invocations still parse)
     start.add_argument("--repo", help="OWNER/NAME (skeleton only, ignored by v2 start)")
@@ -463,6 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
     ans.add_argument("--flow", required=True, help="absolute flow dir")
     ans.add_argument("--text", required=True)
     ans.add_argument("--note", help="optional note for Redo or Drop answers")
+    ans.add_argument("--item", help="assess batch only: the item id this answer is for")
 
     clear = sub.add_parser("clear-live", help="clear a spawned or resumed record (logged)")
     clear.add_argument("--flow", required=True, help="absolute flow dir")

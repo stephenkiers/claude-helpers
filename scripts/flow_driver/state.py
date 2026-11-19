@@ -215,6 +215,8 @@ _KNOWN_KEYS: FrozenSet[str] = frozenset(
         "step_gates",
         "audit",
         "audit_gate",
+        "assess",
+        "assess_gate",
         "parked",
         "merge_gate",
     }
@@ -361,6 +363,8 @@ class V2State:
     step_gates: bool = False
     audit: bool = False
     audit_gate: Optional[AuditRecord] = None
+    assess: bool = False
+    assess_gate: Optional[AuditRecord] = None  # same shape as the audit record; step is always "assess" here
     parked: Optional[ParkedQuestion] = None
     merge_gate: Optional[MergeGateRecord] = None
 
@@ -733,6 +737,8 @@ def load_v2_state(raw: object) -> V2State:
         step_gates=fields.boolean("step_gates") if fields.present("step_gates") else False,
         audit=fields.boolean("audit") if fields.present("audit") else False,
         audit_gate=_load_audit_gate(fields.raw_or_none("audit_gate"), "audit_gate"),
+        assess=fields.boolean("assess") if fields.present("assess") else False,
+        assess_gate=_load_audit_gate(fields.raw_or_none("assess_gate"), "assess_gate"),
         parked=_load_parked(fields.raw_or_none("parked"), "parked"),
         merge_gate=_load_merge_gate(fields.raw_or_none("merge_gate"), "merge_gate"),
     )
@@ -844,6 +850,8 @@ def v2_state_to_dict(state: V2State) -> Dict[str, object]:
             "step_gates": state.step_gates,
             "audit": state.audit,
             "audit_gate": _audit_gate_to_dict(state.audit_gate),
+            "assess": state.assess,
+            "assess_gate": _audit_gate_to_dict(state.assess_gate),
             "parked": _parked_to_dict(state.parked),
             "merge_gate": _merge_gate_to_dict(state.merge_gate),
         }

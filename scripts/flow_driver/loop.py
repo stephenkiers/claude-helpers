@@ -31,6 +31,7 @@ from typing import Callable, Dict, Mapping, Optional, Tuple, Union
 
 from scripts.workflow.fsutil import atomic_write_text
 
+from . import assess
 from . import audit
 from . import driver
 from . import gates
@@ -70,6 +71,8 @@ from .steps import (
     GateMerge,
     GateStop,
     MergeDirective,
+    ParkDirective,
+    AskDirective,
     Notification,
     QuestionFact,
     ReceiptFact,
@@ -955,6 +958,69 @@ def _audit_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, nonc
     )
 
 
+def _assess_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, nonce: str, headless: bool) -> Optional[Outcome]:
+    """
+    The opt-in assess stage (state.assess), run between a landed OK verify receipt and its advance to ship. It keeps its
+    own record (state.assess_gate, the audit record's shape with step "assess"). Returns an outcome that replaces the
+    transition (the assessor SPAWN, a WAIT for its records, the batch ASK or PARK, or a STOP), or None to let verify go
+    on. A pass is recorded per verify attempt, so a replayed call never assesses twice.
+    """
+    state = locked.require_state()
+    pending = state.pending_spawn
+    if not state.assess or state.status != "running" or receipt_fact == "failed":
+        return None
+    if state.parked is not None and state.parked.kind != "assess":
+        return None
+    if pending is None or pending.state != "receipt-landed" or pending.step != "verify":
+        return None
+    attempt = pending.attempt
+    record = state.assess_gate
+    current = record is not None and record.attempt == attempt
+    if record is not None and current and record.state == "passed":
+        return None
+    result = assess.assess_next(locked, flow, state, nonce if not current else record.nonce, attempt)  # type: ignore[union-attr]
+    state = locked.require_state()  # assess_next may have parked the batch
+    if isinstance(result, assess.AssessStop):
+        return _halt(state, flow, "assess-error", result.reason)
+    if isinstance(result, assess.AssessAdvance):
+        passed = AuditRecord(step="assess", attempt=attempt, nonce=nonce if record is None else record.nonce, state="passed")
+        locked.commit(dataclasses.replace(state, assess_gate=passed, parked=None))
+        return None
+    if isinstance(result, assess.AssessAsk):
+        parked = state.parked
+        if parked is None or parked.kind != "assess":
+            return _halt(state, flow, "assess-error", "the assess batch was not parked")
+        question = relay.question_path(flow, parked)
+        answer = relay.answer_path(flow, parked)
+        item = parked.item or "<item id>"
+        command = f"{driver.answer_command(flow)} --item '{item}'"
+        ask_cls = ParkDirective if headless else AskDirective
+        return state, ask_cls(  # type: ignore[call-arg]
+            next_command=driver.next_command(flow), question_file=str(question), answer_file=str(answer), answer_command=command
+        )
+    # AssessSpawn: the assessor has not written its records yet
+    records = assess.assess_records_path(flow)
+    if record is not None and current:
+        return state, WaitDirective(
+            next_command=driver.next_command(flow),
+            receipt_file=str(records),
+            clear_live_command=driver.clear_live_command(flow),
+            nonce=record.nonce,
+        )
+    prompt_file = step_prompt_path(flow, "assess", attempt, nonce)
+    results = flow / "steps" / "07-assess-precomputed.json"
+    _write(prompt_file, assess.assessor_spawn(flow, attempt, nonce, results))
+    spawned = dataclasses.replace(state, assess_gate=AuditRecord(step="assess", attempt=attempt, nonce=nonce, state="spawned"))
+    return spawned, SpawnDirective(
+        next_command=driver.next_command(flow),
+        agent_type=_SPAWN_AGENT,
+        prompt_file=str(prompt_file),
+        step="assess",
+        attempt=attempt,
+        nonce=nonce,
+    )
+
+
 def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: datetime, headless: bool) -> str:
     event = event_from_label(event_label)
     notified = isinstance(event, Notification)
@@ -965,10 +1031,13 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
     ledger_line = ""
     extra = ""
     audited = _audit_stage(locked, flow, receipt_fact, nonce) if landed is None else None
+    assessed = _assess_stage(locked, flow, receipt_fact, nonce, headless) if landed is None and audited is None else None
     if landed is not None:
         new_state, directive = landed
     elif audited is not None:
         new_state, directive = audited
+    elif assessed is not None:
+        new_state, directive = assessed
     else:
         new_state, directive, ledger_line, extra = _decide(locked, flow, event, event_is_start, receipt_fact, nonce, headless)
     if _changed(locked.require_state(), new_state):
@@ -980,6 +1049,12 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
         dfile = directive_file_path(flow, f"audit-{gate_record.step}", gate_record.attempt, gate_record.nonce, directive.verb)
         _write(dfile, json.dumps(directive_to_dict(directive), indent=2, sort_keys=True) + "\n")
         locked.log(directive.verb.lower(), step=gate_record.step, attempt=gate_record.attempt, nonce=gate_record.nonce)
+        return f"NEXT: {directive.verb} {dfile}"
+    if assessed is not None and committed.assess_gate is not None and isinstance(directive, (SpawnDirective, WaitDirective)):
+        gate_record = committed.assess_gate
+        dfile = directive_file_path(flow, "assess", gate_record.attempt, gate_record.nonce, directive.verb)
+        _write(dfile, json.dumps(directive_to_dict(directive), indent=2, sort_keys=True) + "\n")
+        locked.log(directive.verb.lower(), step="assess", attempt=gate_record.attempt, nonce=gate_record.nonce)
         return f"NEXT: {directive.verb} {dfile}"
     if isinstance(directive, (SpawnDirective, MergeDirective)):
         _write_step_prompt(flow, committed, directive, ledger_line, extra)
@@ -1010,18 +1085,43 @@ def run_next(flow: Path, after: Optional[str], *, now: Clock = _utc_now, headles
         raise
 
 
-def run_start(flow: Path, *, step_gates: bool = False, audit: bool = False, now: Clock = _utc_now) -> str:
+def run_start(flow: Path, *, step_gates: bool = False, audit: bool = False, assess: bool = False, now: Clock = _utc_now) -> str:
     """The first `next` of a v2 flow, sent as the `start` label. The opt-in flags are stored first. Raises what run_next raises."""
-    if step_gates or audit:
+    if step_gates or audit or assess:
         with mutating(flow) as locked:
             state = locked.require_state()
-            wanted = dataclasses.replace(state, step_gates=step_gates or state.step_gates, audit=audit or state.audit)
+            wanted = dataclasses.replace(state, step_gates=step_gates or state.step_gates, audit=audit or state.audit, assess=assess or state.assess)
             if wanted != state:
                 locked.commit(wanted)
     return run_next(flow, "start", now=now)
 
 
-def run_answer(flow: Path, text: str, note: Optional[str] = None) -> str:
+def _answer_assess_item(flow: Path, text: str, note: Optional[str], item: str) -> str:
+    """One per-item answer of the parked assess batch. Validated under the lock, written by assess.save_item_answer."""
+    with mutating(flow) as locked:
+        state = locked.require_state()
+        parked = state.parked
+        if parked is None or parked.kind != "assess":
+            raise LoopRefusal("answer refused: no assess batch is parked, so --item does not apply")
+        asked = assess._read_questions(flow, parked.nn)
+        if item not in asked:
+            raise LoopRefusal(f"answer refused: {item} is not an item of the assess batch")
+        label = text.strip()
+        if label not in asked[item]:
+            raise LoopRefusal(f"answer refused: '{label}' is not an option for {item}")
+        seq = parked.nn
+        per_item = flow / "answers" / f"assess-{seq}.d"
+        unanswered = {qid for qid in asked if not (per_item / f"{qid}.json").exists()}
+    error = assess.save_item_answer(flow, seq, item, label, note, unanswered)
+    if error is not None:
+        raise LoopRefusal(error)
+    with mutating(flow) as locked:
+        locked.log("answer", step="assess", attempt=parked.attempt, nonce=item)
+    remaining = len(unanswered)
+    return f"answer recorded for {item}; {remaining} item(s) still to answer" if remaining else f"answer recorded for {item}; the batch is complete"
+
+
+def run_answer(flow: Path, text: str, note: Optional[str] = None, item: Optional[str] = None) -> str:
     """
     Write the human's answer for the parked attempt. The next `next` resumes it. One answer per attempt.
 
@@ -1029,6 +1129,8 @@ def run_answer(flow: Path, text: str, note: Optional[str] = None) -> str:
         LoopRefusal: the record is not parked-awaiting-answer, or an answer file already exists.
         Refusal: the flow is locked or its state.json is missing or invalid.
     """
+    if item is not None:
+        return _answer_assess_item(flow, text, note, item)
     try:
         success, message = relay.accept_answer(flow, text, note)
         if success:
