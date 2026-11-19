@@ -598,8 +598,9 @@ writing, confirm `${FLOW_DIR}/steps/` exists with `ls -d` (the orchestrator crea
 not, the path is wrong — stop and reply `Decision: FAILED` `Reason: flow dir missing` rather than
 writing.
 Never write anything else under `FLOW_DIR` — `state.json`, `log.md`, `answers/` belong to the
-orchestrator alone. The one exception is the read-then-write of this step's own receipt in the Ask
-block.
+orchestrator alone. The exceptions are the read-then-write of this step's own receipt in the Ask
+block, and the fix step's `test-edits/` directory (drafted patches, `asked.txt`, `approval-commit.txt`;
+`commands/implement-with-haiku.md`, fix-step items 0 and f, and 4.7), which that step writes from Bash only.
 
 **`Deviation:` is reserved.** A step never writes a line beginning `Deviation:`. A command that
 cannot run as documented writes `Decision: FAILED` with the reason, and never substitutes its

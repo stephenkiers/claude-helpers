@@ -28,7 +28,7 @@ GIT_ID = ["-c", "user.email=test@example.com", "-c", "user.name=Test", "-c", "co
 NAMED_REASONS = {
     "test-edit", "gate-config-edit", "added-suppression", "env-guard", "revert-to-pass",
     "test-removed", "neutered-verification", "stub-body", "bad-ref", "missing-revert-base",
-    "revert-base-not-allowed",
+    "revert-base-not-allowed", "allow-test-edit-not-allowed", "allow-test-edit-unmatched",
 }
 
 BASE_FILES = {
@@ -152,6 +152,163 @@ def heal_case(h, label, files, reason):
         c2 = commit(repo, files, "heal")
         rc, data = scan(repo, c1, c2, "heal", revert_base=c0)
         h.test_result(f"heal: {label} fails with '{reason}'", failed_with(rc, data, reason), detail(rc, data))
+
+
+ALLOW_BASE = {
+    "README.md": "# repo\n",
+    "src/app.py": 'VALUE = "old"\n',
+    "tests/test_x.py": "def test_x():\n    assert True\n",
+    "tests/test_a.py": "def test_a():\n    assert True\n",
+    "tests/test_b.py": "def test_b():\n    assert True\n",
+    "package.json": '{"scripts": {"check": "ruff check ."}}\n',
+}
+ALLOW_X_EDIT = {"tests/test_x.py": "def test_x():\n    assert 1 == 1\n"}
+
+
+def allow_fixture(tmp, head_files, remove=()):
+    """Base commit ALLOW_BASE, then one head commit that writes head_files and deletes `remove`."""
+    repo = new_repo(tmp)
+    base = commit(repo, ALLOW_BASE, "base")
+    head = commit(repo, head_files, "head", remove=remove)
+    return repo, base, head
+
+
+def scan_with(repo, base, head, profile, extra=()):
+    argv = [str(SCAN), "--repo", str(repo), "--base", base, "--head", head, "--profile", profile, *extra]
+    result = run_python(argv)
+    try:
+        data = json.loads(result.stdout)
+    except ValueError:
+        data = {}
+    return result.returncode, data
+
+
+def reason_starts(data, prefix):
+    return any(str(r).startswith(prefix) for r in data.get("reasons", []))
+
+
+def allow_test_edit_checks(h):
+    print("[allow-test-edit] approved path, declined path, unchanged rules, scope, removal, profile, other rules")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = allow_fixture(tmp, ALLOW_X_EDIT)
+        rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", "tests/test_x.py"])
+        h.test_result("allow-test-edit: approved test edit under implement passes with exit 0",
+                      passed(rc, data), detail(rc, data))
+        h.test_result("allow-test-edit: approved path leaves no 'test-edit:' reason",
+                      not reason_starts(data, "test-edit:"), detail(rc, data))
+
+    for label, extra in (("no flag", []), ("another path allowlisted", ["--allow-test-edit", "tests/test_other.py"])):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base, head = allow_fixture(tmp, ALLOW_X_EDIT)
+            rc, data = scan_with(repo, base, head, "implement", extra)
+            h.test_result(f"declined test edit ({label}) fails with verdict 'fail' and exit 1",
+                          rc == 1 and data.get("verdict") == "fail", detail(rc, data))
+            h.test_result(f"declined test edit ({label}) reasons contain 'test-edit: tests/test_x.py'",
+                          "test-edit: tests/test_x.py" in data.get("reasons", []), detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = allow_fixture(tmp, ALLOW_X_EDIT)
+        rc, data = scan_with(repo, base, head, "implement")
+        h.test_result("unchanged: implement without the flag, test edit: reasons equal ['test-edit: tests/test_x.py']",
+                      data.get("verdict") == "fail" and data.get("reasons") == ["test-edit: tests/test_x.py"],
+                      detail(rc, data))
+        rc, data = scan_with(repo, base, head, "heal", ["--revert-base", base])
+        h.test_result("unchanged: heal without the flag, test edit: fails with 'test-edit'",
+                      failed_with(rc, data, "test-edit"), detail(rc, data))
+        rc, data = scan_with(repo, base, head, "fix-now")
+        h.test_result("unchanged: fix-now without the flag, test edit: passes with empty reasons",
+                      passed(rc, data) and data.get("reasons") == [], detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = allow_fixture(tmp, {}, remove=["tests/test_x.py"])
+        rc, data = scan_with(repo, base, head, "implement")
+        h.test_result("unchanged: implement without the flag, removed test: reasons equal ['test-removed: tests/test_x.py']",
+                      data.get("verdict") == "fail" and data.get("reasons") == ["test-removed: tests/test_x.py"],
+                      detail(rc, data))
+        rc, data = scan_with(repo, base, head, "heal", ["--revert-base", base])
+        h.test_result("unchanged: heal without the flag, removed test: fails with 'test-removed'",
+                      failed_with(rc, data, "test-removed"), detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = allow_fixture(tmp, {"tests/test_a.py": "def test_a():\n    assert 1 == 1\n",
+                                               "tests/test_b.py": "def test_b():\n    assert 1 == 1\n"})
+        rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", "tests/test_a.py"])
+        h.test_result("allowlist scope: one allowed and one unlisted test edit under implement fails with 'test-edit'",
+                      failed_with(rc, data, "test-edit"), detail(rc, data))
+        h.test_result("allowlist scope: reasons contain 'test-edit: tests/test_b.py'",
+                      "test-edit: tests/test_b.py" in data.get("reasons", []), detail(rc, data))
+        h.test_result("allowlist scope: reasons do not contain 'test-edit: tests/test_a.py'",
+                      "test-edit: tests/test_a.py" not in data.get("reasons", []), detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = allow_fixture(tmp, {}, remove=["tests/test_x.py"])
+        rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", "tests/test_x.py"])
+        h.test_result("removed-file control: allowlisted deletion under implement fails with 'test-removed'",
+                      failed_with(rc, data, "test-removed"), detail(rc, data))
+        h.test_result("removed-file control: reasons contain 'test-removed: tests/test_x.py'",
+                      "test-removed: tests/test_x.py" in data.get("reasons", []), detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = allow_fixture(tmp, {"tests/test_y.py": "def test_x():\n    assert True\n"},
+                                         remove=["tests/test_x.py"])
+        rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", "tests/test_x.py"])
+        h.test_result("removed-file control: allowlisted rename of tests/test_x.py fails with 'test-removed'",
+                      failed_with(rc, data, "test-removed"), detail(rc, data))
+        h.test_result("removed-file control: rename reasons contain 'test-removed: tests/test_x.py'",
+                      "test-removed: tests/test_x.py" in data.get("reasons", []), detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = allow_fixture(tmp, {"tests/test_new.py": "def test_new():\n    assert 1 == 1\n"})
+        rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", "tests/test_new.py"])
+        h.test_result("added file: allowlisting a newly added test file still reports 'test-edit: tests/test_new.py'",
+                      "test-edit: tests/test_new.py" in data.get("reasons", []), detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = allow_fixture(tmp, ALLOW_X_EDIT)
+        for profile, extra in (("fix-now", ["--allow-test-edit", "tests/test_x.py"]),
+                               ("heal", ["--revert-base", base, "--allow-test-edit", "tests/test_x.py"])):
+            rc, data = scan_with(repo, base, head, profile, extra)
+            h.test_result(f"profile restriction: --allow-test-edit under {profile} fails with 'allow-test-edit-not-allowed'",
+                          rc == 1 and data.get("verdict") == "fail" and reason_starts(data, "allow-test-edit-not-allowed"),
+                          detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = allow_fixture(tmp, {
+            "tests/test_x.py": "def test_x():\n    assert 1 == 1\n",
+            "package.json": '{"scripts": {"check": "ruff check . || true"}}\n',
+        })
+        rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", "tests/test_x.py"])
+        h.test_result("other rules stay armed: allowed test edit plus '|| true' in package.json fails with 'neutered-verification'",
+                      failed_with(rc, data, "neutered-verification"), detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = new_repo(tmp)
+        base = commit(repo, {"tests/sub/test_x.py": "def test_sub():\n    assert True\n"}, "base")
+        head = commit(repo, {"tests/sub/test_x.py": "def test_sub():\n    assert 1 == 1\n"}, "head")
+        rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", "tests/test_x.py"])
+        h.test_result("exact path: allowlisting tests/test_x.py does not suppress a same-basename tests/sub/test_x.py",
+                      "test-edit: tests/sub/test_x.py" in data.get("reasons", []), detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        accented = "tests/café_test.py"
+        repo = new_repo(tmp)
+        base = commit(repo, {accented: "def test_c():\n    assert True\n"}, "base")
+        head = commit(repo, {accented: "def test_c():\n    assert 1 == 1\n"}, "head")
+        rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", accented])
+        h.test_result("non-ASCII path: an allowlisted edit to a non-ASCII test path passes (raw -z path matches exactly)",
+                      passed(rc, data), detail(rc, data))
+
+    for label, near_miss in (("trailing slash", "tests/test_x.py/"), ("leading ./", "./tests/test_x.py"),
+                             ("different case", "tests/Test_X.py"), ("glob", "tests/*.py"),
+                             ("absent path", "tests/test_missing.py")):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base, head = allow_fixture(tmp, ALLOW_X_EDIT)
+            rc, data = scan_with(repo, base, head, "implement", ["--allow-test-edit", near_miss])
+            h.test_result(f"near-miss path ({label}): the edit is not suppressed and fails with 'test-edit'",
+                          rc == 1 and "test-edit: tests/test_x.py" in data.get("reasons", []), detail(rc, data))
+            h.test_result(f"near-miss path ({label}): the unmatched allowlist entry is reported",
+                          f"allow-test-edit-unmatched: {near_miss}" in data.get("reasons", []), detail(rc, data))
 
 
 def main():
@@ -363,6 +520,8 @@ def main():
         h.test_result("heal: a bad --revert-base ref fails closed with 'bad-ref'", failed_with(rc, data, "bad-ref"), detail(rc, data))
         rc, data = scan(Path(tmp) / "no-such-repo", c1, c2, "implement")
         h.test_result("a missing repo path fails closed", failed_with(rc, data), detail(rc, data))
+
+    allow_test_edit_checks(h)
 
     h.summarize_and_exit()
 

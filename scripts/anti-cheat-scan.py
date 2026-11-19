@@ -4,6 +4,7 @@
 Usage:
     anti-cheat-scan.py --repo PATH --base SHA --head SHA
                        --profile {implement,heal,fix-now} [--revert-base SHA]
+                       [--allow-test-edit PATH ...]
 
 The script runs `git diff` itself (read-only) over BASE..HEAD in REPO and prints one
 JSON object on stdout:
@@ -19,6 +20,9 @@ Profiles:
              test-removed), neutered verification in build/config files
              (neutered-verification), stub/placeholder markers on added lines
              (stub-body). "Wired but never called" stays judgment prose in the doc.
+             --allow-test-edit PATH (repeatable) suppresses test-edit for that exact
+             path when it is modified (status M). test-removed is never suppressed,
+             and an added test path still reports test-edit.
   fix-now    The implement profile minus the test-edit rule (test-removed still
              applies), and nothing more. Its range includes the re-run step's Round 2 and Round 4 test commits; Round 1's own Gate step 2 already ran the implement profile.
   heal       The check-heal profile. Everything in implement, plus gate-config-edit,
@@ -27,9 +31,13 @@ Profiles:
              fails a hunk only if its post-image restores the pre-REVERT_BASE text of
              a region that changed in REVERT_BASE..BASE.
 
+--allow-test-edit is valid only with --profile implement; any other profile fails closed
+with allow-test-edit-not-allowed.
+
 Named reasons: test-edit, test-removed, gate-config-edit, added-suppression, env-guard,
 revert-to-pass, neutered-verification, stub-body, bad-ref, missing-revert-base,
-revert-base-not-allowed, diff-unreadable.
+revert-base-not-allowed, allow-test-edit-not-allowed, allow-test-edit-unmatched,
+diff-unreadable.
 """
 
 import argparse
@@ -359,8 +367,21 @@ def check_revert_to_pass(
 
 
 def scan(
-    repo: str, base: str, head: str, profile: str, revert_base: Optional[str]
+    repo: str,
+    base: str,
+    head: str,
+    profile: str,
+    revert_base: Optional[str],
+    allow_test_edit: Optional[List[str]] = None,
 ) -> List[str]:
+    """Scan BASE..HEAD in REPO and return the unique named failure reasons (empty list = pass).
+
+    allow_test_edit (implement profile only): exact repo-relative test paths whose `test-edit` reason is
+    suppressed. The match is exact (no globs or normalisation) and applies to modified files (status M) only;
+    an added or deleted test path is never suppressed. An allowed path that never matched a modified test
+    path in the range is itself a failure, `allow-test-edit-unmatched: <path>`, so a typo or a stale path
+    cannot pass silently. Raises ScanError for an unusable profile combination or ref.
+    """
     reasons = []  # type: List[str]
     if profile == "heal" and not revert_base:
         raise ScanError("missing-revert-base", "--revert-base is required for profile heal")
@@ -368,12 +389,19 @@ def scan(
         raise ScanError(
             "revert-base-not-allowed", "--revert-base is only valid for profile heal"
         )
+    if allow_test_edit and profile != "implement":
+        raise ScanError(
+            "allow-test-edit-not-allowed",
+            "--allow-test-edit is only valid for profile implement",
+        )
+    allowed_test_edits = set(allow_test_edit or [])
     base_sha = resolve_ref(repo, base)
     head_sha = resolve_ref(repo, head)
     rb_sha = resolve_ref(repo, revert_base) if revert_base else None
 
     files = changed_files(repo, base_sha, head_sha)
     hunk_cache: Dict[str, List[Hunk]] = {}
+    matched_allowed = set()  # type: Set[str]
 
     def hunks_for(p: str) -> List[Hunk]:
         if p not in hunk_cache:
@@ -386,7 +414,18 @@ def scan(
             if status == "D":
                 reasons.append("test-removed: %s" % path)
             elif profile in ("implement", "heal"):
-                reasons.append("test-edit: %s" % path)
+                # Exact-path, modified-only suppression, implement profile only.
+                # A pathological or malformed path never equals a git path, so it
+                # suppresses nothing.
+                suppressed = (
+                    profile == "implement"
+                    and status == "M"
+                    and path in allowed_test_edits
+                )
+                if suppressed:
+                    matched_allowed.add(path)
+                else:
+                    reasons.append("test-edit: %s" % path)
         if profile == "heal" and is_gate_path(path, repo):
             reasons.append("gate-config-edit: %s" % path)
         if status == "D":
@@ -404,6 +443,8 @@ def scan(
             if status == "A":
                 continue
             reasons.extend(check_revert_to_pass(repo, rb_sha, base_sha, path, hunks_for(path)))
+    for unmatched in sorted(allowed_test_edits - matched_allowed):
+        reasons.append("allow-test-edit-unmatched: %s" % unmatched)
     seen: Set[str] = set()
     unique = []  # type: List[str]
     for r in reasons:
@@ -420,10 +461,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--head", required=True)
     parser.add_argument("--profile", required=True, choices=PROFILES)
     parser.add_argument("--revert-base", default=None)
+    parser.add_argument(
+        "--allow-test-edit",
+        dest="allow_test_edit",
+        action="append",
+        default=None,
+        metavar="PATH",
+    )
     args = parser.parse_args(argv)
 
     try:
-        reasons = scan(args.repo, args.base, args.head, args.profile, args.revert_base)
+        reasons = scan(
+            args.repo,
+            args.base,
+            args.head,
+            args.profile,
+            args.revert_base,
+            args.allow_test_edit,
+        )
     except ScanError as exc:
         reasons = ["%s: %s" % (exc.reason, exc.detail)]
     except Exception as exc:  # fail closed on anything unexpected

@@ -1,0 +1,531 @@
+#!/usr/bin/env python3
+"""
+Fix-step test-edit checks for scripts/flow-verify-receipt.py (#497).
+
+An OK fix receipt may name an existing-test edit that a human approved in the fix step's
+answers file (TEST_EDIT: <finding id> <path> <answers file>), together with the approval commit
+(TEST_EDIT_COMMIT). The verifier accepts such an edit only when the approval is recorded in the
+flow's human ledger, the answers file bytes still match the recorded sha256, the finding id and
+path match the approved question, and the approval commit touches only the approved test file.
+Edits that were declined, failed to apply, or do not match the approval are reported as
+OUTSTANDING lines.
+
+Fixtures use real temporary git repositories and real FLOW_DIR trees. Ledger records are appended
+through scripts/flow-ledger.py, never hand-built. Answers files use the relay shape written by the
+fix step.
+
+Run with: python3 tests/test_flow_verify_receipt_test_edit.py
+"""
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _test_harness import Harness, REPO_ROOT  # noqa: E402
+from _assess_fixtures import (  # noqa: E402
+    BASE_IMPL, DECISION_OPTIONS, ISSUE_URL, S3, S4, TS, assess_line, disp, gate, make_flow, make_home,
+    outstanding_set, parse_outstanding, write_answers, write_assess, write_marker,
+)
+
+VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
+LEDGER = REPO_ROOT / "scripts" / "flow-ledger.py"
+SINCE = "2026-10-13T00:00:00Z"
+GIT_ID = ["-c", "user.email=test@example.com", "-c", "user.name=Test", "-c", "commit.gpgsign=false"]
+DECLINE = "Decline — leave OUTSTANDING"
+TEST_EDIT_D3 = "TEST_EDIT: D3 tests/test_x.py answers/fix-02.json"
+DECLINED_D5 = "D5 (test-edit-declined: tests/test_z.py) [self-report]"
+
+BASE_FILES = {
+    "README.md": "# repo\n",
+    "src/app.py": 'VALUE = "old"\n',
+    "tests/test_x.py": "def test_x():\n    assert True\n",
+    "tests/test_z.py": "def test_z():\n    assert True\n",
+    "tests/test_w.py": "def test_w():\n    assert True\n",
+}
+UNITS = ({"src/app.py": 'VALUE = "new"\n'}, (), "ordinary units")
+OTHER_UNIT = ({"src/other.py": "def g():\n    return 2\n"}, (), "another ordinary unit")
+APPROVED_X = ({"tests/test_x.py": "def test_x():\n    assert 1 == 1\n"}, (), "approved test edit")
+
+
+def git(cwd, *args):
+    result = subprocess.run(["git", *GIT_ID, *args], cwd=str(cwd), capture_output=True, text=True, check=True)
+    return result.stdout.strip()
+
+
+def build_repo(root, steps):
+    """Linear repo: BASE_FILES as the base commit, then one commit per (files, removed, message) in
+    `steps`. Returns (repo path, [sha of each commit in order, base first])."""
+    repo = Path(root) / "repo"
+    repo.mkdir(parents=True)
+    git(repo, "init", "-q")
+    shas = []
+    for files, removed, message in [(BASE_FILES, (), "base"), *steps]:
+        for rel, text in files.items():
+            path = repo / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        for rel in removed:
+            (repo / rel).unlink()
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", message)
+        shas.append(git(repo, "rev-parse", "HEAD"))
+    return str(repo), shas
+
+
+def build_scenario(root, approval=APPROVED_X, later=()):
+    """base, ordinary units, the approval commit, then any `later` steps.
+    Returns (repo, base sha, approval sha, HEAD sha)."""
+    repo, shas = build_repo(root, [UNITS, approval, *later])
+    return repo, shas[0], shas[2], shas[-1]
+
+
+def write_check_cache(repo):
+    cache = Path(repo) / ".claude"
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / "repo-cache.json").write_text(json.dumps({"commands": {"check": "just check"}}))
+
+
+def fix_receipt(head, *, test_edit="TEST_EDIT: none", test_edit_commit=None, outstanding=()):
+    lines = ["ROUND 1", "CHECK: just check", "CHECK_EXIT: 0", "CHECK_SOURCE: repo-cache", f"CHECK_SHA: {head}",
+             "SPLIT_BASIS: parallel", "MIN_UNITS: 1", "PRIOR_SPLIT_BASIS: none", "UNITS: 3", test_edit]
+    if test_edit_commit is not None:
+        lines.append(f"TEST_EDIT_COMMIT: {test_edit_commit}")
+    lines += [f"OUTSTANDING: {item}" for item in outstanding] or ["OUTSTANDING: none"]
+    lines += ["Decision: OK", "<!-- step-end -->"]
+    return "\n".join(lines) + "\n"
+
+
+def fix_flow(td):
+    """FLOW_DIR (with a log of an OK implement and fix) plus HOME and a review dir for the fix step."""
+    home = make_home(td)
+    flow = make_flow(td, log=[f"{TS} fix ok"])
+    review_dir = Path(home) / ".claude" / "reviews" / "rv"
+    review_dir.mkdir(parents=True)
+    (review_dir / "claude-action-plan.md").write_text("# Action plan\n\nNo items to do.\n")
+    return home, flow, review_dir
+
+
+def env_for(home):
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+    env["HOME"] = str(home)
+    env["FLOW_VERIFY_GIT_TIMEOUT_SECS"] = "60"
+    return env
+
+
+def run_fix(flow, home, repo, base, review_dir, receipt):
+    """Write steps/05-fix.md and run the verifier's fix step on it. Returns (rc, stdout, stderr)."""
+    path = flow / "steps" / "05-fix.md"
+    path.write_text(receipt)
+    cmd = [sys.executable, str(VERIFIER), "--step", "fix", "--receipt", str(path), "--since", SINCE,
+           "--repo", repo, "--branch", "HEAD", "--base", base, "--review-dir", str(review_dir),
+           "--flow-dir", str(flow)]
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env_for(home))
+    return result.returncode, result.stdout, result.stderr
+
+
+def combined(out, err):
+    return (out or "") + (err or "")
+
+
+def passed_fix(rc, out):
+    return rc == 0 and "ARTIFACTS: ok" in (out or "")
+
+
+def write_fix_answers(flow, seq, entries):
+    """entries: (question id, finding id, path, approve). Writes questions/fix-<seq>.json and
+    answers/fix-<seq>.json in the relay shape (each question offers the approval label and the
+    decline label). Returns the sha256 of the answers file bytes."""
+    questions = []
+    answers = {}
+    for qid, item, path, approve in entries:
+        approve_label = f"Approve edit: {item} {path}"
+        questions.append({
+            "id": qid, "item": item, "question": f"Approve the existing-test edit for {item}?",
+            "header": "Test edit",
+            "options": [{"label": approve_label, "description": ""}, {"label": DECLINE, "description": ""}],
+        })
+        answers[qid] = approve_label if approve else DECLINE
+    (flow / "questions" / f"fix-{seq:02d}.json").write_text(json.dumps({"step": "fix", "seq": seq, "questions": questions}))
+    answer_file = flow / "answers" / f"fix-{seq:02d}.json"
+    answer_file.write_text(json.dumps({"step": "fix", "seq": seq, "answers": answers, "annotations": {}}))
+    return hashlib.sha256(answer_file.read_bytes()).hexdigest()
+
+
+def ledger_append(flow, home, text, step="fix"):
+    """Record an answer through the real flow-ledger.py append."""
+    result = subprocess.run(
+        [sys.executable, str(LEDGER), "append", "--flow-dir", str(flow), "--kind", "answer",
+         "--step", step, "--attempt", "1", "--text", text],
+        capture_output=True, text=True, env=env_for(home))
+    if result.returncode != 0:
+        raise AssertionError(f"flow-ledger append failed: {result.stderr}")
+
+
+def approved_flow(td, entries, *, ledger=True, ledger_step="fix"):
+    """A fix FLOW_DIR whose answers/fix-02.json holds `entries`, recorded in the ledger unless ledger=False."""
+    home, flow, review_dir = fix_flow(td)
+    sha = write_fix_answers(flow, 2, entries)
+    if ledger:
+        ledger_append(flow, home, f"answer_ref: answers/fix-02.json\nsha256: {sha}", step=ledger_step)
+    return home, flow, review_dir
+
+
+# Fixture 10: D3's edit is approved, D5's question is declined.
+ENTRIES_D3_APPROVED_D5_DECLINED = [("q1", "D3", "tests/test_x.py", True), ("q2", "D5", "tests/test_z.py", False)]
+
+
+def iso_ago(seconds):
+    """ISO-8601 UTC Z stamp `seconds` before now."""
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def stamp_fix_attempt(flow, begin_ago, record_ago):
+    """Set the fix step's `begin` line in log.md to `begin_ago` seconds ago and the ledger answer
+    record's ts to `record_ago` seconds ago (ledger records are stamped 'now' by flow-ledger.py)."""
+    (flow / "log.md").write_text(f"{iso_ago(begin_ago)} fix begin\n{TS} fix ok\n")
+    ledger = flow / "human.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+    for row in rows:
+        row["ts"] = iso_ago(record_ago)
+    ledger.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+
+def main():
+    h = Harness("FLOW-VERIFY-RECEIPT TEST-EDIT APPROVAL TESTS (#497)")
+
+    print("[Receipt and outstanding-set contract without any approval]")
+    with tempfile.TemporaryDirectory() as td:
+        repo, base, _approval, head = build_scenario(td, approval=OTHER_UNIT)
+        write_check_cache(repo)
+        home, flow, review_dir = fix_flow(td)
+        outstanding = [
+            "D4 (test-edit-declined: tests/test_x.py) [self-report]",
+            "D7 (test-removal: tests/test_y.py) [self-report]",
+            "D9 (test-edit-coupled: tests/test_w.py) [self-report]",
+        ]
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, outstanding=outstanding))
+        h.test_result("OK fix receipt with TEST_EDIT none and three self-report OUTSTANDING lines passes",
+                      passed_fix(rc, out), combined(out, err))
+        rc2, out2, err2 = outstanding_set(flow, home)
+        _count, rows = parse_outstanding(out2)
+        h.test_result("outstanding-set exits 0 for that flow", rc2 == 0, combined(out2, err2))
+        h.test_result("outstanding-set lists fix:D4, fix:D7 and fix:D9",
+                      all(key in rows for key in ("fix:D4", "fix:D7", "fix:D9")), out2)
+        h.test_result("outstanding-set gives each of those ids provenance 'self-report'",
+                      all(rows.get(key, ("",))[0] == "self-report" for key in ("fix:D4", "fix:D7", "fix:D9")), out2)
+
+    print()
+    print("[Approved-set subset check]")
+    with tempfile.TemporaryDirectory() as td:
+        repo, base, approval, head = build_scenario(td)
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
+                                           outstanding=[DECLINED_D5]))
+        h.test_result("approved subset: TEST_EDIT for the approved path passes the test-edit check",
+                      passed_fix(rc, out), combined(out, err))
+
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit="TEST_EDIT: D5 tests/test_z.py answers/fix-02.json",
+                                           test_edit_commit=approval, outstanding=[DECLINED_D5]))
+        h.test_result("unapproved path: TEST_EDIT for a declined question is rejected",
+                      rc != 0 and not passed_fix(rc, out) and "path not approved: tests/test_z.py" in combined(out, err),
+                      combined(out, err))
+
+    with tempfile.TemporaryDirectory() as td:
+        repo, base, approval, head = build_scenario(td)
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, [("q1", "D3", "tests/test_x.py", True),
+                                                    ("q2", "D5", "tests/test_x.py", False)])
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit="TEST_EDIT: D5 tests/test_x.py answers/fix-02.json",
+                                           test_edit_commit=approval, outstanding=[DECLINED_D5]))
+        h.test_result("approval bound to finding id: TEST_EDIT for D5 on the approved path is rejected naming D5",
+                      rc != 0 and not passed_fix(rc, out) and "finding D5 is not approved for tests/test_x.py" in combined(out, err),
+                      combined(out, err))
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit="TEST_EDIT: D3 tests/test_x.py answers/fix-02.json",
+                                           test_edit_commit=approval, outstanding=[DECLINED_D5]))
+        h.test_result("approval bound to finding id: TEST_EDIT for D3 on the same path passes",
+                      passed_fix(rc, out), combined(out, err))
+
+    with tempfile.TemporaryDirectory() as td:
+        repo, base, approval, head = build_scenario(td)
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        write_fix_answers(flow, 2, [("q1", "D3", "tests/test_x.py", True), ("q2", "D5", "tests/test_z.py", True)])
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
+                                           outstanding=[DECLINED_D5]))
+        h.test_result("sha256 mismatch: answers file rewritten after the ledger record is rejected naming sha256",
+                      rc != 0 and not passed_fix(rc, out) and "does not match answers/fix-02.json (sha256 mismatch)" in combined(out, err),
+                      combined(out, err))
+
+    with tempfile.TemporaryDirectory() as td:
+        repo, base, approval, head = build_scenario(td)
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED, ledger=False)
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
+                                           outstanding=[DECLINED_D5]))
+        h.test_result("no ledger record: approved edit without the ledger record is rejected naming answers/fix-02.json",
+                      rc != 0 and not passed_fix(rc, out) and "no ledger record for answers/fix-02.json" in combined(out, err),
+                      combined(out, err))
+
+    print()
+    print("[Approval commit set]")
+    with tempfile.TemporaryDirectory() as td:
+        extra_source = ({"tests/test_x.py": "def test_x():\n    assert 1 == 1\n", "src/app.py": 'VALUE = "other"\n'},
+                        (), "approval also edits source")
+        repo, base, approval, head = build_scenario(td, approval=extra_source)
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
+                                           outstanding=[DECLINED_D5]))
+        h.test_result("commit set: approval commit that also modifies src/app.py is rejected",
+                      rc != 0 and not passed_fix(rc, out) and "changes paths not approved: src/app.py" in combined(out, err),
+                      combined(out, err))
+
+    with tempfile.TemporaryDirectory() as td:
+        deletion = ({}, ("tests/test_x.py",), "approval deletes the test")
+        repo, base, approval, head = build_scenario(td, approval=deletion)
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
+                                           outstanding=[DECLINED_D5]))
+        h.test_result("commit set: approval commit that deletes tests/test_x.py is rejected",
+                      rc != 0 and not passed_fix(rc, out) and "tests/test_x.py has status D" in combined(out, err),
+                      combined(out, err))
+
+    with tempfile.TemporaryDirectory() as td:
+        later = ({"tests/test_x.py": "def test_x():\n    assert 2 == 2\n"}, (), "later edit to the same test")
+        repo, base, approval, head = build_scenario(td, later=[later])
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
+                                           outstanding=[DECLINED_D5]))
+        h.test_result("commit set: a later commit touching the same test does not cause a rejection",
+                      passed_fix(rc, out), combined(out, err))
+
+    print()
+    print("[Ledger kind and step binding]")
+    for name in ("test_flow_verify_receipt_outstanding_gate.py", "test_flow_verify_receipt_assess.py"):
+        result = subprocess.run([sys.executable, str(REPO_ROOT / "tests" / name)], capture_output=True, text=True)
+        h.test_result(f"existing {name} fixtures pass unmodified", result.returncode == 0,
+                      (result.stdout + result.stderr)[-400:])
+
+    for ledger_step, expect_pass in (("fix", False), ("assess", True)):
+        with tempfile.TemporaryDirectory() as td:
+            home = make_home(td)
+            flow = make_flow(td, implement=BASE_IMPL)
+            write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS),
+                                assess_line(S4, kind="decision", options=DECISION_OPTIONS)])
+            write_answers(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)], ledger=False)
+            write_marker(flow, [disp(S3, "filed-as-issue", option="Open an issue", route="issue", url=ISSUE_URL),
+                                disp(S4, "filed-as-issue", option="Open an issue", route="issue", url=ISSUE_URL)])
+            sha = hashlib.sha256((flow / "answers" / "assess-01.json").read_bytes()).hexdigest()
+            ledger_append(flow, home, f"answer_ref: answers/assess-01.json\nsha256: {sha}", step=ledger_step)
+            rc, out, err = gate(flow, home)
+            text = combined(out, err)
+            if expect_pass:
+                h.test_result("assess answer_ref: a step-assess ledger record satisfies it (control)", rc == 0, text)
+            else:
+                h.test_result("assess answer_ref: a step-fix ledger record never satisfies an assess answer_ref",
+                              rc != 0 and "no ledger record for answers/assess-01.json" in text, text)
+
+    with tempfile.TemporaryDirectory() as td:
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED, ledger_step="assess")
+        repo, base, approval, head = build_scenario(td)
+        write_check_cache(repo)
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
+                                           outstanding=[DECLINED_D5]))
+        h.test_result("fix TEST_EDIT ref: a step-assess ledger record never satisfies a fix answers ref",
+                      rc != 0 and not passed_fix(rc, out) and "no ledger record for answers/fix-02.json" in combined(out, err),
+                      combined(out, err))
+
+    print()
+    print("[Non-ASCII approved path]")
+    with tempfile.TemporaryDirectory() as td:
+        cafe = "tests/café_test.py"
+        created = ({cafe: "def test_cafe():\n    assert True\n", "src/app.py": 'VALUE = "new"\n'},
+                   (), "units add a non-ASCII test file")
+        approve_cafe = ({cafe: "def test_cafe():\n    assert 1 == 1\n"}, (), "approved non-ASCII test edit")
+        repo, shas = build_repo(td, [created, approve_cafe])
+        base, approval, head = shas[0], shas[2], shas[-1]
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, [("q1", "D3", cafe, True), ("q2", "D5", "tests/test_z.py", False)])
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit=f"TEST_EDIT: D3 {cafe} answers/fix-02.json",
+                                           test_edit_commit=approval, outstanding=[DECLINED_D5]))
+        h.test_result("non-ASCII approved path: approval commit touching only the quoted-UTF-8 path passes",
+                      passed_fix(rc, out), combined(out, err))
+
+    print()
+    print("[Coverage mode: set-aside rows]")
+    with tempfile.TemporaryDirectory() as td:
+        repo, base, approval, head = build_scenario(td)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        plan = Path(td) / "claude-action-plan.md"
+        plan.write_text("\n".join([
+            "## Doing it: 2",
+            "",
+            "| # | Severity | Finding | File | Raised by | Fix |",
+            "|---|----------|---------|------|-----------|-----|",
+            "| 1 | HIGH | D3 edit | tests/test_x.py | ariadne | Tighten the assertion |",
+            "| 2 | HIGH | D5 edit | tests/test_z.py | ariadne | Tighten the assertion |",
+            "",
+        ]))
+        receipt = Path(td) / "05-fix.md"
+        receipt.write_text(fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
+                                       outstanding=["D2 (test-edit-declined: tests/test_z.py) [self-report]"]))
+        cmd = [sys.executable, str(VERIFIER), "--step", "fix", "--coverage", "--plan", str(plan),
+               "--receipt", str(receipt), "--repo", repo, "--branch", "HEAD", "--base", base]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env_for(home))
+        rows = {}
+        for line in result.stdout.splitlines():
+            parts = line.split(" | ", 2)
+            if len(parts) == 3 and parts[0].startswith("D"):
+                rows[parts[0]] = parts[1]
+        h.test_result("coverage: the approved D1 row on tests/test_x.py is covered by the diff",
+                      result.returncode == 0 and rows.get("D1") == "covered", result.stdout + result.stderr)
+        h.test_result("coverage: the set-aside D2 row is declared, not uncovered",
+                      rows.get("D2") == "declared", result.stdout + result.stderr)
+
+    print()
+    print("[Approved edit skipped at apply time stays OUTSTANDING]")
+    with tempfile.TemporaryDirectory() as td:
+        repo, base, approval, head = build_scenario(td)
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, [("q1", "D3", "tests/test_x.py", True),
+                                                    ("q2", "D5", "tests/test_z.py", True)])
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
+                                           outstanding=["D5 (test-edit-apply-conflict: tests/test_z.py) [self-report]"]))
+        h.test_result("approved-but-skipped: D3 applied and D5 (approved, skipped as apply-conflict) reported OUTSTANDING passes",
+                      passed_fix(rc, out), combined(out, err))
+        rc2, out2, err2 = outstanding_set(flow, home)
+        _count, rows = parse_outstanding(out2)
+        h.test_result("approved-but-skipped: outstanding-set lists the skipped item fix:D5", rc2 == 0 and "fix:D5" in rows,
+                      combined(out2, err2))
+
+    print()
+    print("[Fail-closed receipt shapes (table-driven)]")
+    other_sha = "f" * 40
+    table = [
+        ("two TEST_EDIT_COMMIT lines", dict(test_edit=TEST_EDIT_D3, extra="TEST_EDIT_COMMIT: {approval}"),
+         "more than one TEST_EDIT_COMMIT"),
+        ("commit with TEST_EDIT: none", dict(test_edit="TEST_EDIT: none", test_edit_commit="{approval}"),
+         "present with TEST_EDIT: none"),
+        ("commit without a TEST_EDIT line", dict(test_edit="Addressed: none", test_edit_commit="{approval}"),
+         "TEST_EDIT_COMMIT without a TEST_EDIT line"),
+        ("none mixed with an edit line", dict(test_edit=TEST_EDIT_D3 + "\nTEST_EDIT: none", test_edit_commit="{approval}"),
+         "mixed with approved edit lines"),
+        ("edit line without commit", dict(test_edit=TEST_EDIT_D3), "without TEST_EDIT_COMMIT"),
+        ("malformed commit sha", dict(test_edit=TEST_EDIT_D3, test_edit_commit="abc123"), "malformed TEST_EDIT_COMMIT"),
+        ("malformed edit line", dict(test_edit="TEST_EDIT: D3 tests/test_x.py", test_edit_commit="{approval}"),
+         "malformed TEST_EDIT line"),
+        ("answers ref that is not a fix answers file",
+         dict(test_edit="TEST_EDIT: D3 tests/test_x.py answers/assess-02.json", test_edit_commit="{approval}"),
+         "malformed TEST_EDIT line"),
+        ("unknown commit", dict(test_edit=TEST_EDIT_D3, test_edit_commit=other_sha), "test-edit:"),
+    ]
+    with tempfile.TemporaryDirectory() as td:
+        repo, base, approval, head = build_scenario(td)
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        for name, spec, expected in table:
+            receipt = fix_receipt(head, test_edit=spec["test_edit"], test_edit_commit=(spec.get("test_edit_commit") or "").format(approval=approval) or None,
+                                  outstanding=[DECLINED_D5])
+            if spec.get("extra"):
+                receipt = receipt.replace("OUTSTANDING:", spec["extra"].format(approval=approval) + "\nOUTSTANDING:", 1)
+                receipt = receipt.replace(f"TEST_EDIT_COMMIT: {approval}\n", "", 0)
+                receipt = receipt.replace("UNITS: 3\n", "UNITS: 3\nTEST_EDIT_COMMIT: " + approval + "\n", 1)
+            rc, out, err = run_fix(flow, home, repo, base, review_dir, receipt)
+            h.test_result(f"fail closed: {name} is rejected with '{expected}'",
+                          rc != 0 and not passed_fix(rc, out) and expected in combined(out, err), combined(out, err))
+
+    print()
+    print("[Approval commit must lie in the fix range]")
+    with tempfile.TemporaryDirectory() as td:
+        repo, base, approval, head = build_scenario(td)
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        git(repo, "checkout", "-q", "-b", "side", base)
+        (Path(repo) / "tests" / "test_x.py").write_text("def test_x():\n    assert 1 == 1\n")
+        git(repo, "add", "tests")
+        git(repo, "commit", "-q", "-m", "side edit")
+        side = git(repo, "rev-parse", "HEAD")
+        git(repo, "checkout", "-q", "-")
+        rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=side, outstanding=[DECLINED_D5]))
+        h.test_result("commit on another branch: rejected as not on the branch",
+                      rc != 0 and "is not on HEAD" in combined(out, err), combined(out, err))
+        rc, out, err = run_fix(flow, home, repo, approval, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval, outstanding=[DECLINED_D5]))
+        h.test_result("commit equal to the range base: rejected as the base",
+                      rc != 0 and "is the fix range base" in combined(out, err), combined(out, err))
+    with tempfile.TemporaryDirectory() as td:
+        repo, _base, approval, head = build_scenario(td, later=[OTHER_UNIT])
+        write_check_cache(repo)
+        home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+        rc, out, err = run_fix(flow, home, repo, head, review_dir,
+                               fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval, outstanding=[DECLINED_D5]))
+        h.test_result("commit before the range base: rejected as not in the fix range",
+                      rc != 0 and "not in the fix range" in combined(out, err), combined(out, err))
+
+    print()
+    print("[Typed Other text and list answers never approve an edit]")
+    for label, value in (("typed text not offered by the question", "Approve edit: D3 tests/test_z.py"),
+                         ("list-shaped answer (multiSelect shape)", ["Approve edit: D3 tests/test_x.py", "note"])):
+        with tempfile.TemporaryDirectory() as td:
+            repo, base, approval, head = build_scenario(td)
+            write_check_cache(repo)
+            home, flow, review_dir = fix_flow(td)
+            write_fix_answers(flow, 2, [("q1", "D3", "tests/test_x.py", True)])
+            answer_file = flow / "answers" / "fix-02.json"
+            doc = json.loads(answer_file.read_text())
+            doc["answers"]["q1"] = value
+            answer_file.write_text(json.dumps(doc))
+            ledger_append(flow, home, f"answer_ref: answers/fix-02.json\nsha256: {hashlib.sha256(answer_file.read_bytes()).hexdigest()}")
+            rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                                   fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval))
+            h.test_result(f"{label}: the edit is rejected as not approved",
+                          rc != 0 and "not approved" in combined(out, err), combined(out, err))
+
+    print()
+    print("[Stale ledger record from an earlier attempt (D8)]")
+    # The approval commit is created now, so a begin 100s ago precedes it: the record must be newer than that begin.
+    for label, record_ago, accepted in (("record older than the fix begin", 1000, False),
+                                        ("record newer than the fix begin", 50, True)):
+        with tempfile.TemporaryDirectory() as td:
+            repo, base, approval, head = build_scenario(td)
+            write_check_cache(repo)
+            home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+            stamp_fix_attempt(flow, 100, record_ago)
+            rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                                   fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
+                                               outstanding=[DECLINED_D5]))
+            if accepted:
+                h.test_result(f"stale ledger record (D8): {label} passes", passed_fix(rc, out), combined(out, err))
+            else:
+                h.test_result(f"stale ledger record (D8): {label} is rejected naming answers/fix-02.json",
+                              rc != 0 and not passed_fix(rc, out) and "no ledger record for answers/fix-02.json" in combined(out, err),
+                              combined(out, err))
+
+    h.summarize_and_exit()
+
+
+if __name__ == "__main__":
+    main()

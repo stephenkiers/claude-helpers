@@ -193,6 +193,131 @@ def _line_containing(text, needle):
     return ""
 
 
+def _te_paragraphs(text):
+    return [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+
+
+def _te_para_re(text, *patterns):
+    """True if some blank-line-separated paragraph of `text` matches every regex in `patterns` (case-insensitive)."""
+    return any(all(re.search(p, para, re.IGNORECASE) for p in patterns) for para in _te_paragraphs(text))
+
+
+def test_fix_test_edit_doc_contract(h):
+    """Command-doc text for the fix-step test-edit split and its approval relay (#497)."""
+    impl = IMPL_CMD.read_text() if IMPL_CMD.is_file() else ""
+    flow_doc = COMMAND.read_text() if COMMAND.is_file() else ""
+    combined = impl + "\n" + flow_doc
+    impl_lines = impl.splitlines()
+
+    print("[Fix-step test-edit doc contract (#497)]")
+
+    # Call-site pin: count only lines that invoke anti-cheat-scan.py.
+    invoke_idx = [i for i, line in enumerate(impl_lines) if re.search(r'anti-cheat-scan\.py"?\s+--repo', line)]
+    gate_exact = ('python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <TICKET_WT_PATH> '
+                  '--base "$START_SHA" --head HEAD --profile implement')
+    gate_lines = [impl_lines[i] for i in invoke_idx if gate_exact in impl_lines[i]]
+    h.test_result("call-site: exactly one Gate step 2 invocation has the exact implement argv",
+                  len(gate_lines) == 1 and "--allow-test-edit" not in gate_lines[0], f"gate_lines={gate_lines}")
+    flagged = [i for i in invoke_idx if "--allow-test-edit" in impl_lines[i]]
+    h.test_result("call-site: exactly one invocation line carries --allow-test-edit",
+                  len(flagged) == 1, f"flagged={[impl_lines[i] for i in flagged]}")
+    flagged_line = impl_lines[flagged[0]] if flagged else ""
+    base_match = re.search(r"--base\s+(\S+)", flagged_line)
+    base_token = base_match.group(1).strip('"') if base_match else ""
+    heading = next((i for i, line in enumerate(impl_lines) if line.startswith("### 4.6b")), -1)
+    final = next((i for i, line in enumerate(impl_lines) if line.startswith("## Final check")), -1)
+    h.test_result("call-site: the flagged invocation uses --profile implement",
+                  "--profile implement" in flagged_line, flagged_line)
+    h.test_result("call-site: the flagged --base is neither $START_SHA nor $ROUND2_START_SHA",
+                  base_token not in ("", "$START_SHA", "$ROUND2_START_SHA"), f"base={base_token!r}")
+    h.test_result("call-site: the flagged --base names the approval commit's parent",
+                  base_token.endswith("^") and "<APPROVAL_COMMIT>" in base_token, f"base={base_token!r}")
+    h.test_result("call-site: the flagged invocation sits after '### 4.6b' and before '## Final check'",
+                  heading >= 0 and final > (flagged[0] if flagged else -1) > heading,
+                  f"heading={heading} flagged={flagged} final={final}")
+
+    # Stop string and the baseline classification fixture stay unchanged.
+    h.test_result("stop string: implement-with-haiku keeps 'existing-test-edit: <step or finding id> <path>'",
+                  "existing-test-edit: <step or finding id> <path>" in impl)
+    baseline = subprocess.run([sys.executable, str(REPO_ROOT / "tests" / "test_flow_stop_baseline.py")],
+                              capture_output=True, text=True)
+    h.test_result("stop baseline: tests/test_flow_stop_baseline.py still passes (existing-test-edit is STEP_AGENT)",
+                  baseline.returncode == 0, (baseline.stdout + baseline.stderr)[-400:])
+
+    # The test-edit worker is never a unit; --only-units runs never ask a test-edit question.
+    h.test_result("never a unit: implement-with-haiku states the test-edit worker is never a unit",
+                  _te_para_re(impl, r"The test-edit worker is never a unit"))
+    h.test_result("--only-units: implement-with-haiku states such runs never ask a test-edit question",
+                  _te_para_re(impl, r"A run with `--only-units` never drafts, asks or applies a test edit",
+                                r"so it never asks a test-edit question"))
+    fix_now_lines = [line for line in flow_doc.splitlines() if "anti-cheat-scan" in line and "--profile fix-now" in line]
+    h.test_result("fix-now: expert-flow's Fix now scan line carries --profile fix-now",
+                  len(fix_now_lines) >= 1, f"lines={fix_now_lines}")
+    h.test_result("fix-now: that scan line carries no --allow-test-edit",
+                  bool(fix_now_lines) and all("--allow-test-edit" not in line for line in fix_now_lines),
+                  f"lines={fix_now_lines}")
+
+    # Misclassification ends with planned-change-breaks-test.
+    h.test_result("misclassification: an ordinary item whose change turns a test red ends with 'planned-change-breaks-test: <path>'",
+                  _te_para_re(impl, r"An item classified ordinary whose change turns an existing test red",
+                                r"planned-change-breaks-test: <path>", r"never `gate-not-converged` with no path"))
+
+    # Fleet parks, no default.
+    labels = ("Decline — leave OUTSTANDING", "Approve edit: <finding id> <path>")
+    label_lines = [line for line in combined.splitlines() if any(label in line for label in labels)]
+    h.test_result("fleet parks: both new Ask option labels appear in the command docs",
+                  all(any(label in line for line in label_lines) for label in labels), f"lines={label_lines}")
+    h.test_result("fleet parks: no option-label line carries '(Recommended)'",
+                  bool(label_lines) and not any("(Recommended)" in line for line in label_lines), f"lines={label_lines}")
+    ask_sites = subprocess.run([sys.executable, str(REPO_ROOT / "tests" / "test_flow_ask_sites.py")],
+                               capture_output=True, text=True)
+    h.test_result("fleet parks: tests/test_flow_ask_sites.py passes with the new site",
+                  ask_sites.returncode == 0, (ask_sites.stdout + ask_sites.stderr)[-400:])
+
+    # Relay record: expert-flow relay step 4a appends the pinned answer_ref with --step fix.
+    flow_lines = flow_doc.splitlines()
+    # Checks the bash block itself: the command line that precedes each answer_ref line must append with
+    # --kind answer --step fix (prose elsewhere in the doc does not satisfy it).
+    ref_lines = [i for i, line in enumerate(flow_lines) if line.strip() == "answer_ref: answers/fix-<SEQ>.json"]
+    relay_cmds = [" ".join(flow_lines[max(0, i - 3):i]) for i in ref_lines]
+    h.test_result("relay record: the step 4a command block appends answer_ref with --kind answer --step fix",
+                  any("flow-ledger.py" in cmd and "append" in cmd and "--kind answer" in cmd and "--step fix" in cmd
+                      for cmd in relay_cmds),
+                  f"relay_cmds={relay_cmds}")
+
+    # Set aside without stopping; UNITS counts ordinary units; the no-Round-1-work check runs first.
+    h.test_result("set aside: a test-edit item is set aside without stopping the step while ordinary units remain",
+                  _te_para_re(impl, r"a test-edit item never stops the step while ordinary units remain; it is set aside and the step continues"))
+    h.test_result("set aside: UNITS: counts ordinary units only",
+                  _te_para_re(impl, r"UNITS:` counts ordinary units only"))
+    h.test_result("set aside: the no-Round-1-work check runs before any drafting or asking",
+                  _te_para_re(impl, r"No Round 1 work left\.\*\* This check runs before any drafting or asking"))
+
+    # Coupled item withheld from units.json and reported.
+    h.test_result("coupled: a coupled item's code half is withheld from units.json",
+                  _te_para_re(impl, r"A coupled item's code half is withheld from `units\.json`",
+                                r"reported `OUTSTANDING: D<n> \(test-edit-coupled: <path>\)`"))
+    h.test_result("coupled: a coupled item is never drafted or asked about",
+                  _te_para_re(impl, r"It is never drafted or asked about, and it is reported `OUTSTANDING: D<n> \(test-edit-coupled"))
+
+    # Fail-closed answer mapping.
+    h.test_result("fail closed: a missing, free-text or unmappable answer counts as declined",
+                  _te_para_re(impl, r"A missing, list-shaped, free-text or unmappable answer counts as declined"),
+                  "no paragraph states the fail-closed mapping")
+
+    # Approval lifecycle across Retry and resume (ADR-0019 2026-11-17 amendment, plan ruling Q1 = A).
+    h.test_result("lifecycle: patches persist under the test-edit directory and are reloaded byte for byte",
+                  _te_para_re(impl, r"Reload first", r"<TEST_EDIT_DIR>/<finding id>\.patch", r"byte for byte"))
+    h.test_result("lifecycle: the re-ask cap is two asks per finding id",
+                  _te_para_re(impl, r"Re-ask cap", r"asked\.txt", r"two lines"))
+    h.test_result("lifecycle: Gate step 2 advances its base past a verified approval commit and never widens the flag",
+                  _te_para_re(impl, r"Retry or resume of a fix step that already landed an approval commit",
+                              r"Do not pass `--allow-test-edit` here, ever", r"use that commit as `--base`"))
+    h.test_result("lifecycle: a failed ledger write prints the exact append and mark commands",
+                  _te_para_re(flow_doc, r"the stop prints the exact commands still to run by hand",
+                              r"--by steps/<NN>-fix\.md"))
+
+
 def test_341_doc_facts(h):
     """Test #341 doc facts: ROUND 1 contract and maxTurns look-back."""
     def read(path):
@@ -1433,6 +1558,7 @@ def main():
 
     test_341_doc_facts(h)
     test_468_doc_contract(h)
+    test_fix_test_edit_doc_contract(h)
 
     print()
     h.summarize_and_exit()
