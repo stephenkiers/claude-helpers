@@ -183,27 +183,27 @@ def archive_consumed(flow: Path, parked: ParkedQuestion) -> None:
 
 def render_question(flow: Path, question_path: Path) -> str:
     """
-    Render a question through flow-render-questions.py subprocess.
+    Render a question through flow-render-questions.py, which writes to a file (--out is required) that is read back.
 
     Returns the rendered text (summary + brief + options).
     On failure, returns an explicit marker string that starts with "(render".
     """
     try:
-        # Resolve the script path using ~/.claude/scripts convention or relative to repo
         script_path = Path.home() / ".claude" / "scripts" / "flow-render-questions.py"
         if not script_path.exists():
-            # Fallback to relative to repo scripts directory
-            script_path = flow.parent.parent / "scripts" / "flow-render-questions.py"
+            script_path = Path(__file__).resolve().parent.parent / "flow-render-questions.py"
 
+        out_path = flow / "rendered" / f"{question_path.stem}.md"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
-            ["python3", str(script_path), str(question_path)],
+            ["python3", str(script_path), str(question_path), "--out", str(out_path)],
             capture_output=True,
             text=True,
             timeout=30,
         )
         if result.returncode != 0:
             return f"(render failed: {result.stderr.strip()})"
-        return result.stdout
+        return out_path.read_text(encoding="utf-8")
     except subprocess.TimeoutExpired:
         return "(render timeout)"
     except Exception as e:

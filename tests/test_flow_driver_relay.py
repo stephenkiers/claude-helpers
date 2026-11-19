@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""
+Tests for relay.py, written from its documented contract: question/answer paths per kind, NN allocation, park re-entry,
+consumed-answer archival, exact-match answer validation, exclusive answer files, and the render failure marker.
+
+Run with: python3 tests/test_flow_driver_relay.py
+"""
+
+import json
+import sys
+import tempfile
+from pathlib import Path
+from typing import Callable, List, Optional
+
+sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from _test_harness import Harness  # noqa: E402
+
+from scripts.flow_driver import relay  # noqa: E402
+from scripts.flow_driver.state import InitSpec, ParkedQuestion, init_state, mutating  # noqa: E402
+
+
+def expect(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+def check(h: Harness, name: str, fn: Callable[[Path], None]) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        flow = Path(tmp) / "flow"
+        flow.mkdir()
+        try:
+            fn(flow)
+        except AssertionError as exc:
+            h.test_result(name, False, str(exc) or "assertion failed")
+        except Exception as exc:
+            h.test_result(name, False, f"{type(exc).__name__}: {exc}")
+        else:
+            h.test_result(name, True)
+
+
+def init(flow: Path) -> None:
+    spec = InitSpec(repo="o/n", issue=1, worktree=str(flow))
+    with mutating(flow, create=spec) as locked:
+        init_state(locked, spec)
+
+
+def park(flow: Path, step: str, attempt: int, kind: str, nn: Optional[int] = None) -> ParkedQuestion:
+    with mutating(flow) as locked:
+        return relay.park(locked, flow, step, attempt, kind, nn=nn)  # type: ignore[arg-type]
+
+
+def write_question(flow: Path, parked: ParkedQuestion, options: object) -> None:
+    path = relay.question_path(flow, parked)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"summary": "s", "options": options}), encoding="utf-8")
+
+
+def refused(flow: Path, text: str, note: Optional[str] = None) -> str:
+    try:
+        relay.accept_answer(flow, text, note)
+    except relay.AnswerRefused as exc:
+        return str(exc)
+    return ""
+
+
+def test_paths_per_kind(flow: Path) -> None:
+    step = ParkedQuestion(step="plan", attempt=2, nn=3, kind="step")
+    expect(relay.question_path(flow, step) == flow / "questions" / "plan-03.json", "step question path is v1 shape")
+    expect(relay.answer_path(flow, step) == flow / "answers" / "plan-a2.json", "step answer path")
+    gate = ParkedQuestion(step="plan", attempt=2, nn=1, kind="gate")
+    expect(relay.question_path(flow, gate) == flow / "questions" / "plan-a2-gate.json", "gate question path")
+    expect(relay.answer_path(flow, gate) == flow / "answers" / "plan-a2-gate.json", "gate answer path")
+    assess = ParkedQuestion(step="assess", attempt=1, nn=1, kind="assess")
+    expect(relay.question_path(flow, assess) == flow / "questions" / "assess-1.json", "assess question path")
+    expect(relay.answer_path(flow, assess) == flow / "answers" / "assess-1.json", "assess answer path")
+
+
+def test_park_allocates_and_reenters(flow: Path) -> None:
+    init(flow)
+    (flow / "questions").mkdir()
+    (flow / "questions" / "plan-01.json").write_text("{}", encoding="utf-8")
+    first = park(flow, "plan", 1, "step")
+    expect(first.nn == 2, f"NN skips the used 01: {first.nn}")
+    again = park(flow, "plan", 1, "step")
+    expect(again.nn == first.nn, "re-entry for the same step and attempt keeps the NN")
+
+
+def test_park_nn_counts_archived_answers(flow: Path) -> None:
+    init(flow)
+    (flow / "archive" / "plan").mkdir(parents=True)
+    (flow / "archive" / "plan" / "a1.answer-1.json").write_text("{}", encoding="utf-8")
+    expect(park(flow, "plan", 2, "step").nn == 2, "an archived answer-01 reserves NN 1")
+
+
+def test_park_non_step_needs_nn(flow: Path) -> None:
+    init(flow)
+    try:
+        park(flow, "plan", 1, "gate")
+    except ValueError:
+        return
+    raise AssertionError("a non-step park without nn must raise")
+
+
+def test_archive_consumed(flow: Path) -> None:
+    parked = ParkedQuestion(step="plan", attempt=1, nn=2, kind="step")
+    relay.archive_consumed(flow, parked)  # no answer file: no-op, must not raise
+    target = relay.answer_path(flow, parked)
+    target.parent.mkdir(parents=True)
+    target.write_text("{}", encoding="utf-8")
+    relay.archive_consumed(flow, parked)
+    expect(not target.exists(), "the answer was not moved")
+    expect((flow / "archive" / "plan" / "a1.answer-2.json").exists(), "the answer was not archived under its NN")
+
+
+def test_nothing_parked_refused(flow: Path) -> None:
+    init(flow)
+    expect("answer refused: nothing is parked" in refused(flow, "x"), "answering with nothing parked must refuse")
+
+
+def test_exact_option_match(flow: Path) -> None:
+    init(flow)
+    parked = park(flow, "plan", 1, "step")
+    write_question(flow, parked, ["Continue", "Abort"])
+    expect(refused(flow, "continue").startswith("answer refused:"), "options match exactly, case included")
+    expect(not relay.answer_path(flow, parked).exists(), "a refused answer wrote nothing")
+    ok, _ = relay.accept_answer(flow, "  Continue \n", "because")
+    expect(ok, "surrounding whitespace is stripped")
+    data = json.loads(relay.answer_path(flow, parked).read_text(encoding="utf-8"))
+    expect(data["text"] == "Continue" and data["note"] == "because" and data["attempt"] == 1, str(data))
+
+
+def test_answer_is_exclusive(flow: Path) -> None:
+    init(flow)
+    parked = park(flow, "plan", 1, "step")
+    write_question(flow, parked, ["Continue"])
+    relay.accept_answer(flow, "Continue", None)
+    expect("already exists" in refused(flow, "Continue"), "a second answer must refuse")
+
+
+def test_free_text_accepts_anything(flow: Path) -> None:
+    init(flow)
+    parked = park(flow, "plan", 1, "step")
+    write_question(flow, parked, "free_text")
+    ok, _ = relay.accept_answer(flow, "whatever I like", None)
+    expect(ok, "free_text takes any text")
+    data = json.loads(relay.answer_path(flow, parked).read_text(encoding="utf-8"))
+    expect("note" not in data, "no note given, none recorded")
+
+
+def test_missing_or_malformed_question_refused(flow: Path) -> None:
+    init(flow)
+    park(flow, "plan", 1, "step")
+    expect(refused(flow, "x").startswith("answer refused:"), "a missing question file must refuse")
+    parked = park(flow, "plan", 1, "step")
+    path = relay.question_path(flow, parked)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not json", encoding="utf-8")
+    expect(refused(flow, "x").startswith("answer refused:"), "a malformed question file must refuse")
+
+
+def test_render_question(flow: Path) -> None:
+    good = flow / "good.json"
+    good.write_text(json.dumps({"summary": "Pick one", "questions": [{"id": "q1", "question": "Which?", "header": "Pick", "multiSelect": False, "options": [{"label": "Alpha", "description": "a"}, {"label": "Beta", "description": "b"}]}]}), encoding="utf-8")
+    out = relay.render_question(flow, good)
+    expect(not out.startswith("(render") and "Alpha" in out, f"a valid question did not render: {out[:120]}")
+    bad = flow / "bad.json"
+    bad.write_text("not json", encoding="utf-8")
+    out = relay.render_question(flow, bad)
+    expect(out.startswith("(render"), f"an invalid question must return a (render marker: {out[:120]}")
+
+
+TESTS: List = [
+    ("1: paths per kind", test_paths_per_kind),
+    ("2: park allocates NN and re-enters", test_park_allocates_and_reenters),
+    ("3: archived answers reserve NNs", test_park_nn_counts_archived_answers),
+    ("4: non-step park needs an nn", test_park_non_step_needs_nn),
+    ("5: archive_consumed moves the answer", test_archive_consumed),
+    ("6: nothing parked is refused", test_nothing_parked_refused),
+    ("7: options match exactly", test_exact_option_match),
+    ("8: an answer file is exclusive", test_answer_is_exclusive),
+    ("9: free text accepts anything", test_free_text_accepts_anything),
+    ("10: bad question files refuse", test_missing_or_malformed_question_refused),
+    ("11: render succeeds and fails as a marker", test_render_question),
+]
+
+
+def main() -> None:
+    h = Harness("FLOW DRIVER RELAY")
+    for name, fn in TESTS:
+        check(h, name, fn)
+    h.summarize_and_exit()
+
+
+if __name__ == "__main__":
+    main()
