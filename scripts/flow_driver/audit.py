@@ -17,8 +17,8 @@ from typing import Callable, Dict, Optional, Tuple, Union
 from .state import LockedFlow, ParkedQuestion, Step, V2State
 
 
-# Flipped on when run_recover can execute Accept and continue; until then the rejection question offers Retry only.
-ACCEPT_WIRED = False
+# run_recover executes Accept and continue; the rejection question offers it when flow-accept.py's allowlist classifies the reason.
+ACCEPT_WIRED = True
 
 
 # Closed result type for audit verdict
@@ -363,7 +363,7 @@ def audit_orchestrate(
 
     if isinstance(verdict, AuditReject):
         # Import flow-accept for eligibility checking
-        # Accept and continue is not wired in run_recover yet, so the question never offers it.
+        # Accept and continue is offered only when flow-accept.py classifies the reason; run_recover executes it.
         allowlist, classify = (import_flow_accept() if ACCEPT_WIRED else (None, None))
 
         # Handle rejection: write state and park question

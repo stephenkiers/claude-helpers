@@ -137,7 +137,7 @@ def _cmd_next(args: argparse.Namespace) -> int:
 def _cmd_recover(args: argparse.Namespace) -> int:
     """recover --choice: the human's answer to a hard stop (retry, take-over or keep-previous)."""
     flow = _v2_flow(args)
-    return _run_loop(lambda: run_recover(flow, args.choice), stream="stderr")
+    return _run_loop(lambda: run_recover(flow, args.choice, note=getattr(args, "note", None)), stream="stderr")
 
 
 def _cmd_abandon(args: argparse.Namespace) -> int:
@@ -471,9 +471,10 @@ def build_parser() -> argparse.ArgumentParser:
     clear.add_argument("--flow", required=True, help="absolute flow dir")
     clear.add_argument("--reason", required=True)
 
-    rec = sub.add_parser("recover", help="answer a hard stop: retry, take-over or keep-previous; resume re-asks a paused or held gate")
+    rec = sub.add_parser("recover", help="answer a hard stop: retry, take-over or keep-previous; resume re-asks a paused or held gate; accept (human-only) passes an allowlisted audit rejection; reverify re-reads the PR after a merge-head-mismatch")
     rec.add_argument("--flow", required=True, help="absolute flow dir")
-    rec.add_argument("--choice", required=True, choices=["retry", "take-over", "keep-previous", "resume"])
+    rec.add_argument("--choice", required=True, choices=["retry", "take-over", "keep-previous", "resume", "accept", "reverify"])
+    rec.add_argument("--note", help="why, for accept (recorded in the trail)")
 
     aband = sub.add_parser("abandon", help="abandon a flow (refused while a record is live)")
     aband.add_argument("--flow", required=True, help="absolute flow dir")

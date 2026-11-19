@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Loop-level tests for the opt-in fidelity audit (`driver start --audit`): off by default, an audit SPAWN and WAIT after a
-landed plan, a pass advancing to the next step, and a rejection stopping with a Retry-only question that recover retries.
+landed plan, a pass advancing to the next step, and a rejection stopping with a question that recover retries or (allowlisted, human-only) accepts.
 
 Drives the real driver CLI under a temp HOME with fake step agents (no model runs).
 
@@ -96,7 +96,7 @@ def test_reject_stops_and_retry_recovers(base: Path) -> None:
     expect(verb == "STOP" and state["status"] == "failed", f"a rejection printed {verb} / {state['status']}")
     expect(state["stop_reason"]["plan"].startswith("audit-rejected:"), f"stop reason {state['stop_reason']}")
     question = load_json(flow / "questions" / "plan-a1-audit.json")
-    expect(question["options"] == ["Retry"], f"the rejection offers {question['options']}, expected Retry only")
+    expect(question["options"] == ["Retry", "Accept and continue"], f"the rejection offers {question['options']}")
     code, _, err = run_cli(home, "recover", "--flow", str(flow), "--choice", "retry", extra_env=ENVS[str(flow)])
     expect(code == 0, f"recover retry exited {code}: {err}")
     code, out, _ = run_cli(home, "next", "--flow", str(flow), extra_env=ENVS[str(flow)])
@@ -113,11 +113,46 @@ def test_malformed_verdict_halts(base: Path) -> None:
     expect(verb == "STOP" and state_of(flow)["stop_reason"]["plan"].startswith("audit-error:"), "a malformed verdict did not halt")
 
 
+def test_accept_allowlisted_rejection(base: Path) -> None:
+    home, flow, _ = to_landed_plan(base, audit=True)
+    (flow / "steps" / "audit-plan-a1.md").write_text("reject: reduced run (audit): two experts only\n", encoding="utf-8")
+    run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=ENVS[str(flow)])
+    question = load_json(flow / "questions" / "plan-a1-audit.json")
+    expect("Accept and continue" in question["options"], f"an allowlisted rejection offers {question['options']}")
+    code, _, err = run_cli(home, "recover", "--flow", str(flow), "--choice", "accept", "--note", "two experts is fine here", extra_env=ENVS[str(flow)])
+    expect(code == 0, f"recover accept exited {code}: {err}")
+    state = state_of(flow)
+    expect(state["status"] == "running" and state["audit_gate"]["state"] == "passed", f"accept left {state['status']}")
+    expect((flow / "steps" / "audit-plan-a1.accepted.md").exists(), "the accept trail was not written")
+    code, out, _ = run_cli(home, "next", "--flow", str(flow), extra_env=ENVS[str(flow)])
+    verb, path = next_line(out)
+    expect(verb == "SPAWN" and load_json(path)["step"] == "track", f"accept did not advance to track: {verb}")
+
+
+def test_accept_refused_off_allowlist(base: Path) -> None:
+    home, flow, _ = to_landed_plan(base, audit=True)
+    (flow / "steps" / "audit-plan-a1.md").write_text("reject: the plan ignores the ticket\n", encoding="utf-8")
+    run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=ENVS[str(flow)])
+    question = load_json(flow / "questions" / "plan-a1-audit.json")
+    expect(question["options"] == ["Retry"], f"off-allowlist offers {question['options']}")
+    code, _, _ = run_cli(home, "recover", "--flow", str(flow), "--choice", "accept", extra_env=ENVS[str(flow)])
+    expect(code != 0 and state_of(flow)["status"] == "failed", "accept off the allowlist was not refused")
+
+
+def test_reverify_refused_without_mismatch(base: Path) -> None:
+    home, flow, _ = to_landed_plan(base, audit=True)
+    code, _, _ = run_cli(home, "recover", "--flow", str(flow), "--choice", "reverify", extra_env=ENVS[str(flow)])
+    expect(code != 0, "reverify with no merge-head-mismatch stop was not refused")
+
+
 CHECKS = [
     ("1: audit is off by default", test_off_by_default),
     ("2: spawn, wait, pass advances", test_audit_spawn_wait_pass),
     ("3: rejection stops; retry respawns", test_reject_stops_and_retry_recovers),
     ("4: a malformed verdict halts", test_malformed_verdict_halts),
+    ("5: accept passes an allowlisted rejection", test_accept_allowlisted_rejection),
+    ("6: accept refused off the allowlist", test_accept_refused_off_allowlist),
+    ("7: reverify refused without a mismatch", test_reverify_refused_without_mismatch),
 ]
 
 

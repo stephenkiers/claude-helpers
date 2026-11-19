@@ -53,6 +53,7 @@ from .state import (
     PendingSpawn,
     Refusal,
     Step,
+    StopSource,
     TransitionKey,
     V2State,
     apply_transition,
@@ -1253,7 +1254,55 @@ def _resume_held_gate(locked: LockedFlow, flow: Path, state: V2State) -> str:
     return f"recovered: resume {step} ({code} cleared; the next next asks the gate again)"
 
 
-def run_recover(flow: Path, choice: str) -> str:
+def _accept_audit_rejection(locked: LockedFlow, flow: Path, state: V2State, note: Optional[str]) -> str:
+    """
+    Accept and continue past an audit rejection, a human-only choice. Eligible only when audit.lifecycle_check_audit_eligible
+    holds and flow-accept.py's closed allowlist classifies the rejection reason. The audit is recorded as passed for the
+    attempt (so it is not re-run), the stop and the parked question are cleared, and the note and class go to a trail file.
+    """
+    step = state.step
+    pending = state.pending_spawn
+    if not audit.lifecycle_check_audit_eligible(state, step) or pending is None or pending.state != "receipt-landed":
+        raise LoopRefusal("recover refused: accept is offered only for an audit rejection of a landed step")
+    _, reason = parse_stop_reason(state.stop_reason.get(step, ""))
+    _, classify = audit.import_flow_accept()
+    klass = classify("audit", reason) if callable(classify) else None
+    if klass is None:
+        raise LoopRefusal("recover refused: this audit rejection is not on the Accept allowlist; retry it")
+    reasons: Dict[Step, str] = dict(state.stop_reason)
+    reasons.pop(step, None)
+    sources: Dict[Step, StopSource] = {k: v for k, v in state.stop_source.items() if k != step}
+    passed = AuditRecord(step=step, attempt=pending.attempt, nonce=pending.nonce, state="passed")
+    locked.commit(dataclasses.replace(state, status="running", parked=None, stop_reason=reasons, stop_source=sources, audit_gate=passed))
+    trail = flow / "steps" / f"audit-{step}-a{pending.attempt}.accepted.md"
+    _write(trail, f"class: {klass}\nreason: {reason}\nnote: {note or 'none'}\n")
+    locked.log("recover", step=step, attempt=pending.attempt, choice="accept", accepted_class=str(klass))
+    return f"recovered: accept {step} ({klass}); the audit is recorded as passed and the next next goes on"
+
+
+def _reverify_merge(locked: LockedFlow, flow: Path, state: V2State) -> str:
+    """
+    Re-read the PR after a merge-head-mismatch stop at the merge gate: drop the stale approval record and the consumed
+    answer, clear the stop, and set the flow running. The next call re-reads the PR and asks the merge gate again for the
+    head it finds now, so the human approves the new head explicitly; nothing is merged here.
+    """
+    step = state.step
+    code, _ = parse_stop_reason(state.stop_reason.get(step, ""))
+    pending = state.pending_spawn
+    if state.status != "failed" or code != "merge-head-mismatch" or step != "ship":
+        raise LoopRefusal("recover refused: reverify is offered only after a merge-head-mismatch stop at the merge gate")
+    if pending is None or pending.state != "receipt-landed" or state.merge_gate is None:
+        raise LoopRefusal("recover refused: reverify found no pending merge approval to re-read")
+    relay.archive_consumed(flow, ParkedQuestion(step="merge", attempt=_gate_attempt(state, "ship"), nn=1, kind="merge-gate"))
+    reasons: Dict[Step, str] = dict(state.stop_reason)
+    reasons.pop(step, None)
+    sources: Dict[Step, StopSource] = {k: v for k, v in state.stop_source.items() if k != step}
+    locked.commit(dataclasses.replace(state, status="running", parked=None, merge_gate=None, stop_reason=reasons, stop_source=sources))
+    locked.log("recover", step=step, attempt=pending.attempt, choice="reverify")
+    return "recovered: reverify (the stale approval is dropped; the next next re-reads the PR and asks the merge gate again)"
+
+
+def run_recover(flow: Path, choice: str, note: Optional[str] = None) -> str:
     """
     The human's answer to a hard stop: retry (a FAILED receipt, at most two times), take-over, or keep-previous.
     Each is one replace under the lock and is logged. A refused choice names its cap or reason.
@@ -1267,8 +1316,12 @@ def run_recover(flow: Path, choice: str) -> str:
         state = locked.require_state()
         if choice == "resume":
             return _resume_held_gate(locked, flow, state)
+        if choice == "reverify":
+            return _reverify_merge(locked, flow, state)
         if state.status != "failed":
             raise LoopRefusal(f"recover refused: the flow is not stopped on a step (status {state.status})")
+        if choice == "accept":
+            return _accept_audit_rejection(locked, flow, state, note)
         step = state.step
         code, _ = parse_stop_reason(state.stop_reason.get(step, ""))
         pending = state.pending_spawn
