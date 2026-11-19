@@ -123,7 +123,8 @@ def _cmd_start(args: argparse.Namespace) -> int:
     flow = _v2_flow(args)
     retention.sweep(flow.parent, _now(), keep=flow)
     step_gates = getattr(args, "gates", False)
-    return _run_loop(lambda: run_start(flow, step_gates=step_gates), stream="stdout")
+    audit = getattr(args, "audit", False)
+    return _run_loop(lambda: run_start(flow, step_gates=step_gates, audit=audit), stream="stdout")
 
 
 def _cmd_next(args: argparse.Namespace) -> int:
@@ -446,6 +447,7 @@ def build_parser() -> argparse.ArgumentParser:
     start = sub.add_parser("start", help="perform the first next of an initialized v2 flow")
     start.add_argument("--flow", help="absolute flow dir (created by init)")
     start.add_argument("--auto-merge", action="store_true", help="refused: the v2 driver never auto-merges")
+    start.add_argument("--audit", action="store_true", help="opt in to the fidelity audit after plan, implement, review and fix")
     start.add_argument("--gates", action="store_true", help="enable step gates (pauses after plan, implement, review, fix, verify)")
     # Skeleton-only flags, optional and ignored by the v2 start (kept so old invocations still parse)
     start.add_argument("--repo", help="OWNER/NAME (skeleton only, ignored by v2 start)")

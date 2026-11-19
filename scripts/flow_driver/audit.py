@@ -17,6 +17,10 @@ from typing import Callable, Dict, Optional, Tuple, Union
 from .state import LockedFlow, ParkedQuestion, Step, V2State
 
 
+# Flipped on when run_recover can execute Accept and continue; until then the rejection question offers Retry only.
+ACCEPT_WIRED = False
+
+
 # Closed result type for audit verdict
 @dataclass(frozen=True)
 class AuditPass:
@@ -49,6 +53,7 @@ def audit_spawn(
     nonce: str,
     receipt_path: Path,
     ledger_snapshot_path: Optional[Path] = None,
+    verdict_path: Optional[Path] = None,
 ) -> str:
     """
     Build the audit SPAWN prompt file content.
@@ -62,6 +67,7 @@ def audit_spawn(
         nonce: Unique nonce for this spawn
         receipt_path: Path to the step receipt (steps/NN-<step>.md or similar)
         ledger_snapshot_path: Path to the ledger snapshot (optional)
+        verdict_path: Where the auditor writes its one verdict line (the only file it may write)
 
     Returns:
         The prompt file content as a string.
@@ -82,13 +88,15 @@ Your task is to audit the receipt for completeness and correctness. Check:
 3. No critical findings were missed or suppressed
 4. The delivery is commensurate with the stated effort level
 
-Output exactly one line:
+Write exactly one line as the whole content of the verdict file:
 - `pass` if the audit passes
 - `reject: <reason>` if the audit fails (begin reason with a classification like "reduced run (audit):" or "insufficient evidence (audit):" etc.)
 - Any other output is treated as an error
 
-Do not write to files or edit code. Only read and audit.
+Do not edit code. Write only the verdict file named below; read everything else.
 """
+    if verdict_path is not None:
+        prompt += f"\n**Verdict file:** {verdict_path}\n"
     return prompt
 
 
@@ -251,6 +259,7 @@ def handle_audit_rejection(
         stop_reason=new_stop_reason,
         stop_source=new_stop_source,
         parked=parked,
+        audit_gate=None,
     )
 
     locked.commit(new_state)
@@ -354,7 +363,8 @@ def audit_orchestrate(
 
     if isinstance(verdict, AuditReject):
         # Import flow-accept for eligibility checking
-        allowlist, classify = import_flow_accept()
+        # Accept and continue is not wired in run_recover yet, so the question never offers it.
+        allowlist, classify = (import_flow_accept() if ACCEPT_WIRED else (None, None))
 
         # Handle rejection: write state and park question
         new_state, write_err = handle_audit_rejection(

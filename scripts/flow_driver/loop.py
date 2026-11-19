@@ -31,6 +31,7 @@ from typing import Callable, Dict, Mapping, Optional, Tuple, Union
 
 from scripts.workflow.fsutil import atomic_write_text
 
+from . import audit
 from . import driver
 from . import gates
 from . import ledger as lg
@@ -44,6 +45,7 @@ from .recovery import malformed_rerun
 from .state import (
     DRIVER_LOG_FILE,
     AttemptOutcome,
+    AuditRecord,
     Heads,
     LockedFlow,
     ParkedQuestion,
@@ -898,6 +900,61 @@ def _write_directive(flow: Path, state: V2State, directive: Directive) -> Path:
     return dfile
 
 
+_AUDIT_STEPS: Tuple[Step, ...] = ("plan", "implement", "review", "fix")
+
+
+def _audit_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, nonce: str) -> Optional[Outcome]:
+    """
+    The opt-in fidelity audit (state.audit), run between a landed OK receipt and its gate or advance. It keeps its own
+    record (state.audit_gate), so the step's receipt-landed record is never touched. Returns an outcome that replaces
+    the transition (the audit SPAWN, a WAIT for its verdict, or a STOP on rejection or error), or None to let the
+    landed step go on. A pass is recorded per (step, attempt), so a replayed call never audits twice.
+    """
+    state = locked.require_state()
+    pending = state.pending_spawn
+    if not state.audit or state.status != "running" or receipt_fact == "failed" or state.parked is not None:
+        return None
+    if pending is None or pending.state != "receipt-landed" or pending.step not in _AUDIT_STEPS:
+        return None
+    step, attempt = pending.step, pending.attempt
+    record = state.audit_gate
+    current = record is not None and record.step == step and record.attempt == attempt
+    if record is not None and current and record.state == "passed":
+        return None
+    verdict_path = audit.audit_receipt_path(flow, step, attempt)
+    if record is None or not current:
+        landed = flow / "archive" / step / f"a{attempt}.landed.md"
+        prompt_file = step_prompt_path(flow, f"audit-{step}", attempt, nonce)
+        _write(prompt_file, audit.audit_spawn(flow, step, attempt, nonce, landed, verdict_path=verdict_path))
+        spawned = dataclasses.replace(state, audit_gate=AuditRecord(step=step, attempt=attempt, nonce=nonce, state="spawned"))
+        directive = SpawnDirective(
+            next_command=driver.next_command(flow),
+            agent_type=_SPAWN_AGENT,
+            prompt_file=str(prompt_file),
+            step=step,
+            attempt=attempt,
+            nonce=nonce,
+        )
+        return spawned, directive
+    if not verdict_path.exists():
+        return state, WaitDirective(
+            next_command=driver.next_command(flow),
+            receipt_file=str(verdict_path),
+            clear_live_command=driver.clear_live_command(flow),
+            nonce=record.nonce,
+        )
+    error, parked = audit.audit_orchestrate(locked, flow, state, step, attempt, record.nonce, verdict_path)
+    if error is not None:
+        return _halt(state, flow, "audit-error", error)
+    if parked is None:
+        locked.commit(dataclasses.replace(state, audit_gate=dataclasses.replace(record, state="passed")))
+        return None
+    stopped = locked.require_state()
+    return stopped, StopDirective(
+        next_command=driver.next_command(flow), reason=stopped.stop_reason.get(stopped.step, "audit-rejected")
+    )
+
+
 def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: datetime, headless: bool) -> str:
     event = event_from_label(event_label)
     notified = isinstance(event, Notification)
@@ -907,14 +964,23 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
     landed = _record_landed_edges(locked, flow, locked.require_state(), receipt_fact)
     ledger_line = ""
     extra = ""
+    audited = _audit_stage(locked, flow, receipt_fact, nonce) if landed is None else None
     if landed is not None:
         new_state, directive = landed
+    elif audited is not None:
+        new_state, directive = audited
     else:
         new_state, directive, ledger_line, extra = _decide(locked, flow, event, event_is_start, receipt_fact, nonce, headless)
     if _changed(locked.require_state(), new_state):
         locked.commit(new_state)  # the state replace is the first write of the commit order
     directive, ledger_line, extra = _replay_unwritten(locked, flow, directive, ledger_line, extra)
     committed = locked.require_state()
+    if audited is not None and committed.audit_gate is not None and isinstance(directive, (SpawnDirective, WaitDirective)):
+        gate_record = committed.audit_gate
+        dfile = directive_file_path(flow, f"audit-{gate_record.step}", gate_record.attempt, gate_record.nonce, directive.verb)
+        _write(dfile, json.dumps(directive_to_dict(directive), indent=2, sort_keys=True) + "\n")
+        locked.log(directive.verb.lower(), step=gate_record.step, attempt=gate_record.attempt, nonce=gate_record.nonce)
+        return f"NEXT: {directive.verb} {dfile}"
     if isinstance(directive, (SpawnDirective, MergeDirective)):
         _write_step_prompt(flow, committed, directive, ledger_line, extra)
     dfile = _write_directive(flow, committed, directive)
@@ -944,15 +1010,14 @@ def run_next(flow: Path, after: Optional[str], *, now: Clock = _utc_now, headles
         raise
 
 
-def run_start(flow: Path, *, step_gates: bool = False, now: Clock = _utc_now) -> str:
-    """The first `next` of a v2 flow, sent as the `start` label. Raises what run_next raises."""
-    # Set step_gates on the initial state if requested
-    if step_gates:
+def run_start(flow: Path, *, step_gates: bool = False, audit: bool = False, now: Clock = _utc_now) -> str:
+    """The first `next` of a v2 flow, sent as the `start` label. The opt-in flags are stored first. Raises what run_next raises."""
+    if step_gates or audit:
         with mutating(flow) as locked:
             state = locked.require_state()
-            if state.step_gates != step_gates:
-                new_state = dataclasses.replace(state, step_gates=step_gates)
-                locked.commit(new_state)
+            wanted = dataclasses.replace(state, step_gates=step_gates or state.step_gates, audit=audit or state.audit)
+            if wanted != state:
+                locked.commit(wanted)
     return run_next(flow, "start", now=now)
 
 

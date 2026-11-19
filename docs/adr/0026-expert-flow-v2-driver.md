@@ -454,6 +454,6 @@ and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.
   re-verify are the wired entries; the rest (auto-rebase, check heal, Unknown-skill retry, Retry with sonnet) are a follow-up.
 - **Test-path stops.** The Decision 12 test-path codes (`plan-test-paths`, `test-path-in-units`, `test-only-plan`,
   `existing-test-edit`, `planned-change-breaks-test`) are carried as named stops from FAILED receipts and get no Retry.
-- **Audit and assess are opt-in** on `driver start` for now, so the approved Layer 2 loop tests are unchanged by default.
+- **Audit and assess are opt-in** on `driver start` for now, so the approved Layer 2 loop tests are unchanged by default. The audit is wired behind `driver start --audit`, with its own `audit_gate` state record (keyed by step and attempt) beside `pending_spawn`, which stays the single landed-step slot. Not yet wired: Accept and continue after an audit rejection (the question offers Retry only), a wait timeout for a spawned audit, and the assess stage.
   Audit rejections key on step and attempt; Accept is eligible only for allowlisted classes imported from `flow-accept.py`.
 - Folds #304, #408 and #476 (Session D3).
