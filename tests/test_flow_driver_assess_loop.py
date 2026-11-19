@@ -124,12 +124,30 @@ def test_item_answer_without_batch_refused(base: Path) -> None:
     expect(code != 0, "--item with no assess batch parked was accepted")
 
 
+def test_assessor_wait_timeout_then_clear_live(base: Path) -> None:
+    home, flow, env, _, nxt = to_landed_verify(base, assess=True)
+    first_nonce = nxt["nonce"]
+    run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=env)
+    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "wait-timeout", extra_env=env)
+    verb, _ = next_line(out)
+    state = state_of(flow)
+    expect(verb == "STOP" and state["stop_reason"]["verify"].startswith("wait-timeout:"), f"a timed-out assessor printed {verb} / {state['stop_reason']}")
+    code, _, err = run_cli(home, "clear-live", "--flow", str(flow), "--reason", "assessor never answered", extra_env=env)
+    expect(code == 0, f"clear-live exited {code}: {err}")
+    expect(state_of(flow)["status"] == "running" and state_of(flow).get("assess_gate") is None, "clear-live did not reopen the assess stage")
+    code, out, _ = run_cli(home, "next", "--flow", str(flow), extra_env=env)
+    verb, path = next_line(out)
+    spawn = load_json(path)
+    expect(verb == "SPAWN" and spawn["step"] == "assess" and spawn["nonce"] != first_nonce, f"the assessor was not re-spawned fresh: {verb} {spawn}")
+
+
 CHECKS = [
     ("1: assess is off by default", test_off_by_default),
     ("2: nothing outstanding skips the assessor", test_nothing_outstanding_skips),
     ("3: spawn, wait, ask, answer, advance", test_spawn_wait_ask_answer_advance),
     ("4: bad assessor records halt", test_bad_records_halt),
     ("5: --item without a parked batch is refused", test_item_answer_without_batch_refused),
+    ("6: assessor wait-timeout stops; clear-live re-spawns", test_assessor_wait_timeout_then_clear_live),
 ]
 
 

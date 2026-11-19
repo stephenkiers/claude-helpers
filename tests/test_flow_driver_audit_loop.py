@@ -145,6 +145,30 @@ def test_reverify_refused_without_mismatch(base: Path) -> None:
     expect(code != 0, "reverify with no merge-head-mismatch stop was not refused")
 
 
+def test_audit_wait_timeout_then_clear_live(base: Path) -> None:
+    home, flow, nxt = to_landed_plan(base, audit=True)
+    first_nonce = nxt["nonce"]
+    run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=ENVS[str(flow)])
+    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "wait-timeout", extra_env=ENVS[str(flow)])
+    verb, _ = next_line(out)
+    state = state_of(flow)
+    expect(verb == "STOP" and state["stop_reason"]["plan"].startswith("wait-timeout:"), f"a timed-out audit printed {verb} / {state['stop_reason']}")
+    code, _, err = run_cli(home, "clear-live", "--flow", str(flow), "--reason", "auditor never answered", extra_env=ENVS[str(flow)])
+    expect(code == 0, f"clear-live exited {code}: {err}")
+    expect(state_of(flow)["status"] == "running" and state_of(flow).get("audit_gate") is None, "clear-live did not reopen the audit")
+    code, out, _ = run_cli(home, "next", "--flow", str(flow), extra_env=ENVS[str(flow)])
+    verb, path = next_line(out)
+    spawn = load_json(path)
+    expect(verb == "SPAWN" and spawn["step"] == "plan" and spawn["nonce"] != first_nonce, f"the audit was not re-spawned with a fresh nonce: {verb} {spawn}")
+
+
+def test_clear_live_refused_without_timeout(base: Path) -> None:
+    home, flow, _ = to_landed_plan(base, audit=True)
+    run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=ENVS[str(flow)])
+    code, _, _ = run_cli(home, "clear-live", "--flow", str(flow), "--reason", "impatient", extra_env=ENVS[str(flow)])
+    expect(code != 0 and state_of(flow)["audit_gate"]["state"] == "spawned", "clear-live on a healthy waiting audit must refuse")
+
+
 CHECKS = [
     ("1: audit is off by default", test_off_by_default),
     ("2: spawn, wait, pass advances", test_audit_spawn_wait_pass),
@@ -153,6 +177,8 @@ CHECKS = [
     ("5: accept passes an allowlisted rejection", test_accept_allowlisted_rejection),
     ("6: accept refused off the allowlist", test_accept_refused_off_allowlist),
     ("7: reverify refused without a mismatch", test_reverify_refused_without_mismatch),
+    ("8: audit wait-timeout stops; clear-live re-spawns", test_audit_wait_timeout_then_clear_live),
+    ("9: clear-live refused on a healthy waiting audit", test_clear_live_refused_without_timeout),
 ]
 
 

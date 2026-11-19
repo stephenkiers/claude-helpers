@@ -471,7 +471,7 @@ def build_parser() -> argparse.ArgumentParser:
     clear.add_argument("--flow", required=True, help="absolute flow dir")
     clear.add_argument("--reason", required=True)
 
-    rec = sub.add_parser("recover", help="answer a hard stop: retry, take-over or keep-previous; resume re-asks a paused or held gate; accept (human-only) passes an allowlisted audit rejection; reverify re-reads the PR after a merge-head-mismatch")
+    rec = sub.add_parser("recover", help="answer a hard stop: retry, take-over or keep-previous; resume re-asks a paused or held gate; accept (human-only) passes an allowlisted audit rejection; reverify re-reads the PR after a merge-head-mismatch at ship")
     rec.add_argument("--flow", required=True, help="absolute flow dir")
     rec.add_argument("--choice", required=True, choices=["retry", "take-over", "keep-previous", "resume", "accept", "reverify"])
     rec.add_argument("--note", help="why, for accept (recorded in the trail)")

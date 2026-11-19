@@ -81,6 +81,7 @@ from .steps import (
     StopCode,
     StopDirective,
     WaitDirective,
+    WaitTimeout,
     directive_file_path,
     directive_to_dict,
     event_from_label,
@@ -907,7 +908,7 @@ def _write_directive(flow: Path, state: V2State, directive: Directive) -> Path:
 _AUDIT_STEPS: Tuple[Step, ...] = ("plan", "implement", "review", "fix")
 
 
-def _audit_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, nonce: str) -> Optional[Outcome]:
+def _audit_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, nonce: str, event: object = None) -> Optional[Outcome]:
     """
     The opt-in fidelity audit (state.audit), run between a landed OK receipt and its gate or advance. It keeps its own
     record (state.audit_gate), so the step's receipt-landed record is never touched. Returns an outcome that replaces
@@ -941,6 +942,8 @@ def _audit_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, nonc
         )
         return spawned, directive
     if not verdict_path.exists():
+        if isinstance(event, WaitTimeout):
+            return _halt(state, flow, "wait-timeout", f"the audit verdict for {step} attempt {attempt} did not land; clear-live re-spawns the audit")
         return state, WaitDirective(
             next_command=driver.next_command(flow),
             receipt_file=str(verdict_path),
@@ -959,7 +962,7 @@ def _audit_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, nonc
     )
 
 
-def _assess_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, nonce: str, headless: bool) -> Optional[Outcome]:
+def _assess_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, nonce: str, headless: bool, event: object = None) -> Optional[Outcome]:
     """
     The opt-in assess stage (state.assess), run between a landed OK verify receipt and its advance to ship. It keeps its
     own record (state.assess_gate, the audit record's shape with step "assess"). Returns an outcome that replaces the
@@ -1002,6 +1005,8 @@ def _assess_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, non
     # AssessSpawn: the assessor has not written its records yet
     records = assess.assess_records_path(flow)
     if record is not None and current:
+        if isinstance(event, WaitTimeout):
+            return _halt(state, flow, "wait-timeout", f"the assessor records for verify attempt {attempt} did not land; clear-live re-spawns the assessor")
         return state, WaitDirective(
             next_command=driver.next_command(flow),
             receipt_file=str(records),
@@ -1031,8 +1036,8 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
     landed = _record_landed_edges(locked, flow, locked.require_state(), receipt_fact)
     ledger_line = ""
     extra = ""
-    audited = _audit_stage(locked, flow, receipt_fact, nonce) if landed is None else None
-    assessed = _assess_stage(locked, flow, receipt_fact, nonce, headless) if landed is None and audited is None else None
+    audited = _audit_stage(locked, flow, receipt_fact, nonce, event) if landed is None else None
+    assessed = _assess_stage(locked, flow, receipt_fact, nonce, headless, event) if landed is None and audited is None else None
     if landed is not None:
         new_state, directive = landed
     elif audited is not None:
@@ -1148,6 +1153,28 @@ def run_answer(flow: Path, text: str, note: Optional[str] = None, item: Optional
         raise LoopRefusal(str(exc))
 
 
+def _clear_gate_record(locked: LockedFlow, state: V2State, reason: str) -> str:
+    """
+    Clear a spawned audit or assessor record whose output never landed, after a wait-timeout STOP: the gate record is
+    dropped and the flow set running, so the next `next` re-spawns it with a fresh nonce. Anything else is refused.
+    """
+    pending = state.pending_spawn
+    record = state.assess_gate if (pending is not None and pending.step == "verify") else state.audit_gate
+    code = state.stop_reason.get(state.step, "").partition(": ")[0]
+    if record is None or record.state != "spawned" or state.status != "failed" or code != "wait-timeout":
+        raise LoopRefusal("clear-live refused: there is no live record to clear")
+    reasons: Dict[Step, str] = dict(state.stop_reason)
+    reasons.pop(state.step, None)
+    sources: Dict[Step, StopSource] = {k: v for k, v in state.stop_source.items() if k != state.step}
+    if record.step == "assess":
+        cleared = dataclasses.replace(state, status="running", stop_reason=reasons, stop_source=sources, assess_gate=None)
+    else:
+        cleared = dataclasses.replace(state, status="running", stop_reason=reasons, stop_source=sources, audit_gate=None)
+    locked.commit(cleared)
+    locked.log("clear-live", step=record.step, attempt=record.attempt, nonce=record.nonce, reason=reason, cleared_state="gate-spawned")
+    return f"cleared live record: {record.step} attempt {record.attempt}, nonce {record.nonce}"
+
+
 def run_clear_live(flow: Path, reason: str) -> str:
     """
     Clear a spawned or resumed record without a receipt (logged with its nonce). Only a wait-timeout STOP is reopened,
@@ -1161,6 +1188,8 @@ def run_clear_live(flow: Path, reason: str) -> str:
     with mutating(flow) as locked:
         state = locked.require_state()
         pending = state.pending_spawn
+        if pending is not None and pending.state == "receipt-landed":
+            return _clear_gate_record(locked, state, reason)
         if pending is None or pending.state not in ("spawned", "resumed"):
             raise LoopRefusal("clear-live refused: there is no live record to clear")
         key = TransitionKey(state.run_id, pending.step, pending.attempt)
@@ -1282,17 +1311,18 @@ def _accept_audit_rejection(locked: LockedFlow, flow: Path, state: V2State, note
 
 def _reverify_merge(locked: LockedFlow, flow: Path, state: V2State) -> str:
     """
-    Re-read the PR after a merge-head-mismatch stop at the merge gate: drop the stale approval record and the consumed
-    answer, clear the stop, and set the flow running. The next call re-reads the PR and asks the merge gate again for the
-    head it finds now, so the human approves the new head explicitly; nothing is merged here.
+    Re-read the PR after a merge-head-mismatch stop at the merge gate (the PR head differs from the shipped head): drop
+    any stale approval record and consumed answer, clear the stop, and set the flow running. The next call re-reads the
+    PR and asks the merge gate only if the head now matches the shipped head; otherwise it stops again. Nothing is
+    merged here. A mismatch found after a merge receipt landed (step merge) is not reopened this way.
     """
     step = state.step
     code, _ = parse_stop_reason(state.stop_reason.get(step, ""))
     pending = state.pending_spawn
     if state.status != "failed" or code != "merge-head-mismatch" or step != "ship":
         raise LoopRefusal("recover refused: reverify is offered only after a merge-head-mismatch stop at the merge gate")
-    if pending is None or pending.state != "receipt-landed" or state.merge_gate is None:
-        raise LoopRefusal("recover refused: reverify found no pending merge approval to re-read")
+    if pending is None or pending.state != "receipt-landed":
+        raise LoopRefusal("recover refused: reverify found no landed ship to re-read the PR for")
     relay.archive_consumed(flow, ParkedQuestion(step="merge", attempt=_gate_attempt(state, "ship"), nn=1, kind="merge-gate"))
     reasons: Dict[Step, str] = dict(state.stop_reason)
     reasons.pop(step, None)
