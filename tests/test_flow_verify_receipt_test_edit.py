@@ -23,6 +23,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -177,6 +178,22 @@ def approved_flow(td, entries, *, ledger=True, ledger_step="fix"):
 
 # Fixture 10: D3's edit is approved, D5's question is declined.
 ENTRIES_D3_APPROVED_D5_DECLINED = [("q1", "D3", "tests/test_x.py", True), ("q2", "D5", "tests/test_z.py", False)]
+
+
+def iso_ago(seconds):
+    """ISO-8601 UTC Z stamp `seconds` before now."""
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def stamp_fix_attempt(flow, begin_ago, record_ago):
+    """Set the fix step's `begin` line in log.md to `begin_ago` seconds ago and the ledger answer
+    record's ts to `record_ago` seconds ago (ledger records are stamped 'now' by flow-ledger.py)."""
+    (flow / "log.md").write_text(f"{iso_ago(begin_ago)} fix begin\n{TS} fix ok\n")
+    ledger = flow / "human.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+    for row in rows:
+        row["ts"] = iso_ago(record_ago)
+    ledger.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
 
 def main():
@@ -486,6 +503,26 @@ def main():
                                    fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval))
             h.test_result(f"{label}: the edit is rejected as not approved",
                           rc != 0 and "not approved" in combined(out, err), combined(out, err))
+
+    print()
+    print("[Stale ledger record from an earlier attempt (D8)]")
+    # The approval commit is created now, so a begin 100s ago precedes it: the record must be newer than that begin.
+    for label, record_ago, accepted in (("record older than the fix begin", 1000, False),
+                                        ("record newer than the fix begin", 50, True)):
+        with tempfile.TemporaryDirectory() as td:
+            repo, base, approval, head = build_scenario(td)
+            write_check_cache(repo)
+            home, flow, review_dir = approved_flow(td, ENTRIES_D3_APPROVED_D5_DECLINED)
+            stamp_fix_attempt(flow, 100, record_ago)
+            rc, out, err = run_fix(flow, home, repo, base, review_dir,
+                                   fix_receipt(head, test_edit=TEST_EDIT_D3, test_edit_commit=approval,
+                                               outstanding=[DECLINED_D5]))
+            if accepted:
+                h.test_result(f"stale ledger record (D8): {label} passes", passed_fix(rc, out), combined(out, err))
+            else:
+                h.test_result(f"stale ledger record (D8): {label} is rejected naming answers/fix-02.json",
+                              rc != 0 and not passed_fix(rc, out) and "no ledger record for answers/fix-02.json" in combined(out, err),
+                              combined(out, err))
 
     h.summarize_and_exit()
 
