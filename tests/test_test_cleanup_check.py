@@ -1604,7 +1604,13 @@ def check_empty_suites(h):
             unchanged = unchanged and tree_snapshot(root) == before
         h.test_result("empty-suites fixture 5: the helper writes nothing under --root, including on exit-1 runs",
                       exit_codes == [1, 1, 1] and unchanged, f"exit_codes={exit_codes}")
-    for rel, text in (("src/a.test.ts", ACCEPT_1_TS), ("src/n.test.ts", NESTED_TS)):
+    nested_own_line_ts = ('describe("outer", () => {\n'
+                          '  describe("inner", () => {});\n'
+                          '});\n'
+                          'describe("n", () => {\n'
+                          '  it("t", () => {});\n'
+                          '});\n')
+    for rel, text in (("src/a.test.ts", ACCEPT_1_TS), ("src/n.test.ts", nested_own_line_ts)):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_files(root, {rel: text})
