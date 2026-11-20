@@ -727,6 +727,10 @@ def save_item_answer(
       not leave_as_is_safe on both the driver's check and the assessor's record);
     - the label is "Drop with a reason" and no note was given;
     - qid was already answered (the answer file is created exclusively).
+
+    Single-caller invariant: only one `next`/`answer` runs at a time per flow. The caller reads the unanswered set
+    before the second mutating() lock window, so two concurrent answers could race on it (and on advancing
+    state.parked.item). That is accepted, not guarded.
     """
     # Validate the note requirement
     if label == "Drop with a reason" and not note:
