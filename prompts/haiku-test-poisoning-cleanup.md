@@ -257,7 +257,7 @@ Phase 2 is the only section that changes the repository. Start it only when the 
 **Deletion commit.**
 
 1. Delete only the `delete` rows whose verdict is `confirm`. At file granularity use `git rm -- <file>`. At test granularity remove the function. Judgment candidates and `object` rows are never deleted.
-2. **Empty suites (test granularity only).** Run `python3 ~/.claude/scripts/test-cleanup-check.py empty-suites --root <repo> <every file step 1 edited>`, then apply the Empty suites loop in section 4.4 of the reference: remove each `remove` block by content, not by line number, `git rm -- <file>` each `delete-file` file, and stop on any `stop` finding. Re-run the helper after each round, at most 3 rounds, and it must end with exit 0 before step 3. If it is still not clean after 3 rounds, or any `stop` finding appears, run the rollback recipe, record why in `execution.json`, and stop. `report` findings are recorded and never removed. At file granularity this step is skipped, because whole-file deletions leave no partial suites.
+2. **Empty suites (test granularity only).** Run `python3 ~/.claude/scripts/test-cleanup-check.py empty-suites --root <repo> <every file step 1 edited that still exists>`, then apply the Empty suites loop in section 4.4 of the reference: remove each `remove` block by content, not by line number: use its `line`, `end_line` and `text` together, `git rm -- <file>` each `delete-file` file, and stop on any `stop` finding. Each round's file list is the touched files that still exist. Re-run the helper after each round, at most 3 rounds, and it must end with exit 0 before step 3. If it is still not clean after 3 rounds, or any `stop` finding appears, or the helper exits 2, or a `remove` text does not match its lines, run the rollback recipe, record why in `execution.json`, and stop. `report` findings are recorded and never removed. At file granularity this step is skipped, because whole-file deletions leave no partial suites.
 3. Re-scan the post-deletion tree statically with the report's `id_source`, using the same rules as Phase 1. This re-scan is the only source of the static ids and of the static count. If the re-scanned set is empty, refuse: run the rollback recipe, record why, and stop.
 4. Run the checks against the re-scan:
    - The helper `~/.claude/scripts/test-cleanup-check.py survivors` runs only when it is present and granularity is `test`. Invoke it as gate "(a) Named survivors" in the reference shows, with `--deletions` set to a table in the reference 4.4 format and `--collected` set to the re-scanned ids. `--merged` is an empty file at this commit.
@@ -270,15 +270,16 @@ Phase 2 is the only section that changes the repository. Start it only when the 
 **Clean up and refactor commit.**
 
 1. Apply the `clean up` rows (section 4.5 moves, with bodies byte-identical) and the `refactor` rows.
-2. Re-scan statically as in the deletion commit. If the re-scan is empty, run the rollback recipe and stop.
-3. Run the static pass-named check: no file matching a pass-named pattern from section 4.5 survives in the tree.
-4. Run the expected-count check for this commit:
+2. **Empty suites (test granularity only).** Before the re-scan, run the empty-suite loop from the deletion commit's step 2 over every file this commit edited that still exists: the same helper call, the same `remove` / `delete-file` / `stop` handling, at most 3 rounds, and the same stop path (rollback recipe, record in `execution.json`, stop). `report` findings are recorded and never removed. At file granularity this step is skipped.
+3. Re-scan statically as in the deletion commit. If the re-scan is empty, run the rollback recipe and stop.
+4. Run the static pass-named check: no file matching a pass-named pattern from section 4.5 survives in the tree.
+5. Run the expected-count check for this commit:
    - File granularity: compare the rerun's pass/fail per suite. Every suite green in the baseline (or in its merge target) stays green. Each merged file's cases, as listed in its `expected.id_map`, are present in its target file.
    - Test granularity: the re-scanned total equals the post-deletion total plus each row's declared `expected.count_delta`. For each merge, the target file's re-scanned count rises by exactly the folded-in count, which is gate "(c) Count" and the row's `target_rise`.
    - Refactors: each `refactor` row's declared `expected.id_map` (several `from`, one static `to`) and count change must match the re-scan. A difference fails the check. A parametrised case count is checked by the runner cross-check instead, since it is not statically visible.
    If any check fails, run the rollback recipe and stop before committing.
-5. Commit the changes.
-6. Rerun the suite and run the runner cross-check, as the substitute for gate "(g) Gate step 1". If the suite is red or the cross-check fails, run the rollback recipe for the landed commit, record its rows as reverted, and stop.
+6. Commit the changes.
+7. Rerun the suite and run the runner cross-check, as the substitute for gate "(g) Gate step 1". If the suite is red or the cross-check fails, run the rollback recipe for the landed commit, record its rows as reverted, and stop.
 
 **Write `execution.json`** into the run directory incrementally: create it right after the baseline, then rewrite it after every commit, revert and stop, so a stopped run still leaves a record. Shape: `{report_sha256, branch, status, baseline: {passed, failed, total, ids}, commits: [{sha, kind, rows[], reverted: bool}], final: {passed, failed, total}, emptied_files: [], removed_suites: []}`. The deletion commit fills `emptied_files` and `removed_suites`. `kind` is `"deletion"` or `"clean-up"`. `status` is `"completed"` or `"stopped:<reason>"`, and is `"stopped:<reason>"` until the phase finishes. `final` is `null` until the last suite rerun. Delete `~/.claude/test-cleanup/ACTIVE` as the last step, whatever the status.
 
