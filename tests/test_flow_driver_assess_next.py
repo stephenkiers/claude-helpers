@@ -191,7 +191,7 @@ def test_resolve_anchor_valid(flow: Path) -> None:
     wt.mkdir()
     # Initialize a git repo
     subprocess.run(["git", "-C", str(wt), "init", "-q"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(wt), "commit", "-q", "--allow-empty", "-m", "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(wt), "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"], check=True, capture_output=True)
 
     # Path to a file inside the worktree
     test_file = wt / "test.txt"
@@ -206,7 +206,7 @@ def test_resolve_anchor_escaping(flow: Path) -> None:
     wt = flow / "wt"
     wt.mkdir()
     subprocess.run(["git", "-C", str(wt), "init", "-q"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(wt), "commit", "-q", "--allow-empty", "-m", "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(wt), "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"], check=True, capture_output=True)
 
     result = assess._resolve_anchor(str(wt), "../outside")
     expect(result is not None and "escapes" in result,
@@ -222,7 +222,7 @@ def test_resolve_anchor_toplevel(flow: Path) -> None:
     wt = flow / "wt"
     wt.mkdir()
     subprocess.run(["git", "-C", str(wt), "init", "-q"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(wt), "commit", "-q", "--allow-empty", "-m", "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(wt), "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"], check=True, capture_output=True)
 
     result = assess._resolve_anchor(str(wt), ".")
     expect(result is None, f"toplevel anchor '.' returned {result!r}, expected None")
