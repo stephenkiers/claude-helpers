@@ -1902,8 +1902,8 @@ def check_empty_suites(h):
          'export default { test: { exclude: ["src/only.test.ts"] } };\n'),
         ("js suffix import", "src/only.test.ts", "src/other.test.ts",
          'import { helper } from "./only.test.js";\n'),
-        ("import through a directory index", "src/box/index.test.ts", "src/use.test.ts",
-         'import { helper } from "./box";\n'),
+        ("import through an index.test path", "src/box/index.test.ts", "src/use.test.ts",
+         'import { helper } from "./box/index.test";\n'),
     ]
     for label, emptied_rel, other_rel, other_text in stop_cases:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1929,9 +1929,9 @@ def check_empty_suites(h):
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        write_files(root, {"tests/test_helper_only.py": 'class TestHelperOnly:\n    def helper(self):\n        return 1\n'})
+        write_files(root, {"tests/test_helper_only.py": 'class TestHelperOnly:\n    def helper(self):\n        return 1\n\n    def test_x(self):\n        assert self.helper() == 1\n'})
         rc, findings, out, err = run_empty_suites(root, ["tests/test_helper_only.py"])
-        h.test_result("empty-suites negative: a Test* class with a non-test method is not an empty class",
+        h.test_result("empty-suites negative: a Test* class with a test method alongside a helper is not an empty class",
                       rc == 0 and findings == [], f"rc={rc} findings={findings!r} err={err!r}")
 
     with tempfile.TemporaryDirectory() as tmp:

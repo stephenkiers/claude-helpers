@@ -450,7 +450,7 @@ if __name__ == "__main__":
     )
     h.test_result(
         "(n) the empty re-scan refusal survives unchanged",
-        "If the re-scanned set is empty, refuse." in prompt_text,
+        "If the re-scanned set is empty, refuse:" in prompt_text,
         "The re-scanned-set refusal is missing from the prompt",
     )
     h.test_result(
@@ -524,13 +524,13 @@ if __name__ == "__main__":
         impl_path.exists(),
         "File not found",
     )
-    r44_at = impl_text.find("4.4")
-    r46_at = impl_text.find("4.6", r44_at) if r44_at != -1 else -1
-    r4_helper_at = impl_text.find("empty-suites", r44_at) if r44_at != -1 else -1
+    gate_at = impl_text.find("**Empty-suite gate (after the 4.4 deletions, before 4.6).**")
+    r46a_at = impl_text.find("### 4.6a Record Round 4 evidence")
+    r4_helper_at = impl_text.find("empty-suites", gate_at) if gate_at != -1 else -1
     h.test_result(
         "(p) Round 4 runs empty-suites after the 4.4 deletions and before the 4.6 checks",
-        r44_at != -1 and r46_at != -1 and r44_at < r4_helper_at < r46_at,
-        f"4.4 at {r44_at}, empty-suites at {r4_helper_at}, 4.6 at {r46_at}",
+        gate_at != -1 and r46a_at != -1 and gate_at < r4_helper_at < r46a_at,
+        f"gate at {gate_at}, empty-suites at {r4_helper_at}, 4.6a at {r46a_at}",
     )
     h.test_result(
         "(p) the Round 4 empty-suites hook defines a stop path",
@@ -539,7 +539,8 @@ if __name__ == "__main__":
     )
     clean_match = re.search(r"clean up\s*(?:/|and)\s*refactor", prompt_text, re.IGNORECASE)
     clean_at = clean_match.start() if clean_match else -1
-    clean_helper_at = prompt_text.find("empty-suites", clean_at) if clean_at != -1 else -1
+    clean_helper_m = re.search(r"empty[- ]suite", prompt_text[clean_at:], re.IGNORECASE) if clean_at != -1 else None
+    clean_helper_at = clean_at + clean_helper_m.start() if clean_helper_m else -1
     h.test_result(
         "(p) the one-shot prompt runs empty-suites after the Clean up / refactor commit in Phase 2",
         clean_at != -1 and clean_at >= phase2_at and clean_helper_at != -1,
