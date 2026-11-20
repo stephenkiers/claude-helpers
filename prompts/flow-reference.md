@@ -198,6 +198,8 @@ Initial redo spawns (the redo procedure in `commands/expert-flow.md`, from eithe
    a `comment_id: <GitHub comment id>` field. `context_path` is the one file worth opening first (the decision
    brief, the action plan, the diff index); it is a pointer, not pasted content — the orchestrator opens it only as the fallback when a file carries neither `summary` nor `brief`.
 
+   **Known headers.** The header `Test changes` (used by the implement step for human-approved test edits and removals) is special: its approvals are never auto-answered and never pre-selected as a default. Every approval is a human answer to a question, made within a flow through the standard Ask block.
+
    **Context travels with the question.** The human answers in the orchestrator's conversation and
    never sees this command's output, so a bare option list is not enough to decide on. `summary` and
    `brief` are markdown that the renderer prints verbatim above the form. Both `/expert-flow` and
@@ -560,8 +562,8 @@ and verify they lie under their expected roots: `FINAL_PLAN_PATH` under `$HOME/.
 |---|---|---|
 | plan | `FINAL_PLAN_PATH: <abs path>` and `Addressed: <line>` on OK | `FINAL_PLAN_PATH: /Users/me/.claude/plans/add-relay-20261009T101500-00042.md`; `Addressed: none` or seq list |
 | track | `WORKTREE: <abs path>`, `BRANCH: <name>`, `Addressed: <line>` | written by the orchestrator itself (see `commands/expert-flow.md`); `Addressed: none` |
-| implement | `ROUND 1`…`ROUND 4` lines, `OUTSTANDING: <line>`, `Addressed: <line>` on OK | summary copied verbatim from `ROUND SIZING:` to end; `OUTSTANDING: none` or `<unit id> (<reason>) [self-report\|both]`; `Addressed:` lists owed seqs |
-| fix | `ROUND 1`…`ROUND 4` lines, `ACTION PLAN SOURCE: …`, `OUTSTANDING: <line>`, `Addressed: <line>` on OK | summary copied verbatim from `ROUND SIZING:` to end; `OUTSTANDING: none` or `D<n> (<reason>) [self-report\|both]`; `Addressed:` lists owed seqs |
+| implement | `ROUND 1`…`ROUND 4` lines, `OUTSTANDING: <line>`, `Addressed: <line>` on OK; optional `TEST_EDIT`, `TEST_REMOVAL`, `TEST_EDIT_COMMIT` lines | summary copied verbatim from `ROUND SIZING:` to end; `OUTSTANDING: none` or `<unit id> (<reason>) [self-report\|both]`; `Addressed:` lists owed seqs; `TEST_EDIT: <id> <path> answers/implement-<SEQ>.json` per applied edit, `TEST_REMOVAL: <id> <path> answers/implement-<SEQ>.json` per applied removal, `TEST_EDIT_COMMIT: <40-hex>` when the hatch applied a change |
+| fix | `ROUND 1`…`ROUND 4` lines, `ACTION PLAN SOURCE: …`, `OUTSTANDING: <line>`, `Addressed: <line>` on OK; optional `TEST_EDIT`, `TEST_REMOVAL`, `TEST_EDIT_COMMIT` lines | summary copied verbatim from `ROUND SIZING:` to end; `OUTSTANDING: none` or `D<n> (<reason>) [self-report\|both]`; `Addressed:` lists owed seqs; `TEST_EDIT: <id> <path> answers/fix-<SEQ>.json` per applied edit, `TEST_REMOVAL: <id> <path> answers/fix-<SEQ>.json` per applied removal, `TEST_EDIT_COMMIT: <40-hex>` when changes were applied |
 | review | `REVIEW_DIR: <abs path>`, `CONFIRMED: critical=<n> high=<n> medium=<n> low=<n>`, `Addressed: <line>` on OK | counts from `claude-action-plan.md`; `Addressed: none` or seq list |
 | verify | `CHECK: <command>`, `CHECK_EXIT: <n>`, `CHECK_SHA: <40-hex>` (the orchestrator's own `git rev-parse HEAD` in `WORKTREE`), `Addressed: <line>` | written by the orchestrator itself; a FAILED receipt also carries `HEAL_CANDIDATE: <class> <signature>`; the re-run after a heal carries `HEALED: <heal id>`; `Addressed: none` |
 | assess | `ASSESSED: <n>` on OK, `Addressed: <line>` on OK | `ASSESSED: 0` for no outstanding; `Addressed: none` or seq list |
