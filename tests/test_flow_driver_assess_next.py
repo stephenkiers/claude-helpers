@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Tests for assess.py's v2 stage: the outstanding set from receipts, assessor-record parsing, the batch, the disposition gate.
+Tests for assess.py's v2 stage: the outstanding set from receipts, assessor-record parsing, the batch, the disposition gate,
+range/anchor validation, ref checks, and item id quoting in directives.
 
 Run with: python3 tests/test_flow_driver_assess_next.py
 """
 
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -161,6 +163,71 @@ def test_assess_disposition_gate_fails_on_missing_questions_file(flow: Path) -> 
     expect(err is not None, "gate must fail closed when questions file is missing")
 
 
+def test_check_ref_valid(flow: Path) -> None:
+    """_check_ref should return None for valid refs (strings without '-')."""
+    result = assess._check_ref("main")
+    expect(result is None, f"valid ref 'main' returned {result!r}, expected None")
+    result = assess._check_ref("abc123def")
+    expect(result is None, f"valid ref 'abc123def' returned {result!r}, expected None")
+
+
+def test_check_ref_non_string(flow: Path) -> None:
+    """_check_ref should reject non-strings."""
+    result = assess._check_ref(123)
+    expect(result is not None and "must be a string" in result,
+           f"non-string ref returned {result!r}, expected error about string type")
+
+
+def test_check_ref_dash_prefix(flow: Path) -> None:
+    """_check_ref should reject refs starting with '-'."""
+    result = assess._check_ref("-foo")
+    expect(result is not None and "starts with" in result,
+           f"ref '-foo' returned {result!r}, expected error about dash")
+
+
+def test_resolve_anchor_valid(flow: Path) -> None:
+    """_resolve_anchor should return None for valid paths inside the worktree."""
+    wt = flow / "wt"
+    wt.mkdir()
+    # Initialize a git repo
+    subprocess.run(["git", "-C", str(wt), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(wt), "commit", "-q", "--allow-empty", "-m", "init"], check=True, capture_output=True)
+
+    # Path to a file inside the worktree
+    test_file = wt / "test.txt"
+    test_file.write_text("test", encoding="utf-8")
+
+    result = assess._resolve_anchor(str(wt), "test.txt")
+    expect(result is None, f"valid anchor 'test.txt' returned {result!r}, expected None")
+
+
+def test_resolve_anchor_escaping(flow: Path) -> None:
+    """_resolve_anchor should reject paths with '..' or leading '/'."""
+    wt = flow / "wt"
+    wt.mkdir()
+    subprocess.run(["git", "-C", str(wt), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(wt), "commit", "-q", "--allow-empty", "-m", "init"], check=True, capture_output=True)
+
+    result = assess._resolve_anchor(str(wt), "../outside")
+    expect(result is not None and "escapes" in result,
+           f"escaped path returned {result!r}, expected error about escaping")
+
+    result = assess._resolve_anchor(str(wt), "/absolute")
+    expect(result is not None and "escapes" in result,
+           f"absolute path returned {result!r}, expected error about escaping")
+
+
+def test_resolve_anchor_toplevel(flow: Path) -> None:
+    """_resolve_anchor should accept the toplevel directory itself."""
+    wt = flow / "wt"
+    wt.mkdir()
+    subprocess.run(["git", "-C", str(wt), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(wt), "commit", "-q", "--allow-empty", "-m", "init"], check=True, capture_output=True)
+
+    result = assess._resolve_anchor(str(wt), ".")
+    expect(result is None, f"toplevel anchor '.' returned {result!r}, expected None")
+
+
 TESTS = [
     ("1: the set reads OK receipts only", test_set_reads_ok_receipts),
     ("2: empty set and malformed line", test_set_empty_and_malformed),
@@ -172,6 +239,12 @@ TESTS = [
     ("8: save_item_answer refuses invalid options", test_save_item_answer_refuses_invalid_options),
     ("9: assess disposition gate requires all answered", test_assess_disposition_gate_requires_all_answered),
     ("10: assess disposition gate fails on missing questions file", test_assess_disposition_gate_fails_on_missing_questions_file),
+    ("11: _check_ref accepts valid ref", test_check_ref_valid),
+    ("12: _check_ref rejects non-string", test_check_ref_non_string),
+    ("13: _check_ref rejects dash-prefix", test_check_ref_dash_prefix),
+    ("14: _resolve_anchor accepts valid path", test_resolve_anchor_valid),
+    ("15: _resolve_anchor rejects escaping", test_resolve_anchor_escaping),
+    ("16: _resolve_anchor accepts toplevel", test_resolve_anchor_toplevel),
 ]
 
 

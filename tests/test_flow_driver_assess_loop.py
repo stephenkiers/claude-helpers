@@ -151,6 +151,17 @@ def test_plain_answer_refuses_assess_batch(base: Path) -> None:
     expect("--item" in err, f"error message does not mention --item: {err}")
 
 
+def test_item_id_with_a_space_is_shell_quoted_in_the_answer_command(base: Path) -> None:
+    home, flow, env, _, _ = to_landed_verify(base, assess=True)
+    run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=env)
+    (flow / "steps" / "07-assess-records.txt").write_text(RECORD + "\n", encoding="utf-8")
+    _, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=env)
+    verb, path = next_line(out)
+    expect(verb == "ASK", f"expected the batch ASK, got {verb} {err}")
+    command = str(load_json(path)["answer_command"])
+    expect(command.endswith("--item 'implement:Step 3'"), f"the item id is not shell-quoted: {command}")
+
+
 CHECKS = [
     ("1: assess is off by default", test_off_by_default),
     ("2: nothing outstanding skips the assessor", test_nothing_outstanding_skips),
@@ -159,6 +170,7 @@ CHECKS = [
     ("5: --item without a parked batch is refused", test_item_answer_without_batch_refused),
     ("6: assessor wait-timeout stops; clear-live re-spawns", test_assessor_wait_timeout_then_clear_live),
     ("7: plain answer refuses assess batch", test_plain_answer_refuses_assess_batch),
+    ("8: item id with a space is shell-quoted in the answer command", test_item_id_with_a_space_is_shell_quoted_in_the_answer_command),
 ]
 
 

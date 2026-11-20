@@ -365,54 +365,31 @@ def main():
     h.test_result("HEAL_MAX_TIMEOUT_SECS equals the heal timeout_secs upper bound",
                   fl.HEAL_MAX_TIMEOUT_SECS == heal_mod.PARAM_BOUNDS["timeout_secs"][1])
 
-    # Case 6: v2 flow refuses --auto-merge at the merge gate
-    # A v2 flow with a parked merge gate question should not allow --auto-merge to bypass the question.
-    # This pins that the merge gate is not auto-mergeable even when --auto-merge is passed.
+    # Case 6: v2 driver refuses --auto-merge at startup (Decision 1, test requirement)
+    # The v2 flow driver should refuse --auto-merge before creating any state, asserting
+    # that every merge must ask the human, never auto-merge.
+    sys.path.insert(0, str(REPO_ROOT))
+    from tests._flow_driver_loop_helpers import make_home, run_cli
+
     with tempfile.TemporaryDirectory() as tmp:
-        from scripts.flow_driver import state as state_mod, gates, shipguard as sg
-        import dataclasses
-
-        tmpdir = Path(tmp)
-        flow = tmpdir / "flow"
-        flow.mkdir()
-
-        # Create a minimal v2 flow state with a merge gate question parked
-        from scripts.flow_driver.state import InitSpec, MergeGateRecord, Sha, Heads
-        spec = InitSpec(repo="o/n", issue=1, worktree=str(tmpdir / "wt"))
-        with state_mod.mutating(flow, create=spec) as locked:
-            state_mod.init_state(locked, spec)
-            state = locked.require_state()
-            # Simulate a parked merge gate question
-            parked = state_mod.ParkedQuestion(step="ship", attempt=1, nn=1, kind="gate")
-            merge_rec = MergeGateRecord(pr_number=7, approved_head=Sha("a" * 40), repo="o/n")
-            state = dataclasses.replace(
-                state,
-                step="ship",  # type: ignore[arg-type]
-                parked=parked,
-                merge_gate=merge_rec,
-            )
-            locked.commit(state)
-
-        # Now check that even if we try to respond to the merge gate with auto-merge context,
-        # an unrecognized answer still maps to gate-aborted, not an auto-merge shortcut
-        from scripts.flow_driver.state import V2State
-        with state_mod.mutating(flow) as locked:
-            current = locked.require_state()
-
-        result = gates.decide(
-            current,
-            gates.GateFacts(
-                flow=flow,
-                nonce="n0",
-                landed="ship",
-                answer="auto-merge-me",  # Unrecognized answer
-                check_pr_by_number=lambda *a, **k: sg.NotMerged(7, "OPEN"),
-            ),
+        base = Path(tmp)
+        home = make_home(base)
+        flow = home / ".claude" / "flows-v2" / "owner_name" / "487-auto-merge-refused-abc123"
+        code, out, err = run_cli(
+            home, "start", "--flow", str(flow), "--auto-merge", "--repo", "owner/name", "--mode", "interactive",
+            "--wait-mode", "end-turn", "--step-minutes", "1",
         )
         h.test_result(
-            "v2 flow: unrecognized merge answer in auto-merge context maps to gate-aborted",
-            isinstance(result, gates.Stop) and result.code == "gate-aborted",
-            f"got {type(result).__name__} with code={result.code if isinstance(result, gates.Stop) else 'N/A'}"
+            "v2 driver: start with --auto-merge outputs STOP auto-merge-refused",
+            "STOP auto-merge-refused:" in (out + err),
+            f"output={out!r}\nstderr={err!r}"
+        )
+        # Verify no state.json was created (the refusal happened before initialization)
+        created = list((home / ".claude" / "flows-v2").rglob("state.json")) if (home / ".claude" / "flows-v2").exists() else []
+        h.test_result(
+            "v2 driver: start --auto-merge creates no state.json",
+            not created,
+            f"created state files: {created}"
         )
 
     h.summarize_and_exit()

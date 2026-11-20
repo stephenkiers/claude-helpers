@@ -71,7 +71,50 @@ def test_reverify_reasks_the_merge_gate(base: Path) -> None:
     expect(state_of(flow)["merge_gate"]["approved_head"] == head, "the gate was recorded for a head other than the matching one")
 
 
-CHECKS = [("1: reverify re-reads the PR and asks the merge gate once the head matches", test_reverify_reasks_the_merge_gate)]
+def test_retried_merge_archives_the_consumed_gate_answer(base: Path) -> None:
+    """A merge that failed after the human approved is retried: the consumed merge-gate answer is archived and the approval record cleared, so the retry asks again."""
+    import dataclasses
+
+    from scripts.flow_driver.loop import run_recover
+    from scripts.flow_driver.state import InitSpec, MergeGateRecord, PendingSpawn, Sha, init_state, mutating
+
+    flow = base / "flow"
+    flow.mkdir()
+    spec = InitSpec(repo="o/n", issue=1, worktree=str(base))
+    with mutating(flow, create=spec) as locked:
+        init_state(locked, spec)
+        state = locked.require_state()
+        locked.commit(
+            dataclasses.replace(
+                state,
+                step="merge",  # type: ignore[arg-type]
+                status="failed",  # type: ignore[arg-type]
+                attempts={"merge": 1},  # type: ignore[dict-item]
+                pending_spawn=PendingSpawn(step="merge", attempt=1, nonce="n0", state="receipt-landed", receipt_seen=None),  # type: ignore[arg-type]
+                stop_reason={"merge": "step-failed: the merge failed"},  # type: ignore[dict-item]
+                stop_source={"merge": "receipt"},  # type: ignore[dict-item]
+                merge_gate=MergeGateRecord(pr_number=7, approved_head=Sha("a" * 40), repo="o/n"),
+            )
+        )
+    landed = flow / "archive" / "merge" / "a1.landed.md"
+    landed.parent.mkdir(parents=True)
+    landed.write_text("ATTEMPT: 1\nDecision: FAILED\nReason: merge failed\n<!-- step-end -->\nbody\n", encoding="utf-8")
+    answer = flow / "answers" / "merge-a1-merge-gate.json"
+    answer.parent.mkdir(parents=True)
+    answer.write_text(json.dumps({"text": "Merge"}), encoding="utf-8")
+    run_recover(flow, "retry")
+    state = json.loads((flow / "state.json").read_text(encoding="utf-8"))
+    expect(state["merge_gate"] is None, "the approval record survived the retry, so the retried merge would not ask again")
+    expect(not answer.exists(), "the consumed merge-gate answer was left in place, so the retried merge would be auto-answered")
+    archived = sorted(p.name for p in (flow / "archive").rglob("*.answer-*.json"))
+    expect(len(archived) == 1, f"the consumed answer is not archived exactly once: {archived}")
+
+
+
+CHECKS = [
+    ("1: reverify re-reads the PR and asks the merge gate once the head matches", test_reverify_reasks_the_merge_gate),
+    ("2: a retried merge archives the consumed gate answer", test_retried_merge_archives_the_consumed_gate_answer),
+]
 
 
 def main() -> None:

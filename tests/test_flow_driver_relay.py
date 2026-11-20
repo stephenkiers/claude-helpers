@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Tests for relay.py, written from its documented contract: question/answer paths per kind, NN allocation, park re-entry,
-consumed-answer archival, exact-match answer validation, exclusive answer files, and the render failure marker.
+consumed-answer archival, exact-match answer validation, exclusive answer files, the render failure marker,
+and invoke_review_ruling argv handling.
 
 Run with: python3 tests/test_flow_driver_relay.py
 """
@@ -11,6 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Callable, List, Optional
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -197,6 +199,154 @@ def test_park_reentry_raises_on_item_mismatch(flow: Path) -> None:
     raise AssertionError("re-entry with different item must raise")
 
 
+def test_next_gate_nn_allocates_monotonic(flow: Path) -> None:
+    """next_gate_nn should return a monotonic sequence based on archived answers."""
+    init(flow)
+    # Initial call with no archives returns 1
+    nn = relay.next_gate_nn(flow, "plan", 1)
+    expect(nn == 1, f"first NN should be 1, got {nn}")
+
+    # Archive the first answer (at NN 1)
+    (flow / "archive" / "plan").mkdir(parents=True)
+    (flow / "archive" / "plan" / "a1.answer-1.json").write_text("{}", encoding="utf-8")
+
+    # Next call should return 2
+    nn = relay.next_gate_nn(flow, "plan", 1)
+    expect(nn == 2, f"NN after one archive should be 2, got {nn}")
+
+    # Archive the second answer (at NN 2)
+    (flow / "archive" / "plan" / "a1.answer-2.json").write_text("{}", encoding="utf-8")
+
+    # Next call should return 3
+    nn = relay.next_gate_nn(flow, "plan", 1)
+    expect(nn == 3, f"NN after two archives should be 3, got {nn}")
+
+
+def test_archive_answer_uses_monotonic_nn(flow: Path) -> None:
+    """archive_answer should use next_gate_nn and never overwrite prior archives."""
+    init(flow)
+    parked = ParkedQuestion(step="merge", attempt=1, nn=1, kind="gate")
+
+    # First answer
+    (flow / "answers").mkdir(parents=True)
+    answer_path = relay.answer_path(flow, parked)
+    answer_path.write_text(json.dumps({"text": "first answer"}), encoding="utf-8")
+    relay.archive_answer(flow, parked)
+
+    # Verify the first answer was archived at the right path
+    expect((flow / "archive" / "merge" / "a1.answer-1.json").exists(), "first archive should exist at a1.answer-1.json")
+    expect(json.loads((flow / "archive" / "merge" / "a1.answer-1.json").read_text(encoding="utf-8"))["text"] == "first answer", "first archive has correct content")
+
+    # Second answer (simulating a retry)
+    answer_path.write_text(json.dumps({"text": "second answer"}), encoding="utf-8")
+    relay.archive_answer(flow, parked)
+
+    # Verify the second answer was archived at a different NN
+    expect((flow / "archive" / "merge" / "a1.answer-2.json").exists(), "second archive should exist at a1.answer-2.json")
+    expect(json.loads((flow / "archive" / "merge" / "a1.answer-2.json").read_text(encoding="utf-8"))["text"] == "second answer", "second archive has correct content")
+    expect(json.loads((flow / "archive" / "merge" / "a1.answer-1.json").read_text(encoding="utf-8"))["text"] == "first answer", "first archive not overwritten")
+
+
+def test_invoke_review_ruling_argv_with_option(flow: Path) -> None:
+    """invoke_review_ruling builds correct argv with --option= for valid options."""
+    init(flow)
+    parked = ParkedQuestion(step="review", attempt=1, nn=1, kind="review", item=None)
+
+    # Create a question file with a review context and valid options
+    review_dir = flow / "reviews" / "test-review"
+    review_dir.mkdir(parents=True)
+    action_plan = review_dir / "claude-action-plan.md"
+    action_plan.write_text("# Plan\n### 1. Some decision\ntext", encoding="utf-8")
+
+    question_path = relay.question_path(flow, parked)
+    question_path.parent.mkdir(parents=True, exist_ok=True)
+    question_path.write_text(json.dumps({
+        "summary": "Test question",
+        "options": ["Accept", "Reject"],
+        "context_path": str(action_plan),
+        "brief": "### 1. Test item",
+    }), encoding="utf-8")
+
+    # Mock the run_command to capture the argv
+    captured_argv = []
+    def mock_run_command(argv):
+        captured_argv.extend(argv)
+        return MagicMock(returncode=0, stderr="")
+
+    with patch("scripts.flow_driver.preflight.run_command", mock_run_command):
+        relay.invoke_review_ruling(flow, parked, "Accept", "my reason")
+
+    # Verify the argv structure
+    expect(len(captured_argv) > 0, "run_command was not called")
+    expect("review-ruling.py" in captured_argv[1], f"script path not found in {captured_argv}")
+    expect("decide" in captured_argv, "decide command not found")
+    expect(f"--review-dir={str(review_dir)}" in captured_argv or "--review-dir" in captured_argv, f"review dir not found in {captured_argv}")
+    expect("--option=Accept" in captured_argv, f"--option=Accept not in {captured_argv}")
+    expect("--reasoning=my reason" in captured_argv, f"--reasoning not found in {captured_argv}")
+
+
+def test_invoke_review_ruling_argv_with_custom(flow: Path) -> None:
+    """invoke_review_ruling builds correct argv with --custom= for custom text."""
+    init(flow)
+    parked = ParkedQuestion(step="review", attempt=1, nn=1, kind="review", item=None)
+
+    review_dir = flow / "reviews" / "test-review"
+    review_dir.mkdir(parents=True)
+    action_plan = review_dir / "claude-action-plan.md"
+    action_plan.write_text("# Plan\n### 2. Another decision\ntext", encoding="utf-8")
+
+    question_path = relay.question_path(flow, parked)
+    question_path.parent.mkdir(parents=True, exist_ok=True)
+    question_path.write_text(json.dumps({
+        "summary": "Test question",
+        "options": ["Accept", "Reject"],
+        "context_path": str(action_plan),
+        "brief": "### 2. Test item",
+    }), encoding="utf-8")
+
+    captured_argv = []
+    def mock_run_command(argv):
+        captured_argv.extend(argv)
+        return MagicMock(returncode=0, stderr="")
+
+    with patch("scripts.flow_driver.preflight.run_command", mock_run_command):
+        relay.invoke_review_ruling(flow, parked, "Custom reason text", "my reason")
+
+    # Verify custom text is passed with --custom=
+    expect("--custom=Custom reason text" in captured_argv, f"--custom not in {captured_argv}")
+    expect("--option=" not in " ".join(captured_argv) or "--option=Custom" not in captured_argv, "should use --custom not --option for custom text")
+
+
+def test_invoke_review_ruling_surfaces_failure(flow: Path) -> None:
+    """invoke_review_ruling raises RuntimeError when script fails."""
+    init(flow)
+    parked = ParkedQuestion(step="review", attempt=1, nn=1, kind="review", item=None)
+
+    review_dir = flow / "reviews" / "test-review"
+    review_dir.mkdir(parents=True)
+    action_plan = review_dir / "claude-action-plan.md"
+    action_plan.write_text("# Plan\n### 3. Item\ntext", encoding="utf-8")
+
+    question_path = relay.question_path(flow, parked)
+    question_path.parent.mkdir(parents=True, exist_ok=True)
+    question_path.write_text(json.dumps({
+        "summary": "Test question",
+        "options": ["Accept"],
+        "context_path": str(action_plan),
+        "brief": "### 3. Test item",
+    }), encoding="utf-8")
+
+    def mock_run_command_fail(argv):
+        return MagicMock(returncode=3, stderr="Conflict: prior ruling exists\n")
+
+    try:
+        with patch("scripts.flow_driver.preflight.run_command", mock_run_command_fail):
+            relay.invoke_review_ruling(flow, parked, "Accept", None)
+        expect(False, "invoke_review_ruling should raise on script failure")
+    except RuntimeError as exc:
+        expect("review-ruling.py failed" in str(exc) and "Conflict" in str(exc), f"error message not informative: {exc}")
+
+
 TESTS: List = [
     ("1: paths per kind", test_paths_per_kind),
     ("2: park allocates NN and re-enters", test_park_allocates_and_reenters),
@@ -211,6 +361,11 @@ TESTS: List = [
     ("11: render succeeds and fails as a marker", test_render_question),
     ("12: park re-entry raises on kind mismatch", test_park_reentry_raises_on_kind_mismatch),
     ("13: park re-entry raises on item mismatch", test_park_reentry_raises_on_item_mismatch),
+    ("14: next_gate_nn allocates monotonic NN", test_next_gate_nn_allocates_monotonic),
+    ("15: archive_answer uses monotonic NN never overwrites", test_archive_answer_uses_monotonic_nn),
+    ("16: invoke_review_ruling builds argv with --option=", test_invoke_review_ruling_argv_with_option),
+    ("17: invoke_review_ruling builds argv with --custom=", test_invoke_review_ruling_argv_with_custom),
+    ("18: invoke_review_ruling surfaces script failure", test_invoke_review_ruling_surfaces_failure),
 ]
 
 
