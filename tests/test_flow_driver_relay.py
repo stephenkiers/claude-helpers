@@ -171,6 +171,32 @@ def test_render_question(flow: Path) -> None:
     expect(out.startswith("(render"), f"an invalid question must return a (render marker: {out[:120]}")
 
 
+def test_park_reentry_raises_on_kind_mismatch(flow: Path) -> None:
+    init(flow)
+    parked = park(flow, "plan", 1, "step")
+    expect(parked.kind == "step", "initial park is kind=step")
+    try:
+        park(flow, "plan", 1, "gate")
+    except (ValueError, RuntimeError) as exc:
+        expect("mismatch" in str(exc).lower() or "kind" in str(exc).lower() or "is not" in str(exc).lower(), f"error message must mention mismatch: {exc}")
+        return
+    raise AssertionError("re-entry with different kind must raise")
+
+
+def test_park_reentry_raises_on_item_mismatch(flow: Path) -> None:
+    init(flow)
+    with mutating(flow) as locked:
+        parked = relay.park(locked, flow, "assess", 1, "assess", nn=1, item="fix:Item 1")
+    expect(parked.item == "fix:Item 1", "initial park has item=fix:Item 1")
+    try:
+        with mutating(flow) as locked:
+            relay.park(locked, flow, "assess", 1, "assess", nn=1, item="implement:Item 2")
+    except (ValueError, RuntimeError) as exc:
+        expect("mismatch" in str(exc).lower() or "item" in str(exc).lower() or "is not" in str(exc).lower(), f"error message must mention mismatch: {exc}")
+        return
+    raise AssertionError("re-entry with different item must raise")
+
+
 TESTS: List = [
     ("1: paths per kind", test_paths_per_kind),
     ("2: park allocates NN and re-enters", test_park_allocates_and_reenters),
@@ -183,6 +209,8 @@ TESTS: List = [
     ("9: free text accepts anything", test_free_text_accepts_anything),
     ("10: bad question files refuse", test_missing_or_malformed_question_refused),
     ("11: render succeeds and fails as a marker", test_render_question),
+    ("12: park re-entry raises on kind mismatch", test_park_reentry_raises_on_kind_mismatch),
+    ("13: park re-entry raises on item mismatch", test_park_reentry_raises_on_item_mismatch),
 ]
 
 

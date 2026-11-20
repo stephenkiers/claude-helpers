@@ -123,6 +123,44 @@ def test_drop_needs_a_note_and_gate_catches_gaps(flow: Path) -> None:
     expect(assess.invoke_outstanding_gate(flow, 1) is not None, "an unanswered asked item blocks the gate")
 
 
+def test_save_item_answer_refuses_invalid_options(flow: Path) -> None:
+    receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (tests missing) [self-report]\n")
+    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 3", status="open") + "\n", encoding="utf-8")
+    run_next(flow)
+    err = assess.save_item_answer(flow, 1, "implement:Step 3", "InvalidOption", None, set())
+    expect(err is not None, "an invalid option must be refused")
+    err = assess.save_item_answer(flow, 1, "unknown:Item", "Finish it", None, set())
+    expect(err is not None, "an unknown item must be refused")
+
+
+def test_assess_disposition_gate_requires_all_answered(flow: Path) -> None:
+    receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (tests missing) [self-report]\nOUTSTANDING: Step 4 (more) [verifier]\n")
+    assess.assess_records_path(flow).write_text(
+        RECORD.format(id="implement:Step 3", status="open") + "\n" +
+        RECORD.format(id="implement:Step 4", status="open") + "\n",
+        encoding="utf-8"
+    )
+    run_next(flow)
+    (flow / "answers").mkdir(exist_ok=True)
+    (flow / "answers" / "assess-1.json").write_text(json.dumps({"answers": {"implement:Step 3": "Finish it"}, "annotations": {}}), encoding="utf-8")
+    err = assess.invoke_outstanding_gate(flow, 1)
+    expect(err is not None, "gate must fail when not all items are answered")
+    (flow / "answers" / "assess-1.json").write_text(json.dumps({"answers": {"implement:Step 3": "Finish it", "implement:Step 4": "Leave as-is"}, "annotations": {}}), encoding="utf-8")
+    err = assess.invoke_outstanding_gate(flow, 1)
+    expect(err is None, "gate must pass when all items are answered")
+
+
+def test_assess_disposition_gate_fails_on_missing_questions_file(flow: Path) -> None:
+    receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (tests missing) [self-report]\n")
+    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 3", status="open") + "\n", encoding="utf-8")
+    run_next(flow)
+    (flow / "answers").mkdir(exist_ok=True)
+    (flow / "answers" / "assess-1.json").write_text(json.dumps({"answers": {"implement:Step 3": "Finish it"}, "annotations": {}}), encoding="utf-8")
+    (flow / "questions" / "assess-1.json").unlink(missing_ok=True)
+    err = assess.invoke_outstanding_gate(flow, 1)
+    expect(err is not None, "gate must fail closed when questions file is missing")
+
+
 TESTS = [
     ("1: the set reads OK receipts only", test_set_reads_ok_receipts),
     ("2: empty set and malformed line", test_set_empty_and_malformed),
@@ -131,6 +169,9 @@ TESTS = [
     ("5: bad assessor records stop", test_bad_records_stop),
     ("6: done items ask nothing", test_done_items_ask_nothing),
     ("7: Drop note and gate gaps", test_drop_needs_a_note_and_gate_catches_gaps),
+    ("8: save_item_answer refuses invalid options", test_save_item_answer_refuses_invalid_options),
+    ("9: assess disposition gate requires all answered", test_assess_disposition_gate_requires_all_answered),
+    ("10: assess disposition gate fails on missing questions file", test_assess_disposition_gate_fails_on_missing_questions_file),
 ]
 
 

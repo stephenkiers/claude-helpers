@@ -161,6 +161,15 @@ def test_only_gates_constructs_merge_directive() -> None:
     expect(not offenders, f"MergeDirective constructed outside gates.py: {offenders}")
 
 
+def test_unrecognized_merge_answer_maps_to_distinct_code() -> None:
+    rec = MergeGateRecord(pr_number=7, approved_head=HEAD, repo="o/n")
+    s = make_state(merge_gate=rec)
+    result = gates.decide(s, facts("ship", answer="Merge later maybe", check_pr_by_number=by_number(sg.NotMerged(7, "OPEN"))))
+    expect(isinstance(result, gates.Stop), f"unrecognized answer should be a Stop, got {type(result).__name__}")
+    expect(result.code != "take-over", f"unrecognized answer must map to a distinct code, not take-over, got {result.code}")
+    expect(result.code == "gate-aborted", f"expected gate-aborted, got {result.code}")
+
+
 SECTIONS = [
     ("[Step gates]", [
         ("1: gates off advances", test_gates_off_advances),
@@ -174,6 +183,7 @@ SECTIONS = [
         ("7: PR states that stop", test_merge_gate_stops),
         ("8: the answer re-reads by number", test_merge_answer_rereads_by_number),
         ("9: only gates.py constructs MergeDirective", test_only_gates_constructs_merge_directive),
+        ("10: unrecognized merge answer maps to gate-aborted", test_unrecognized_merge_answer_maps_to_distinct_code),
     ]),
 ]
 

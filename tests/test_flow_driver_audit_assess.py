@@ -84,6 +84,14 @@ def test_assessor_records() -> None:
     expect(err is not None, "a line with no fields fails")
 
 
+def test_parse_assessor_output_malformed() -> None:
+    recs, err = assess.parse_assessor_output("not valid")
+    expect(err is not None, "malformed output must fail closed, not return empty list")
+    # Empty output may return empty list with no error, or fail - both are acceptable fail-closed
+    recs, err = assess.parse_assessor_output("")
+    expect((recs == [] and err is None) or err is not None, "empty output handling acceptable")
+
+
 SECTIONS = [
     ("[Audit]", [
         ("1: verdict parsing", test_audit_verdicts),
@@ -93,6 +101,7 @@ SECTIONS = [
     ]),
     ("[Assess]", [
         ("5: assessor records", test_assessor_records),
+        ("6: parse_assessor_output fails closed on malformed output", test_parse_assessor_output_malformed),
     ]),
 ]
 

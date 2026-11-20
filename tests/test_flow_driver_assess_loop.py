@@ -141,6 +141,16 @@ def test_assessor_wait_timeout_then_clear_live(base: Path) -> None:
     expect(verb == "SPAWN" and spawn["step"] == "assess" and spawn["nonce"] != first_nonce, f"the assessor was not re-spawned fresh: {verb} {spawn}")
 
 
+def test_plain_answer_refuses_assess_batch(base: Path) -> None:
+    home, flow, env, _, _ = to_landed_verify(base, assess=True)
+    (flow / "steps" / "07-assess-records.txt").write_text(RECORD + "\n", encoding="utf-8")
+    run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=env)
+    # Try to answer the assess batch without --item, which should be refused
+    code, _, err = run_cli(home, "answer", "--flow", str(flow), "--text", "Finish it", extra_env=env)
+    expect(code != 0, f"plain answer on assess batch was accepted; exit code={code}, stderr={err}")
+    expect("--item" in err, f"error message does not mention --item: {err}")
+
+
 CHECKS = [
     ("1: assess is off by default", test_off_by_default),
     ("2: nothing outstanding skips the assessor", test_nothing_outstanding_skips),
@@ -148,6 +158,7 @@ CHECKS = [
     ("4: bad assessor records halt", test_bad_records_halt),
     ("5: --item without a parked batch is refused", test_item_answer_without_batch_refused),
     ("6: assessor wait-timeout stops; clear-live re-spawns", test_assessor_wait_timeout_then_clear_live),
+    ("7: plain answer refuses assess batch", test_plain_answer_refuses_assess_batch),
 ]
 
 
