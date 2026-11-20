@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from scripts.workflow.fsutil import atomic_write_text
+
 from .state import ParkedKind, ParkedQuestion, Step, LockedFlow
 import dataclasses
 
@@ -115,6 +117,37 @@ def _allocate_nn(flow: Path, step: Step) -> int:
     while nn in used:
         nn += 1
     return nn
+
+
+def next_gate_nn(flow: Path, step: Step, attempt: int) -> int:
+    """
+    Monotonic NN for a driver question (gate, merge-gate, audit) of this step and attempt.
+
+    One above the highest archived answer NN for the attempt, so a consumed answer is never overwritten and a
+    re-park after archival never reuses an archived name. Returns 1 when nothing is archived yet.
+    """
+    highest = 0
+    archive_dir = flow / "archive" / step
+    if archive_dir.exists():
+        pattern = re.compile(f"^a{attempt}\\.answer-([0-9]+)\\.json$")
+        for file in archive_dir.iterdir():
+            match = pattern.match(file.name)
+            if match:
+                highest = max(highest, int(match.group(1)))
+    return highest + 1
+
+
+def write_question(flow: Path, parked: ParkedQuestion, question: Dict[str, object]) -> Path:
+    """
+    Write the question file for parked atomically, only when it is absent. Returns its path.
+
+    An existing question file is left untouched, so a re-park of the same question never rewrites what the human was
+    shown. The write goes through atomic_write_text, so a crash never leaves a half-written question.
+    """
+    path = question_path(flow, parked)
+    if not path.exists():
+        atomic_write_text(path, json.dumps(question, indent=2) + "\n")
+    return path
 
 
 def park(locked: LockedFlow, flow: Path, step: Step, attempt: int, kind: ParkedKind, nn: Optional[int] = None, item: Optional[str] = None) -> ParkedQuestion:

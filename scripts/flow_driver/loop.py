@@ -25,6 +25,7 @@ import dataclasses
 import json
 import re
 import secrets
+import shlex
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, Mapping, Optional, Tuple, Union
@@ -278,7 +279,6 @@ def _question_fact(flow: Path, pending: Optional[PendingSpawn]) -> QuestionFact:
     if pending is None:
         return "none"
     # For Layer 2 step questions, construct a temporary ParkedQuestion for path resolution
-    from .state import ParkedQuestion
     parked = ParkedQuestion(step=pending.step, attempt=pending.attempt, nn=pending.attempt, kind="step")
     if relay.answer_path(flow, parked).exists():
         return "answered"
@@ -335,13 +335,16 @@ def _branch_of(worktree: Optional[str]) -> Union[str, sg.GitError]:
     return name
 
 
-def _heal_commits(worktree: Optional[str]) -> Tuple[str, ...]:
-    """Subjects of the Flow-Heal commits on the ticket branch (merge gate context); () on any git failure."""
+def _heal_commits(worktree: Optional[str]) -> Optional[Tuple[str, ...]]:
+    """
+    Subjects of the Flow-Heal commits on the ticket branch (merge gate context). None when the read fails, so the brief
+    shows unknown rather than zero. V2State carries no base ref, so the base is origin/main, the repo's default branch.
+    """
     if not worktree:
-        return ()
+        return None
     result = pf.run_command(["git", "-C", worktree, "log", "--format=%s", "--grep=^Flow-Heal:", "origin/main..HEAD"])
     if result.returncode != 0:
-        return ()
+        return None
     return tuple(line for line in result.stdout.splitlines() if line.strip())
 
 
@@ -638,12 +641,9 @@ def _spawn_directive_present(flow: Path, pending: PendingSpawn) -> bool:
 def _merge_directive_again(flow: Path, state: V2State, pending: PendingSpawn) -> MergeDirective:
     """
     The MERGE directive of a live merge attempt, rebuilt for a re-render. MergeDirective is constructed only in gates.py,
-    so this asks gates for it with the attempt counter wound back one (gates numbers the next attempt) and the live nonce.
+    so this asks gates for it with the live attempt and nonce.
     """
-    attempts: Dict[Step, int] = dict(state.attempts)
-    attempts["merge"] = pending.attempt - 1
-    wound = dataclasses.replace(state, attempts=attempts)
-    return gates._build_merge_directive(wound, gates.GateFacts(flow=flow, nonce=pending.nonce, landed="merge"))
+    return gates.merge_directive_again(flow, pending.attempt, pending.nonce)
 
 
 def _replay_spawn(
@@ -709,6 +709,8 @@ def _gate_landed(state: V2State, receipt_fact: ReceiptFact, forced: Optional[Ste
             return pending.step
     if pending is None and state.step == "merge":
         return "merge"
+    if _skipped_ship(state):
+        return "ship"
     return None
 
 
@@ -738,12 +740,16 @@ def _read_answer(flow: Path, probe: ParkedQuestion) -> Tuple[Optional[str], Opti
 
 
 def _park_question(locked: LockedFlow, flow: Path, spec: gates.QuestionSpec) -> GateAsk:
-    """Commit the parked question first (relay.park), then write its question file if it is not there yet."""
-    parked = relay.park(locked, flow, spec.step, spec.attempt, spec.kind, nn=1)
-    question = relay.question_path(flow, parked)
-    if not question.exists():
-        options = list(spec.options)
-        payload = {
+    """
+    Commit the parked question first (relay.park), then write its question file if it is not there yet. A gate
+    re-entering its own held question keeps the held NN; a new question takes the next NN past every archived answer.
+    """
+    held = locked.require_state().parked
+    same = held is not None and (held.step, held.attempt, held.kind) == (spec.step, spec.attempt, spec.kind)
+    nn = held.nn if held is not None and same else relay.next_gate_nn(flow, spec.step, spec.attempt)
+    parked = relay.park(locked, flow, spec.step, spec.attempt, spec.kind, nn=nn)
+    options = list(spec.options)
+    payload: Dict[str, object] = {
             "summary": spec.question,
             "brief": spec.brief,
             "question": spec.question,
@@ -757,8 +763,27 @@ def _park_question(locked: LockedFlow, flow: Path, spec: gates.QuestionSpec) -> 
                 }
             ],
         }
-        _write(question, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    relay.write_question(flow, parked, payload)
     return GateAsk(options=spec.options)
+
+
+def _skipped_ship(state: V2State) -> bool:
+    """A ship the guard skipped (a PR is already open at the verified head): no landed receipt, but a ship head is recorded."""
+    return state.pending_spawn is None and state.step == "ship" and state.heads.ship is not None
+
+
+def _archive_consumed_gate(flow: Path, state: V2State, landed: Step) -> None:
+    """
+    Archive the consumed gate (or merge-gate) answer of the landed step so the next park asks again. The archive name
+    takes the next free NN, so no consumed answer is ever overwritten.
+    """
+    attempt = _gate_attempt(state, landed)
+    if landed in _MERGE_GATE_STEPS:
+        nn = relay.next_gate_nn(flow, "merge", attempt)
+        relay.archive_answer(flow, ParkedQuestion(step="merge", attempt=attempt, nn=nn, kind="merge-gate"))
+    else:
+        nn = relay.next_gate_nn(flow, landed, attempt)
+        relay.archive_answer(flow, ParkedQuestion(step=landed, attempt=attempt, nn=nn, kind="gate"))
 
 
 def _gate_effects(
@@ -775,6 +800,7 @@ def _gate_effects(
     if isinstance(outcome, gates.Stop):
         return GateStop(code=outcome.code, detail=outcome.detail, status=outcome.status), None
     if isinstance(outcome, gates.MergeSpawn):
+        _archive_consumed_gate(flow, state, "ship")
         return GateMerge(outcome.directive), None
     if isinstance(outcome, gates.MergeDone):
         return GateDone(), None
@@ -785,6 +811,7 @@ def _gate_effects(
         recorded = gates.record_redo_direction(flow, outcome.step, pending.attempt, outcome.note)
         if isinstance(recorded, lg.LedgerError):
             return None, _halt(state, flow, "ledger-error", recorded.detail)
+        _archive_consumed_gate(flow, state, outcome.step)
         outcomes = _copy_outcomes(state)
         _set_outcome(outcomes, outcome.step, pending.attempt, "redone", replaces="receipt-landed")
         locked.commit(
@@ -982,6 +1009,9 @@ def _assess_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, non
     current = record is not None and record.attempt == attempt
     if record is not None and current and record.state == "passed":
         return None
+    if not current:
+        # assess_next consumes any records file it finds: one left by an earlier attempt is stale, so it goes first
+        assess.assess_records_path(flow).unlink(missing_ok=True)
     result = assess.assess_next(locked, flow, state, nonce if not current else record.nonce, attempt)  # type: ignore[union-attr]
     state = locked.require_state()  # assess_next may have parked the batch
     if isinstance(result, assess.AssessStop):
@@ -997,7 +1027,7 @@ def _assess_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, non
         question = relay.question_path(flow, parked)
         answer = relay.answer_path(flow, parked)
         item = parked.item or "<item id>"
-        command = f"{driver.answer_command(flow)} --item '{item}'"
+        command = f"{driver.answer_command(flow)} --item {shlex.quote(item)}"
         ask_cls = ParkDirective if headless else AskDirective
         return state, ask_cls(  # type: ignore[call-arg]
             next_command=driver.next_command(flow), question_file=str(question), answer_file=str(answer), answer_command=command
@@ -1137,6 +1167,10 @@ def run_answer(flow: Path, text: str, note: Optional[str] = None, item: Optional
     """
     if item is not None:
         return _answer_assess_item(flow, text, note, item)
+    with mutating(flow) as locked:
+        parked = locked.require_state().parked
+        if parked is not None and parked.kind == "assess":
+            raise LoopRefusal("answer refused: the assess batch is parked; answer each item with --item")
     try:
         success, message = relay.accept_answer(flow, text, note)
         if success:
@@ -1239,6 +1273,10 @@ def _retry_locked(locked: LockedFlow, state: V2State, step: Step, attempt: int) 
     reasons: Dict[Step, str] = dict(state.stop_reason)
     reasons.pop(step, None)
     stop_sources = {k: v for k, v in state.stop_source.items() if k != step}
+    merge_gate = state.merge_gate
+    if step == "merge":
+        _archive_consumed_gate(locked.path, state, "ship")
+        merge_gate = None
     new_state = dataclasses.replace(
         state,
         status="running",
@@ -1247,6 +1285,7 @@ def _retry_locked(locked: LockedFlow, state: V2State, step: Step, attempt: int) 
         stop_reason=reasons,
         stop_source=stop_sources,
         attempt_log=outcomes,
+        merge_gate=merge_gate,
     )
     locked.commit(new_state)
     return new_state
@@ -1267,14 +1306,15 @@ def _resume_held_gate(locked: LockedFlow, flow: Path, state: V2State) -> str:
             f"recover refused: resume is offered only after a paused step gate or a held merge (status {state.status})"
         )
     pending = state.pending_spawn
-    if pending is None or pending.state != "receipt-landed":
-        raise LoopRefusal("recover refused: resume found no landed attempt to re-ask the gate for")
     merge = code == "merge-held"
-    landed: Step = "ship" if merge else pending.step
+    skipped = merge and _skipped_ship(state)
+    if not skipped and (pending is None or pending.state != "receipt-landed"):
+        raise LoopRefusal("recover refused: resume found no landed attempt to re-ask the gate for")
+    landed: Step = "ship" if merge else pending.step  # type: ignore[union-attr]
     probe = ParkedQuestion(
         step="merge" if merge else landed, attempt=_gate_attempt(state, landed), nn=1, kind="merge-gate" if merge else "gate"
     )
-    relay.archive_consumed(flow, probe)
+    _archive_consumed_gate(flow, state, landed)
     reasons: Dict[Step, str] = dict(state.stop_reason)
     reasons.pop(step, None)
     stop_sources = {k: v for k, v in state.stop_source.items() if k != step}
@@ -1321,14 +1361,14 @@ def _reverify_merge(locked: LockedFlow, flow: Path, state: V2State) -> str:
     pending = state.pending_spawn
     if state.status != "failed" or code != "merge-head-mismatch" or step != "ship":
         raise LoopRefusal("recover refused: reverify is offered only after a merge-head-mismatch stop at the merge gate")
-    if pending is None or pending.state != "receipt-landed":
+    if not _skipped_ship(state) and (pending is None or pending.state != "receipt-landed"):
         raise LoopRefusal("recover refused: reverify found no landed ship to re-read the PR for")
-    relay.archive_consumed(flow, ParkedQuestion(step="merge", attempt=_gate_attempt(state, "ship"), nn=1, kind="merge-gate"))
+    _archive_consumed_gate(flow, state, "ship")
     reasons: Dict[Step, str] = dict(state.stop_reason)
     reasons.pop(step, None)
     sources: Dict[Step, StopSource] = {k: v for k, v in state.stop_source.items() if k != step}
     locked.commit(dataclasses.replace(state, status="running", parked=None, merge_gate=None, stop_reason=reasons, stop_source=sources))
-    locked.log("recover", step=step, attempt=pending.attempt, choice="reverify")
+    locked.log("recover", step=step, attempt=state.attempts.get(step, 0), choice="reverify")
     return "recovered: reverify (the stale approval is dropped; the next next re-reads the PR and asks the merge gate again)"
 
 

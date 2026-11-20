@@ -83,7 +83,8 @@ class GateFacts:
     answer: the current answer text for the parked gate question, or None when it is not yet answered.
     note: the optional free-text note given with a Redo answer.
     branch: the ticket branch, read by the loop from the worktree (used only for the first PR discovery).
-    heal_commits: raw `Flow-Heal:` commit subjects from `git log <base>..HEAD`, shown as context only.
+    heal_commits: raw `Flow-Heal:` commit subjects from `git log <base>..HEAD`, shown as context only; None when the
+    read failed, which the brief shows as unknown rather than as zero.
     """
 
     flow: Path
@@ -93,7 +94,7 @@ class GateFacts:
     answer: Optional[str] = None
     note: Optional[str] = None
     branch: str = ""
-    heal_commits: Tuple[str, ...] = ()
+    heal_commits: Optional[Tuple[str, ...]] = ()
     check_pr: PrReader = field(default=sg.check_pr)
     check_pr_by_number: PrNumberReader = field(default=sg.check_pr_by_number)
 
@@ -222,7 +223,9 @@ def _heal_context(state: V2State, facts: GateFacts) -> str:
     """The healing context for the merge-gate brief, from fixed templates. Context only; it is never an option."""
     healed = "yes" if state.healed else "no"
     lines = [f"Healed during this flow: {healed}.", f"Recovery heals recorded: {state.recovery.heals}."]
-    if facts.heal_commits:
+    if facts.heal_commits is None:
+        lines.append("Flow-Heal commits on the branch: unknown (could not read the branch history).")
+    elif facts.heal_commits:
         shown = facts.heal_commits[:_MAX_CONTEXT_ITEMS]
         lines.append(f"Flow-Heal commits on the branch: {len(facts.heal_commits)}.")
         for subject in shown:
@@ -305,6 +308,22 @@ def _build_merge_directive(state: V2State, facts: GateFacts) -> MergeDirective:
         step="merge",
         attempt=attempt,
         nonce=facts.nonce,
+    )
+
+
+def merge_directive_again(flow: Path, attempt: int, nonce: str) -> MergeDirective:
+    """
+    The MERGE directive of a live merge attempt, rebuilt for a re-render with the attempt and nonce the record holds.
+
+    _build_merge_directive numbers the next attempt; a re-render must keep the live one, so the loop asks for it here.
+    """
+    return MergeDirective(
+        next_command=driver.next_command(flow),
+        agent_type=_MERGE_AGENT,
+        prompt_file=str(step_prompt_path(flow, "merge", attempt, nonce)),
+        step="merge",
+        attempt=attempt,
+        nonce=nonce,
     )
 
 
