@@ -5,6 +5,7 @@ Usage:
     anti-cheat-scan.py --repo PATH --base SHA --head SHA
                        --profile {implement,heal,fix-now} [--revert-base SHA]
                        [--allow-test-edit PATH ...]
+                       [--allow-test-removal PATH ...]
 
 The script runs `git diff` itself (read-only) over BASE..HEAD in REPO and prints one
 JSON object on stdout:
@@ -23,6 +24,9 @@ Profiles:
              --allow-test-edit PATH (repeatable) suppresses test-edit for that exact
              path when it is modified (status M). test-removed is never suppressed,
              and an added test path still reports test-edit.
+             --allow-test-removal PATH (repeatable) suppresses test-removed only for
+             that exact path when it is deleted (status D); a rename, modify, add or
+             type change at that path is not suppressed.
   fix-now    The implement profile minus the test-edit rule (test-removed still
              applies), and nothing more. Its range includes the re-run step's Round 2 and Round 4 test commits; Round 1's own Gate step 2 already ran the implement profile.
   heal       The check-heal profile. Everything in implement, plus gate-config-edit,
@@ -32,11 +36,14 @@ Profiles:
              a region that changed in REVERT_BASE..BASE.
 
 --allow-test-edit is valid only with --profile implement; any other profile fails closed
-with allow-test-edit-not-allowed.
+with allow-test-edit-not-allowed. --allow-test-removal is valid only with --profile
+implement; any other profile fails closed with allow-test-removal-not-allowed.
 
 Named reasons: test-edit, test-removed, gate-config-edit, added-suppression, env-guard,
 revert-to-pass, neutered-verification, stub-body, bad-ref, missing-revert-base,
 revert-base-not-allowed, allow-test-edit-not-allowed, allow-test-edit-unmatched,
+allow-test-removal-not-allowed, allow-test-removal-unmatched, allow-test-change-conflict,
+allow-test-edit-not-test-case, allow-test-removal-not-test-case, allow-test-change-mode,
 diff-unreadable.
 """
 
@@ -126,6 +133,56 @@ def is_impl_path(path: str) -> bool:
     return path.endswith(_CODE_EXTS) and not is_test_path(path)
 
 
+def is_test_case_path(path: str) -> bool:
+    """Check if a path is a test-case file (not a fixture, helper, or config file).
+
+    Returns True if:
+    - is_test_path(path) is True, AND
+    - basename matches one of: test_*.py, *_test.py, *_test.go, *.test.{js,jsx,ts,tsx,mjs,cjs},
+      *.spec.{js,jsx,ts,tsx,mjs,cjs}, *_spec.rb, AND
+    - path is not conftest.py, __init__.py, jest.config.*, vitest.config.*, AND
+    - path has no segment named fixtures, __fixtures__, or helpers
+    """
+    if not is_test_path(path):
+        return False
+
+    base = _basename(path)
+
+    # Reject known fixture/config files
+    if base in ("conftest.py", "__init__.py"):
+        return False
+    if fnmatch.fnmatchcase(base, "jest.config.*"):
+        return False
+    if fnmatch.fnmatchcase(base, "vitest.config.*"):
+        return False
+
+    # Reject paths with fixture/helper segments
+    parts = path.split("/")
+    if any(p in ("fixtures", "__fixtures__", "helpers") for p in parts):
+        return False
+
+    # Check basename against allowed patterns
+    allowed_patterns = (
+        "test_*.py",
+        "*_test.py",
+        "*_test.go",
+        "*.test.js",
+        "*.test.jsx",
+        "*.test.ts",
+        "*.test.tsx",
+        "*.test.mjs",
+        "*.test.cjs",
+        "*.spec.js",
+        "*.spec.jsx",
+        "*.spec.ts",
+        "*.spec.tsx",
+        "*.spec.mjs",
+        "*.spec.cjs",
+        "*_spec.rb",
+    )
+    return any(fnmatch.fnmatchcase(base, pattern) for pattern in allowed_patterns)
+
+
 # --- patterns (marker words are split so this file does not trip its own scan) ---
 
 _STUB_RE = re.compile(
@@ -201,20 +258,27 @@ def resolve_ref(repo: str, ref: str) -> str:
     return sha
 
 
-def changed_files(repo: str, base: str, head: str) -> List[Tuple[str, str]]:
-    """Return [(status letter, path)] for base..head, renames split into D + A."""
+def changed_files(repo: str, base: str, head: str) -> List[Tuple[str, str, Optional[Tuple[str, str]]]]:
+    """Return [(status letter, path, (old_mode, new_mode))] for base..head, renames split into D + A.
+
+    old_mode and new_mode are None when not available (which should not happen with --raw).
+    """
     out = _git(repo, ["diff", "--raw", "-z", "--no-renames", "--no-ext-diff", base, head])
     tokens = out.decode("utf-8", "replace").split("\0")
-    files = []  # type: List[Tuple[str, str]]
+    files = []  # type: List[Tuple[str, str, Optional[Tuple[str, str]]]]
     i = 0
     while i < len(tokens):
         tok = tokens[i]
         if tok.startswith(":"):
             fields = tok.split()
-            status = fields[-1][:1] if fields else "M"
+            if len(fields) < 5:
+                raise ScanError("diff-unreadable", "malformed raw diff line")
+            old_mode = fields[0][1:]  # strip leading ":"
+            new_mode = fields[1]
+            status = fields[4][:1] if len(fields) > 4 else "M"
             if i + 1 >= len(tokens):
                 raise ScanError("diff-unreadable", "truncated raw diff")
-            files.append((status, tokens[i + 1]))
+            files.append((status, tokens[i + 1], (old_mode, new_mode)))
             i += 2
         else:
             i += 1
@@ -373,6 +437,7 @@ def scan(
     profile: str,
     revert_base: Optional[str],
     allow_test_edit: Optional[List[str]] = None,
+    allow_test_removal: Optional[List[str]] = None,
 ) -> List[str]:
     """Scan BASE..HEAD in REPO and return the unique named failure reasons (empty list = pass).
 
@@ -380,7 +445,14 @@ def scan(
     suppressed. The match is exact (no globs or normalisation) and applies to modified files (status M) only;
     an added or deleted test path is never suppressed. An allowed path that never matched a modified test
     path in the range is itself a failure, `allow-test-edit-unmatched: <path>`, so a typo or a stale path
-    cannot pass silently. Raises ScanError for an unusable profile combination or ref.
+    cannot pass silently.
+
+    allow_test_removal (implement profile only): exact repo-relative test paths whose `test-removed` reason is
+    suppressed only for that exact path when it is deleted (status D). A rename, modify, add or type change
+    at that path is not suppressed. An allowed path that never matched a deleted test path in the range is
+    itself a failure, `allow-test-removal-unmatched: <path>`.
+
+    Raises ScanError for an unusable profile combination or ref.
     """
     reasons = []  # type: List[str]
     if profile == "heal" and not revert_base:
@@ -394,25 +466,68 @@ def scan(
             "allow-test-edit-not-allowed",
             "--allow-test-edit is only valid for profile implement",
         )
-    allowed_test_edits = set(allow_test_edit or [])
-    base_sha = resolve_ref(repo, base)
-    head_sha = resolve_ref(repo, head)
-    rb_sha = resolve_ref(repo, revert_base) if revert_base else None
+    if allow_test_removal and profile != "implement":
+        raise ScanError(
+            "allow-test-removal-not-allowed",
+            "--allow-test-removal is only valid for profile implement",
+        )
 
-    files = changed_files(repo, base_sha, head_sha)
+    allowed_test_edits = set(allow_test_edit or [])
+    allowed_test_removals = set(allow_test_removal or [])
+
+    # Check for conflicts: a path cannot be in both allow flags
+    conflict = allowed_test_edits & allowed_test_removals
+    if conflict:
+        for path in sorted(conflict):
+            reasons.append("allow-test-change-conflict: %s" % path)
+
+    # Check that all allowed paths pass the test-case predicate and have no mode issues
+    files = changed_files(repo, base_sha := resolve_ref(repo, base), head_sha := resolve_ref(repo, head))
+
+    # Build mode maps
+    mode_map: Dict[str, Tuple[str, str]] = {}  # path -> (old_mode, new_mode)
+    for status, path, modes in files:
+        if modes:
+            mode_map[path] = modes
+
+    # Validate all allowed paths
+    for path in allowed_test_edits:
+        if not is_test_case_path(path):
+            reasons.append("allow-test-edit-not-test-case: %s" % path)
+        if path in mode_map:
+            old_mode, new_mode = mode_map[path]
+            if old_mode == "120000" or new_mode == "120000" or old_mode != new_mode:
+                reasons.append("allow-test-change-mode: %s" % path)
+
+    for path in allowed_test_removals:
+        if not is_test_case_path(path):
+            reasons.append("allow-test-removal-not-test-case: %s" % path)
+        if path in mode_map:
+            old_mode, new_mode = mode_map[path]
+            if old_mode == "120000" or new_mode == "120000" or old_mode != new_mode:
+                reasons.append("allow-test-change-mode: %s" % path)
+
     hunk_cache: Dict[str, List[Hunk]] = {}
-    matched_allowed = set()  # type: Set[str]
+    matched_allowed_edits = set()  # type: Set[str]
+    matched_allowed_removals = set()  # type: Set[str]
 
     def hunks_for(p: str) -> List[Hunk]:
         if p not in hunk_cache:
             hunk_cache[p] = file_hunks(repo, base_sha, head_sha, p)
         return hunk_cache[p]
 
-    for status, path in files:
+    rb_sha = resolve_ref(repo, revert_base) if revert_base else None
+
+    for status, path, modes in files:
         test_path = is_test_path(path)
         if test_path:
             if status == "D":
-                reasons.append("test-removed: %s" % path)
+                # Suppress test-removed only for exact path with status D
+                suppressed = profile == "implement" and path in allowed_test_removals
+                if suppressed:
+                    matched_allowed_removals.add(path)
+                else:
+                    reasons.append("test-removed: %s" % path)
             elif profile in ("implement", "heal"):
                 # Exact-path, modified-only suppression, implement profile only.
                 # A pathological or malformed path never equals a git path, so it
@@ -423,7 +538,7 @@ def scan(
                     and path in allowed_test_edits
                 )
                 if suppressed:
-                    matched_allowed.add(path)
+                    matched_allowed_edits.add(path)
                 else:
                     reasons.append("test-edit: %s" % path)
         if profile == "heal" and is_gate_path(path, repo):
@@ -439,12 +554,14 @@ def scan(
             reasons.extend(check_suppressions(path, hunks))
             reasons.extend(check_env_guard(path, hunks))
     if profile == "heal" and rb_sha:
-        for status, path in files:
+        for status, path, modes in files:
             if status == "A":
                 continue
             reasons.extend(check_revert_to_pass(repo, rb_sha, base_sha, path, hunks_for(path)))
-    for unmatched in sorted(allowed_test_edits - matched_allowed):
+    for unmatched in sorted(allowed_test_edits - matched_allowed_edits):
         reasons.append("allow-test-edit-unmatched: %s" % unmatched)
+    for unmatched in sorted(allowed_test_removals - matched_allowed_removals):
+        reasons.append("allow-test-removal-unmatched: %s" % unmatched)
     seen: Set[str] = set()
     unique = []  # type: List[str]
     for r in reasons:
@@ -468,6 +585,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=None,
         metavar="PATH",
     )
+    parser.add_argument(
+        "--allow-test-removal",
+        dest="allow_test_removal",
+        action="append",
+        default=None,
+        metavar="PATH",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -478,6 +602,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.profile,
             args.revert_base,
             args.allow_test_edit,
+            args.allow_test_removal,
         )
     except ScanError as exc:
         reasons = ["%s: %s" % (exc.reason, exc.detail)]
