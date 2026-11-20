@@ -324,6 +324,11 @@ class Facts:
     # a FAILED receipt whose Reason names one of the five test-path codes: (code, detail); None otherwise
     failed_stop: Optional[Tuple[StopCode, str]] = None
 
+    def __post_init__(self) -> None:
+        """A failed_stop exists only for a FAILED receipt. Any other pairing is a wiring defect in loop.py, never a STOP."""
+        if self.failed_stop is not None and self.receipt != "failed":
+            raise RuntimeError(f"Facts.failed_stop is set but receipt is {self.receipt!r}, not 'failed'")
+
 
 def _live(pending: Optional[PendingSpawn]) -> Optional[LiveRecord]:
     """D1: live is exactly the projection of a spawned or resumed pending record."""

@@ -336,7 +336,7 @@ def _answer_outcome(state: V2State, facts: GateFacts, record: MergeGateRecord, v
             return Stop("take-over", "the human took over the merge")
         if answer is None:
             return _merge_gate_park(state, facts, record)
-        return Stop("take-over", "the merge gate got an answer that is not one of its options")
+        return Stop("gate-aborted", "the merge gate got an answer that is not one of its options")
     assert_never(verdict)
 
 

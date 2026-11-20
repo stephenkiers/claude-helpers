@@ -16,10 +16,11 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .state import ParkedQuestion, Step, LockedFlow
+from .state import ParkedKind, ParkedQuestion, Step, LockedFlow
 import dataclasses
 
 
@@ -116,7 +117,7 @@ def _allocate_nn(flow: Path, step: Step) -> int:
     return nn
 
 
-def park(locked: LockedFlow, flow: Path, step: Step, attempt: int, kind: str, nn: Optional[int] = None, item: Optional[str] = None) -> ParkedQuestion:
+def park(locked: LockedFlow, flow: Path, step: Step, attempt: int, kind: ParkedKind, nn: Optional[int] = None, item: Optional[str] = None) -> ParkedQuestion:
     """
     Park a question under the lock. Allocates NN once for step questions, records state.parked,
     commits the state, and returns the ParkedQuestion.
@@ -138,13 +139,24 @@ def park(locked: LockedFlow, flow: Path, step: Step, attempt: int, kind: str, nn
         ParkedQuestion with the allocated or provided NN
 
     Raises:
-        RuntimeError: if state cannot be accessed or committed
+        RuntimeError: if state cannot be accessed or committed; if a parked question for this step and attempt
+            exists and its kind, nn (when given) or item differs from the request; or if a gate or merge-gate
+            is about to park while its answer file still exists (archive the consumed answer first, see
+            archive_answer)
+        ValueError: if kind is not step and nn is not given
     """
     state = locked.require_state()
 
-    # If already parked for this step+attempt, re-use the NN
+    # If already parked for this step+attempt, re-use the NN, but only for the same question
     if state.parked is not None and state.parked.step == step and state.parked.attempt == attempt:
-        return state.parked
+        existing = state.parked
+        if existing.kind != kind:
+            raise RuntimeError(f"park re-entry for {step} attempt {attempt}: parked kind {existing.kind} is not {kind}")
+        if nn is not None and existing.nn != nn:
+            raise RuntimeError(f"park re-entry for {step} attempt {attempt}: parked nn {existing.nn} is not {nn}")
+        if existing.item != item:
+            raise RuntimeError(f"park re-entry for {step} attempt {attempt}: parked item {existing.item} is not {item}")
+        return existing
 
     # Allocate or use provided NN
     if nn is None:
@@ -153,12 +165,42 @@ def park(locked: LockedFlow, flow: Path, step: Step, attempt: int, kind: str, nn
         else:
             raise ValueError(f"nn must be provided for kind {kind}")
 
+    # A gate answer left unarchived would answer the new question before anyone is asked: refuse to park over it.
+    if kind in ("gate", "merge-gate"):
+        stale = answer_path(flow, ParkedQuestion(step=step, attempt=attempt, nn=nn, kind=kind, item=item))
+        if stale.exists():
+            raise RuntimeError(f"cannot park {kind} for {step} attempt {attempt}: {stale} still exists; archive it first")
+
     # Create and commit the parked question
-    parked = ParkedQuestion(step=step, attempt=attempt, nn=nn, kind=kind, item=item)  # type: ignore
+    parked = ParkedQuestion(step=step, attempt=attempt, nn=nn, kind=kind, item=item)
     new_state = dataclasses.replace(state, parked=parked)
     locked.commit(new_state)
 
     return parked
+
+
+def archive_answer(flow: Path, parked: ParkedQuestion) -> Optional[Path]:
+    """
+    Move the consumed answer file for parked into archive/<step>/a<attempt>.answer-<k>.json and return its new path.
+
+    k starts at parked.nn and is the first number whose file does not exist yet, so repeated archives of the same
+    attempt never overwrite each other (gate answers all carry nn 1). Returns None, and changes nothing, when there
+    is no answer file. Relay owns archival of consumed answers; resume paths call this rather than moving files.
+    """
+    old_answer = answer_path(flow, parked)
+    if not old_answer.exists():
+        return None
+
+    archive_dir = flow / "archive" / parked.step
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    nn = parked.nn
+    archived = archive_dir / f"a{parked.attempt}.answer-{nn}.json"
+    while archived.exists():
+        nn += 1
+        archived = archive_dir / f"a{parked.attempt}.answer-{nn}.json"
+    old_answer.rename(archived)
+    return archived
 
 
 def archive_consumed(flow: Path, parked: ParkedQuestion) -> None:
@@ -166,19 +208,25 @@ def archive_consumed(flow: Path, parked: ParkedQuestion) -> None:
     When a consumed answer exists for the step+attempt and a new question is about to park,
     move the answer file to archive/<step>/a<attempt>.answer-<NN>.json before the next question parks.
 
-    If no answer file exists, this is a no-op.
+    If no answer file exists, this is a no-op. A name already taken is never overwritten (see archive_answer).
     """
-    old_answer = answer_path(flow, parked)
-    if not old_answer.exists():
-        return
+    archive_answer(flow, parked)
 
-    # Create archive directory if needed
-    archive_dir = flow / "archive" / parked.step
-    archive_dir.mkdir(parents=True, exist_ok=True)
 
-    # Move the file to archive
-    archived = archive_dir / f"a{parked.attempt}.answer-{parked.nn}.json"
-    old_answer.rename(archived)
+def write_exclusive(path: Path, text: str) -> None:
+    """
+    Create path with O_EXCL and write text to it.
+
+    Raises FileExistsError, and touches nothing, when path already exists. Any failure after the create unlinks the
+    partial file and re-raises. The fd is closed exactly once, by the file object that owns it.
+    """
+    fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def render_question(flow: Path, question_path: Path) -> str:
@@ -219,15 +267,17 @@ def accept_answer(flow: Path, text: str, note: Optional[str]) -> Tuple[bool, str
     - The answer file already exists (O_EXCL exclusive create)
     - For non-free-text questions, text.strip() is not exactly one of the option labels
 
+    For a review-step question the ruling is recorded through review-ruling.py before the answer file is written.
+    If that ruling fails, the answer is refused and no answer file is written, so the human can answer again.
+
     The note (if provided) is written to a separate field in the answer file and
     carried to the ledger for Redo.
 
     Returns:
-        (True, success_message) if the answer is accepted
-        (False, refusal_message) if the answer is refused (message starts 'answer refused:')
+        (True, success_message) when the answer is accepted. This function never returns a failure value.
 
     Raises:
-        AnswerRefused: if the answer is refused (message starts 'answer refused:')
+        AnswerRefused: on every refusal; the message starts 'answer refused:'. Refusals are raised, never returned.
     """
     from .state import mutating
 
@@ -272,12 +322,20 @@ def accept_answer(flow: Path, text: str, note: Optional[str]) -> Tuple[bool, str
         if options is not None and stripped_text not in options:
             raise AnswerRefused(f"answer refused: '{stripped_text}' is not a valid option")
 
+        # For review-step answers, the ruling is recorded first: a failure refuses the answer, so nothing is consumed.
+        # Re-answering after a recorded ruling is idempotent in review-ruling.py (same answer exits 0).
+        if parked.kind == "step" and parked.step == "review":
+            try:
+                invoke_review_ruling(flow, parked, stripped_text, note)
+            except (RuntimeError, ValueError, OSError) as e:
+                raise AnswerRefused(f"answer refused: review ruling not recorded: {e}")
+
         # Build the answer payload
         payload = {
             "attempt": parked.attempt,
             "step": parked.step,
             "text": stripped_text,
-            "answered_utc": locked.require_state().updated,
+            "answered_utc": _utc_now(),
         }
         if note is not None:
             payload["note"] = note
@@ -285,16 +343,7 @@ def accept_answer(flow: Path, text: str, note: Optional[str]) -> Tuple[bool, str
         # Write the answer file with exclusive create
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            # Use O_EXCL to ensure atomicity
-            fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            try:
-                with os.fdopen(fd, "w") as f:
-                    json.dump(payload, f, indent=2, sort_keys=True)
-                    f.write("\n")
-            except Exception:
-                os.close(fd)
-                target.unlink(missing_ok=True)
-                raise
+            write_exclusive(target, json.dumps(payload, indent=2, sort_keys=True) + "\n")
         except FileExistsError:
             raise AnswerRefused(f"answer refused: {target} already exists (race condition)")
         except Exception as e:
@@ -302,16 +351,12 @@ def accept_answer(flow: Path, text: str, note: Optional[str]) -> Tuple[bool, str
 
         # A Redo note reaches the ledger as a direction through gates.record_redo_direction, once, at the gate.
 
-        # For review-step answers, call review-ruling.py if applicable
-        if parked.kind == "step" and parked.step == "review":
-            # The review step records its ruling through scripts/review-ruling.py
-            try:
-                invoke_review_ruling(flow, parked, stripped_text, note)
-            except Exception:
-                # Log but don't fail - the answer was written
-                pass
-
         return True, f"answer recorded: {target}"
+
+
+def _utc_now() -> str:
+    """The current time as YYYY-MM-DDTHH:MM:SSZ, the format state.json uses for its timestamps."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def invoke_review_ruling(flow: Path, parked: ParkedQuestion, text: str, note: Optional[str]) -> None:
@@ -327,36 +372,70 @@ def invoke_review_ruling(flow: Path, parked: ParkedQuestion, text: str, note: Op
         text: The answer text (the option label or custom text)
         note: Optional note text
 
+    Review dir and item come from the question file: its context_path is <review-dir>/claude-action-plan.md, and the
+    item number is the leading "### N." heading of the question's brief (the item's own Needs you block). Option
+    labels are passed as --option, anything else as --custom, both in the = form so a leading dash is never a flag.
+
     Raises:
-        RuntimeError: if the script invocation fails (non-zero exit)
+        RuntimeError: if the script cannot be found, the review dir or item cannot be derived, or the script exits
+            non-zero (including 3, a conflicting prior ruling)
+        ValueError: if the question file is malformed
     """
     from .preflight import run_command
 
-    # Determine the review-dir and item from the flow structure
-    # For a review step question, the item number is the NN
-    item_num = parked.nn
+    question = _load_question_json(question_path(flow, parked))
+    review_dir = _review_dir_from_question(question)
+    item_num = _review_item_number(question)
+    options = _get_options(question)
 
-    # Build the command: scripts/review-ruling.py decide --review-dir <dir> --item <n> (--option <label> | --custom <text>)
-    script_path = flow.parent.parent / "scripts" / "review-ruling.py"
+    # Resolve the script path the way render_question does: the installed copy, else the one in this checkout
+    script_path = Path.home() / ".claude" / "scripts" / "review-ruling.py"
     if not script_path.exists():
-        # Script not available; skip
-        return
+        script_path = Path(__file__).resolve().parent.parent / "review-ruling.py"
+    if not script_path.exists():
+        raise RuntimeError(f"review-ruling.py not found at {script_path}")
 
-    cmd = ["python3", str(script_path), "decide", "--review-dir", str(flow), "--item", str(item_num)]
-
-    # Determine if this is an option or custom text
-    # Try to match against known options first
-    if text in ("", "continue", "accept"):
-        # Standard option
-        cmd.extend(["--option", text])
+    cmd = ["python3", str(script_path), "decide", "--review-dir", str(review_dir), "--item", str(item_num)]
+    if text in ("", "continue", "accept") or (options is not None and text in options):
+        cmd.append(f"--option={text}")
     else:
-        # Custom text
-        cmd.extend(["--custom", text])
-
-    # Add note if provided
+        cmd.append(f"--custom={text}")
     if note:
-        cmd.extend(["--note", note])
+        cmd.append(f"--reasoning={note}")
 
     result = run_command(cmd)
     if result.returncode != 0:
-        raise RuntimeError(f"review-ruling.py failed: {result.stderr.strip().split(chr(10))[0]}")
+        lines = result.stderr.strip().splitlines()
+        detail = lines[0] if lines else f"exit {result.returncode}"
+        raise RuntimeError(f"review-ruling.py failed: {detail}")
+
+
+def _review_dir_from_question(question: Dict[str, object]) -> Path:
+    """The expert-review dir: the parent of the question's context_path, which must name claude-action-plan.md."""
+    context = question.get("context_path")
+    if not isinstance(context, str) or not context:
+        raise RuntimeError("review question has no context_path, so the review dir is unknown")
+    path = Path(context)
+    if path.name != "claude-action-plan.md" or not path.is_absolute():
+        raise RuntimeError(f"review question context_path is not an absolute claude-action-plan.md: {context}")
+    return path.parent
+
+
+_ITEM_HEADING = re.compile(r"^\s*#{1,6}\s+(\d+)\.", re.MULTILINE)
+
+
+def _review_item_number(question: Dict[str, object]) -> int:
+    """The Needs you item number: the leading '### N.' heading of the first question brief that carries one."""
+    questions = question.get("questions")
+    briefs: List[str] = []
+    if isinstance(questions, list):
+        for entry in questions:
+            if isinstance(entry, dict) and isinstance(entry.get("brief"), str):
+                briefs.append(str(entry["brief"]))
+    if isinstance(question.get("brief"), str):
+        briefs.append(str(question["brief"]))
+    for brief in briefs:
+        match = _ITEM_HEADING.search(brief)
+        if match:
+            return int(match.group(1))
+    raise RuntimeError("review question brief has no '### N.' Needs you heading, so the item number is unknown")
