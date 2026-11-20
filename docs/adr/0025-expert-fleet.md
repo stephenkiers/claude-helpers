@@ -135,5 +135,14 @@ When a ticket's process exits stopped or failed on a known environmental cause, 
 ## Amendment (2026-11-18) — v2 refuses auto-merge too (#487)
 
 The code-enforced half of section 3 now also covers v2: `driver start --auto-merge` refuses with `STOP auto-merge-refused`
-(`scripts/flow_driver/cli.py`), `commands/expert-flow-v2.md` never passes the flag, and `tests/test_fleet_invariants.py`
-pins it. Fleet auto-merge is not adopted. Changing that needs a new section 3 amendment. Section 3 is not reversed.
+(`scripts/flow_driver/cli.py`), and `commands/expert-flow-v2.md` never passes the flag. The v2 refusal is pinned by
+`test_10_auto_merge_is_refused_before_any_state` in `tests/test_flow_driver_loop.py`; the v2 case in
+`tests/test_fleet_invariants.py` is added alongside. Fleet auto-merge is not adopted. Changing that needs a new section 3
+amendment. Section 3 is not reversed.
+
+## Amendment (2026-11-20) — v2 merge runs as a general-purpose agent (#487)
+
+The v2 merge step is spawned as a `general-purpose` agent, not the restricted `flow-merge` agent, so it has no
+guard profile (no Bash or Skill guard, no push allow-list). This is a known residual, not a decision to keep it:
+making the v2 merge step restricted needs `flow-merge` added to the `AgentType` registry and a Layer 2 shape change,
+and that restricted-agent follow-up is deferred to a tracked follow-up issue (to be filed). ADR-0023 records the same residual.
