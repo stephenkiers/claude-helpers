@@ -185,6 +185,7 @@ class LedgerRecord(NamedTuple):
     text: str
     # Optional fields
     supersedes: Optional[int]  # For "correction" kind
+    attempt: Optional[int] = None  # Attempt number for answer records
 
 
 class StructuredFileToken(NamedTuple):
@@ -345,6 +346,7 @@ def load_ledger(flow_dir: Path) -> LedgerLoad:
                 status=cast(str, status),
                 text=cast(str, text),
                 supersedes=cast(Optional[int], r.get("supersedes")),
+                attempt=cast(Optional[int], r.get("attempt")),
             )
             ledger_records.append(rec)
         return LedgerRecords(tuple(ledger_records))
@@ -2760,6 +2762,7 @@ def check_implement(
     base: str,
     main_worktree: Optional[str] = None,
     check_worktree: Optional[str] = None,
+    flow_dir: Optional[Path] = None,
 ) -> Optional[str]:
     """Check implement artifacts. Return error reason or None."""
     count = _count_commits(repo, base, branch)
@@ -2792,7 +2795,8 @@ def check_implement(
     # Step 4: Check ledger binding (after artifact checks; D2: use _step_begin_ts helper)
     # D14: Guard the ledger check on Decision == "OK"
     decision = parse_receipt_field(receipt, "Decision")
-    flow_dir = resolve_flow_dir(None, receipt_file)
+    if flow_dir is None:
+        flow_dir = resolve_flow_dir(None, receipt_file)
     if decision == "OK" and flow_dir is not None:
         step_ts, ts_err = _step_begin_ts(flow_dir, "implement")
         fmt = ledger_format_of(flow_dir)
@@ -2804,62 +2808,121 @@ def check_implement(
         if ledger_reason:
             return ledger_reason
 
+    # #511: human-approved existing-test changes (edits and removals).
+    if decision == "OK":
+        step_ts_implement = _step_begin_ts(flow_dir, "implement")[0] if flow_dir else 0.0
+        test_changes_reason = check_test_changes(receipt, repo, flow_dir, "implement", base, branch, step_ts_implement)
+        if test_changes_reason:
+            return test_changes_reason
+
     return None
 
 
-_TEST_EDIT_ANSWER_REF_PATTERN = r"answers/fix-([0-9]+)\.json"
-_TEST_EDIT_ANSWER_REF_RE = re.compile(_TEST_EDIT_ANSWER_REF_PATTERN)
-_TEST_EDIT_LINE_RE = re.compile(r"(\S+) (\S+) (" + _TEST_EDIT_ANSWER_REF_PATTERN + ")")
+def _test_edit_answer_ref_pattern(step: str) -> str:
+    """Answer ref pattern for the given step (fix or implement)."""
+    return rf"answers/{step}-([0-9]+)\.json"
+
+
+def _test_edit_answer_ref_re(step: str) -> re.Pattern[str]:
+    """Compiled regex for answer ref pattern for the given step."""
+    pattern = _test_edit_answer_ref_pattern(step)
+    return re.compile(pattern)
+
+
 _TEST_EDIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _APPROVE_EDIT_RE = re.compile(r"Approve edit: (\S+) (\S+)")
+_APPROVE_REMOVAL_RE = re.compile(r"Approve removal: (\S+) (\S+)")
+_HEAL_TRAILER_RE = re.compile(r"^Flow-Heal:")
 
 
-class EditReceiptLine(NamedTuple):
-    """One parsed `TEST_EDIT: <finding id> <path> <answers ref>` receipt line (#497)."""
+class ApprovalRecord(NamedTuple):
+    """One parsed line from approval-commit.txt (W2 schema) with M/D status."""
     finding_id: str
     path: str
+    status: str  # "M" for edit, "D" for removal
     ref: str
 
 
-class ApprovedTestEdits(NamedTuple):
-    """Result of _load_approved_test_edits: exactly one of `approved` and `error` is set (#497)."""
-    approved: Optional[Set[Tuple[str, str]]]
+class ReceiptTestEditLine(NamedTuple):
+    """One parsed `TEST_EDIT/TEST_REMOVAL: <finding id> <path> <answers ref>` receipt line."""
+    finding_id: str
+    path: str
+    ref: str
+    kind: str  # "edit" or "removal"
+
+
+def parse_approval_record(line: str) -> Optional[ApprovalRecord]:
+    """Parse a W2 schema approval-commit.txt line.
+
+    Format: `<id> <path> [<status>] <ref>`, where status is optional and defaults to M.
+    Returns ApprovalRecord or None if line is blank or malformed.
+    Example: `D3 tests/test_x.py M answers/fix-02.json` or `D3 tests/test_x.py answers/fix-02.json`
+    """
+    line = line.strip()
+    if not line:
+        return None
+    parts = line.split()
+    if len(parts) < 3:
+        return None
+    finding_id = parts[0]
+    path = parts[1]
+    # If the last part is an answers ref, then third-to-last is the status (or missing, defaulting to M).
+    # Otherwise, it's malformed.
+    ref = parts[-1]
+    if not _test_edit_answer_ref_re("fix").fullmatch(ref) and not _test_edit_answer_ref_re("implement").fullmatch(ref):
+        return None
+    if len(parts) == 3:
+        # Format: id path ref (status defaults to M)
+        status = "M"
+    elif len(parts) == 4:
+        # Format: id path status ref
+        status = parts[2]
+    else:
+        return None
+    if status not in ("M", "D"):
+        return None
+    return ApprovalRecord(finding_id, path, status, ref)
+
+
+class ApprovedTestChanges(NamedTuple):
+    """Result of _load_approved_test_changes: exactly one of `approved` and `error` is set."""
+    approved: Optional[Dict[Tuple[str, str], str]]  # maps (id, path) -> "edit" or "removal"
     error: Optional[str]
 
 
-def _load_approved_test_edits(flow_dir: Path, answer_ref: str) -> ApprovedTestEdits:
-    """Return the (finding id, path) pairs approved in answers/fix-<SEQ>.json (#497).
+def _load_approved_test_changes(flow_dir: Path, answer_ref: str, step: str) -> ApprovedTestChanges:
+    """Return the (finding id, path) pairs and their kind (edit/removal) approved in answers/<step>-<SEQ>.json.
 
     Reads the answer values in the shape the relay writes (`"answers": {qid: label}`), and the sibling
-    questions/fix-<SEQ>.json that offered the options. An answer counts only when it is a plain string
-    equal to an `Approve edit: <id> <path>` option label that the question with that id actually offered;
-    a list value (the multiSelect shape) or text that is not one of the question's own option labels is
-    declined, so typed "Other" text never approves an edit the question did not offer. (Typed text that
-    reproduces an offered label letter for letter is indistinguishable from picking it; it is the same
-    approval.) Fails closed on a ref that is not `answers/fix-<SEQ>.json`, a file outside FLOW_DIR, or
-    unreadable JSON in either file.
+    questions/<step>-<SEQ>.json that offered the options. An answer counts only when it is a plain string
+    equal to an `Approve edit:` or `Approve removal:` option label that the question with that id actually
+    offered; a list value (multiSelect shape) or text that is not one of the question's own option labels
+    is declined, so typed "Other" text never approves a change the question did not offer. Fails closed on
+    a ref outside the step-scoped pattern, a file outside FLOW_DIR, or unreadable JSON.
     """
-    m = _TEST_EDIT_ANSWER_REF_RE.fullmatch(answer_ref)
+    ref_re = _test_edit_answer_ref_re(step)
+    m = ref_re.fullmatch(answer_ref)
     if not m:
-        return ApprovedTestEdits(None, f"test-edit: invalid answer ref: {answer_ref}")
-    answers_file = flow_dir / "answers" / f"fix-{m.group(1)}.json"
-    questions_file = flow_dir / "questions" / f"fix-{m.group(1)}.json"
+        return ApprovedTestChanges(None, f"test-edit: invalid answer ref: {answer_ref}")
+    seq = m.group(1)
+    answers_file = flow_dir / "answers" / f"{step}-{seq}.json"
+    questions_file = flow_dir / "questions" / f"{step}-{seq}.json"
     for candidate in (answers_file, questions_file):
         if not _is_under_root(candidate.resolve(), flow_dir.resolve()):
-            return ApprovedTestEdits(None, f"test-edit: answer file outside FLOW_DIR: {answer_ref}")
+            return ApprovedTestChanges(None, f"test-edit: answer file outside FLOW_DIR: {answer_ref}")
     if not answers_file.is_file():
-        return ApprovedTestEdits(None, f"test-edit: answer file not found: {answer_ref}")
+        return ApprovedTestChanges(None, f"test-edit: answer file not found: {answer_ref}")
     if not questions_file.is_file():
-        return ApprovedTestEdits(None, f"test-edit: question file not found for {answer_ref}")
+        return ApprovedTestChanges(None, f"test-edit: question file not found for {answer_ref}")
     try:
         data = json.loads(answers_file.read_text(encoding="utf-8"))
         qdata = json.loads(questions_file.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as e:
-        return ApprovedTestEdits(None, f"test-edit: cannot read answers for {answer_ref}: {e}")
+        return ApprovedTestChanges(None, f"test-edit: cannot read answers for {answer_ref}: {e}")
     answers = data.get("answers") if isinstance(data, dict) else None
     questions = qdata.get("questions") if isinstance(qdata, dict) else None
     if not isinstance(answers, dict) or not isinstance(questions, list):
-        return ApprovedTestEdits(None, f"test-edit: answers file malformed for {answer_ref}")
+        return ApprovedTestChanges(None, f"test-edit: answers file malformed for {answer_ref}")
     offered: Dict[str, Set[str]] = {}
     for question in questions:
         if not isinstance(question, dict) or not isinstance(question.get("id"), str):
@@ -2867,18 +2930,83 @@ def _load_approved_test_edits(flow_dir: Path, answer_ref: str) -> ApprovedTestEd
         options = question.get("options")
         labels = {o.get("label") for o in options if isinstance(o, dict)} if isinstance(options, list) else set()
         offered[question["id"]] = {label for label in labels if isinstance(label, str)}
-    approved: Set[Tuple[str, str]] = set()
+    approved: Dict[Tuple[str, str], str] = {}
     for qid, label in answers.items():
         if not isinstance(label, str) or label not in offered.get(qid, set()):
             continue
-        approve = _APPROVE_EDIT_RE.fullmatch(label)
-        if approve:
-            approved.add((approve.group(1), approve.group(2)))
-    return ApprovedTestEdits(approved, None)
+        # Try to match Approve edit: label
+        approve_edit = _APPROVE_EDIT_RE.fullmatch(label)
+        if approve_edit:
+            approved[(approve_edit.group(1), approve_edit.group(2))] = "edit"
+            continue
+        # Try to match Approve removal: label
+        approve_removal = _APPROVE_REMOVAL_RE.fullmatch(label)
+        if approve_removal:
+            approved[(approve_removal.group(1), approve_removal.group(2))] = "removal"
+    return ApprovedTestChanges(approved, None)
 
 
-def _test_edit_commit_reason(repo: str, commit: str, paths: Set[str]) -> Optional[str]:
-    """The approval commit must change exactly the TEST_EDIT paths, each with status M (#497)."""
+def _get_blob_id(repo: str, commit: str, path: str, is_preimage: bool = False) -> Optional[str]:
+    """Get the 40-hex blob id for a path in a commit.
+
+    If is_preimage is True, reads from commit^:<path> (pre-image for deletions).
+    Otherwise, reads from commit:<path> (post-image).
+    Returns the full 40-hex blob id or None if it cannot be read.
+    """
+    try:
+        ref = f"{commit}^:{path}" if is_preimage else f"{commit}:{path}"
+        result = subprocess.run(
+            ["git", "-C", repo, "rev-parse", ref],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECS,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return None
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _commit_mode_reason(repo: str, commit: str, paths: Set[str]) -> Optional[str]:
+    """Check that approved paths have no mode changes and no symlink mode (120000)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "diff", "--raw", "--no-renames", "-z", "--end-of-options", f"{commit}^", commit],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECS,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    # --raw format: :oldmode newmode oldhash newhash status\tpath (NUL-separated)
+    fields = [f for f in result.stdout.split("\0") if f]
+    for field in fields:
+        parts = field.split("\t", 1)
+        if len(parts) < 2:
+            continue
+        path = parts[1]
+        if path not in paths:
+            continue
+        raw_part = parts[0].split()
+        if len(raw_part) < 5:
+            continue
+        old_mode = raw_part[0][1:]  # remove leading ':'
+        new_mode = raw_part[1]
+        if old_mode == "120000" or new_mode == "120000":
+            return f"allow-test-change-mode: {path}"
+        if old_mode != new_mode:
+            return f"allow-test-change-mode: {path}"
+    return None
+
+
+def _test_edit_commit_reason(repo: str, commit: str, paths_by_status: Dict[str, Set[str]]) -> Optional[str]:
+    """The approval commit must change exactly the approved paths with their approved statuses.
+
+    paths_by_status: dict mapping status ("M" or "D") to set of paths with that status.
+    """
     try:
         result = subprocess.run(
             ["git", "-C", repo, "diff", "--name-status", "--no-renames", "-z", "--end-of-options", f"{commit}^", commit],
@@ -2897,20 +3025,28 @@ def _test_edit_commit_reason(repo: str, commit: str, paths: Set[str]) -> Optiona
     changed: Dict[str, str] = {}
     for status, path in zip(fields[0::2], fields[1::2]):
         changed[path] = status
-    for path in sorted(changed):
-        if changed[path] != "M":
-            return f"test-edit: {path} has status {changed[path]} in TEST_EDIT_COMMIT {commit}, expected M"
-    extra = sorted(set(changed) - paths)
+
+    # Check each approved path has the correct status
+    for status, paths in paths_by_status.items():
+        for path in sorted(paths):
+            if path not in changed:
+                return f"test-edit: TEST_EDIT_COMMIT {commit} does not change approved path: {path}"
+            if changed[path] != status:
+                return f"test-edit: {path} has status {changed[path]}"
+
+    # Check no unapproved paths are changed
+    all_approved = set()
+    for paths in paths_by_status.values():
+        all_approved.update(paths)
+    extra = sorted(set(changed) - all_approved)
     if extra:
         return f"test-edit: TEST_EDIT_COMMIT {commit} changes paths not approved: {', '.join(extra)}"
-    missing = sorted(paths - set(changed))
-    if missing:
-        return f"test-edit: TEST_EDIT_COMMIT {commit} does not change approved path: {', '.join(missing)}"
+
     return None
 
 
-def _commit_ancestry_reason(repo: str, commit: str, base: str, branch: str) -> Optional[str]:
-    """TEST_EDIT_COMMIT must sit strictly after `base` and be reachable from `branch` (#497)."""
+def _commit_ancestry_reason(repo: str, commit: str, base: str, branch: str, step: str = "fix") -> Optional[str]:
+    """Approval commit must sit strictly after `base` and be reachable from `branch`."""
     def is_ancestor(older: str, newer: str) -> Optional[bool]:
         try:
             result = subprocess.run(
@@ -2923,7 +3059,8 @@ def _commit_ancestry_reason(repo: str, commit: str, base: str, branch: str) -> O
         return False if result.returncode == 1 else None
 
     if commit == base:
-        return f"test-edit: TEST_EDIT_COMMIT {commit} is the fix range base, not a commit in it"
+        range_name = "implement range" if step == "implement" else "fix range"
+        return f"test-edit: TEST_EDIT_COMMIT {commit} is the {range_name} base, not a commit in it"
     on_branch = is_ancestor(commit, branch)
     if on_branch is None:
         return f"test-edit: cannot check TEST_EDIT_COMMIT {commit} against {branch}"
@@ -2933,7 +3070,54 @@ def _commit_ancestry_reason(repo: str, commit: str, base: str, branch: str) -> O
     if after_base is None:
         return f"test-edit: cannot check TEST_EDIT_COMMIT {commit} against base {base}"
     if not after_base:
-        return f"test-edit: TEST_EDIT_COMMIT {commit} is not in the fix range after {base}"
+        range_name = "implement range" if step == "implement" else "fix range"
+        return f"test-edit: TEST_EDIT_COMMIT {commit} is not in the {range_name} after {base}"
+    return None
+
+
+def _commit_parent_reason(repo: str, commit: str, base: str) -> Optional[str]:
+    """For implement: approval commit's parent must equal --base (bases[implement])."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "rev-parse", f"{commit}^"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECS,
+        )
+        if result.returncode != 0:
+            return f"test-edit: cannot get parent of TEST_EDIT_COMMIT {commit}"
+        parent = result.stdout.strip()
+        if parent != base:
+            return f"test-edit: TEST_EDIT_COMMIT {commit} parent {parent} is not --base {base}"
+    except (subprocess.TimeoutExpired, OSError):
+        return f"test-edit: cannot check TEST_EDIT_COMMIT {commit} parent"
+    return None
+
+
+def _approved_paths_untouched_reason(repo: str, commit: str, branch: str, paths: Set[str]) -> Optional[str]:
+    """Check that approved paths are untouched after the approval commit on the branch."""
+    if not paths:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "diff", "--name-status", "--no-renames", "-z", "--end-of-options",
+             commit, branch, "--"] + sorted(paths),
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECS,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return f"test-edit: cannot check approved paths after TEST_EDIT_COMMIT {commit}"
+    if result.returncode != 0:
+        return None  # No changes (exit 1 means no matching commits or paths)
+    # If there are changes, the output will have status/path pairs
+    fields = [f for f in result.stdout.split("\0") if f]
+    if fields:
+        # Extract the first path that changed
+        if len(fields) >= 2:
+            changed_path = fields[1]
+            return f"approved-path-touched: {changed_path}"
+        return "approved-path-touched: approved path changed after approval commit"
     return None
 
 
@@ -2948,88 +3132,376 @@ def _commit_time(repo: str, commit: str) -> Optional[float]:
         return None
 
 
-def _check_test_edits(
-    receipt: str, repo: str, flow_dir: Optional[Path],
+def check_test_changes(
+    receipt: str, repo: str, flow_dir: Optional[Path], step: str,
     base: str = "", branch: str = "HEAD", step_ts: float = 0.0,
 ) -> Optional[str]:
-    """Cross-check an OK fix receipt's TEST_EDIT lines against the approval record (#497). Return reason or None.
+    """Cross-check an OK receipt's TEST_EDIT/TEST_REMOVAL lines against the approval record.
 
-    No TEST_EDIT or TEST_EDIT_COMMIT line: nothing to check. `TEST_EDIT: none` with no commit: nothing
-    further. Checks, for each cited answers file: (a) the ref is answers/fix-<SEQ>.json inside FLOW_DIR;
-    (b) a non-superseded fix-step ledger answer record pins its sha256; (c) each (finding id, path) pair is
-    an `Approve edit:` answer in that file; (d) the approval commit's name-status is exactly the approved
-    paths, all M; (e) the approval commit lies in the fix range (after `base`, reachable from `branch`) when
-    `base` is given; (f) the approval record is not older than this attempt's begin (`step_ts`) unless the
-    approval commit itself predates it (an approval carried from a prior attempt of the same step).
-    Residual: an approval commit that no TEST_EDIT line declares is not found by this check.
+    Parameterized by step (fix or implement). No TEST_EDIT/TEST_REMOVAL or TEST_EDIT_COMMIT line:
+    nothing to check. `TEST_EDIT: none` with no commit: nothing further.
+
+    Checks:
+    (a) each ref is answers/<step>-<SEQ>.json inside FLOW_DIR
+    (b) each ref is pinned by a non-superseded ledger record
+    (c) each (finding id, path) pair is approved with the correct kind (edit/removal)
+    (d) the approval commit changes exactly the approved paths with approved statuses
+    (e) for fix: approval commit in fix range; for implement: parent equals --base
+    (f) for fix: approval timestamp >= step_ts; for implement: each ref bound to its own ledger record
+    (g) no symlink mode (120000) or mode changes at approved paths
+    (h) no HEAL_TRAILER_RE or Merge-Gate: lines in the message
+    (i) for implement: approval commit recap lines present for each path
     """
-    edit_values: List[str] = []
+    edit_removal_values: List[Tuple[str, str]] = []  # (kind, value): kind is "edit", "removal", or "none"
     commit_values: List[str] = []
-    # Whole-receipt scan on purpose: a TEST_EDIT line outside the header block is still checked (stricter than the header-only fields).
+
+    # Whole-receipt scan on purpose: lines outside the header block are still checked.
     for line in receipt.split("\n"):
         if line.startswith("TEST_EDIT_COMMIT:"):
             commit_values.append(line[len("TEST_EDIT_COMMIT:"):].strip())
         elif line.startswith("TEST_EDIT:"):
-            edit_values.append(line[len("TEST_EDIT:"):].strip())
-    if not edit_values and not commit_values:
+            value = line[len("TEST_EDIT:"):].strip()
+            if value == "none":
+                edit_removal_values.append(("none", value))
+            else:
+                edit_removal_values.append(("edit", value))
+        elif line.startswith("TEST_REMOVAL:"):
+            value = line[len("TEST_REMOVAL:"):].strip()
+            edit_removal_values.append(("removal", value))
+
+    # If no test lines, nothing to check
+    if not edit_removal_values and not commit_values:
         return None
+
     if len(commit_values) > 1:
         return "test-edit: more than one TEST_EDIT_COMMIT line"
+
     commit = commit_values[0] if commit_values else None
-    if edit_values == ["none"]:
+
+    # Handle "none" case
+    has_none = any(kind == "none" for kind, _ in edit_removal_values)
+    has_items = any(kind != "none" for kind, _ in edit_removal_values)
+
+    if has_none:
+        if has_items:
+            return "test-edit: TEST_EDIT: none mixed with approved edit lines"
         if commit is not None:
             return f"test-edit: TEST_EDIT_COMMIT {commit} present with TEST_EDIT: none"
         return None
-    if not edit_values:
+
+    if not has_items and commit is not None:
         return "test-edit: TEST_EDIT_COMMIT without a TEST_EDIT line"
-    if "none" in edit_values:
-        return "test-edit: TEST_EDIT: none mixed with approved edit lines"
+
+    if not edit_removal_values:
+        if commit is not None:
+            return "test-edit: TEST_EDIT_COMMIT without a TEST_EDIT line"
+        return None
+
     if commit is None:
-        return "test-edit: TEST_EDIT lines without TEST_EDIT_COMMIT"
+        return f"test-edit: TEST_EDIT lines without TEST_EDIT_COMMIT"
+
     if not _TEST_EDIT_COMMIT_RE.fullmatch(commit):
         return f"test-edit: malformed TEST_EDIT_COMMIT: {commit}"
 
-    edits: List[EditReceiptLine] = []
-    for value in edit_values:
-        m = _TEST_EDIT_LINE_RE.fullmatch(value)
-        if not m:
-            return f"test-edit: malformed TEST_EDIT line: {value}"
-        edits.append(EditReceiptLine(m.group(1), m.group(2), m.group(3)))
+    # Parse the TEST_EDIT/TEST_REMOVAL lines
+    test_lines: List[ReceiptTestEditLine] = []
+    for kind, value in edit_removal_values:
+        if kind == "none":
+            continue
+        # Format: <finding id> <path> <answers ref>
+        ref_re = _test_edit_answer_ref_re(step)
+        parts = value.split()
+        if len(parts) < 3:
+            return f"test-edit: malformed TEST_{kind.upper()} line: {value}"
+        finding_id = parts[0]
+        path = parts[1]
+        ref = parts[2]
+        if not ref_re.fullmatch(ref):
+            return f"test-edit: malformed TEST_{kind.upper()} line: {value}"
+        test_lines.append(ReceiptTestEditLine(finding_id, path, ref, kind))
 
     if flow_dir is None:
         return "test-edit: cannot resolve FLOW_DIR for TEST_EDIT answers"
-    if base:
-        ancestry_reason = _commit_ancestry_reason(repo, commit, base, branch)
+
+    # Check ancestry (fix range check for fix, parent check for implement)
+    if step == "fix" and base:
+        ancestry_reason = _commit_ancestry_reason(repo, commit, base, branch, step)
         if ancestry_reason:
             return ancestry_reason
+    elif step == "implement":
+        parent_reason = _commit_parent_reason(repo, commit, base)
+        if parent_reason:
+            return parent_reason
+
+    # For implement, also check approved paths are untouched on the branch
+    if step == "implement":
+        approved_paths = {line.path for line in test_lines}
+        untouched_reason = _approved_paths_untouched_reason(repo, commit, branch, approved_paths)
+        if untouched_reason:
+            return untouched_reason
+
+    # For fix, check commit is in fix range if base is given
+    if step == "fix" and base:
+        ancestry_reason = _commit_ancestry_reason(repo, commit, base, branch, step)
+        if ancestry_reason:
+            return ancestry_reason
+
+    # Get the commit message and check for forbidden trailers
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "log", "-1", "--format=%B", commit],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECS,
+        )
+        if result.returncode == 0:
+            message = result.stdout
+            for line in message.split("\n"):
+                if _HEAL_TRAILER_RE.match(line) or line.startswith("Merge-Gate:"):
+                    return f"test-edit: approval commit message contains forbidden trailer: {line}"
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
     commit_ts = _commit_time(repo, commit)
-    # An approval carried from a prior attempt (commit older than this attempt) keeps its older record.
-    not_before = step_ts if commit_ts is not None and commit_ts >= step_ts else 0.0
-    refs = {edit.ref for edit in edits}
-    # (a) and (b): each cited ref is a fix answers file in FLOW_DIR, pinned by a fix-step ledger record.
-    for ref in sorted(refs):
-        if not _TEST_EDIT_ANSWER_REF_RE.fullmatch(ref):
-            return f"test-edit: invalid answer ref: {ref}"
-    ledger_reason = _check_ledger_records(flow_dir, refs, step="fix", not_before=not_before)
-    if ledger_reason:
-        return ledger_reason
-    # (c): every (finding id, path) pair is approved in the file its line cites.
-    approved_by_ref: Dict[str, Set[Tuple[str, str]]] = {}
-    for ref in sorted(refs):
-        loaded = _load_approved_test_edits(flow_dir, ref)
+
+    # For fix: use timestamp-based cut-off; for implement: use per-ref ledger binding
+    if step == "fix":
+        not_before = step_ts if commit_ts is not None and commit_ts >= step_ts else 0.0
+        refs = {tl.ref for tl in test_lines}
+        ledger_reason = _check_ledger_records(flow_dir, refs, step="fix", not_before=not_before)
+        if ledger_reason:
+            return ledger_reason
+    elif step == "implement":
+        # For implement, each ref is bound to its own ledger record with its own attempt field
+        refs_to_check: Dict[str, str] = {}  # ref -> kind
+        for tl in test_lines:
+            refs_to_check[tl.ref] = tl.kind
+        ledger_reason = _check_ledger_records_implement(flow_dir, refs_to_check, receipt)
+        if ledger_reason:
+            return ledger_reason
+
+    # Load approvals and check each (finding id, path) pair matches its kind
+    approved_by_ref: Dict[str, Dict[Tuple[str, str], str]] = {}
+    for ref in sorted({tl.ref for tl in test_lines}):
+        loaded = _load_approved_test_changes(flow_dir, ref, step)
         if loaded.approved is None:
             return loaded.error or f"test-edit: cannot load approvals for {ref}"
         approved_by_ref[ref] = loaded.approved
-    for finding_id, path, ref in edits:
-        approved = approved_by_ref[ref]
-        if (finding_id, path) in approved:
+
+    for tl in test_lines:
+        approved = approved_by_ref[tl.ref]
+        if (tl.finding_id, tl.path) not in approved:
+            if any(approved_path == tl.path for _, approved_path in approved):
+                return f"test-edit: finding {tl.finding_id} is not approved for {tl.path} ({tl.ref})"
+            return f"test-edit: path not approved: {tl.path} (finding {tl.finding_id}, {tl.ref})"
+        # Check kind matches
+        approved_kind = approved[(tl.finding_id, tl.path)]
+        if approved_kind != tl.kind:
+            status = "M" if tl.kind == "edit" else "D"
+            return f"test-edit: {tl.path} status {status} not approved as {tl.kind}"
+
+    # Check approval commit paths and statuses
+    paths_by_status: Dict[str, Set[str]] = {"M": set(), "D": set()}
+    for tl in test_lines:
+        status = "M" if tl.kind == "edit" else "D"
+        paths_by_status[status].add(tl.path)
+
+    commit_reason = _test_edit_commit_reason(repo, commit, paths_by_status)
+    if commit_reason:
+        return commit_reason
+
+    # Check for mode changes at approved paths
+    all_approved_paths = {tl.path for tl in test_lines}
+    mode_reason = _commit_mode_reason(repo, commit, all_approved_paths)
+    if mode_reason:
+        return mode_reason
+
+    # For implement: check blob ids match and recap lines present
+    if step == "implement":
+        blob_reason = _check_implement_blobs(repo, flow_dir, commit, test_lines)
+        if blob_reason:
+            return blob_reason
+        recap_reason = _check_implement_recap(repo, commit, test_lines)
+        if recap_reason:
+            return recap_reason
+
+    return None
+
+
+def _check_ledger_records_implement(flow_dir: Path, refs_to_check: Dict[str, str], receipt: str) -> Optional[str]:
+    """Check ledger records for implement step, with per-ref attempt binding.
+
+    Each ref is bound to its own ledger record: kind='answer', step='implement', status != 'superseded',
+    sha256 matches current file, and the record's attempt <= receipt's ATTEMPT.
+    """
+    # Parse receipt ATTEMPT
+    attempt_match = None
+    for line in receipt.split("\n"):
+        if line.startswith("ATTEMPT:"):
+            attempt_match = line[len("ATTEMPT:"):].strip()
+            break
+    if not attempt_match or not attempt_match.isdigit():
+        return "test-changes: cannot determine receipt ATTEMPT"
+    receipt_attempt = int(attempt_match)
+
+    ledger_load = load_ledger(flow_dir)
+
+    if isinstance(ledger_load, LedgerAbsent):
+        if refs_to_check:
+            refs_list = ", ".join(sorted(refs_to_check.keys()))
+            return f"test-changes: no ledger record for {refs_list}"
+        return None
+
+    if isinstance(ledger_load, LedgerUnreadable):
+        if refs_to_check:
+            return f"test-changes: cannot read human ledger: {ledger_load.detail}"
+        return None
+
+    if not isinstance(ledger_load, LedgerRecords):
+        return None
+
+    # Build a map of ref -> (sha256, attempt) from ledger records
+    ledger_map: Dict[str, Tuple[str, int]] = {}
+    for record in ledger_load.records:
+        if record.kind != "answer" or record.step != "implement" or record.status == "superseded":
             continue
-        if any(approved_path == path for _, approved_path in approved):
-            return f"test-edit: finding {finding_id} is not approved for {path} ({ref})"
-        return f"test-edit: path not approved: {path} (finding {finding_id}, {ref})"
-    # (d): the approval commit changes exactly the approved paths, each with status M.
-    paths = {edit.path for edit in edits}
-    return _test_edit_commit_reason(repo, commit, paths)
+        # Try to parse attempt from the record
+        attempt = getattr(record, "attempt", None)
+        if attempt is None:
+            continue
+
+        text = record.text
+        lines_in_text = text.split("\n")
+
+        # Parse answer_ref and sha256 from text
+        answer_ref = None
+        sha256_val = None
+        for text_line in lines_in_text[:2]:
+            if text_line.startswith("answer_ref: "):
+                answer_ref = text_line[len("answer_ref: "):].strip()
+            elif text_line.startswith("sha256: "):
+                sha256_val = text_line[len("sha256: "):].strip()
+
+        if answer_ref and sha256_val:
+            ledger_map[answer_ref] = (sha256_val, attempt)
+
+    # Verify each ref
+    for ref in sorted(refs_to_check.keys()):
+        if ref not in ledger_map:
+            return f"test-changes: no ledger record for {ref}"
+
+        sha256_val, attempt = ledger_map[ref]
+        if attempt > receipt_attempt:
+            return f"test-changes: no ledger record for {ref}"
+
+        # Verify sha256 matches current file
+        ref_path = flow_dir / ref
+        try:
+            ref_bytes = ref_path.read_bytes()
+            ref_sha256 = hashlib.sha256(ref_bytes).hexdigest()
+        except (OSError, UnicodeDecodeError) as e:
+            return f"test-changes: cannot read answer file {ref}: {e}"
+
+        if ref_sha256 != sha256_val:
+            return f"test-changes: ledger record does not match {ref} (sha256 mismatch)"
+
+    return None
+
+
+def _check_implement_blobs(repo: str, flow_dir: Optional[Path], commit: str, test_lines: List[ReceiptTestEditLine]) -> Optional[str]:
+    """For implement: verify each committed blob matches its approved blob id.
+
+    For M (edit): committed blob should match post-image (from commit:<path>).
+    For D (removal): committed blob should match pre-image (from commit^:<path>).
+    """
+    if not flow_dir:
+        return None
+
+    # Load all answers files referenced by the test lines
+    answers_by_ref: Dict[str, Dict[str, str]] = {}
+    for line in test_lines:
+        if line.ref not in answers_by_ref:
+            try:
+                ref_path = flow_dir / line.ref
+                if ref_path.is_file():
+                    data = json.loads(ref_path.read_text(encoding="utf-8"))
+                    answers = data.get("answers", {}) if isinstance(data, dict) else {}
+                    answers_by_ref[line.ref] = answers
+            except (OSError, UnicodeDecodeError, ValueError):
+                return f"test-edit: cannot read answers file {line.ref}"
+
+    # For each test line, find the question to get the label and extract blob id
+    for line in test_lines:
+        if line.ref not in answers_by_ref:
+            continue
+        answers = answers_by_ref[line.ref]
+
+        # Find the question id that corresponds to this finding id and path
+        # We need to load the questions file to match them
+        try:
+            seq = line.ref.split("-")[-1].replace(".json", "")
+            questions_file = flow_dir / "questions" / f"implement-{seq}.json"
+            if not questions_file.is_file():
+                continue
+            qdata = json.loads(questions_file.read_text(encoding="utf-8"))
+            questions = qdata.get("questions", []) if isinstance(qdata, dict) else []
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+
+        # Find the question with matching item (finding_id/path)
+        label_text = None
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            # Questions may have an 'item' field with finding_id or similar
+            # For now, try to find by id in answers
+            qid = question.get("id")
+            if qid and qid in answers:
+                label = answers[qid]
+                if isinstance(label, str) and line.finding_id in label and line.path in label:
+                    label_text = label
+                    break
+
+        if not label_text:
+            continue
+
+        # Extract blob id from label: "Approve edit: <id> <path> <blob>" or "Approve removal: <id> <path> <blob>"
+        # or "Approve removal: <id> <path>" (no blob for fix removals)
+        parts = label_text.split()
+        if len(parts) >= 4 and parts[0] == "Approve" and parts[1] in ("edit:", "removal:"):
+            blob_id = parts[3]
+            if _TEST_EDIT_COMMIT_RE.fullmatch(blob_id):
+                # Verify the committed blob matches
+                is_preimage = line.kind == "removal"
+                committed_blob = _get_blob_id(repo, commit, line.path, is_preimage)
+                if committed_blob != blob_id:
+                    return f"test-edit: {line.path} committed blob {committed_blob} does not match approved {blob_id}"
+
+    return None
+
+
+def _check_implement_recap(repo: str, commit: str, test_lines: List[ReceiptTestEditLine]) -> Optional[str]:
+    """For implement: verify approval commit message contains recap lines for each path."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "log", "-1", "--format=%B", commit],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECS,
+        )
+        if result.returncode != 0:
+            return f"test-edit: cannot read TEST_EDIT_COMMIT {commit} message"
+        message = result.stdout
+
+        for line in test_lines:
+            # Look for a line starting with "> <id> <path>: "
+            recap_prefix = f"> {line.finding_id} {line.path}: "
+            if not any(msg_line.startswith(recap_prefix) for msg_line in message.split("\n")):
+                return f"test-edit: approval commit missing recap for {line.finding_id} {line.path}"
+    except (subprocess.TimeoutExpired, OSError):
+        return f"test-edit: cannot check TEST_EDIT_COMMIT {commit} message"
+
+    return None
 
 
 def check_fix(
@@ -3078,13 +3550,13 @@ def check_fix(
         if ledger_reason:
             return ledger_reason
 
-    # #497: human-approved existing-test edits must join the approval record (no-op without TEST_EDIT lines).
+    # #497: human-approved existing-test edits and removals must join the approval record (no-op without TEST_EDIT/TEST_REMOVAL lines).
     # Deliberate: a non-OK receipt is never cross-checked, since its TEST_EDIT lines claim nothing the flow accepts.
     if decision == "OK":
         step_ts_fix = _step_begin_ts(flow_dir, "fix")[0]
-        test_edit_reason = _check_test_edits(receipt, repo, flow_dir, base, branch, step_ts_fix)
-        if test_edit_reason:
-            return test_edit_reason
+        test_changes_reason = check_test_changes(receipt, repo, flow_dir, "fix", base, branch, step_ts_fix)
+        if test_changes_reason:
+            return test_changes_reason
 
     return None
 
@@ -4465,7 +4937,7 @@ def _parse_marker(text: str) -> Tuple[MarkerKind, Optional[AssessmentMode], List
     return ("v2", mode, dispositions, has_sentinel)
 
 
-_LEDGER_STEP_PREFIX = {"assess": "outstanding gate", "fix": "test-edit"}
+_LEDGER_STEP_PREFIX = {"assess": "outstanding gate", "fix": "test-edit", "implement": "test-changes"}
 
 
 def _check_ledger_records(flow_dir: Path, answer_refs: Set[str], step: str = "assess", not_before: float = 0.0) -> Optional[str]:
@@ -6437,7 +6909,7 @@ def main() -> None:
             error(f"Invalid base SHA: {args.base}")
         step_error = check_implement(
             receipt_file, args.repo, args.branch, args.base, args.main_worktree,
-            args.check_worktree,
+            args.check_worktree, step_flow_dir,
         )
     elif args.step == "fix":
         if not all([args.repo, args.branch, args.base, args.review_dir]):
