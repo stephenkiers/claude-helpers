@@ -35,7 +35,7 @@ REPORT_FIELDS = {
     "by_disposition", "judgment_candidates", "not_analysed", "tests", "id", "file",
     "disposition", "class", "reason", "survivor", "proof", "target", "expected", "id_map",
     "from", "to", "count_delta", "target_rise", "judgment_candidate", "set_id", "evidence",
-    "sets", "members", "judgment", "suggested_survivor", "notes",
+    "sets", "members", "judgment", "suggested_survivor", "notes", "uncovered_workspaces",
 }
 
 
@@ -89,6 +89,17 @@ def section_text(text, start_prefix, end_prefix):
     if end == -1 or end <= start:
         return text[start:]
     return text[start:end]
+
+
+def numbered_items(text, number):
+    """Return the text of every list item `N.` in text, each up to the next numbered item or heading."""
+    items = []
+    for start in re.finditer(rf"(?m)^[ \t]*{number}\.[ \t]", text):
+        rest = text[start.end():]
+        stop = re.search(r"(?m)^[ \t]*\d+\.[ \t]|^#{1,6} ", rest)
+        end = start.end() + (stop.start() if stop else len(rest))
+        items.append(text[start.start():end])
+    return items
 
 
 if __name__ == "__main__":
@@ -338,6 +349,203 @@ if __name__ == "__main__":
             gate in reference_text,
             f"Cited gate '{gate}' not found in {REFERENCE_FILE.name}; the reference may have renamed it",
         )
+
+    print()
+
+    # ============================================================================
+    # (m) Workspace coverage key: schema, Phase 1 field meanings, precondition 8
+    # ============================================================================
+    print("[Section m] Workspace coverage key")
+
+    framework = None
+    for block in schema_blocks:
+        try:
+            parsed = json.loads(block)
+        except ValueError:
+            continue
+        candidate = parsed.get("framework") if isinstance(parsed, dict) else None
+        if isinstance(candidate, dict) and "uncovered_workspaces" in candidate:
+            framework = candidate
+            break
+    h.test_result(
+        "(m) the fenced JSON schema block has framework.uncovered_workspaces set to []",
+        framework is not None and framework.get("uncovered_workspaces") == [],
+        f"framework object in the schema block: {framework!r}",
+    )
+    phase1_text = section_text(prompt_text, "Phase 1", "Opus review")
+    h.test_result(
+        "(m) Phase 1 field meanings name uncovered_workspaces",
+        "uncovered_workspaces" in phase1_text,
+        "The Phase 1 section does not mention uncovered_workspaces",
+    )
+    h.test_result(
+        "(m) Phase 1 field meanings use the 'cannot determine:' marker",
+        "cannot determine:" in phase1_text,
+        "The Phase 1 section lacks the 'cannot determine:' marker",
+    )
+    precondition_8 = numbered_items(prompt_text, 8)
+    h.test_result(
+        "(m) precondition 8 prints uncovered_workspaces beside the command",
+        any("uncovered_workspaces" in item for item in precondition_8),
+        f"numbered items '8.' found: {len(precondition_8)}; none mentions uncovered_workspaces",
+    )
+    h.test_result(
+        "(m) the prompt still says schema_version: 1",
+        re.search(r'schema_version[`"]?\s*:\s*1\b', prompt_text) is not None,
+        "No schema_version: 1 in the prompt",
+    )
+
+    print()
+
+    # ============================================================================
+    # (n) Empty-suite helper wiring in Phase 2 (precondition 11, Deletion commit)
+    # ============================================================================
+    print("[Section n] Empty-suite helper wiring in Phase 2")
+
+    precondition_10 = numbered_items(phase2_text, 10)
+    precondition_11 = numbered_items(phase2_text, 11)
+    p10_at = phase2_text.find(precondition_10[0]) if precondition_10 else -1
+    p11_at = phase2_text.find(precondition_11[0]) if precondition_11 else -1
+    h.test_result(
+        "(n) Phase 2 precondition 11 runs `empty-suites --help`, numbered after precondition 10",
+        any("empty-suites --help" in item for item in precondition_11) and 0 <= p10_at < p11_at,
+        f"precondition 10 at {p10_at}, precondition 11 at {p11_at}, items 11: {len(precondition_11)}",
+    )
+    h.test_result(
+        "(n) precondition 11 refuses when the helper fails and tells the human to run /setup-local",
+        any("/setup-local" in item and "refuse" in item.lower() for item in precondition_11),
+        "Precondition 11 lacks the refusal or the /setup-local instruction",
+    )
+    offending = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n", prompt_text):
+        low = sentence.lower()
+        if ("empty" in low and "suite" in low
+                and ("by hand" in low or "manually" in low or "fallback" in low)
+                and not re.search(r"\b(no|not|never|nor)\b", low)):
+            offending.append(sentence.strip()[:120])
+    h.test_result(
+        "(n) no sentence offers removing empty suites by hand or a prose fallback",
+        not offending,
+        f"offending sentences: {offending}",
+    )
+
+    deletion_at = phase2_text.find("Deletion commit")
+    rescan_at = phase2_text.find("Re-scan the post-deletion tree", max(deletion_at, 0))
+    helper_at = phase2_text.find("empty-suites", max(deletion_at, 0))
+    h.test_result(
+        "(n) the Deletion commit runs empty-suites before the post-deletion re-scan",
+        deletion_at != -1 and rescan_at != -1 and 0 <= helper_at < rescan_at,
+        f"deletion={deletion_at} helper={helper_at} rescan={rescan_at}",
+    )
+    deletion_text = phase2_text[deletion_at:rescan_at] if deletion_at != -1 and rescan_at > deletion_at else ""
+    h.test_result(
+        "(n) the Deletion commit bounds the empty-suite loop at 'at most 3 rounds'",
+        "at most 3 rounds" in deletion_text,
+        "The Deletion commit text lacks 'at most 3 rounds'",
+    )
+    h.test_result(
+        "(n) the Deletion commit removes suites by content, not by line number",
+        "by content, not by line number" in deletion_text,
+        "The Deletion commit text lacks 'by content, not by line number'",
+    )
+    h.test_result(
+        "(n) the empty re-scan refusal survives unchanged",
+        "If the re-scanned set is empty, refuse:" in prompt_text,
+        "The re-scanned-set refusal is missing from the prompt",
+    )
+    h.test_result(
+        "(n) gate \"(c) Count\" is still defined in the prompt",
+        '"(c) Count"' in prompt_text,
+        "Gate (c) Count is missing from the prompt",
+    )
+
+    print()
+
+    # ============================================================================
+    # (o) Empty suites rule in shared doctrine section 4.4 (reference file)
+    # ============================================================================
+    print("[Section o] Empty suites rule in reference section 4.4")
+
+    heading_44 = re.search(r"(?m)^#+ .*4\.4\b", reference_text)
+    section_44 = ""
+    if heading_44:
+        rest = reference_text[heading_44.end():]
+        stop = re.search(r"(?m)^#+ .*4\.5\b|^## ", rest)
+        section_44 = reference_text[heading_44.start(): heading_44.end() + (stop.start() if stop else len(rest))]
+    table_rows = [line.split("|")[1].strip().strip("`*").strip().lower()
+                  for line in section_44.splitlines()
+                  if line.lstrip().startswith("|") and line.count("|") >= 3]
+    normalized_44 = " ".join(section_44.split()).lower()
+    h.test_result(
+        "(o) section 4.4 has an 'Empty suites' heading",
+        re.search(r"(?m)^#+ .*Empty suites", section_44) is not None,
+        "No 'Empty suites' heading inside section 4.4",
+    )
+    for stack, pattern in (("js", r"\bjs\b"), ("python", r"\bpython\b"), ("go", r"\bgo\b")):
+        h.test_result(
+            f"(o) section 4.4 table has a row for {stack}",
+            any(re.search(pattern, row) for row in table_rows),
+            f"table first-column cells in 4.4: {table_rows!r}",
+        )
+    h.test_result(
+        "(o) section 4.4 states that pytest and Go findings are report-only",
+        "report-only" in section_44,
+        "The string 'report-only' is missing from section 4.4",
+    )
+    h.test_result(
+        "(o) section 4.4 names the empty-suites invocation",
+        "empty-suites" in section_44,
+        "The string 'empty-suites' is missing from section 4.4",
+    )
+    h.test_result(
+        "(o) section 4.4 hands a stop finding or loop exhaustion back to the caller's stop or rollback",
+        re.search(r"handed back[^.]*\bcaller", normalized_44) is not None and "rollback" in normalized_44,
+        "No wording that a stop finding or loop exhaustion is handed back to the caller's stop or rollback",
+    )
+    sentences_44 = normalized_44.split(". ")
+    h.test_result(
+        "(o) section 4.4 says a caller without the helper stops and says so",
+        any("helper" in s and "stop" in s
+            and re.search(r"without|absent|missing|unavailable|not available", s) for s in sentences_44),
+        "No sentence saying a caller without the helper stops and says so",
+    )
+
+    print()
+
+    # ============================================================================
+    # (p) Decision A wiring: empty-suite gate in Round 4 and after the Clean up / refactor commit
+    # ============================================================================
+    print("[Section p] Empty-suite gate wiring (Decision A)")
+
+    impl_path = REPO_ROOT / "commands" / "implement-with-haiku.md"
+    impl_text = impl_path.read_text(encoding="utf-8") if impl_path.exists() else ""
+    h.test_result(
+        "(p) commands/implement-with-haiku.md exists",
+        impl_path.exists(),
+        "File not found",
+    )
+    gate_at = impl_text.find("**Empty-suite gate (after the 4.4 deletions, before 4.6).**")
+    r46a_at = impl_text.find("### 4.6a Record Round 4 evidence")
+    r4_helper_at = impl_text.find("empty-suites", gate_at) if gate_at != -1 else -1
+    h.test_result(
+        "(p) Round 4 runs empty-suites after the 4.4 deletions and before the 4.6 checks",
+        gate_at != -1 and r46a_at != -1 and gate_at < r4_helper_at < r46a_at,
+        f"gate at {gate_at}, empty-suites at {r4_helper_at}, 4.6a at {r46a_at}",
+    )
+    h.test_result(
+        "(p) the Round 4 empty-suites hook defines a stop path",
+        r4_helper_at != -1 and re.search(r"\bstop", impl_text[r4_helper_at:r4_helper_at + 800], re.IGNORECASE) is not None,
+        "No stop wording within the Round 4 empty-suites hook",
+    )
+    clean_match = re.search(r"clean up\s*(?:/|and)\s*refactor", prompt_text, re.IGNORECASE)
+    clean_at = clean_match.start() if clean_match else -1
+    clean_helper_m = re.search(r"empty[- ]suite", prompt_text[clean_at:], re.IGNORECASE) if clean_at != -1 else None
+    clean_helper_at = clean_at + clean_helper_m.start() if clean_helper_m else -1
+    h.test_result(
+        "(p) the one-shot prompt runs empty-suites after the Clean up / refactor commit in Phase 2",
+        clean_at != -1 and clean_at >= phase2_at and clean_helper_at != -1,
+        f"Clean up / refactor at {clean_at}, phase 2 at {phase2_at}, empty-suites at {clean_helper_at}",
+    )
 
     print()
 

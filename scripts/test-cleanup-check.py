@@ -14,6 +14,7 @@ Usage:
                           [--impl PATH [PATH ...]] --out FILE [--names-given-file FILE]
     test-cleanup-check.py hygiene-json --scratch DIR --step implement|fix [--layout-names-given-file FILE]
                           [--skip-round2] [--skip-round4] [--flow-dir DIR] --out FILE
+    test-cleanup-check.py empty-suites --root DIR FILE [FILE ...]
 
 Output paths (overlaps --out, hygiene-json --out, layout-evidence --out and --names-given-file) are
 confined to the repo toplevel, FLOW_DIR (the environment variable, or the --flow-dir the subcommand
@@ -135,6 +136,18 @@ hygiene-json: file-only (no git). Reads the Round 2 and Round 4 hygiene evidence
   fields and the overlap fields). --out is confined as above. Prints the --out path on success. Exit 2 when --scratch
   is not a directory.
 
+empty-suites --root DIR FILE...: read-only, writes nothing. Finds test units left empty by a deletion.
+  JS/TS (.js .jsx .ts .tsx .mjs .cjs .mts .cts): a describe/suite block whose body holds only whitespace,
+  comments, hooks and other empty suites is "empty-suite" (action remove). A file whose remaining code is only
+  imports and hooks is "empty-file" (delete-file) when nothing imports it, else "empty-file-unsafe" (stop); other
+  top-level code also makes it unsafe. A suite the scanner cannot prove empty is "kept-suspicious" (report).
+  pytest (.py): a top-level Test* class with no base other than object, no test* method and no nested class is
+  "empty-class" (report). Go (_test.go): no Test/Benchmark/Fuzz/Example function is "empty-go-test-file" (report).
+  Prints one JSON object {"findings": [...]} with keys file, line, end_line, stack, kind, name, action, reason,
+  imported_by, text. Exit 1 if any finding is remove, delete-file or stop; else 0. Exit 2 when a FILE is outside
+  --root or cannot be read. A FILE that no longer exists is skipped with a stderr note, so a re-run after a
+  delete-file exits 0; a FILE with no rule for its type (for example .md) is skipped the same way.
+
 Patterns, per framework (chosen from the file extension):
   python  (.py)      def NAME(  (test body sized by the AST: the def's lines through its end_lineno,
                      plus any deeper-indented comment lines directly after it; a file that does not
@@ -165,11 +178,12 @@ import difflib
 import io
 import json
 import os
+import posixpath
 import tempfile
 import re
 import subprocess
 import sys
-from typing import Dict, List, Literal, NoReturn, Optional, Pattern, Sequence, Set, Tuple
+from typing import Dict, List, Literal, NamedTuple, NoReturn, Optional, Pattern, Sequence, Set, Tuple, TypedDict
 
 Lang = Literal["python", "js", "rust", "swift", "go"]
 Verdict = Literal["binding-edit", "violation"]
@@ -1412,6 +1426,662 @@ def cmd_layout_evidence(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# empty-suites (#498): read-only detection of test units left empty by a deletion.
+# One rule table covers JS/TS (describe suites and emptied files), pytest (empty Test* classes)
+# and Go (_test.go files with no test functions). Only JS findings are removable.
+# ---------------------------------------------------------------------------
+
+JS_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
+JS_REGEX_KEYWORDS = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw",
+                     "case", "do", "else", "yield", "await"}
+SUITE_MODIFIERS = {"skip", "only", "todo", "concurrent", "sequential", "shuffle", "each", "skipIf", "runIf"}
+# Playwright's test.describe is a suite, so its callee is matched as one and never as a test call.
+SUITE_CALLEE_RE = re.compile(r"(?<![\w$.])(?:test\s*\.\s*describe|describe|suite|fdescribe|xdescribe)(?![\w$])")
+SUITE_HEAD_RE = re.compile(r"(?:test\s*\.\s*)?(?:describe|suite|fdescribe|xdescribe)((?:\s*\.\s*\w+)*)\s*")
+CALLBACK_RE = re.compile(
+    r"(?:async\s+)?(?:function\b\s*\*?\s*[\w$]*\s*\([^()]*\)|\([^()]*\)\s*=>|[\w$]+\s*=>)\s*\{"
+)
+# A test call. test.describe is excluded: it is a suite (see SUITE_CALLEE_RE).
+TEST_CALL_RE = re.compile(r"(?<![\w$.])(?:it|test|fit|xit|xtest)(?!\s*\.\s*describe\b)(?:\s*\.\s*\w+)*\s*\(")
+HOOK_RE = re.compile(r"(?<![\w$.])(?:beforeEach|afterEach|beforeAll|afterAll)\s*\(")
+IMPORT_STMT_RE = re.compile(r"(?<![\w$.])import\b(?!\s*\()(?:[^;{]|\{[^}]*\})*?(?:;|$)", re.M)
+IMPORT_SPEC_RE = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)(['"])([^'"\n]+)\1""")
+GO_TEST_FUNC_RE = re.compile(r"^func\s+(?:Test|Benchmark|Fuzz|Example)\w*\s*\(", re.M)
+# Go test frameworks whose spec files may hold their tests outside a Test function.
+GO_FRAMEWORK_RE = re.compile(r'"github\.com/(?:onsi/(?:ginkgo|gomega)|stretchr/testify)')
+
+FindingKind = Literal["empty-suite", "kept-suspicious", "empty-file", "empty-file-unsafe", "empty-class",
+                      "empty-go-test-file"]
+FindingAction = Literal["remove", "delete-file", "stop", "report"]
+
+
+class Finding(TypedDict):
+    """One empty-suites finding, as printed in the JSON output.
+
+    A block is identified by file, line and end_line. text is its source and is the caller's content
+    match key: a consumer that removes a block checks that the text at file, line and end_line still
+    equals text, and stops if it does not. Identical blocks (the same helper copied twice) share their
+    text, so text alone never identifies a block.
+    """
+    file: str
+    line: int
+    end_line: int
+    stack: str
+    kind: FindingKind
+    name: Optional[str]
+    action: FindingAction
+    reason: Optional[str]
+    imported_by: List[str]
+    text: str
+
+
+class JsSuite(NamedTuple):
+    start: int  # index of the callee in the masked text
+    end: int  # index of the ')' that closes the outermost call
+    name: Optional[str]
+    each: bool
+    body: Optional[Tuple[int, int]]  # (index of '{', index of its matching '}')
+
+
+def _new_suite(start: int, end: int, name: Optional[str], each: bool,
+               body: Optional[Tuple[int, int]]) -> JsSuite:
+    """A JsSuite whose invariants hold: it ends at or after its start, and a body is a brace pair
+    (open before close) lying inside the call."""
+    if end < start:
+        raise ValueError("suite ends before it starts")
+    if body is not None and not (start <= body[0] < body[1] <= end):
+        raise ValueError("suite body lies outside its call")
+    return JsSuite(start, end, name, each, body)
+
+
+def _finding(rel: str, line: int, end_line: int, stack: str, kind: FindingKind, name: Optional[str],
+             action: FindingAction, reason: Optional[str], imported_by: List[str], text: str) -> Finding:
+    return {"file": rel, "line": line, "end_line": end_line, "stack": stack, "kind": kind, "name": name,
+            "action": action, "reason": reason, "imported_by": imported_by, "text": text}
+
+
+def _total_lines(src: str) -> int:
+    return len(src.splitlines()) or 1
+
+
+def _block_text(lines: List[str], line: int, end_line: int) -> str:
+    return "\n".join(lines[line - 1:end_line])
+
+
+def _line_of(src: str, index: int) -> int:
+    return src.count("\n", 0, index) + 1
+
+
+def _blank(text: str, spans: List[Tuple[int, int]]) -> str:
+    """Replace each [a, b) span with spaces, keeping newlines so line numbers stay true."""
+    chars = list(text)
+    for a, b in spans:
+        for k in range(max(a, 0), min(b, len(chars))):
+            if chars[k] != "\n":
+                chars[k] = " "
+    return "".join(chars)
+
+
+def _js_close(text: str, i: int) -> Optional[int]:
+    """Index of the bracket closing the one at text[i], or None when the brackets do not balance."""
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    stack: List[str] = []
+    j = i
+    while j < len(text):
+        c = text[j]
+        if c in pairs:
+            stack.append(pairs[c])
+        elif c in ")]}":
+            if not stack or stack.pop() != c:
+                return None
+            if not stack:
+                return j
+        j += 1
+    return None
+
+
+def _js_split_args(text: str, lo: int, hi: int) -> List[Tuple[int, int]]:
+    """Top-level comma-separated ranges in text[lo:hi]; empty when the span is blank."""
+    if text[lo:hi].strip() == "":
+        return []
+    ranges: List[Tuple[int, int]] = []
+    depth = 0
+    start = lo
+    for j in range(lo, hi):
+        c = text[j]
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif c == "," and depth == 0:
+            ranges.append((start, j))
+            start = j + 1
+    ranges.append((start, hi))
+    return ranges
+
+
+def _js_regex_ok(last: str) -> bool:
+    """Whether a '/' after the previous significant token starts a regex literal (not division).
+
+    Heuristic limit: JSX and TSX text is lexed as code. An apostrophe or backtick in JSX text
+    (`<p>Don't</p>`) starts a masked literal that runs to the end of its line, and a '/' in JSX text
+    is read by this same previous-token rule. Either can hide a brace or paren. A suite whose braces
+    then fail to balance is reported suspicious rather than removed, but no other guarantee holds for
+    JSX/TSX files.
+    """
+    if last == "":
+        return True
+    if len(last) == 1:
+        return last in "(,=:[!&|?{};+-*%<>~^"
+    return last in JS_REGEX_KEYWORDS
+
+
+def _hide(out: List[str], a: int, b: int) -> None:
+    for k in range(a, b):
+        if out[k] != "\n":
+            out[k] = " "
+
+
+def _mask_line_comment(src: str, out: List[str], i: int) -> int:
+    """Blank a // comment starting at i; returns the index of its newline (or the end of src)."""
+    j = src.find("\n", i)
+    j = len(src) if j < 0 else j
+    _hide(out, i, j)
+    return j
+
+
+def _mask_block_comment(src: str, out: List[str], i: int) -> int:
+    """Blank a /* */ comment starting at i; returns the index just past it (or the end of src)."""
+    j = src.find("*/", i + 2)
+    j = len(src) if j < 0 else j + 2
+    _hide(out, i, j)
+    return j
+
+
+def _mask_quoted(src: str, out: List[str], i: int) -> int:
+    """Blank a '...' or "..." literal starting at i. It ends at its closing quote or at the line end
+    (an unterminated literal is not carried across lines). Returns the index just past it."""
+    quote = src[i]
+    n = len(src)
+    j = i + 1
+    while j < n and src[j] != quote and src[j] != "\n":
+        j += 2 if src[j] == "\\" else 1
+    end = j + 1 if (j < n and src[j] == quote) else j
+    end = min(end, n)
+    _hide(out, i, end)
+    return end
+
+
+def _mask_regex(src: str, out: List[str], i: int) -> Optional[int]:
+    """Blank a regex literal whose opening '/' is at i. Returns the index just past it (with its flags),
+    or None when no closing '/' appears on the line, in which case the '/' is not a regex."""
+    n = len(src)
+    j = i + 1
+    in_class = False
+    while j < n and src[j] != "\n":
+        c = src[j]
+        if c == "\\":
+            j += 2
+            continue
+        if in_class:
+            if c == "]":
+                in_class = False
+        elif c == "[":
+            in_class = True
+        elif c == "/":
+            j += 1
+            while j < n and (src[j].isalnum() or src[j] == "_"):
+                j += 1
+            j = min(j, n)
+            _hide(out, i, j)
+            return j
+        j += 1
+    return None
+
+
+def _js_mask(src: str) -> str:
+    """Same-length copy of src with string, template, comment and regex contents blanked.
+
+    Template `${...}` expressions stay visible as code. Brackets and identifiers outside literals
+    survive, so brace matching and call matching can run on the masked text; names are read from src.
+    This function is the dispatch: each literal kind is blanked by its own scanner above. The lexer's
+    JSX/TSX limit is documented on _js_regex_ok.
+    """
+    out = list(src)
+    n = len(src)
+    stack: List[str] = []  # "tpl" (inside a template literal) or "expr" (inside a ${...})
+    depth: List[int] = []  # brace depth of each frame (used by "expr" frames)
+    last = ""  # previous significant token: a word, one punctuation char, or "'" after a literal
+    i = 0
+    while i < n:
+        ch = src[i]
+        top = stack[-1] if stack else "code"
+        if top == "tpl":
+            if ch == "\\":
+                _hide(out, i, min(i + 2, n))
+                i += 2
+                continue
+            if ch == "`":
+                _hide(out, i, i + 1)
+                stack.pop()
+                depth.pop()
+                last = "'"
+                i += 1
+                continue
+            if src.startswith("${", i):
+                _hide(out, i, i + 2)
+                stack.append("expr")
+                depth.append(0)
+                last = "{"
+                i += 2
+                continue
+            _hide(out, i, i + 1)
+            i += 1
+            continue
+        if ch.isspace():
+            i += 1
+            continue
+        if src.startswith("//", i):
+            i = _mask_line_comment(src, out, i)
+            continue
+        if src.startswith("/*", i):
+            i = _mask_block_comment(src, out, i)
+            continue
+        if ch in "'\"":
+            i = _mask_quoted(src, out, i)
+            last = "'"
+            continue
+        if ch == "`":
+            stack.append("tpl")
+            depth.append(0)
+            _hide(out, i, i + 1)
+            i += 1
+            continue
+        if ch == "/" and _js_regex_ok(last):
+            end = _mask_regex(src, out, i)
+            if end is not None:
+                i = end
+                last = "'"
+                continue
+        if ch == "{":
+            if top == "expr":
+                depth[-1] += 1
+            last = "{"
+            i += 1
+            continue
+        if ch == "}":
+            if top == "expr":
+                if depth[-1] == 0:
+                    stack.pop()
+                    depth.pop()
+                    _hide(out, i, i + 1)
+                    last = "'"
+                    i += 1
+                    continue
+                depth[-1] -= 1
+            last = "}"
+            i += 1
+            continue
+        if ch.isalnum() or ch in "_$":
+            j = i
+            while j < n and (src[j].isalnum() or src[j] in "_$"):
+                j += 1
+            last = src[i:j]
+            i = j
+            continue
+        last = ch
+        i += 1
+    return "".join(out)
+
+
+def _js_suite_at(masked: str, src: str, index: int) -> Optional[JsSuite]:
+    """Parse a suite call whose callee starts at index; None when it is not a recognised suite call."""
+    head = SUITE_HEAD_RE.match(masked, index)
+    if head is None:
+        return None
+    words = [w.strip() for w in head.group(1).split(".") if w.strip()]
+    if any(w not in SUITE_MODIFIERS for w in words):
+        return None
+    groups: List[Tuple[int, int]] = []
+    pos = head.end()
+    while pos < len(masked) and masked[pos] == "(":
+        close = _js_close(masked, pos)
+        if close is None:
+            # Unbalanced text: keep it visible as an unparseable suite (never removable), ending on its line.
+            nl = masked.find("\n", pos)
+            end = len(masked) - 1 if nl < 0 else max(index, nl - 1)
+            return _new_suite(index, end, None, "each" in words, None)
+        groups.append((pos, close))
+        pos = close + 1
+        while pos < len(masked) and masked[pos].isspace():
+            pos += 1
+    if not groups:
+        return None
+    open_i, close_i = groups[-1]
+    args = _js_split_args(masked, open_i + 1, close_i)
+    name: Optional[str] = None
+    if args:
+        s, e = args[0]
+        raw = src[s:e].strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"`":
+            name = raw[1:-1]
+    body: Optional[Tuple[int, int]] = None
+    if len(args) == 2:
+        cs, ce = args[1]
+        seg = masked[cs:ce]
+        lead = len(seg) - len(seg.lstrip())
+        cm = CALLBACK_RE.match(seg.lstrip())
+        if cm is not None:
+            brace = cs + lead + cm.end() - 1
+            close_b = _js_close(masked, brace)
+            if close_b is not None and masked[close_b + 1:ce].strip() == "":
+                body = (brace, close_b)
+    return _new_suite(index, close_i, name, "each" in words, body)
+
+
+def _js_suites_in(masked: str, src: str, lo: int, hi: int) -> List[JsSuite]:
+    """Direct suite children of masked[lo:hi]: suites not nested inside another suite found here."""
+    found: List[JsSuite] = []
+    last_end = -1
+    for m in SUITE_CALLEE_RE.finditer(masked, lo, hi):
+        if m.start() < last_end:
+            continue
+        suite = _js_suite_at(masked, src, m.start())
+        if suite is None:
+            continue
+        found.append(suite)
+        last_end = suite.end
+    return found
+
+
+def _blank_hooks(text: str) -> str:
+    spans: List[Tuple[int, int]] = []
+    for m in HOOK_RE.finditer(text):
+        close = _js_close(text, m.end() - 1)
+        if close is not None:
+            spans.append((m.start(), close + 1))
+    return _blank(text, spans)
+
+
+def _js_block_class(masked: str, src: str, lo: int, hi: int) -> str:
+    """'empty', 'nonempty' or 'suspicious' for the block text masked[lo:hi] (a virtual fixpoint:
+    empty child suites are blanked before the rest is judged)."""
+    body = masked[lo:hi]
+    if TEST_CALL_RE.search(body):
+        return "nonempty"
+    spans: List[Tuple[int, int]] = []
+    for child in _js_suites_in(masked, src, lo, hi):
+        cls = _js_suite_class(masked, src, child)
+        if cls != "empty":
+            return cls
+        spans.append((child.start - lo, child.end + 1 - lo))
+    rest = _blank_hooks(_blank(body, spans))
+    return "empty" if rest.replace(";", " ").strip() == "" else "suspicious"
+
+
+def _js_suite_class(masked: str, src: str, suite: JsSuite) -> str:
+    if suite.body is None:
+        return "suspicious"
+    cls = _js_block_class(masked, src, suite.body[0] + 1, suite.body[1])
+    if suite.each and cls == "empty":
+        return "suspicious"
+    return cls
+
+
+def _strip_js_ext(path: str) -> str:
+    for ext in JS_EXTS:
+        if path.endswith(ext):
+            return path[:-len(ext)]
+    return path
+
+
+def _is_config_file(fn: str) -> bool:
+    """Config files name test paths as plain text (globs, include lists), so any mention counts."""
+    low = fn.lower()
+    return "config" in low or low.endswith((".json", ".yml", ".yaml", ".toml", ".ini", ".cfg"))
+
+
+class _ImportIndex(NamedTuple):
+    """What the files under one root import or mention, read once per run (not once per deleted file)."""
+    relative: Dict[str, List[str]]  # resolved relative import target (no extension) -> importing files
+    nonrelative: List[Tuple[str, str]]  # (file, specifier) for each non-relative JS/TS import
+    texts: List[Tuple[str, str]]  # (file, text) for each config file, which may name a path in plain text
+
+
+def _build_import_index(root: str) -> _ImportIndex:
+    """Walk root once (node_modules and .git skipped). Text is decoded with errors="replace", so an
+    undecodable byte never hides a mention."""
+    relative: Dict[str, List[str]] = {}
+    nonrelative: List[Tuple[str, str]] = []
+    texts: List[Tuple[str, str]] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in ("node_modules", ".git")]
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            try:
+                with open(full, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            if _is_config_file(fn):
+                texts.append((rel, text))
+            if os.path.splitext(fn)[1] not in JS_EXTS:
+                continue
+            for m in IMPORT_SPEC_RE.finditer(text):
+                spec = m.group(2)
+                if not spec.startswith("."):
+                    nonrelative.append((rel, spec))
+                    continue
+                resolved = posixpath.normpath(posixpath.join(posixpath.dirname(rel), spec))
+                relative.setdefault(_strip_js_ext(resolved), []).append(rel)
+    return _ImportIndex(relative, nonrelative, texts)
+
+
+def _js_importers(index: _ImportIndex, target: str) -> Tuple[List[str], List[str]]:
+    """(relative importers, other mentions) of target, each sorted and never including target itself.
+
+    Other mentions are a non-relative import whose specifier names the file (an alias such as
+    "@/lib/x" cannot be resolved here, so its last segment is compared) or a config file that names
+    the file's path. Either one blocks delete-file, the same as a relative importer."""
+    stem = _strip_js_ext(target)
+    base = posixpath.basename(stem)
+    relative = sorted({f for f in index.relative.get(stem, []) if f != target})
+    other: Set[str] = set()
+    for rel, spec in index.nonrelative:
+        if rel == target:
+            continue
+        tail = spec.rstrip("/").rsplit("/", 1)[-1]
+        if stem in spec or _strip_js_ext(tail) == base:
+            other.add(rel)
+    for rel, text in index.texts:
+        if rel != target and (target in text or stem in text):
+            other.add(rel)
+    return relative, sorted(other)
+
+
+def _js_suite_shares_line(masked: str, suite: JsSuite) -> bool:
+    """Whether other code shares the suite's first or last line. Such a block is not removed whole:
+    deleting its lines would take that code with it. Reads masked text, so string contents never count."""
+    # Anything before the callee on its first line, other than a stray ';', is code this removal would take.
+    line_start = masked.rfind("\n", 0, suite.start) + 1
+    before = masked[line_start:suite.start].strip()
+    if before and before != ";":
+        return True
+    # Likewise anything after the closing paren on its last line.
+    line_end = masked.find("\n", suite.end)
+    if line_end == -1:
+        line_end = len(masked)
+    after = masked[suite.end + 1:line_end].strip()
+    return bool(after and after != ";")
+
+
+def _suite_finding(rel: str, src: str, lines: List[str], suite: JsSuite, kind: FindingKind,
+                   action: FindingAction, reason: Optional[str]) -> Finding:
+    line = _line_of(src, suite.start)
+    end_line = _line_of(src, suite.end)
+    return _finding(rel, line, end_line, "js", kind, suite.name, action, reason, [],
+                    _block_text(lines, line, end_line))
+
+
+def _classify_suites(masked: str, src: str, suites: List[JsSuite]) -> Tuple[List[JsSuite], List[JsSuite]]:
+    """(outermost empty suites, outermost kept-suspicious suites) among suites. Recurses only through
+    non-empty suites, so an empty suite nested in an empty one is reported once, for the outer one."""
+    empties: List[JsSuite] = []
+    kept: List[JsSuite] = []
+    for suite in suites:
+        cls = _js_suite_class(masked, src, suite)
+        if cls == "empty":
+            empties.append(suite)
+        elif cls == "suspicious":
+            kept.append(suite)
+        elif suite.body is not None:
+            inner_empty, inner_kept = _classify_suites(
+                masked, src, _js_suites_in(masked, src, suite.body[0] + 1, suite.body[1]))
+            empties.extend(inner_empty)
+            kept.extend(inner_kept)
+    return empties, kept
+
+
+def _js_findings(index: _ImportIndex, rel: str, src: str) -> List[Finding]:
+    masked = _js_mask(src)
+    lines = src.split("\n")
+    empties, kept = _classify_suites(masked, src, _js_suites_in(masked, src, 0, len(masked)))
+
+    # The flat file rule runs whenever no suite is kept, not only when a suite was emptied: a test file
+    # whose tests were all removed, leaving imports only, is still an emptied file. A file with no
+    # empty suites must be a test path with an import to count, so an unrelated helper is not swept in.
+    if not kept and (empties or (_is_test_path(rel) and IMPORT_STMT_RE.search(masked))):
+        spans = [(s.start, s.end + 1) for s in empties]
+        spans += [(m.start(), m.end()) for m in IMPORT_STMT_RE.finditer(masked)]
+        rest = _blank_hooks(_blank(masked, spans))
+        if not TEST_CALL_RE.search(rest):
+            other_code = rest.replace(";", " ").strip() != ""
+            relative, others = _js_importers(index, rel)
+            reasons: List[str] = []
+            if other_code:
+                reasons.append("other top-level code remains")
+            if relative:
+                reasons.append("imported by other files")
+            if others:
+                reasons.append("named by a non-relative import or a config file")
+            total = _total_lines(src)
+            if reasons:
+                return [_finding(rel, 1, total, "js", "empty-file-unsafe", None, "stop", "; ".join(reasons),
+                                 sorted(set(relative) | set(others)), src)]
+            return [_finding(rel, 1, total, "js", "empty-file", None, "delete-file", None, [], src)]
+
+    findings: List[Finding] = []
+    for suite in kept:
+        findings.append(_suite_finding(rel, src, lines, suite, "kept-suspicious", "report",
+                                       "body holds code that is not provably empty"))
+    for suite in empties:
+        if _js_suite_shares_line(masked, suite):
+            findings.append(_suite_finding(rel, src, lines, suite, "kept-suspicious", "report",
+                                           "shares a line with other code"))
+        else:
+            findings.append(_suite_finding(rel, src, lines, suite, "empty-suite", "remove", None))
+    return findings
+
+
+def _py_findings(rel: str, src: str) -> List[Finding]:
+    total = _total_lines(src)
+    try:
+        tree = ast.parse(src, filename=rel)
+    except (SyntaxError, ValueError):
+        return [_finding(rel, 1, total, "python", "kept-suspicious", None, "report",
+                         "file does not parse", [], src)]
+    lines = src.split("\n")
+    findings: List[Finding] = []
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or not node.name.startswith("Test") or node.keywords:
+            continue
+        if node.bases and not (len(node.bases) == 1 and isinstance(node.bases[0], ast.Name)
+                               and node.bases[0].id == "object"):
+            continue
+        if any(isinstance(m, ast.ClassDef) for m in node.body):
+            continue
+        if any(isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name.startswith("test")
+               for m in node.body):
+            continue
+        end = node.end_lineno or node.lineno
+        findings.append(_finding(rel, node.lineno, end, "python", "empty-class", node.name, "report", None,
+                                 [], _block_text(lines, node.lineno, end)))
+    return findings
+
+
+def _go_findings(rel: str, src: str) -> List[Finding]:
+    if GO_TEST_FUNC_RE.search(src):
+        return []
+    # Report only. A helper file with no tests can be legitimate, and a Ginkgo or testify file can
+    # keep its specs outside a Test function, so the reason names that possible false positive.
+    reason = "no Test, Benchmark, Fuzz or Example function; a helper or framework file can be legitimate (possible false positive)"
+    return [_finding(rel, 1, _total_lines(src), "go", "empty-go-test-file", None, "report", reason, [], src)]
+
+
+def _empty_stack(rel: str) -> Optional[str]:
+    if rel.endswith("_test.go"):
+        return "go"
+    ext = os.path.splitext(rel)[1]
+    if ext in JS_EXTS:
+        return "js"
+    if ext == ".py":
+        return "python"
+    return None
+
+
+def _inside_root(root: str, raw: str) -> Optional[str]:
+    """Real path of raw (relative to root, or absolute) when it lies strictly inside root; else None."""
+    full = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(root, raw))
+    try:
+        inside = full != root and os.path.commonpath([root, full]) == root
+    except ValueError:
+        # Different drives, or a mix of absolute and relative paths: never inside.
+        inside = False
+    return full if inside else None
+
+
+def cmd_empty_suites(args: argparse.Namespace) -> int:
+    root = os.path.realpath(args.root)
+    if not os.path.isdir(root):
+        print(f"error: --root is not a directory: {args.root!r}", file=sys.stderr)
+        return 2
+    index: Optional[_ImportIndex] = None  # built on the first JS file, once per run
+    findings: List[Finding] = []
+    for raw in args.files:
+        full = _inside_root(root, raw)
+        if full is None:
+            print(f"error: path is outside --root: {raw!r}", file=sys.stderr)
+            return 2
+        if not os.path.exists(full):
+            # Already deleted (a re-run after delete-file): nothing left to scan, not an error.
+            print(f"skipped: {raw!r} does not exist", file=sys.stderr)
+            continue
+        rel = os.path.relpath(full, root).replace(os.sep, "/")
+        stack = _empty_stack(rel)
+        if stack is None:
+            print(f"skipped: {raw!r} has no empty-suites rule for its file type", file=sys.stderr)
+            continue
+        try:
+            with open(full, encoding="utf-8") as fh:
+                src = fh.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"error: cannot read {raw!r}: {exc}", file=sys.stderr)
+            return 2
+        if stack == "js":
+            if index is None:
+                index = _build_import_index(root)
+            findings.extend(_js_findings(index, rel, src))
+        elif stack == "python":
+            findings.extend(_py_findings(rel, src))
+        else:
+            findings.extend(_go_findings(rel, src))
+    findings.sort(key=lambda f: (f["file"], f["line"], f["end_line"], f["kind"], str(f["name"])))
+    print(json.dumps({"findings": findings}, sort_keys=True))
+    return 1 if any(f["action"] in ("remove", "delete-file", "stop") for f in findings) else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deterministic checks for /implement-with-haiku spec-blind tests.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1485,6 +2155,11 @@ def build_parser() -> argparse.ArgumentParser:
     layout_ev.add_argument("--names-given-file", default=None, dest="names_given_file",
                            help="file to receive true/false (default: <flow-dir or scratch>/layout-names-given.txt)")
 
+    # empty-suites subcommand (read-only)
+    empty = sub.add_parser("empty-suites", help="read-only: test units left empty after a deletion (JSON findings)")
+    empty.add_argument("--root", required=True, help="repo root; every FILE must resolve inside it")
+    empty.add_argument("files", nargs="*", metavar="FILE", help="touched files to check")
+
     return parser
 
 
@@ -1512,6 +2187,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_hygiene_json(args)
     if args.cmd == "layout-evidence":
         return cmd_layout_evidence(args)
+    if args.cmd == "empty-suites":
+        return cmd_empty_suites(args)
     return 1
 
 

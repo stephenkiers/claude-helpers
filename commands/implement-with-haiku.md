@@ -2435,6 +2435,10 @@ the framework's documented default and note in the final summary that no in-repo
 
 Read `~/.claude/prompts/test-cleanup-reference.md` for sections 4.3 (Classify), 4.4 (Delete), 4.5 (Relocate, rename and merge), and 4.6 (Verify green, then commit). The reference doc holds the shared cleanup doctrine used by both `/implement-with-haiku` and `/expert-test-cleanup` (#463).
 
+**Empty-suite gate (after the 4.4 deletions, before 4.6).** Once the 4.4 deletions are on disk, run the helper over the files those deletions touched that still exist:
+`python3 "$HOME/.claude/scripts/test-cleanup-check.py" empty-suites --root "<repo root>" <touched files>`.
+Apply its loop from the reference's 4.4 "Empty suites" section, at most 3 rounds: remove each `remove` block using its `line`, `end_line` and echoed `text` together; `git rm` each `delete-file` file; stop on any `stop` finding; re-run over the touched files that still exist until exit 0. A `stop` finding, helper exit 2, a `remove` whose text does not match its lines, or a loop still not clean after 3 rounds is a Round 4 stop: restore each touched path with `git checkout HEAD -- <path>`, record `empty-suites: <reason>` in the Round 4 evidence, and do not run 4.6 or commit. A clean loop leaves the tree 4.6 checks.
+
 ### 4.6a Record Round 4 evidence
 
 Once the cleanup commit from 4.6 has landed and check (d) holds, write the Round 4 evidence. The first line keeps its
