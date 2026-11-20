@@ -66,7 +66,7 @@ def read_state(flow: Path) -> dict:  # type: ignore[type-arg]
     return json.loads((flow / "state.json").read_text(encoding="utf-8"))
 
 
-def test_resume_reasks_step_gate(flow: Path) -> None:
+def test_resume_clears_step_gate_pause(flow: Path) -> None:
     paused_flow(flow, "plan", "gate-paused")
     answer = flow / "answers" / "plan-a1-gate.json"
     answer.parent.mkdir(parents=True)
@@ -79,7 +79,7 @@ def test_resume_reasks_step_gate(flow: Path) -> None:
     expect((flow / "archive" / "plan" / "a1.answer-1.json").exists(), "the answer is not in the archive")
 
 
-def test_resume_reasks_merge_hold(flow: Path) -> None:
+def test_resume_clears_merge_hold(flow: Path) -> None:
     paused_flow(flow, "ship", "merge-held")
     answer = flow / "answers" / "merge-a1-merge-gate.json"
     answer.parent.mkdir(parents=True)
@@ -117,8 +117,8 @@ def test_resume_needs_landed_attempt(flow: Path) -> None:
 
 
 CHECKS = [
-    ("1: resume re-asks a paused step gate", test_resume_reasks_step_gate),
-    ("2: resume re-asks a held merge gate", test_resume_reasks_merge_hold),
+    ("1: resume clears a paused step gate stop and archives its answer", test_resume_clears_step_gate_pause),
+    ("2: resume clears a held merge gate stop and archives the Hold answer", test_resume_clears_merge_hold),
     ("3: other stops are refused", test_resume_refused_for_other_stops),
     ("4: a failed flow is refused", test_resume_refused_when_failed),
     ("5: no landed attempt is refused", test_resume_needs_landed_attempt),

@@ -62,6 +62,7 @@ def test_reverify_reasks_the_merge_gate(base: Path) -> None:
     code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=env)
     verb, _ = next_line(out)
     expect(verb == "STOP", f"the PR is still on the other head, so the re-read must stop again, got {verb}")
+    expect(state_of(flow)["stop_reason"]["ship"].startswith("merge-head-mismatch"), "the second stop is not a head mismatch")
     open_pr(head)  # the PR now matches the shipped head
     code, _, err = run_cli(home, "recover", "--flow", str(flow), "--choice", "reverify", extra_env=env)
     expect(code == 0, f"second reverify exited {code}: {err}")
