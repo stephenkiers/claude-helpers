@@ -1797,7 +1797,7 @@ def check_empty_suites(h):
         outside.write_text(ACCEPT_1_TS)
         rc, findings, out, err = run_empty_suites(root, [str(outside)])
         h.test_result("empty-suites fixture 17: a FILE outside --root exits 2 with a stderr message",
-                      rc == 2 and err.strip() != "", f"rc={rc} err={err!r}")
+                      rc == 2 and "outside --root" in err, f"rc={rc} err={err!r}")
 
     # Fixture 18: a Markdown argument produces no finding and exits 0.
     with tempfile.TemporaryDirectory() as tmp:

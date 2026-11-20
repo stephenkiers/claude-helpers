@@ -14,6 +14,7 @@ Usage:
                           [--impl PATH [PATH ...]] --out FILE [--names-given-file FILE]
     test-cleanup-check.py hygiene-json --scratch DIR --step implement|fix [--layout-names-given-file FILE]
                           [--skip-round2] [--skip-round4] [--flow-dir DIR] --out FILE
+    test-cleanup-check.py empty-suites --root DIR FILE [FILE ...]
 
 Output paths (overlaps --out, hygiene-json --out, layout-evidence --out and --names-given-file) are
 confined to the repo toplevel, FLOW_DIR (the environment variable, or the --flow-dir the subcommand
@@ -1458,9 +1459,10 @@ FindingAction = Literal["remove", "delete-file", "stop", "report"]
 class Finding(TypedDict):
     """One empty-suites finding, as printed in the JSON output.
 
-    A block is identified by file, line and end_line. text is its source, for display only: identical
-    blocks (the same helper copied twice) share their text, so a consumer that removes a block must
-    match file, line and end_line together, never text alone.
+    A block is identified by file, line and end_line. text is its source and is the caller's content
+    match key: a consumer that removes a block checks that the text at file, line and end_line still
+    equals text, and stops if it does not. Identical blocks (the same helper copied twice) share their
+    text, so text alone never identifies a block.
     """
     file: str
     line: int
