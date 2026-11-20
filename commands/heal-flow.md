@@ -28,9 +28,12 @@ only when the failure needs them; don't restate them.
    record, `--resume <flow> --redo <plan|review>` for a bad plan or review. Never weaken a test or guard to pass a
    check, and never write or edit `steps/*` receipts. If flow state itself looks wrong and no sanctioned writer covers
    it, report it and stop.
-4. **Write no flow state.** Never append `taken-over`, `accepted` or any lifecycle line to `log.md`, and never edit
-   `state.json`, `steps/*` or `human.jsonl`. Resume re-runs the failed step under full validation and audit, so the
-   heal is checked, not attested. If `status` is `failed` and `failures[STEP]` is 2 or more, resume stops with
+4. **Write no flow state by hand.** Never append `taken-over`, `accepted` or any lifecycle line to `log.md`, and never
+   edit `state.json`, `steps/*` or `human.jsonl`. Writes the sanctioned tools make themselves (`deps ensure`,
+   `checks validate`, `scripts/flow-ledger.py`) are allowed; only hand-edits are forbidden. When `status` is `failed`
+   and `failures[STEP]` is under 2, resume re-runs the failed step under full validation, so the heal is checked, not
+   attested. In any other state (paused at a gate, or the newest log line is `ok`) resume goes to the gate and does not
+   re-run the step, so the heal commit is not validated: say so. If `status` is `failed` and `failures[STEP]` is 2 or more, resume stops with
    `attempts exhausted`: say so, and tell the human the way forward is the flow's own Hard stop menu (Take over or
    Accept and continue), which only they can choose.
 5. **Unblock.** If a human call is needed (an approval, an ambiguous direction, a destructive step), ask once with a
