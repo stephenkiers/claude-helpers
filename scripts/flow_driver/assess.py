@@ -10,6 +10,7 @@ writes disposition markers, and invokes the v1 outstanding gate.
 Python 3.8 floor: typing.Literal, Optional, Tuple, Dict, List, Union only.
 """
 
+import dataclasses
 import json
 import os
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 
 from . import relay
 from .preflight import run_command
-from .state import LockedFlow, Step, V2State
+from .state import LockedFlow, Step, V2State, mutating
 
 
 # Closed result type for assess_next orchestration
@@ -61,31 +62,42 @@ AssessOutcome = Union[AssessSpawn, AssessAsk, AssessAdvance, AssessStop]
 # Frozen dataclasses for precomputed results and assessor input
 @dataclass(frozen=True)
 class AssessmentItem:
-    """One outstanding item with precomputed driver-side checks."""
+    """
+    One outstanding item with precomputed driver-side checks.
+
+    range_ok and anchor_ok are inert today: v2 outstanding items carry no "range" or "anchor" keys (get_outstanding_set
+    never sets them), so both stay None and are not wired to anything. already_done is also always None here, since the
+    already-done judgment is the assessor's. leave_as_is_safe is therefore True for every item until a range or anchor
+    source exists; the assessor record's own leave_as_is_safe is checked as well when the batch is built.
+    """
 
     id: str  # unique item id
     title: str  # from the outstanding set
     # Precomputed checks (all either a result or a reason why it stays outstanding)
-    range_ok: Optional[str]  # None if OK, else error reason
-    anchor_ok: Optional[str]  # None if OK, else error reason
+    range_ok: Optional[str]  # None if OK, else error reason (inert: no range source yet)
+    anchor_ok: Optional[str]  # None if OK, else error reason (inert: no anchor source yet)
     already_done: Optional[bool]  # None if check failed, True/False if confirmed
     leave_as_is_safe: bool  # True if already_done=False OR both checks passed
 
 
 @dataclass(frozen=True)
 class AssessRecord:
-    """Parsed assessor output for one item (typed closed fields)."""
+    """
+    Parsed assessor output for one item. A field the assessor left out is None, never a default; the parser fails
+    closed on malformed output. status and kind are required by parse_assessor_output; a missing leave_as_is_safe
+    is None, which is treated as not safe.
+    """
 
     id: str
-    status: str  # "done", "open", etc.
-    kind: str  # item classification
-    scope: str  # "isolated", "cross-file", etc.
-    leave_as_is_safe: bool
-    cause: str  # why it's outstanding
-    evidence: str  # what was checked
-    finish_plan: str  # how to finish
-    verification_proof: str  # how to verify
-    options: List[str]  # the assessor's recommended options
+    status: Optional[str]  # "done", "open", etc.
+    kind: Optional[str]  # item classification
+    scope: Optional[str]  # "isolated", "cross-file", etc.
+    leave_as_is_safe: Optional[bool]  # None when absent (treated as not safe)
+    cause: Optional[str]  # why it's outstanding
+    evidence: Optional[str]  # what was checked
+    finish_plan: Optional[str]  # how to finish
+    verification_proof: Optional[str]  # how to verify
+    options: Optional[List[str]]  # the assessor's recommended options, None when absent
 
 
 _OUTSTANDING_STEPS: Tuple[Step, ...] = ("implement", "fix")
@@ -201,7 +213,9 @@ def compute_assessments(
     """
     Compute driver-side checks for each outstanding item.
 
-    For each item, run range check, anchor check, and already-done check in driver Python.
+    For each item, run the range and anchor checks in driver Python when the item carries a "range" or "anchor" key.
+    That is inert today: v2 receipts produce no such keys, so the checks never run and range_ok/anchor_ok stay None.
+    They are kept, documented and unit-testable, but not wired to a source. The already-done check is the assessor's.
     Returns (items_with_checks, error_reason).
     """
     assessments: List[AssessmentItem] = []
@@ -286,10 +300,14 @@ def write_assessment_results(flow: Path, assessments: List[AssessmentItem]) -> P
         ]
     }
 
-    with open(results_file, "w") as f:
+    with open(results_file, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
     return results_file
+
+
+_TRUE_WORDS = ("true", "yes", "1")
+_FALSE_WORDS = ("false", "no", "0")
 
 
 def parse_assessor_record(line: str) -> Optional[AssessRecord]:
@@ -299,45 +317,48 @@ def parse_assessor_record(line: str) -> Optional[AssessRecord]:
     Format: <id> | status=<status> | kind=<kind> | scope=<scope> | leave_as_is_safe=<bool> |
             cause=<cause> | evidence=<evidence> | finish_plan=<plan> | verification_proof=<proof> | options=<csv>
 
-    Returns parsed record or None if line does not parse.
+    An absent field is None (not a default). Returns None, failing closed, when the line has no id, a segment is not
+    key=value, or leave_as_is_safe is neither a true nor a false word.
     """
     parts = [p.strip() for p in line.split("|")]
 
     if len(parts) < 2:
         return None
 
-    item_id = parts[0].strip()
+    item_id = parts[0]
+    if not item_id:
+        return None
     fields: Dict[str, str] = {}
 
     for part in parts[1:]:
         if "=" not in part:
-            continue
+            return None
         key, _, value = part.partition("=")
         fields[key.strip()] = value.strip()
 
-    # Parse required fields
-    status = fields.get("status", "unknown")
-    kind = fields.get("kind", "unknown")
-    scope = fields.get("scope", "unknown")
-    leave_safe_str = fields.get("leave_as_is_safe", "false")
-    leave_safe = leave_safe_str.lower() in ("true", "yes", "1")
-    cause = fields.get("cause", "")
-    evidence = fields.get("evidence", "")
-    finish_plan = fields.get("finish_plan", "")
-    verification_proof = fields.get("verification_proof", "")
-    options_str = fields.get("options", "")
-    options = [o.strip() for o in options_str.split(",") if o.strip()] if options_str else []
+    leave_safe: Optional[bool] = None
+    if "leave_as_is_safe" in fields:
+        word = fields["leave_as_is_safe"].lower()
+        if word in _TRUE_WORDS:
+            leave_safe = True
+        elif word in _FALSE_WORDS:
+            leave_safe = False
+        else:
+            return None
+
+    options_str = fields.get("options")
+    options = [o.strip() for o in options_str.split(",") if o.strip()] if options_str else None
 
     return AssessRecord(
         id=item_id,
-        status=status,
-        kind=kind,
-        scope=scope,
+        status=fields.get("status"),
+        kind=fields.get("kind"),
+        scope=fields.get("scope"),
         leave_as_is_safe=leave_safe,
-        cause=cause,
-        evidence=evidence,
-        finish_plan=finish_plan,
-        verification_proof=verification_proof,
+        cause=fields.get("cause"),
+        evidence=fields.get("evidence"),
+        finish_plan=fields.get("finish_plan"),
+        verification_proof=fields.get("verification_proof"),
         options=options,
     )
 
@@ -346,9 +367,8 @@ def parse_assessor_output(assessor_text: str) -> Tuple[List[AssessRecord], Optio
     """
     Parse assessor output (one record per line) into typed AssessRecords.
 
-    Returns (records, error_reason). Unknown keys, duplicate ids, or missing fields cause
-    an error. An unknown key in one record does not fail the whole parse; a duplicate id or
-    missing field does.
+    Returns (records, error_reason). A malformed line, a duplicate id, or a missing status or kind is an error (fail
+    closed); any other absent field is None on the record rather than a default.
     """
     records: List[AssessRecord] = []
     seen_ids: Set[str] = set()
@@ -377,7 +397,12 @@ def parse_assessor_output(assessor_text: str) -> Tuple[List[AssessRecord], Optio
 
 
 def write_assess_report(flow: Path, assessments: List[AssessmentItem], assessor_records: Dict[str, AssessRecord]) -> None:
-    """Write steps/07-assess.md report."""
+    """
+    Write steps/07-assess.md report.
+
+    An ALREADY DONE item is the assessor's judgment and is unverified by the driver: the driver's own checks are inert
+    (see AssessmentItem), so a done answer is never confirmed against code. It is reported, and it needs no answer.
+    """
     report_file = flow / "steps" / "07-assess.md"
     report_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -412,18 +437,91 @@ def write_assess_report(flow: Path, assessments: List[AssessmentItem], assessor_
 
         lines.append("")
 
-    with open(report_file, "w") as f:
+    with open(report_file, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
+
+
+def done_set_path(flow: Path, seq: int) -> Path:
+    """Where the already-done ids of assess batch seq are persisted (read by the disposition gate)."""
+    return flow / "steps" / f"07-assess-done-{seq}.json"
+
+
+def _read_done_set(flow: Path, seq: int) -> Tuple[Optional[List[str]], Optional[str]]:
+    """The persisted already-done ids for seq, as (ids, None); or (None, error reason) when absent or malformed."""
+    path = done_set_path(flow, seq)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return None, f"cannot read {path.name}: {e}"
+    done = data.get("done") if isinstance(data, dict) else None
+    if not isinstance(done, list) or not all(isinstance(i, str) for i in done):
+        return None, f"{path.name} is malformed"
+    return sorted(done), None
+
+
+def persist_done_set(flow: Path, seq: int, done_ids: List[str]) -> Optional[str]:
+    """
+    Persist the already-done ids for batch seq, fixed once. The disposition gate skips exactly these ids and requires an
+    answer for every other outstanding item. A later call that would persist a different set is refused, not overwritten.
+    Returns an error reason, else None.
+    """
+    path = done_set_path(flow, seq)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"done": sorted(done_ids)}, indent=2, sort_keys=True) + "\n"
+    try:
+        relay.write_exclusive(path, payload)
+        return None
+    except FileExistsError:
+        pass
+    except OSError as e:
+        return f"cannot write {path.name}: {e}"
+    existing, err = _read_done_set(flow, seq)
+    if err is not None:
+        return err
+    if existing != sorted(done_ids):
+        return f"{path.name} was fixed with a different already-done set"
+    return None
+
+
+def _load_questions(flow: Path, seq: int) -> Tuple[Optional[Dict[str, List[str]]], Optional[str]]:
+    """
+    {question id: options} from questions/assess-<seq>.json, as (questions, None). An absent file is an empty batch;
+    an unreadable or malformed one is (None, error reason), so the gate fails closed instead of passing.
+    """
+    path = flow / "questions" / f"assess-{seq}.json"
+    if not path.exists():
+        return {}, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return None, f"cannot read {path.name}: {e}"
+    qs = data.get("questions") if isinstance(data, dict) else None
+    if not isinstance(qs, list):
+        return None, f"{path.name} has no questions list"
+    out: Dict[str, List[str]] = {}
+    for q in qs:
+        if not (isinstance(q, dict) and isinstance(q.get("id"), str) and isinstance(q.get("options"), list)):
+            return None, f"{path.name} has a malformed question"
+        out[q["id"]] = [str(o) for o in q["options"]]
+    return out, None
 
 
 def invoke_outstanding_gate(flow: Path, seq: int = 1) -> Optional[str]:
     """
-    The v2 disposition gate: every item in the derived outstanding set has an answer in answers/assess-<seq>.json,
-    every answer label is a real option for it, and a Drop carries a note. Returns an error reason, else None.
+    The v2 disposition gate, fail closed. Each item of the derived outstanding set must be either in the persisted
+    already-done set for seq (skipped), or answered in answers/assess-<seq>.json with a label that is one of its asked
+    options; a Drop carries a note. Every asked question must be answered. An unreadable or malformed questions, done-set
+    or answers file is an error, never a pass. Returns an error reason, else None.
     """
     items, err = get_outstanding_set(flow)
     if err:
         return err
+    done, done_err = _read_done_set(flow, seq)
+    if done_err is not None or done is None:
+        return done_err or "the already-done set is missing"
+    questions, q_err = _load_questions(flow, seq)
+    if q_err is not None or questions is None:
+        return q_err or "the questions file is missing"
     answers_file = flow / "answers" / f"assess-{seq}.json"
     try:
         data = json.loads(answers_file.read_text(encoding="utf-8"))
@@ -433,38 +531,37 @@ def invoke_outstanding_gate(flow: Path, seq: int = 1) -> Optional[str]:
     notes = data.get("annotations") if isinstance(data, dict) else None
     if not isinstance(answers, dict):
         return f"{answers_file.name} has no answers map"
-    ids = [str(i["id"]) for i in items]
-    questions = _read_questions(flow, seq)
-    for item_id in ids:
+    done_set = set(done)
+    for item in items:
+        item_id = str(item["id"])
+        if item_id in done_set:
+            continue  # the assessor's already-done judgment: never asked
+        if item_id not in questions:
+            return f"item {item_id} has no disposition"
         label = answers.get(item_id)
         if not isinstance(label, str):
-            if item_id in questions:
-                return f"item {item_id} has no disposition"
-            continue  # already-done items are never asked
-        if item_id in questions and label not in questions[item_id]:
+            return f"item {item_id} has no disposition"
+        if label not in questions[item_id]:
             return f"item {item_id}: {label!r} is not one of its options"
         if label == "Drop with a reason":
             note = notes.get(item_id) if isinstance(notes, dict) else None
             if not (isinstance(note, dict) and str(note.get("notes", "")).strip()):
                 return f"item {item_id}: Drop needs a reason"
-    asked_missing = [q for q in questions if q not in answers]
-    if asked_missing:
-        return f"item {asked_missing[0]} has no disposition"
+    for asked_id in questions:
+        if not isinstance(answers.get(asked_id), str):
+            return f"item {asked_id} has no disposition"
     return None
 
 
 def _read_questions(flow: Path, seq: int) -> Dict[str, List[str]]:
-    """{question id: options} from questions/assess-<seq>.json; {} when absent or malformed."""
-    try:
-        data = json.loads((flow / "questions" / f"assess-{seq}.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    """
+    {question id: options} from questions/assess-<seq>.json for the loop's --item answers; {} when absent or unreadable.
+    The disposition gate does not use this (it uses _load_questions and fails closed on the same file).
+    """
+    questions, err = _load_questions(flow, seq)
+    if err is not None or questions is None:
         return {}
-    out: Dict[str, List[str]] = {}
-    qs = data.get("questions") if isinstance(data, dict) else None
-    for q in qs if isinstance(qs, list) else []:
-        if isinstance(q, dict) and isinstance(q.get("id"), str) and isinstance(q.get("options"), list):
-            out[q["id"]] = [str(o) for o in q["options"]]
-    return out
+    return questions
 
 
 def prepare_assess_batch(
@@ -473,9 +570,16 @@ def prepare_assess_batch(
     state: V2State,
     assessments: List[AssessmentItem],
     assessor_records: Dict[str, AssessRecord],
+    attempt: int = 1,
 ) -> Tuple[V2State, Optional[str]]:
     """
     Prepare the assess batch questions and park for answering.
+
+    The batch is keyed by the verify attempt: questions/assess-<attempt>.json, answers/assess-<attempt>.json and the
+    parked nn are all attempt, so a later assess stage never reads an earlier attempt's batch. "Leave as-is" is offered
+    only when both the driver's check (item.leave_as_is_safe) and the assessor's record (leave_as_is_safe) say so. A
+    record missing for an unfinished item is an error, not a silent skip. A "done" record is the assessor's unverified
+    judgment and is never asked.
 
     Returns (new_state, error_reason).
     """
@@ -489,21 +593,18 @@ def prepare_assess_batch(
         # All items already done
         return state, None
 
-    # Create assess batch question (v1 shape: questions/assess-<SEQ>.json)
-    # SEQ is allocated once per assess stage
-    seq = 1
+    seq = attempt
     questions = []
 
     for item in unfinished:
         record = assessor_records.get(item.id)
-        if not record:
-            # No assessor record for this item (error case)
-            continue
+        if record is None:
+            return state, f"no assessor record for unfinished item {item.id}"
 
         # Build the question for this item
         options_list = list(record.options) if record.options else []
         options_list.append("Open an issue")
-        if item.leave_as_is_safe:
+        if item.leave_as_is_safe and record.leave_as_is_safe is True:
             options_list.append("Leave as-is")
         options_list.append("Pause to finish by hand")
         options_list.append("Drop with a reason")
@@ -518,15 +619,14 @@ def prepare_assess_batch(
         questions.append(question)
 
     if not questions:
-        # All items already done
         return state, None
 
-    # Write the assess batch question file
+    # Write the assess batch question file (v1 shape: questions/assess-<SEQ>.json, SEQ = attempt)
     batch_data = {"questions": questions}
     batch_file = flow / "questions" / f"assess-{seq}.json"
     batch_file.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(batch_file, "w") as f:
+    with open(batch_file, "w", encoding="utf-8") as f:
         json.dump(batch_data, f, indent=2)
 
     # Park the assess batch
@@ -540,7 +640,7 @@ def prepare_assess_batch(
     relay.park(
         locked, flow,
         step="assess",
-        attempt=1,
+        attempt=attempt,
         kind="assess",
         nn=seq,
         item=first_item_id,
@@ -621,45 +721,39 @@ def save_item_answer(
         note: Optional note (required for Drop)
         unanswered_qids: Set of remaining unanswered question ids
 
-    Returns error reason if the answer is refused, else None.
-
-    Raises or returns error if:
-    - qid is not in the driver's outstanding set
-    - label is not a valid option for that question
-    - Drop without a note
-    - Leave-as-is where leave_as_is_safe != yes
+    Returns error reason if the answer is refused, else None. Nothing is written when refused. Refused when:
+    - qid is not a question of the batch for seq (the questions file is absent, unreadable or does not name it);
+    - label is not one of qid's asked options (so Leave as-is is refused for an item not offered it, i.e. one that is
+      not leave_as_is_safe on both the driver's check and the assessor's record);
+    - the label is "Drop with a reason" and no note was given;
+    - qid was already answered (the answer file is created exclusively).
     """
-    from .state import mutating
-
     # Validate the note requirement
     if label == "Drop with a reason" and not note:
         return "answer refused: Drop requires a note (--note)"
+
+    # The item must be a question of this batch, and the label one of its options
+    asked, asked_err = _load_questions(flow, seq)
+    if asked_err is not None or asked is None:
+        return f"answer refused: {asked_err or 'no assess batch'}"
+    if qid not in asked:
+        return f"answer refused: {qid} is not an item of the assess batch"
+    if label not in asked[qid]:
+        return f"answer refused: {label!r} is not an option for {qid}"
 
     # Create per-item answer file: answers/assess-<SEQ>.d/<qid>.json
     answer_dir = flow / "answers" / f"assess-{seq}.d"
     answer_dir.mkdir(parents=True, exist_ok=True)
     answer_file = answer_dir / f"{qid}.json"
 
-    # Use exclusive create (O_EXCL)
+    payload: Dict[str, str] = {"qid": qid, "label": label}
+    if note:
+        payload["note"] = note
     try:
-        fd = os.open(str(answer_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        try:
-            with os.fdopen(fd, "w") as f:
-                payload = {
-                    "qid": qid,
-                    "label": label,
-                }
-                if note:
-                    payload["note"] = note
-                json.dump(payload, f, indent=2, sort_keys=True)
-                f.write("\n")
-        except Exception:
-            os.close(fd)
-            answer_file.unlink(missing_ok=True)
-            raise
+        relay.write_exclusive(answer_file, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     except FileExistsError:
         return f"answer refused: {qid} already answered"
-    except Exception as e:
+    except OSError as e:
         return f"answer refused: could not write answer: {e}"
 
     # Advance state.parked.item to the next unanswered qid
@@ -676,7 +770,6 @@ def save_item_answer(
     with mutating(flow) as locked:
         state = locked.require_state()
         if state.parked and state.parked.kind == "assess":
-            import dataclasses
             new_parked = dataclasses.replace(state.parked, item=next_item)
             new_state = dataclasses.replace(state, parked=new_parked)
             locked.commit(new_state)
@@ -696,9 +789,8 @@ def assemble_answers(flow: Path, seq: int) -> Optional[str]:
         return f"assemble_answers: questions file not found: {question_file}"
 
     try:
-        with open(question_file, "r") as f:
-            questions_data = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
+        questions_data = json.loads(question_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
         return f"assemble_answers: cannot read questions: {e}"
 
     if not isinstance(questions_data, dict) or not isinstance(questions_data.get("questions"), list):
@@ -721,9 +813,8 @@ def assemble_answers(flow: Path, seq: int) -> Optional[str]:
             return f"assemble_answers: unanswered item {qid}"
 
         try:
-            with open(answer_file, "r") as f:
-                answer_data = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
+            answer_data = json.loads(answer_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
             return f"assemble_answers: cannot read answer for {qid}: {e}"
 
         if not isinstance(answer_data, dict):
@@ -741,23 +832,15 @@ def assemble_answers(flow: Path, seq: int) -> Optional[str]:
 
     # Write the assembled answers file
     assembled_file = flow / "answers" / f"assess-{seq}.json"
+    payload = {
+        "answers": answers_map,
+        "annotations": annotations_map,
+    }
     try:
-        fd = os.open(str(assembled_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        try:
-            with os.fdopen(fd, "w") as f:
-                payload = {
-                    "answers": answers_map,
-                    "annotations": annotations_map,
-                }
-                json.dump(payload, f, indent=2, sort_keys=True)
-                f.write("\n")
-        except Exception:
-            os.close(fd)
-            assembled_file.unlink(missing_ok=True)
-            raise
+        relay.write_exclusive(assembled_file, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     except FileExistsError:
         return "assemble_answers: answers file already exists"
-    except Exception as e:
+    except OSError as e:
         return f"assemble_answers: cannot write answers: {e}"
 
     return None
@@ -776,9 +859,9 @@ def write_disposition_marker(flow: Path, seq: int) -> Optional[str]:
     content = f"# Assess Disposition\n\n`answer_ref answers/assess-{seq}.json`\n"
 
     try:
-        with open(marker_file, "w") as f:
+        with open(marker_file, "w", encoding="utf-8") as f:
             f.write(content)
-    except Exception as e:
+    except OSError as e:
         return f"write_disposition_marker: cannot write marker: {e}"
 
     return None
@@ -890,13 +973,18 @@ def assess_next(
         return AssessStop(code="assess-error", reason=f"assessor gave no record for {missing[0]}")
     write_assess_report(flow, assessments, by_id)
 
-    seq = 1
+    # Every artifact of this stage is keyed by the verify attempt (seq), so a later attempt never reads these
+    seq = attempt
+    done_ids = [i.id for i in assessments if by_id[i.id].status == "done"]
+    persist_err = persist_done_set(flow, seq, done_ids)
+    if persist_err:
+        return AssessStop(code="assess-error", reason=persist_err)
     questions_file = flow / "questions" / f"assess-{seq}.json"
     answers_file = flow / "answers" / f"assess-{seq}.json"
     unfinished = [i for i in assessments if by_id[i.id].status != "done"]
 
     if unfinished and not questions_file.exists():
-        _, batch_err = prepare_assess_batch(locked, flow, state, assessments, by_id)
+        _, batch_err = prepare_assess_batch(locked, flow, state, assessments, by_id, attempt)
         if batch_err:
             return AssessStop(code="assess-error", reason=batch_err)
         return AssessAsk()

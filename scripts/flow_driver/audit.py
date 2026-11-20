@@ -10,15 +10,13 @@ Python 3.8 floor: typing.Literal, Optional, Union only.
 
 import dataclasses
 import importlib.util
+import json
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from .state import LockedFlow, ParkedQuestion, Step, V2State
-
-
-# run_recover executes Accept and continue; the rejection question offers it when flow-accept.py's allowlist classifies the reason.
-ACCEPT_WIRED = True
 
 
 # Closed result type for audit verdict
@@ -104,29 +102,39 @@ def parse_audit_verdict(output: str) -> AuditVerdict:
     """
     Parse the audit verdict from subprocess output.
 
-    Expects exactly one line:
+    Expects exactly one non-empty line (blank lines around it are ignored, so it is not required to be line 1):
     - "pass" => AuditPass
     - "reject: <reason>" => AuditReject(reason)
-    - Anything else => AuditError
+    - Anything else, including no non-empty line or more than one, => AuditError (fail closed)
 
     Returns:
         AuditVerdict: one of AuditPass, AuditReject, or AuditError
     """
-    lines = output.strip().split("\n")
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
         return AuditError(reason="audit output is empty")
+    if len(lines) > 1:
+        return AuditError(reason=f"audit verdict has {len(lines)} non-empty lines; expected exactly one")
 
-    first_line = lines[0].strip()
-    if first_line == "pass":
+    verdict = lines[0]
+    if verdict == "pass":
         return AuditPass()
 
-    if first_line.startswith("reject:"):
-        reason = first_line[7:].strip()
+    if verdict.startswith("reject:"):
+        reason = verdict[7:].strip()
         if not reason:
             return AuditError(reason="reject verdict has no reason")
         return AuditReject(reason=reason)
 
-    return AuditError(reason=f"malformed audit verdict: {first_line}")
+    return AuditError(reason=f"malformed audit verdict: {verdict}")
+
+
+def verdict_ready(text: str) -> bool:
+    """
+    True when the verdict file's text already holds a non-empty line. An empty or whitespace-only file is a partial
+    write (or none yet): the caller should keep waiting rather than read it as a verdict.
+    """
+    return any(line.strip() for line in text.splitlines())
 
 
 def audit_receipt_path(flow: Path, step: Step, attempt: int) -> Path:
@@ -137,29 +145,29 @@ def audit_receipt_path(flow: Path, step: Step, attempt: int) -> Path:
     return flow / "steps" / f"audit-{step}-a{attempt}.md"
 
 
-def import_flow_accept() -> Tuple[Optional[object], Optional[object]]:
+@lru_cache(maxsize=1)
+def _load_flow_accept() -> Tuple[object, object]:
+    """Load scripts/flow-accept.py once per process. Raises ImportError when it cannot be loaded."""
+    path = Path(__file__).resolve().parent.parent / "flow-accept.py"
+    spec = importlib.util.spec_from_file_location("flow_accept", str(path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot build an import spec for {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    allowlist = getattr(module, "ALLOWLIST", None)
+    classify = getattr(module, "classify", None)
+    if allowlist is None or classify is None:
+        raise ImportError(f"{path} has no ALLOWLIST or classify")
+    return allowlist, classify
+
+
+def import_flow_accept() -> Tuple[object, object]:
     """
-    Import scripts/flow-accept.py's ALLOWLIST and classify function via importlib.
+    Return scripts/flow-accept.py's (ALLOWLIST, classify), loaded once and cached.
 
-    Returns:
-        (ALLOWLIST, classify) tuple, or (None, None) if import fails
+    An import failure is not swallowed: it raises ImportError, so the caller sees why Accept cannot be offered.
     """
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "flow_accept", str(Path(__file__).resolve().parent.parent / "flow-accept.py")
-        )
-        if spec is None or spec.loader is None:
-            return None, None
-
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
-        allowlist = getattr(module, "ALLOWLIST", None)
-        classify = getattr(module, "classify", None)
-
-        return allowlist, classify
-    except Exception:
-        return None, None
+    return _load_flow_accept()
 
 
 def lifecycle_check_audit_eligible(state: V2State, step: Step) -> bool:
@@ -227,7 +235,8 @@ def handle_audit_rejection(
     - pending_spawn left at the step's receipt-landed record
     - parked = ParkedQuestion(step, attempt, nn, kind="audit", item=None)
 
-    Then relay writes the question file and returns the updated state.
+    The caller (audit_orchestrate) writes the question file before this commit, so this commit never precedes it.
+    This function does not write the question file itself.
 
     Args:
         locked: LockedFlow with write access under the lock
@@ -273,16 +282,14 @@ def build_audit_rejection_question(reason: str, allowlist: Optional[object], cla
 
     Args:
         reason: The audit rejection reason
-        allowlist: The flow-accept.py ALLOWLIST (or None if import failed)
-        classify: The flow-accept.py classify function (or None if import failed)
+        allowlist: The flow-accept.py ALLOWLIST (None when Accept is not wired, so only Retry is offered)
+        classify: The flow-accept.py classify function (None when Accept is not wired)
 
     Returns:
         A question dict with the rejection details and options.
     """
-    from typing import List as ListType
-
     # Determine which options are available
-    options: ListType[str] = ["Retry"]
+    options: List[str] = ["Retry"]
 
     # Try to match the allowlist
     accept_eligible = False
@@ -316,17 +323,20 @@ def audit_orchestrate(
     step: Step,
     attempt: int,
     nonce: str,
-    receipt_path: Path,
+    verdict_path: Path,
     ledger_snapshot_path: Optional[Path] = None,
     retry_callback: Optional[Callable[[LockedFlow, V2State, Step, int], V2State]] = None,
 ) -> Tuple[Optional[str], Optional[ParkedQuestion]]:
     """
     Orchestrate the audit: check verdict, handle rejection, return error or parked question.
 
-    This is called after the audit receipt lands. It parses the verdict and:
+    This is called after the verdict file lands. It parses the verdict and:
     - On AuditPass: returns (None, None) to advance
-    - On AuditReject: writes rejection state, parks question, returns (None, parked)
-    - On AuditError: returns (error_reason, None)
+    - On AuditReject: writes the question file first, then commits the parked state, returns (None, parked)
+    - On AuditError: returns (error_reason, None) and commits nothing
+
+    A rejection question file that cannot be written leaves the state untouched, so a parked state never points
+    at a question that does not exist. Callers that see an empty verdict file should wait for it (verdict_ready).
 
     Args:
         locked: LockedFlow with write access under the lock
@@ -334,26 +344,23 @@ def audit_orchestrate(
         state: Current V2State
         step: The step being audited
         attempt: The attempt number
-        nonce: Nonce for this audit spawn
-        receipt_path: Path to the audit receipt
-        ledger_snapshot_path: Optional path to ledger snapshot
+        nonce: Nonce for this audit spawn (carried for the caller; not read here)
+        verdict_path: Path to the auditor's verdict file (the one line the auditor wrote)
+        ledger_snapshot_path: Optional path to ledger snapshot (carried for the caller; not read here)
         retry_callback: Optional callback for Retry (unused here, wired by caller)
 
     Returns:
         (error_reason, parked_question) tuple:
         - (None, None): audit passed, advance
         - (None, parked): audit rejected, parked question returned
-        - (error, None): audit error (malformed verdict, missing receipt, etc.)
+        - (error, None): audit error (malformed verdict, unreadable verdict, Accept import failure, etc.)
     """
-    # Read the audit receipt
     try:
-        with open(receipt_path, "r") as f:
-            audit_output = f.read()
-    except Exception as e:
-        return f"audit-error: cannot read audit receipt: {e}", None
+        verdict_text = verdict_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return f"audit-error: cannot read audit verdict: {e}", None
 
-    # Parse the verdict
-    verdict = parse_audit_verdict(audit_output)
+    verdict = parse_audit_verdict(verdict_text)
 
     if isinstance(verdict, AuditPass):
         return None, None
@@ -362,31 +369,29 @@ def audit_orchestrate(
         return f"audit-error: {verdict.reason}", None
 
     if isinstance(verdict, AuditReject):
-        # Import flow-accept for eligibility checking
         # Accept and continue is offered only when flow-accept.py classifies the reason; run_recover executes it.
-        allowlist, classify = (import_flow_accept() if ACCEPT_WIRED else (None, None))
+        # An import failure is surfaced as an audit error rather than silently dropping the Accept option.
+        try:
+            allowlist, classify = import_flow_accept()
+        except Exception as e:
+            return f"audit-error: cannot load flow-accept.py: {e}", None
 
-        # Handle rejection: write state and park question
-        new_state, write_err = handle_audit_rejection(
+        # Write the question file first, so the committed parked state never names a missing question.
+        question_data = build_audit_rejection_question(verdict.reason, allowlist, classify)
+        question_file = flow / "questions" / f"{step}-a{attempt}-audit.json"
+        question_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(question_file, "w", encoding="utf-8") as f:
+                json.dump(question_data, f, indent=2)
+        except OSError as e:
+            return f"audit-error: cannot write question file: {e}", None
+
+        _, write_err = handle_audit_rejection(
             locked, flow, state, step, attempt, verdict.reason, retry_callback or (lambda *args: state)
         )
         if write_err:
             return f"audit-error: {write_err}", None
 
-        # Build and write the question file
-        question_data = build_audit_rejection_question(verdict.reason, allowlist, classify)
-        question_file = flow / "questions" / f"{step}-a{attempt}-audit.json"
-        question_file.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            import json
-
-            with open(question_file, "w") as f:
-                json.dump(question_data, f, indent=2)
-        except Exception as e:
-            return f"audit-error: cannot write question file: {e}", None
-
-        # Return the parked question for relay
         parked = ParkedQuestion(step=step, attempt=attempt, nn=1, kind="audit", item=None)
         return None, parked
 
