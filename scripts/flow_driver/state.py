@@ -97,7 +97,7 @@ Step = Literal["worktree", "plan", "track", "implement", "review", "fix", "verif
 Status = Literal["running", "awaiting", "paused", "failed", "done", "abandoned"]
 StopSource = Literal["receipt", "validation", "audit", "tree"]
 PendingState = Literal["spawned", "parked-awaiting-answer", "resumed", "receipt-landed"]
-Purpose = Literal["step", "rebase", "heal", "retro"]
+Purpose = Literal["step", "rebase", "heal", "retro", "audit"]
 AttemptOutcome = Literal[
     "receipt-landed",
     "cleared",
@@ -129,8 +129,17 @@ STOP_SOURCES: Tuple[StopSource, ...] = get_args(StopSource)
 PENDING_STATES: Tuple[PendingState, ...] = get_args(PendingState)
 PURPOSES: Tuple[Purpose, ...] = get_args(Purpose)
 ATTEMPT_OUTCOMES: Tuple[AttemptOutcome, ...] = get_args(AttemptOutcome)
+ParkedKind = Literal["step", "gate", "merge-gate", "audit", "assess"]
+AuditState = Literal["spawned", "passed"]
+MergeAnswer = Literal["Merge", "Hold", "Take over"]
+PARKED_KINDS: Tuple[ParkedKind, ...] = get_args(ParkedKind)
+AUDIT_STATES: Tuple[AuditState, ...] = get_args(AuditState)
+MERGE_ANSWERS: Tuple[MergeAnswer, ...] = get_args(MergeAnswer)
 _STEP_BY_NAME: Dict[str, Step] = {step: step for step in STEPS}
 _STATUS_BY_NAME: Dict[str, Status] = {status: status for status in STATUSES}
+_PARKED_KIND_BY_NAME: Dict[str, ParkedKind] = {kind: kind for kind in PARKED_KINDS}
+_AUDIT_STATE_BY_NAME: Dict[str, AuditState] = {state: state for state in AUDIT_STATES}
+_MERGE_ANSWER_BY_NAME: Dict[str, MergeAnswer] = {answer: answer for answer in MERGE_ANSWERS}
 _STOP_SOURCE_BY_NAME: Dict[str, StopSource] = {source: source for source in STOP_SOURCES}
 _PENDING_BY_NAME: Dict[str, PendingState] = {state: state for state in PENDING_STATES}
 _PURPOSE_BY_NAME: Dict[str, Purpose] = {purpose: purpose for purpose in PURPOSES}
@@ -212,6 +221,13 @@ _KNOWN_KEYS: FrozenSet[str] = frozenset(
         "applied",
         "recovery",
         "heads",
+        "step_gates",
+        "audit",
+        "audit_gate",
+        "assess",
+        "assess_gate",
+        "parked",
+        "merge_gate",
     }
 )
 _TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
@@ -292,6 +308,43 @@ class Heads:
     ship: Optional[Sha] = None
 
 
+@dataclass(frozen=True)
+class ParkedQuestion:
+    """
+    A question parked mid-flow by the driver or a step agent (Layer 3, Session D1).
+
+    Invariant: `item` is set only for an `assess` park, where it is the outstanding item id being asked. For every
+    other kind it is None. The invariant is documented here and not enforced at construction; the assess park
+    (relay.park) passes the item and every other park passes none.
+    """
+
+    step: Step
+    attempt: int
+    nn: int
+    kind: ParkedKind
+    item: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class AuditRecord:
+    """The fidelity audit of one landed step attempt (Layer 3, opt-in): spawned, then passed. Separate from pending_spawn."""
+
+    step: Step
+    attempt: int
+    nonce: str
+    state: AuditState
+
+
+@dataclass(frozen=True)
+class MergeGateRecord:
+    """The merge gate decision point: PR identity and approved head (Layer 3, Session W1)."""
+
+    pr_number: int
+    approved_head: Sha
+    repo: str
+    answer: Optional[MergeAnswer] = None
+
+
 class TransitionKey(NamedTuple):
     run_id: str
     step: Step
@@ -322,6 +375,13 @@ class V2State:
     extra: Mapping[str, object]
     recovery: Recovery = Recovery()
     heads: Heads = Heads()
+    step_gates: bool = False
+    audit: bool = False
+    audit_gate: Optional[AuditRecord] = None
+    assess: bool = False
+    assess_gate: Optional[AuditRecord] = None  # same shape as the audit record; step is always "assess" here
+    parked: Optional[ParkedQuestion] = None
+    merge_gate: Optional[MergeGateRecord] = None
 
 
 @dataclass(frozen=True)
@@ -544,6 +604,71 @@ def _load_heads(fields: _Fields) -> Heads:
     )
 
 
+def _load_parked(value: object, field: str) -> Optional[ParkedQuestion]:
+    """An absent field loads as None (Layer 3, absent in earlier files)."""
+    if value is None:
+        return None
+    fields = _Fields(_as_object(field, value), f"{field}.")
+    kind_value = fields.raw("kind")
+    kind_text = _as_text(fields.field("kind"), kind_value)
+    kind = _PARKED_KIND_BY_NAME.get(kind_text)
+    if kind is None:
+        raise StateSchemaError(fields.field("kind"), "must be one of step, gate, merge-gate, audit, assess")
+    return ParkedQuestion(
+        step=fields.pick("step", _STEP_BY_NAME),
+        attempt=fields.integer("attempt", 1),
+        nn=fields.integer("nn", 0),
+        kind=kind,
+        item=fields.optional_text("item"),
+    )
+
+
+def _load_audit_gate(value: object, field: str, expected_step: Optional[Step] = None) -> Optional[AuditRecord]:
+    """
+    An absent field loads as None (Layer 3, absent in earlier files). When expected_step is given, the record's step
+    must be that step: assess_gate reuses AuditRecord and is always the assess step.
+    """
+    if value is None:
+        return None
+    fields = _Fields(_as_object(field, value), f"{field}.")
+    state_text = _as_text(fields.field("state"), fields.raw("state"))
+    state = _AUDIT_STATE_BY_NAME.get(state_text)
+    if state is None:
+        raise StateSchemaError(fields.field("state"), "must be spawned or passed")
+    step = fields.pick("step", _STEP_BY_NAME)
+    if expected_step is not None and step != expected_step:
+        raise StateSchemaError(fields.field("step"), f"must be {expected_step}")
+    return AuditRecord(
+        step=step,
+        attempt=fields.integer("attempt", 1),
+        nonce=fields.text("nonce"),
+        state=state,
+    )
+
+
+def _load_merge_gate(value: object, field: str) -> Optional[MergeGateRecord]:
+    """An absent field loads as None (Layer 3, absent in earlier files)."""
+    if value is None:
+        return None
+    fields = _Fields(_as_object(field, value), f"{field}.")
+    answer_value = fields.raw_or_none("answer")
+    answer: Optional[MergeAnswer] = None
+    if answer_value is not None:
+        answer_text = _as_text(fields.field("answer"), answer_value)
+        answer = _MERGE_ANSWER_BY_NAME.get(answer_text)
+        if answer is None:
+            raise StateSchemaError(fields.field("answer"), "must be Merge, Hold or Take over")
+    approved_head_text = fields.text("approved_head")
+    if _GIT_SHA.fullmatch(approved_head_text) is None:
+        raise StateSchemaError(fields.field("approved_head"), "must be 40 or 64 lowercase hex characters")
+    return MergeGateRecord(
+        pr_number=fields.integer("pr_number", 1),
+        approved_head=Sha(approved_head_text),
+        repo=fields.text("repo"),
+        answer=answer,
+    )
+
+
 def _step_map(fields: _Fields, key: str, check: Callable[[str, object], _T]) -> Dict[Step, _T]:
     out: Dict[Step, _T] = {}
     for name, value in fields.mapping(key).items():
@@ -631,6 +756,13 @@ def load_v2_state(raw: object) -> V2State:
         extra={key: value for key, value in obj.items() if key not in _KNOWN_KEYS},
         recovery=_load_recovery(fields),
         heads=_load_heads(fields),
+        step_gates=fields.boolean("step_gates") if fields.present("step_gates") else False,
+        audit=fields.boolean("audit") if fields.present("audit") else False,
+        audit_gate=_load_audit_gate(fields.raw_or_none("audit_gate"), "audit_gate"),
+        assess=fields.boolean("assess") if fields.present("assess") else False,
+        assess_gate=_load_audit_gate(fields.raw_or_none("assess_gate"), "assess_gate", expected_step="assess"),
+        parked=_load_parked(fields.raw_or_none("parked"), "parked"),
+        merge_gate=_load_merge_gate(fields.raw_or_none("merge_gate"), "merge_gate"),
     )
     if state.live != _project_live(state.pending_spawn):
         raise StateSchemaError("live", "must be null unless pending_spawn is spawned or resumed, then a copy of it")
@@ -674,6 +806,35 @@ def _live_to_dict(live: Optional[LiveRecord]) -> Optional[Dict[str, object]]:
     return {"step": live.step, "attempt": live.attempt, "nonce": live.nonce}
 
 
+def _parked_to_dict(parked: Optional[ParkedQuestion]) -> Optional[Dict[str, object]]:
+    if parked is None:
+        return None
+    return {
+        "step": parked.step,
+        "attempt": parked.attempt,
+        "nn": parked.nn,
+        "kind": parked.kind,
+        "item": parked.item,
+    }
+
+
+def _audit_gate_to_dict(record: Optional[AuditRecord]) -> Optional[Dict[str, object]]:
+    if record is None:
+        return None
+    return {"step": record.step, "attempt": record.attempt, "nonce": record.nonce, "state": record.state}
+
+
+def _merge_gate_to_dict(merge_gate: Optional[MergeGateRecord]) -> Optional[Dict[str, object]]:
+    if merge_gate is None:
+        return None
+    return {
+        "pr_number": merge_gate.pr_number,
+        "approved_head": merge_gate.approved_head,
+        "repo": merge_gate.repo,
+        "answer": merge_gate.answer,
+    }
+
+
 def v2_state_to_dict(state: V2State) -> Dict[str, object]:
     """The JSON object for a V2State, with keys sorted and the preserved extra keys merged back in."""
     attempt_log: Dict[str, Dict[str, str]] = {
@@ -708,6 +869,13 @@ def v2_state_to_dict(state: V2State) -> Dict[str, object]:
                 "retros": state.recovery.retros,
             },
             "heads": {"verify": state.heads.verify, "ship": state.heads.ship},
+            "step_gates": state.step_gates,
+            "audit": state.audit,
+            "audit_gate": _audit_gate_to_dict(state.audit_gate),
+            "assess": state.assess,
+            "assess_gate": _audit_gate_to_dict(state.assess_gate),
+            "parked": _parked_to_dict(state.parked),
+            "merge_gate": _merge_gate_to_dict(state.merge_gate),
         }
     )
     return dict(sorted(data.items()))

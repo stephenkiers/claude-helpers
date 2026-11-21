@@ -131,3 +131,18 @@ When a ticket's process exits stopped or failed on a known environmental cause, 
 - **Override.** `fleet.heal.tools.<name>` is read from the main worktree's `.claude/project.yaml` only, never the ticket worktree. It accepts `enabled` and the tool's declared parameters, with their bounds. It cannot add a tool or any behaviour, and it takes no raw argv. Any failure fails closed: an unreadable file, a parse error, an unknown tool or key, an out-of-range value. No tool runs for that heal, and a fixed line says why. `project.yaml` is per-machine, so the override is not shared with collaborators; defaults live in tracked code.
 - **Bounds on the run.** `heal run` gets the probe's effective `timeout_secs` plus a fixed margin. On expiry the CLI receives SIGTERM, a grace period, then SIGKILL, so the installer's process group is cleaned up before the pid clears. Output tails go only to a mode 0600 file under `FLEET/heals/`. They never reach status, the inbox, the summary or a resume message.
 - **Causes without a tool.** The ownership table in #425 is diagnosis only for causes 2 to 6: fixed lines that never nominate a tool. Their owners are #417 at launch, or follow-up tickets.
+
+## Amendment (2026-11-18) — v2 refuses auto-merge too (#487)
+
+The code-enforced half of section 3 now also covers v2: `driver start --auto-merge` refuses with `STOP auto-merge-refused`
+(`scripts/flow_driver/cli.py`), and `commands/expert-flow-v2.md` never passes the flag. The v2 refusal is pinned by
+`test_10_auto_merge_is_refused_before_any_state` in `tests/test_flow_driver_loop.py`; the v2 case in
+`tests/test_fleet_invariants.py` is added alongside. Fleet auto-merge is not adopted. Changing that needs a new section 3
+amendment. Section 3 is not reversed.
+
+## Amendment (2026-11-20) — v2 merge runs as a general-purpose agent (#487)
+
+The v2 merge step is spawned as a `general-purpose` agent, not the restricted `flow-merge` agent, so it has no
+guard profile (no Bash or Skill guard, no push allow-list). This is a known residual, not a decision to keep it:
+making the v2 merge step restricted needs `flow-merge` added to the `AgentType` registry and a Layer 2 shape change,
+and that restricted-agent follow-up is deferred to a tracked follow-up issue (to be filed). ADR-0023 records the same residual.

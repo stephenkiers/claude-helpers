@@ -36,7 +36,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Callable, Dict, List, Literal, NamedTuple, Optional, Protocol, cast, Sequence, Union
+from typing import Callable, Dict, List, Literal, NamedTuple, Optional, Protocol, cast, Sequence, Tuple, Union
 
 from .state import STEPS, LockedFlow, PendingSpawn, ReceiptFingerprint, Step, TransitionKey, V2State, apply_transition
 
@@ -144,6 +144,32 @@ def parse_receipt(step: Step, text: str) -> Optional[Receipt]:
     decision: Literal["OK", "FAILED"] = "OK" if decisions[0] == "OK" else "FAILED"
     rebuilt = any(ln.strip() == "REBUILT: yes" for ln in text.split("\n"))
     return Receipt(step=step, attempt=attempt, decision=decision, rebuilt=rebuilt)
+
+
+TEST_PATH_CODES: Tuple[str, ...] = (
+    "plan-test-paths",
+    "test-path-in-units",
+    "test-only-plan",
+    "existing-test-edit",
+    "planned-change-breaks-test",
+)
+
+
+def failed_test_path_stop(text: str) -> Optional[Tuple[str, str]]:
+    """
+    The (code, detail) of a FAILED receipt whose first `Reason:` line starts with one of the five test-path codes
+    (`<code>:` or `<code> `), or None. The detail is the rest of the reason line. A step receipt is data: only the
+    closed code set is ever returned, never receipt text as a code.
+    """
+    for line in text.split("\n"):
+        if not line.startswith("Reason:"):
+            continue
+        reason = line[len("Reason:"):].strip()
+        for code in TEST_PATH_CODES:
+            if reason == code or reason.startswith(code + ":") or reason.startswith(code + " "):
+                return code, reason[len(code):].lstrip(": ").strip() or "(no detail)"
+        return None
+    return None
 
 
 class Absent(NamedTuple):

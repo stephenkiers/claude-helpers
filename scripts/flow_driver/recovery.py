@@ -5,10 +5,12 @@ Data plus pure lookups. Nothing here spawns, writes, locks or reads the clock: e
 needs as an argument and returns either the decision it allows or a Stop with the StopCode it maps to. loop.py and
 steps.py own every effect.
 
-Table-only (D12): these decisions are a table, not yet wired into the loop. Nothing in the driver dispatches on a
-RecoveryDecision or reads the counters from state through this module yet; that wiring is a later unit. No GitHub
-issue tracks it. The single source for the flow-level heal count is `recovery.heals` (state.py Recovery), which
-HEAL_CAP is checked against; the top-level `healed` boolean in state.json is a Layer 1 field and is not read here.
+Wiring (Layer 3, #487): `retry` and `take_over` are dispatched by loop.run_recover (retry through the single writer
+`_retry_locked`, which an audit rejection also uses), and `redo` by the step gate. The other decisions (auto_rebase,
+heal, unknown_skill_retry, malformed_rerun, keep_previous) are still table-only and not read by the loop; they belong
+to the recovery follow-up named in docs/v2-inventory/rules.md. The single source for the flow-level heal count is
+`recovery.heals` (state.py Recovery), which HEAL_CAP is checked against; the top-level `healed` boolean in state.json
+is a Layer 1 field and is not read here.
 
 Python 3.8 floor: typing.FrozenSet, Literal, Optional, Union, Tuple only.
 """

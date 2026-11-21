@@ -365,6 +365,33 @@ def main():
     h.test_result("HEAL_MAX_TIMEOUT_SECS equals the heal timeout_secs upper bound",
                   fl.HEAL_MAX_TIMEOUT_SECS == heal_mod.PARAM_BOUNDS["timeout_secs"][1])
 
+    # Case 6: v2 driver refuses --auto-merge at startup (Decision 1, test requirement)
+    # The v2 flow driver should refuse --auto-merge before creating any state, asserting
+    # that every merge must ask the human, never auto-merge.
+    sys.path.insert(0, str(REPO_ROOT))
+    from tests._flow_driver_loop_helpers import make_home, run_cli
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        home = make_home(base)
+        flow = home / ".claude" / "flows-v2" / "owner_name" / "487-auto-merge-refused-abc123"
+        code, out, err = run_cli(
+            home, "start", "--flow", str(flow), "--auto-merge", "--repo", "owner/name", "--mode", "interactive",
+            "--wait-mode", "end-turn", "--step-minutes", "1",
+        )
+        h.test_result(
+            "v2 driver: start with --auto-merge outputs STOP auto-merge-refused",
+            "STOP auto-merge-refused:" in (out + err),
+            f"output={out!r}\nstderr={err!r}"
+        )
+        # Verify no state.json was created (the refusal happened before initialization)
+        created = list((home / ".claude" / "flows-v2").rglob("state.json")) if (home / ".claude" / "flows-v2").exists() else []
+        h.test_result(
+            "v2 driver: start --auto-merge creates no state.json",
+            not created,
+            f"created state files: {created}"
+        )
+
     h.summarize_and_exit()
 
 

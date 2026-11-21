@@ -55,7 +55,7 @@ from scripts.flow_driver.state import StateSchemaError, load_v2_state
 
 DOC = REPO_ROOT / "commands" / "expert-flow-v2.md"
 NOW = datetime(2026, 11, 11, 12, 0, 0, tzinfo=timezone.utc)
-NEXT_LINE_RE = re.compile(r"NEXT: (SPAWN|RESUME|WAIT|ASK|PARK|STOP|DONE) (/\S+)")
+NEXT_LINE_RE = re.compile(r"NEXT: (SPAWN|RESUME|WAIT|ASK|PARK|STOP|DONE|MERGE) (/\S+)")
 ACCEPT_LINE_RE = re.compile(r"NEXT: (\S+) (/\S+)")
 
 
@@ -135,6 +135,8 @@ def verb_label(verb: Verb) -> str:
         return "stop"
     if verb == "DONE":
         return "done"
+    if verb == "MERGE":
+        return "merge"
     assert_never(verb)
 
 
@@ -172,6 +174,31 @@ def test_corrupt_state_gives_a_refusal_and_never_a_spawn(base: Path) -> None:
     expect(code != 0, f"a corrupt state.json exited 0: {out!r}")
     expect("SPAWN" not in out, f"a corrupt state.json still printed a SPAWN: {out!r}")
     expect("refused" in err or "NEXT: STOP" in out, f"no refusal or STOP for a corrupt state: {err!r}")
+
+
+def test_assess_gate_validates_step(base: Path) -> None:
+    """assess_gate with wrong step raises StateSchemaError."""
+    home = make_home(base)
+    flow, _ = loop_start_flow(home)
+
+    # Load the valid state
+    state_data = load_json(state_path(flow))
+
+    # Add an assess_gate with the wrong step (not "assess")
+    state_data["assess_gate"] = {
+        "step": "plan",  # Wrong! Should be "assess" only
+        "attempt": 1,
+        "nonce": "n0",
+        "state": "pass"
+    }
+    state_path(flow).write_text(__import__("json").dumps(state_data), encoding="utf-8")
+
+    # Attempting to load this state should raise StateSchemaError
+    try:
+        load_v2_state(state_data)
+        expect(False, "Expected StateSchemaError when assess_gate has wrong step, but none was raised")
+    except StateSchemaError as e:
+        expect("must be assess" in str(e), f"error message does not mention step: {e}")
 
 
 # ---------------------------------------------------------------------------

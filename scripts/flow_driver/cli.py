@@ -122,7 +122,10 @@ def _cmd_start(args: argparse.Namespace) -> int:
         return 1
     flow = _v2_flow(args)
     retention.sweep(flow.parent, _now(), keep=flow)
-    return _run_loop(lambda: run_start(flow), stream="stdout")
+    step_gates = getattr(args, "gates", False)
+    audit = getattr(args, "audit", False)
+    assess = getattr(args, "assess", False)
+    return _run_loop(lambda: run_start(flow, step_gates=step_gates, audit=audit, assess=assess), stream="stdout")
 
 
 def _cmd_next(args: argparse.Namespace) -> int:
@@ -134,7 +137,7 @@ def _cmd_next(args: argparse.Namespace) -> int:
 def _cmd_recover(args: argparse.Namespace) -> int:
     """recover --choice: the human's answer to a hard stop (retry, take-over or keep-previous)."""
     flow = _v2_flow(args)
-    return _run_loop(lambda: run_recover(flow, args.choice), stream="stderr")
+    return _run_loop(lambda: run_recover(flow, args.choice, note=getattr(args, "note", None)), stream="stderr")
 
 
 def _cmd_abandon(args: argparse.Namespace) -> int:
@@ -159,7 +162,8 @@ def _cmd_retro(args: argparse.Namespace) -> int:
 
 def _cmd_answer(args: argparse.Namespace) -> int:
     flow = _v2_flow(args)
-    return _run_loop(lambda: run_answer(flow, args.text), stream="stderr")
+    note = getattr(args, "note", None)
+    return _run_loop(lambda: run_answer(flow, args.text, note=note, item=getattr(args, "item", None)), stream="stderr")
 
 
 def _cmd_clear_live(args: argparse.Namespace) -> int:
@@ -444,6 +448,9 @@ def build_parser() -> argparse.ArgumentParser:
     start = sub.add_parser("start", help="perform the first next of an initialized v2 flow")
     start.add_argument("--flow", help="absolute flow dir (created by init)")
     start.add_argument("--auto-merge", action="store_true", help="refused: the v2 driver never auto-merges")
+    start.add_argument("--audit", action="store_true", help="opt in to the fidelity audit after plan, implement, review and fix")
+    start.add_argument("--assess", action="store_true", help="opt in to the assess stage between verify and ship")
+    start.add_argument("--gates", action="store_true", help="enable step gates (pauses after plan, implement, review, fix, verify)")
     # Skeleton-only flags, optional and ignored by the v2 start (kept so old invocations still parse)
     start.add_argument("--repo", help="OWNER/NAME (skeleton only, ignored by v2 start)")
     start.add_argument("--mode", choices=list(MODES), help="skeleton only, ignored by v2 start")
@@ -457,14 +464,17 @@ def build_parser() -> argparse.ArgumentParser:
     ans = sub.add_parser("answer", help="write the human's answer for the parked attempt")
     ans.add_argument("--flow", required=True, help="absolute flow dir")
     ans.add_argument("--text", required=True)
+    ans.add_argument("--note", help="optional note for Redo or Drop answers")
+    ans.add_argument("--item", help="assess batch only: the item id this answer is for")
 
     clear = sub.add_parser("clear-live", help="clear a spawned or resumed record (logged)")
     clear.add_argument("--flow", required=True, help="absolute flow dir")
     clear.add_argument("--reason", required=True)
 
-    rec = sub.add_parser("recover", help="answer a hard stop: retry, take-over or keep-previous")
+    rec = sub.add_parser("recover", help="answer a hard stop: retry, take-over or keep-previous; resume re-asks a paused or held gate; accept (human-only) passes an allowlisted audit rejection; reverify re-reads the PR after a merge-head-mismatch at ship")
     rec.add_argument("--flow", required=True, help="absolute flow dir")
-    rec.add_argument("--choice", required=True, choices=["retry", "take-over", "keep-previous"])
+    rec.add_argument("--choice", required=True, choices=["retry", "take-over", "keep-previous", "resume", "accept", "reverify"])
+    rec.add_argument("--note", help="why, for accept (recorded in the trail)")
 
     aband = sub.add_parser("abandon", help="abandon a flow (refused while a record is live)")
     aband.add_argument("--flow", required=True, help="absolute flow dir")

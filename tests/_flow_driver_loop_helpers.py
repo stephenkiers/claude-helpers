@@ -22,7 +22,7 @@ from _test_harness import REPO_ROOT  # noqa: E402
 from scripts.flow_driver import receipts  # noqa: E402
 
 MAIN = REPO_ROOT / "scripts" / "flow_driver" / "__main__.py"
-NEXT_LINE_RE = re.compile(r"NEXT: (SPAWN|RESUME|WAIT|ASK|PARK|STOP|DONE) (/\S+)")
+NEXT_LINE_RE = re.compile(r"NEXT: (SPAWN|RESUME|WAIT|ASK|PARK|STOP|DONE|MERGE) (/\S+)")
 HAPPY_STEPS = ["worktree", "plan", "track", "implement", "review", "fix", "verify", "ship"]
 
 FAKE_GH = """#!/bin/sh
