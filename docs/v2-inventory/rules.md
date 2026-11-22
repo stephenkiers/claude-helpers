@@ -288,6 +288,7 @@ Headings marked `###` are amendment-tagged subsection headings. The subsection `
 | 40 | Amendment (2026-11-05, #462): force-push gates run the minimum check; the merge gate is authoritative | Force-push gates run the minimum check; the merge gate runs the full check and is authoritative | Layer 3 | port, pinned by test |
 | 41 | Amendment (2026-11-17): human-approved existing-test edits in the fix step (#497) | The fix step sets aside existing-test-edit items, asks per item, and applies approved edits in one approval commit scanned with `--allow-test-edit`; the verifier cross-checks the sha256-pinned answers file | Layer 3 | port, pinned by test |
 | 42 | Amendment (2026-11-20): the v2 merge step runs unrestricted (#487) | The v2 merge step runs unrestricted; the human-answered merge gate and the PR-state verification stay in the driver | Layer 3 | port, pinned by test |
+| 43 | Amendment (2026-11-21): a step agent that waits on background children hands back `Decision: WAITING` (#520) | A `Decision: WAITING` hand-back with a stub receipt keeps `live` set, counts no failure, and re-wakes the agent with `SendMessage` (bounded at 60 per attempt); any other hand-back follows the validation rules | Layer 3 | port, pinned by test (tests/test_flow_waiting_handback.py pins the v1 prose; the v2 driver port follows with Layer 3 recovery) |
 
 Reference for the one `###` section-level amendment tag outside the amendment list:
 
@@ -295,6 +296,6 @@ Reference for the one `###` section-level amendment tag outside the amendment li
 |---|---|---|---|
 | ### 2.2 Receipts are verified against artifacts, not trusted (amendment 2026-10-14, #276) | Receipts are verified against artifacts | Layer 1 | port, pinned by test |
 
-Totals: 41 `##` amendment headings (rows 1 to 26 and 28 to 42), one `###` amendment heading (row 27), and
+Totals: 42 `##` amendment headings (rows 1 to 26 and 28 to 43), one `###` amendment heading (row 27), and
 the section-level `###` amendment tag under ADR section 2.2 (listed above). The ADR's `### Amending §1`
 subsection is not an amendment heading and is covered by row 14.

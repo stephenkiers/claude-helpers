@@ -950,7 +950,7 @@ printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "<STEP>" "failed (<reason>)
 
 After this sanitisation, the entire line is safe to parse with the grep patterns below.
 
-where `<EVENT>` is one of `begin`, `retry`, `ok`, `failed` (optionally with `(<reason>)`), `taken-over`, `hand-finished`, `awaiting`, `resumed`, `gate`, `paused`,
+where `<EVENT>` is one of `begin`, `retry`, `ok`, `failed` (optionally with `(<reason>)`), `taken-over`, `hand-finished`, `awaiting`, `waiting`, `rewake`, `resumed`, `gate`, `paused`,
 `skipped`, `rebased`, `rebase-worker`, `aborted`, `abandoned`, `handoff`, `escalated`, `assessed`, `outstanding`, `done`, `redo`, `kept-previous`, `accepted`, `heal`, `heal-skipped`, `heal-rejected`, `healed`, `fix-now`. (`heal` is logged when a `HEAL:` record is written (state=started); `heal-skipped` as `verify heal-skipped (<signature did not recur|probe-mutated|...>)` when the heal gates stop short of spawning the healer; `heal-rejected` as `<STEP> heal-rejected (<reason>)` when integrity checks, the scan or the audit reject a heal; `healed` when a check heal converges; `fix-now` when the Fix now sequence runs. The merge-gate bypass is logged as `merge-gate (healed run; auto-merge suspended)`. `handoff` is logged once, by the fresh-run hand-off. `redo` is logged as `<STEP> redo attempt=<k> redos=<n> note_chars=<kept_len>`, with `<kept_len>` the sanitised note's character count. `kept-previous` is logged as `<STEP> kept-previous attempt=<J>` when a failed redo is restored. `accepted` (always with `(<class>: <reason>)`, see above) is logged by Accept and continue, and by a Keep previous re-log of an accepted attempt.)
 `taken-over` is written by Take over at the Hard stop and at the merge gate; it is the only record that a human chose to finish a step by hand, and resume rule 2 reads it. `accepted` is written only by Accept and continue at the Hard stop, and by Keep previous attempt when it restores an accepted attempt (Hard stop item 4 and resume rule 3b); it is the human's attestation that a rejected step is accepted as it stands, and resume rule 2 reads it. `escalated` is logged when an escalation (automatic or manual) is triggered. `assessed` is logged after the assess stage (lines `assess ok`, `assess paused`, `assess skipped`, and `assess taken-over`).)
 
@@ -1127,7 +1127,34 @@ printf 'PENDING: %s\n' "$PENDING"
 A non-empty `PENDING` → go to "Relaying a question" with that `<SEQ>`. Keep `live` set (the step is
 alive) and do not close the stage.
 
-Otherwise **validate the receipt** — every value comes from the file on disk, never from the agent's
+Second, the **waiting check**: if there is no receipt, or it is still the step-3(b) stub, and the
+last `^Decision:` line of the step agent's latest hand-back reply (the `<result>` of its completion
+notification, or its `<agent-message>` hand-back) is exactly `Decision: WAITING`, the agent is alive and
+waiting on its own background children (`prompts/flow-step-contract.md`, "Waiting on background work is
+not failure": the harness answers the end of such a turn with `[handback-send-enforce] ...`). This is not
+a failure. Run none of the validation rules below, do not increment `failures[STEP]`, do not close the
+stage, and keep `live` set. Then:
+
+- **First `WAITING` hand-back of this attempt:** log `waiting`. Not in a fleet run: end the turn with one
+  line (`▶️ expert-flow #<ISSUE> — running: <STEP> (waiting on background work)`), optionally scheduling
+  the one 1800-second `ScheduleWakeup`. In a fleet run: do not end the turn, call
+  `fleet.py wait "$FLOW_DIR/steps/<NN>-<STEP>.md" --timeout 540` once (the "Never idle" rule), and treat
+  its return as the next event below.
+- **Every later event for this step** (a child agent's hand-back `<agent-message>`, a completion
+  notification, the 1800-second wake-up, or the return of that fleet wait) whose receipt read is still the
+  stub: `SendMessage` the step agent (its id is in its launch acknowledgement) with exactly `Continue the
+  <STEP> step from your ledger and scratch directory on disk. Nobody told you to stop. Hand back
+  Decision: WAITING again only if background children are still outstanding; write the receipt when you
+  finish.`, then log `rewake`. A fleet run goes back to its wait loop and any other run ends the turn. A
+  new hand-back is read from the top of this step.
+- **Bound:** count the `<STEP> rewake` lines in `log.md` since the newest `<STEP> begin` or `<STEP> retry`
+  line. At 60 the step is `FAILED` with reason `waiting exhausted: 60 re-wakes without a receipt`, through
+  the normal `FAILED` branch (`stop_source` `"validation"`), and no further `SendMessage` is sent.
+- **Fail closed:** any hand-back whose last `Decision:` line is not exactly `Decision: WAITING` follows the
+  validation rules unchanged, so a stub receipt is still `no receipt written`. `WAITING` inside a receipt
+  is rule 3's `malformed receipt`.
+
+Otherwise (neither check applies) **validate the receipt** — every value comes from the file on disk, never from the agent's
 reply, and any failure below is `FAILED` with the stated reason:
 
 1. No receipt, or the receipt is still the step-3(b) stub → `FAILED` `no receipt written`. Before
