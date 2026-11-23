@@ -8,7 +8,8 @@ temporary git repository built here.
 
 Covered:
 - a single removal that leaves its directory with other test files is not a suite emptying
-- one call that removes every test file in a directory reports `suite-emptied`
+- one call that removes every test file in a directory and leaves other files behind reports `suite-emptied`
+- removing every file in a directory (nothing left behind) reports no `suite-emptied`
 - a --remove path absent from the base tree exits 2
 - an empty --remove path is rejected with exit 2
 
@@ -31,6 +32,9 @@ BASE_FILES = {
     "tests/a/test_one.py": "def test_one():\n    assert True\n",
     "tests/a/test_two.py": "def test_two():\n    assert True\n",
     "tests/b/test_three.py": "def test_three():\n    assert True\n",
+    "tests/a/README.md": "notes\n",
+    "tests/b/README.md": "notes\n",
+    "tests/c/test_four.py": "def test_four():\n    assert True\n",
     "src/app.py": "VALUE = 1\n",
 }
 
@@ -97,6 +101,15 @@ def main():
         h.test_result(
             "removing the only test file in tests/b reports suite-emptied",
             "suite-emptied" in out and parsed is not None and parsed.get("verdict") != "ok",
+            f"exit={code} out={out[:400]} err={err[-300:]}",
+        )
+
+    with tempfile.TemporaryDirectory() as td:
+        repo, base = build_base_repo(td)
+        code, parsed, out, err = run_check(repo, base, ["tests/c/test_four.py"])
+        h.test_result(
+            "removing the only file of a directory leaves nothing behind and reports no suite-emptied",
+            "suite-emptied" not in out and code == 0,
             f"exit={code} out={out[:400]} err={err[-300:]}",
         )
 
