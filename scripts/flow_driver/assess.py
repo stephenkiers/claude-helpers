@@ -53,7 +53,8 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 class _OptionsModule(Protocol):
     """flow-verify-receipt.py's option parser, loaded by path (Step 6). The real shape is Tuple[Tuple[AssessorOption, ...], Optional[str]]."""
 
-    def parse_options(self, text: str) -> Tuple[Tuple[object, ...], Optional[str]]: ...
+    def parse_options(self, text: str) -> Tuple[Tuple[object, ...], Optional[str]]:
+        """Parse the assessor's option lines; returns (options, error-or-None)."""
 
 
 _OPTIONS_MODULE: Optional[_OptionsModule] = None
