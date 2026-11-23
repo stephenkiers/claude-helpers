@@ -28,7 +28,7 @@ import secrets
 import shlex
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Dict, Mapping, Optional, Tuple, Union
+from typing import Callable, Dict, Mapping, Optional, Tuple, Union, get_args
 
 from scripts.workflow.fsutil import atomic_write_text
 
@@ -62,7 +62,8 @@ from .state import (
 )
 from . import relay
 from .steps import (
-    _SPAWN_AGENT,
+    STEP_AGENTS,
+    AgentType,
     Directive,
     DoneDirective,
     Facts,
@@ -78,6 +79,7 @@ from .steps import (
     Notification,
     QuestionFact,
     ReceiptFact,
+    RestrictedAgent,
     SpawnDirective,
     StopCode,
     StopDirective,
@@ -99,13 +101,16 @@ _TS = "%Y-%m-%dT%H:%M:%SZ"
 # Clear-live is the human's way out of a wait-timeout STOP; this code reopens the step. A resume-failed STOP is never
 # reopened by clear-live: the W1 re-spawn allowlist is empty (session D3), so every failed RESUME stays a STOP.
 _CLEARABLE_STOPS = ("wait-timeout",)
-# Steps whose agent carries the restricted guard hooks (flow-plan, flow-implement, flow-review, flow-ship, flow-merge).
-RESTRICTED_STEPS = frozenset(("plan", "implement", "review", "fix", "ship", "merge"))
+# Steps that spawn a guarded restricted agent (its agent type is a RestrictedAgent in STEP_AGENTS). The preflight
+# (added in a later unit) checks the settings registration the guards rely on.
+RESTRICTED_STEPS = frozenset(step for step, agent in STEP_AGENTS.items() if agent in get_args(RestrictedAgent))
+# The fidelity audit spawns a general-purpose agent (not a guarded one); named so it is not a bare literal.
+AUDIT_AGENT: AgentType = "general-purpose"
 # Steps that run the North Star files preflight before they spawn (ADR-0003 2026-10-09 amendment).
 NORTH_STAR_STEPS = frozenset(("plan", "review"))
 # The command each step runs, named in its prompt. Mirrors the Steps table of commands/expert-flow.md. Every
 # placeholder is filled by render_step_prompt from values _step_inputs resolved before the spawn was committed.
-STEP_COMMANDS: Dict[str, str] = {
+STEP_COMMANDS: Dict[Step, str] = {
     "worktree": "/track-and-start --issue {issue} --worktree-only",
     "plan": "/expert-plan {issue_url} --flow {flow}",
     "track": "/track-and-start --issue {issue}",
@@ -676,7 +681,7 @@ def _replay_spawn(
         return None, _merge_directive_again(flow, state, pending), ledger_line, extra
     spawn = SpawnDirective(
         next_command=driver.next_command(flow),
-        agent_type=_SPAWN_AGENT,
+        agent_type=STEP_AGENTS[pending.step],
         prompt_file=str(step_prompt_path(flow, pending.step, pending.attempt, pending.nonce)),
         step=pending.step,
         attempt=pending.attempt,
@@ -961,7 +966,7 @@ def _audit_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, nonc
         spawned = dataclasses.replace(state, audit_gate=AuditRecord(step=step, attempt=attempt, nonce=nonce, state="spawned"))
         directive = SpawnDirective(
             next_command=driver.next_command(flow),
-            agent_type=_SPAWN_AGENT,
+            agent_type=AUDIT_AGENT,
             prompt_file=str(prompt_file),
             step=step,
             attempt=attempt,
@@ -1049,7 +1054,7 @@ def _assess_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, non
     spawned = dataclasses.replace(state, assess_gate=AuditRecord(step="assess", attempt=attempt, nonce=nonce, state="spawned"))
     return spawned, SpawnDirective(
         next_command=driver.next_command(flow),
-        agent_type=_SPAWN_AGENT,
+        agent_type=STEP_AGENTS["assess"],
         prompt_file=str(prompt_file),
         step="assess",
         attempt=attempt,

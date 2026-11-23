@@ -15,11 +15,21 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Literal, Optional, Set, Tuple, Union, get_args
 
 from . import relay
 from .preflight import run_command
 from .state import LockedFlow, Step, V2State, mutating
+from .steps import AgentType
+
+# The closed assess vocabularies. One Literal each, so mypy catches drift; the tuples are derived from them.
+AssessStatus = Literal["already-done", "unfinished"]
+ASSESS_STATUSES: Tuple[AssessStatus, ...] = get_args(AssessStatus)
+ASSESS_DONE_STATUS: AssessStatus = "already-done"
+AssessKind = Literal["mechanical", "decision"]
+ASSESS_KINDS: Tuple[AssessKind, ...] = get_args(AssessKind)
+OptionRoute = Literal["pause", "issue"]
+OPTION_ROUTES: Tuple[OptionRoute, ...] = get_args(OptionRoute)
 
 
 # Closed result type for assess_next orchestration
@@ -27,7 +37,7 @@ from .state import LockedFlow, Step, V2State, mutating
 class AssessSpawn:
     """Return type: assessor spawn is needed; carry the SPAWN fields."""
 
-    agent_type: str
+    agent_type: AgentType
     prompt_file: str
     step: str
     attempt: int
@@ -957,7 +967,7 @@ def assess_next(
     records_file = assess_records_path(flow)
     if not records_file.exists():
         return AssessSpawn(
-            agent_type="general-purpose",
+            agent_type="flow-assessor",
             prompt_file=str(flow / "prompts" / f"assess-a{attempt}-{nonce}.md"),
             step="assess",
             attempt=attempt,

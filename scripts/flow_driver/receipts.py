@@ -36,9 +36,13 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Callable, Dict, List, Literal, NamedTuple, Optional, Protocol, cast, Sequence, Tuple, Union
+from typing import Callable, Dict, List, Literal, NamedTuple, Optional, Protocol, cast, Sequence, Tuple, Union, get_args
 
 from .state import STEPS, LockedFlow, PendingSpawn, ReceiptFingerprint, Step, TransitionKey, V2State, apply_transition
+
+# The closed Decision values of a step receipt's `Decision:` line. One Literal, so mypy catches drift.
+Decision = Literal["OK", "FAILED"]
+DECISION_VALUES: Tuple[Decision, ...] = get_args(Decision)
 
 
 # Receipt file prefixes derive from the one step order (state.STEPS), so they cannot drift from it.
@@ -46,7 +50,7 @@ _STEP_INDICES: Dict[Step, str] = {step: f"{i:02d}" for i, step in enumerate(STEP
 
 # The strict ATTEMPT value: a positive integer with no leading zero (Q2 = C).
 _ATTEMPT_VALUE = re.compile(r"[1-9][0-9]*")
-_DECISION_LINE = re.compile(r"^Decision: (OK|FAILED)\s*$")
+_DECISION_LINE = re.compile(r"^Decision: (" + "|".join(DECISION_VALUES) + r")\s*$")
 _STEP_END = "<!-- step-end -->"
 _VERIFIER_PATH = Path(__file__).parent.parent / "flow-verify-receipt.py"
 

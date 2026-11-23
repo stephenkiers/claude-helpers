@@ -17,7 +17,7 @@ from typing import ClassVar, Dict, Literal, Optional, Tuple, Union, get_args
 
 from . import driver, receipts, relay
 from .model import AFTER_EVENTS, GENERAL_PURPOSE_AGENT, AfterEvent, assert_never, parse_after
-from .state import ALLOWED_TRANSITIONS, LiveRecord, ParkedQuestion, PendingSpawn, Step, V2State
+from .state import ALLOWED_TRANSITIONS, STEPS, LiveRecord, ParkedQuestion, PendingSpawn, Step, V2State
 
 # The happy path the driver spawns step by step. Ship is the last SPAWN; what follows it (the merge gate and MERGE) is
 # decided by gates.py in the loop and reaches transition() as a GateFact.
@@ -58,6 +58,8 @@ StopCode = Literal[
     "existing-test-edit",
     "planned-change-breaks-test",
     "zero-unit-plan-incomplete",
+    "spawn-failed",
+    "run-dir-unresolved",
 ]
 STOP_CODES: Tuple[StopCode, ...] = get_args(StopCode)
 _STOP_BY_NAME: Dict[str, StopCode] = {code: code for code in STOP_CODES}
@@ -168,11 +170,32 @@ def event_from_label(label: Optional[str]) -> Event:
 
 
 # Directives. The closed union; the verb is a class constant, never a field.
-AgentType = Literal["general-purpose"]
-_SPAWN_AGENT: AgentType = "general-purpose"
-# The spawn agent type is a Literal here so the directive is typed; it must equal the model constant.
-if _SPAWN_AGENT != GENERAL_PURPOSE_AGENT:
-    raise RuntimeError("steps._SPAWN_AGENT does not match model.GENERAL_PURPOSE_AGENT")
+AgentType = Literal["general-purpose", "flow-plan", "flow-implement", "flow-review", "flow-ship", "flow-merge", "flow-assessor"]
+# The five restricted step agents: the ones with a guard profile. flow-assessor has no hooks block, so it is not one.
+RestrictedAgent = Literal["flow-plan", "flow-implement", "flow-review", "flow-ship", "flow-merge"]
+# The steps that run a flow command (their spawn is a restricted agent, or the merge step).
+FlowCommandStep = Literal["plan", "implement", "fix", "review", "ship", "merge"]
+STEP_AGENTS: Dict[Step, AgentType] = {
+    "worktree": "general-purpose",
+    "plan": "flow-plan",
+    "track": "general-purpose",
+    "implement": "flow-implement",
+    "fix": "flow-implement",
+    "review": "flow-review",
+    "verify": "general-purpose",
+    "assess": "flow-assessor",
+    "ship": "flow-ship",
+    "merge": "flow-merge",
+}
+# The map is keyed by state.STEPS; a step added to or removed from the state without a matching entry fails at import.
+if set(STEP_AGENTS) != set(STEPS):
+    raise RuntimeError("steps.STEP_AGENTS keys do not match state.STEPS")
+if STEP_AGENTS["worktree"] != GENERAL_PURPOSE_AGENT:
+    raise RuntimeError("steps.STEP_AGENTS['worktree'] does not match model.GENERAL_PURPOSE_AGENT")
+# The merge agent is a Literal so MergeDirective is typed; it must equal the step map entry.
+MERGE_AGENT: Literal["flow-merge"] = "flow-merge"
+if MERGE_AGENT != STEP_AGENTS["merge"]:
+    raise RuntimeError("steps.MERGE_AGENT does not match STEP_AGENTS['merge']")
 
 
 @dataclass(frozen=True)
@@ -241,7 +264,7 @@ class DoneDirective:
 class MergeDirective:
     verb: ClassVar[Literal["MERGE"]] = "MERGE"
     next_command: str
-    agent_type: AgentType
+    agent_type: Literal["flow-merge"]
     prompt_file: str
     step: Step
     attempt: int
@@ -359,7 +382,7 @@ def _spawn(state: V2State, facts: Facts, step: Step) -> Tuple[V2State, Directive
     new_state = dataclasses.replace(_with_pending(state, pending), step=step, attempts=attempts)
     spawn = SpawnDirective(
         next_command=driver.next_command(facts.flow),
-        agent_type=_SPAWN_AGENT,
+        agent_type=STEP_AGENTS[step],
         prompt_file=str(step_prompt_path(facts.flow, step, attempt, facts.nonce)),
         step=step,
         attempt=attempt,

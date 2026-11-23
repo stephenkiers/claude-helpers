@@ -32,16 +32,12 @@ from typing import Literal, Optional, Protocol, Tuple, Union
 
 from . import driver, recovery, shipguard as sg
 from .ledger import LedgerError, ledger_script
-from .model import GENERAL_PURPOSE_AGENT, assert_never
+from .model import assert_never
 from .preflight import CANNOT_START, Runner, run_command
 from .state import MergeGateRecord, Sha, Step, V2State
-from .steps import AgentType, MergeDirective, StopCode, step_prompt_path
+from .steps import MERGE_AGENT, MergeDirective, StopCode, step_prompt_path
 
 REDO_CAP = recovery.REDO_CAP
-
-_MERGE_AGENT: AgentType = "general-purpose"
-if _MERGE_AGENT != GENERAL_PURPOSE_AGENT:
-    raise RuntimeError("gates._MERGE_AGENT does not match model.GENERAL_PURPOSE_AGENT")
 
 STEP_GATE_STEPS: Tuple[Step, ...] = ("plan", "implement", "review", "fix", "verify")
 REDO_STEPS: Tuple[Step, ...] = ("plan", "review")
@@ -303,7 +299,7 @@ def _build_merge_directive(state: V2State, facts: GateFacts) -> MergeDirective:
     attempt = state.attempts.get("merge", 0) + 1
     return MergeDirective(
         next_command=driver.next_command(facts.flow),
-        agent_type=_MERGE_AGENT,
+        agent_type=MERGE_AGENT,
         prompt_file=str(step_prompt_path(facts.flow, "merge", attempt, facts.nonce)),
         step="merge",
         attempt=attempt,
@@ -319,7 +315,7 @@ def merge_directive_again(flow: Path, attempt: int, nonce: str) -> MergeDirectiv
     """
     return MergeDirective(
         next_command=driver.next_command(flow),
-        agent_type=_MERGE_AGENT,
+        agent_type=MERGE_AGENT,
         prompt_file=str(step_prompt_path(flow, "merge", attempt, nonce)),
         step="merge",
         attempt=attempt,
