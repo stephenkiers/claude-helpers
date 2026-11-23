@@ -179,13 +179,26 @@ def get_grep_results(repo: str, rev: str, pattern: str) -> List[Tuple[str, int, 
 
 
 def check_removal(
-    repo: str, rev: str, removed_path: str
+    repo: str,
+    rev: str,
+    removed_path: str,
+    removed_set: Optional[Set[str]] = None,
 ) -> List[str]:
-    """Check a single removed file for suite-emptied and references. Returns findings."""
+    """Check a single removed file for suite-emptied and references. Returns findings.
+
+    removed_set is the full set of paths removed in this run; suite-emptied is
+    judged against what remains after subtracting all of them. Defaults to
+    {removed_path} when omitted.
+    """
     findings: List[str] = []
+    removal_set: Set[str] = removed_set if removed_set is not None else {removed_path}
 
     # Get all files at base
     files = get_tree_files(repo, rev)
+
+    # Fail closed on a target that does not exist in the base tree.
+    if removed_path not in files:
+        raise ValueError("removed path not in base tree: %s" % removed_path)
 
     # Determine directory containing the removed file
     if "/" in removed_path:
@@ -193,25 +206,27 @@ def check_removal(
     else:
         removed_dir = "."
 
+    # Reject an empty module name: grepping "" would match every line.
+    basename = _basename(removed_path)
+    stem = basename.rsplit(".", 1)[0] if "." in basename else basename
+    if not stem:
+        raise ValueError("empty module name for removed path: %s" % removed_path)
+
     # Check if suite would be emptied
     # Suite is emptied if:
     # 1. Directory held test-case files
-    # 2. After removal, holds no test-case files
+    # 2. After removing every path in this run, holds no test-case files
     # 3. But still holds other files or is in config/suite lists
 
     if removed_dir != ".":
-        test_files_in_dir = [
-            path for path in files.keys()
-            if path.startswith(removed_dir + "/") and is_test_case_path(path)
-        ]
+        prefix = removed_dir + "/"
+        in_dir = [path for path in files.keys() if path.startswith(prefix)]
+        test_files_in_dir = [path for path in in_dir if is_test_case_path(path)]
+        remaining_tests = [path for path in test_files_in_dir if path not in removal_set]
 
-        # Check if removed_path was the only test-case file
-        if removed_path in test_files_in_dir and len(test_files_in_dir) == 1:
-            # It's the only test-case file; check if dir would be empty of test-case files
-            other_files_in_dir = [
-                path for path in files.keys()
-                if path.startswith(removed_dir + "/") and path != removed_path
-            ]
+        # Removed path is a test-case file and nothing test-case is left behind
+        if removed_path in test_files_in_dir and not remaining_tests:
+            other_files_in_dir = [path for path in in_dir if path not in removal_set]
             if other_files_in_dir:
                 # Dir holds other files, report suite-emptied
                 findings.append("suite-emptied: %s" % removed_dir)
@@ -223,19 +238,14 @@ def check_removal(
             findings.append("referenced: %s by %s:%d" % (removed_path, file_path, line_num))
 
     # 2. Basename without extension (as module name)
-    basename = _basename(removed_path)
+    module_name = stem
     if "." in basename:
-        module_name = basename.rsplit(".", 1)[0]
         for file_path, line_num, text in get_grep_results(repo, rev, module_name):
             if file_path != removed_path:
                 findings.append("referenced: %s by %s:%d" % (removed_path, file_path, line_num))
 
     # 3. Dotted import path (e.g., tests.test_a for tests/test_a.py)
     # Strip extension and replace / with .
-    if "." in basename:
-        module_name = basename.rsplit(".", 1)[0]
-    else:
-        module_name = basename
 
     if removed_dir != ".":
         import_path = removed_dir.replace("/", ".") + "." + module_name
@@ -314,8 +324,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     all_findings: List[str] = []
 
     try:
+        removal_set = set(removed_paths)
         for removed_path in removed_paths:
-            findings = check_removal(args.repo, rev_sha, removed_path)
+            findings = check_removal(args.repo, rev_sha, removed_path, removal_set)
             all_findings.extend(findings)
     except ValueError as exc:
         # Error reading tree - exit 2
