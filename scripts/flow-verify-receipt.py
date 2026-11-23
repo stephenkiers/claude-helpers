@@ -3198,7 +3198,7 @@ def check_test_changes(
         return None
 
     if commit is None:
-        return f"test-edit: TEST_EDIT lines without TEST_EDIT_COMMIT"
+        return "test-edit: TEST_EDIT lines without TEST_EDIT_COMMIT"
 
     if not _TEST_EDIT_COMMIT_RE.fullmatch(commit):
         return f"test-edit: malformed TEST_EDIT_COMMIT: {commit}"
