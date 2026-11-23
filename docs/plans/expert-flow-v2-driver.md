@@ -1,5 +1,7 @@
 # /expert-flow v2: deterministic Python driver, built beside a frozen v1
 
+> The seq 1 freeze described below is superseded by the ADR-0026 2026-11-23 amendment (#538).
+
 **Ticket:** #477 (this PR, closes #477). **Parent:** #456 (stays open). **Decision record:** ADR-0026 (Proposed).
 
 ## Goal

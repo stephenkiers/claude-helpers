@@ -4,7 +4,7 @@ Line ranges refer to `commands/expert-flow.md` as it stood when this inventory w
 `docs/adr/0023-expert-flow.md`. Where a rule was added by an amendment, the amendment is named by its
 heading in the index at the end. Riskiest areas come first.
 
-Disposition values: **port, pinned by test** (layer named) or **dropped, reason**.
+Disposition values: the closed set defined in `README.md` (each cell begins with one of its prefixes).
 
 ## 1. Rule table
 
@@ -12,18 +12,21 @@ Disposition values: **port, pinned by test** (layer named) or **dropped, reason*
 
 | v1 lines | Area | ADR section / amendment | Target layer | Disposition |
 |---|---|---|---|---|
-| 995-1187 | The step loop: spawn each step, run the verifier, fidelity audit and gate in order, advance `STEP` only after `WRITE-STATE` | ADR base text; 2026-10-13 gated Rebase, 2026-10-14 more human in the loop | Layer 2 (Step 9) | port, pinned by test |
-| 853-956 | Flow state: `state.json` keys (`step`, `status`, `live`, `attempts`, `failures`, `stop_reason`, `stop_source`, `flags`, `pr`, `worktree`, `healed`, `redo_archive`, `skill_retries`) | ADR base text; 2026-10-27 assess keys; 2026-10-29 #380 `healed` | Layer 1 (Step 8) | port, pinned by test (state.py: v2 state schema; v1 field contract retained) |
-| 957-994 | Step list and order (`worktree` through `merge`) | ADR base text | Layer 2 (Step 9) | port, pinned by test |
-| 1188-1199 | Orchestrator-written receipts (`steps/<NN>-<step>.md`) | ADR section 2.2 (2026-10-14, #276) | Layer 1 (Step 8) | port, pinned by test (receipts.py: receipt classification and archive) |
-| 1308-1327 | Re-entry pre-checks | ADR base text | Layer 2 (Step 9) | port, pinned by test (spawn gating; ship case Layer 3) |
-| 1188-1199 (receipt contract, used by 995-1187) | `Decision: OK` / `FAILED`, `ATTEMPT`, `CHECK`/`CHECK_EXIT`/`CHECK_SHA`, `RUN_KEY`/`RECEIPT_CONTRACT` keys | 2026-10-26 #338; 2026-10-29 #346 | Layer 1 (Step 8) | port, pinned by test (receipts.py: well-formedness and verifier parity) |
-| 1897-1928 | Attempt logging and `attempts[STEP]` counting; first-attempt identity floor for plan and review freshness | 2026-10-21 #310 (counted from disk by attempt) | Layer 1 (Step 8) | port, pinned by test (state.py: reconcile and counter repair) |
-| 2015-2034 (deps) | Deps precondition: `deps ensure` before worktree, implement, fix and verify; a manifest change stops for approval | 2026-11-01 #417 | Layer 2 (Step 9) | port, pinned by test |
-| 1953-1993 | Deps precondition block (`deps ensure`, `commands.install`) | 2026-11-01 #417 | Layer 2 (Step 9) | port, pinned by test |
-| 1994-2328 | Per-step details (worktree, track, plan, implement, review, fix, verify, ship, merge) | ADR base text; many amendments (see index) | Layers 2 and 3 | port, pinned by test |
-| 2030-2034 | Check detection (`checks ensure-check`), marker and receipt written only after it | ADR base text; 2026-10-26 #338 | Layer 2 (Step 9) | port, pinned by test |
+| 995-1187 | The step loop: spawn each step, run the verifier, fidelity audit and gate in order, advance `STEP` only after `WRITE-STATE` | ADR base text; 2026-10-13 gated Rebase, 2026-10-14 more human in the loop | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 853-956 | Flow state: `state.json` keys (`step`, `status`, `live`, `attempts`, `failures`, `stop_reason`, `stop_source`, `flags`, `pr`, `worktree`, `healed`, `redo_archive`, `skill_retries`) | ADR base text; 2026-10-27 assess keys; 2026-10-29 #380 `healed` | Layer 1 (Step 8) | port, test not named (backfill #541) (state.py: v2 state schema; v1 field contract retained) |
+| 957-994 | Step list and order (`worktree` through `merge`) | ADR base text | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 1188-1199 | Orchestrator-written receipts (`steps/<NN>-<step>.md`) | ADR section 2.2 (2026-10-14, #276) | Layer 1 (Step 8) | port, test not named (backfill #541) (receipts.py: receipt classification and archive) |
+| 1308-1327 | Re-entry pre-checks | ADR base text | Layer 2 (Step 9) | port, test not named (backfill #541) (spawn gating; ship case Layer 3) |
+| 1188-1199 (receipt contract, used by 995-1187) | `Decision: OK` / `FAILED`, `ATTEMPT`, `CHECK`/`CHECK_EXIT`/`CHECK_SHA`, `RUN_KEY`/`RECEIPT_CONTRACT` keys | 2026-10-26 #338; 2026-10-29 #346 | Layer 1 (Step 8) | port, test not named (backfill #541) (receipts.py: well-formedness and verifier parity) |
+| n/a (#490) | Decision vocabulary (#490) | #490 | Layer 1 (Step 8) | landed in #538 (code in scripts/flow_driver); test not named (backfill #541) |
+| 1897-1928 | Attempt logging and `attempts[STEP]` counting; first-attempt identity floor for plan and review freshness | 2026-10-21 #310 (counted from disk by attempt) | Layer 1 (Step 8) | port, test not named (backfill #541) (state.py: reconcile and counter repair) |
+| 2015-2034 (deps) | Deps precondition: `deps ensure` before worktree, implement, fix and verify; a manifest change stops for approval | 2026-11-01 #417 | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 1953-1993 | Deps precondition block (`deps ensure`, `commands.install`) | 2026-11-01 #417 | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 1994-2328 | Per-step details (worktree, track, plan, implement, review, fix, verify, ship, merge) | ADR base text; many amendments (see index) | Layers 2 and 3 | port, test not named (backfill #541) |
+| 2030-2034 | Check detection (`checks ensure-check`), marker and receipt written only after it | ADR base text; 2026-10-26 #338 | Layer 2 (Step 9) | port, test not named (backfill #541) |
 | 2074-2100 | Plan-step question file, relay, persisted answer, ledger record, refusal line | 2026-10-15 plan checkpoint; 2026-10-30 #288 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_relay.py (test_park_allocates_and_reenters, test_archive_consumed, test_exact_option_match); the plan-step ledger record and refusal line have no test yet |
+| n/a (#538) | Agent-file and registration preflight; main worktree resolution | #538 | Layer 2 (Step 9) | landed in #538 (code in scripts/flow_driver); test not named (backfill #541) |
+| n/a (#538) | `spawn-failed` event and stop: live cleared, no failure recorded (launch failure = v1 parity) | #538 | Layer 2 (Step 9) | landed in #538 (code in scripts/flow_driver); test not named (backfill #541) |
 
 ### 1.2 `--resume` cascade (lines 506-664)
 
@@ -32,21 +35,21 @@ Order matters. Rule 1b (heal in progress) runs before rules 4 and 5, so a heal i
 | v1 lines | Rule | ADR section / amendment | Target layer | Disposition |
 |---|---|---|---|---|
 | 546 | Rule 0: redo entry (`--redo <STEP>` only), runs before rule 1 | 2026-10-20 #286 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_recovery.py (test_redo_bound_before_limit, test_redo_bound_at_limit) and tests/test_flow_driver_gates.py (test_redo_cap); the entry ordering before rule 1 has no test yet |
-| 547-555 | Rule 1: live step, a previous session's step agent still running | ADR base text; 2026-10-14 more human in the loop | Layer 1 (Step 8) | port, pinned by test (resume.py: rule 1 decision and receipts.classify outcomes) |
-| 556-602 | Rule 2: `status: paused` at a step gate (`plan`, `implement`, `review`, `fix`, `verify`) | 2026-10-16 third (step gates opt-in); 2026-10-16 second (`taken-over`) | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_gates.py (test_step_gate_parks_with_options, test_step_gate_answers) and tests/test_flow_driver_resume.py (test_resume_reasks_step_gate) |
+| 547-555 | Rule 1: live step, a previous session's step agent still running | ADR base text; 2026-10-14 more human in the loop | Layer 1 (Step 8) | port, test not named (backfill #541) (resume.py: rule 1 decision and receipts.classify outcomes) |
+| 556-602 | Rule 2: `status: paused` at a step gate (`plan`, `implement`, `review`, `fix`, `verify`) | 2026-10-16 third (step gates opt-in); 2026-10-16 second (`taken-over`) | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_gates.py (test_step_gate_parks_with_options, test_step_gate_answers); the resume re-ask has no named test (backfill #541) |
 | 603-604 | Rule 2a: assess stage (`STEP` is `assess`, or `ship`/`merge` with no passing outstanding check) | 2026-10-27 #383 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_assess_loop.py (test_nothing_outstanding_skips, test_spawn_wait_ask_answer_advance) and tests/test_flow_driver_assess_next.py (test_nothing_outstanding_advances) |
-| 605 | Rule 3: `status: done` prints `flow already done`; no telemetry | ADR base text | Layer 2 (Step 9) | port, pinned by test |
+| 605 | Rule 3: `status: done` prints `flow already done`; no telemetry | ADR base text | Layer 2 (Step 9) | port, test not named (backfill #541) |
 | 606-608 | Rule 3a: `status: abandoned` asks once (fleet parks it as a `gate` ask) | ADR base text | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
-| 609 | Rule 1a: pending human input (legacy file and human ledger) | 2026-10-14 #287 ledger; 2026-10-30 #288 binding | Layer 2 (Step 9) | port, pinned by test |
+| 609 | Rule 1a: pending human input (legacy file and human ledger) | 2026-10-14 #287 ledger; 2026-10-30 #288 binding | Layer 2 (Step 9) | port, test not named (backfill #541) |
 | 610-616 | Rule 1b: heal in progress (`HEAL:` records); runs before rules 4 and 5 | 2026-10-29 #380; 2026-11-02 #425 | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
 | 617-618 | Rule 4: `status: failed` (aborted) re-runs the recorded step while `failures[STEP] < 2`, else Hard stop | ADR base text; 2026-10-20 #286 | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
-| 619-635 | Rule 5: `awaiting`, `paused` or `running` with the step subagent gone | ADR base text; 2026-10-14 more human in the loop | Layer 2 (Step 9) | port, pinned by test |
+| 619-635 | Rule 5: `awaiting`, `paused` or `running` with the step subagent gone | ADR base text; 2026-10-14 more human in the loop | Layer 2 (Step 9) | port, test not named (backfill #541) |
 | 636-641 | Rule 3b: flow resume after a failed redo (before rule 4; `redo_archive`) | 2026-10-20 #286 | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
 | 642-646 | Rule 6: step `merge` checks the PR state first (`gh pr view --json state`) | 2026-11-05 #462 (merge gate authoritative); #476 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_gates.py (test_merge_gate_already_merged_has_no_question, test_merge_gate_stops); the loop-level PR-state read has no test yet |
-| 647-650 | Rule 7: worktree needed by `implement`, `review`, `fix`, `verify`, `ship`, `merge` | ADR base text; 2026-10-14 worktree-first | Layer 2 (Step 9) | port, pinned by test |
-| 651 | Rule 8: epic flows resume the current sub-ticket's child flow | ADR base text (epic mode) | Layer 4 (Step 11) | port, pinned by test |
+| 647-650 | Rule 7: worktree needed by `implement`, `review`, `fix`, `verify`, `ship`, `merge` | ADR base text; 2026-10-14 worktree-first | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 651 | Rule 8: epic flows resume the current sub-ticket's child flow | ADR base text (epic mode) | Layer 4 (Step 11) | port, test not named (backfill #541) |
 | 652-658 | Rule 9: `flags.auto_merge` forced to `false` on resume; `flags.step_gates` restored; `healed` never reset | 2026-10-16 third; 2026-10-29 #380 | Layer 3 (Step 10) | refused by design (Q3 = A): v2 `start --auto-merge` stops `auto-merge-refused`; pinned by `tests/test_flow_driver_loop.py` (test_10_auto_merge_is_refused_before_any_state); the v2 case in `tests/test_fleet_invariants.py` is added alongside |
-| 659-664 | Rule 10: telemetry closes an open stage | ADR base text | Layer 2 (Step 9) | port, pinned by test |
+| 659-664 | Rule 10: telemetry closes an open stage | ADR base text | Layer 2 (Step 9) | port, test not named (backfill #541) |
 
 ### 1.3 Retry, take-over and hard-stop tree (lines 1625-1952)
 
@@ -61,23 +64,27 @@ Order matters. Rule 1b (heal in progress) runs before rules 4 and 5, so a heal i
 | 1772-1783 | Auto-escalate on implementer shortfall (implement and fix) | 2026-10-16 fourth; 2026-10-25 #341 | Layer 3 (Step 10) | dropped: dormant (automatic escalation on implementer shortfall is not ported; see row 20; manual retry is kept) |
 | 1784-1788 | Accept eligibility (plan, implement, review, fix, verify), human-only, only via `scripts/flow-accept.py` | 2026-10-29 #365 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_audit_assess.py (test_accept_eligibility_fails_closed) and tests/test_flow_driver_audit_loop.py (test_accept_allowlisted_rejection, test_accept_refused_off_allowlist) |
 | 1789-1872 | Keep previous attempt (Recommended, offered first), Take over, Abort, Retry with sonnet, and `Retry, split finer` (only before escalation) | 2026-10-16 fourth; 2026-11-02 #419 | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
-| 1873-1896 | Escalation telemetry | 2026-10-25 #341 | Layer 2 (Step 9) | port, pinned by test (log events only) |
+| 1873-1896 | Escalation telemetry | 2026-10-25 #341 | Layer 2 (Step 9) | port, test not named (backfill #541) (log events only) |
 | 1929-1952 | Stop lines printed at a stop (`flow` log events, fleet `(fleet: parked)` suffix) | 2026-11-02 #421 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_loop.py (test_40_stop_reason_round_trip_for_every_code); the fleet `(fleet: parked)` suffix has no test yet |
-| 1667-1872 (shared) | Takeover at the Hard stop and at the merge gate writes `taken-over`; the only record that a human chose it | 2026-10-16 second | Layer 1 (Step 8) | port, pinned by test |
+| n/a (#542) | Stop attribution: guard-denial, `step-failed` and `spawn-failed` stops carry no step-agent ownership claim; a human attributes each on a candidate D6 ticket | #538 (D6 precondition) | Layer 3 (Step 10) | deferred to a named follow-up (#542) |
+| 1667-1872 (shared) | Takeover at the Hard stop and at the merge gate writes `taken-over`; the only record that a human chose it | 2026-10-16 second | Layer 1 (Step 8) | port, test not named (backfill #541) |
 
 ### 1.4 Assess, verify, fidelity and relay
 
 | v1 lines | Rule | ADR section / amendment | Target layer | Disposition |
 |---|---|---|---|---|
 | 2180-2263 | Assess stage before ship: verify each outstanding unit; already-done reported; unfinished relayed with the assessor's options | 2026-10-27 #383 slice 1; 2026-11-02 #435 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_assess_loop.py (test_spawn_wait_ask_answer_advance, test_bad_records_halt) and tests/test_flow_driver_assess_next.py (test_nothing_outstanding_advances, test_spawn_then_ask_then_gate) |
+| 2180-2263 | Assess default-on, assessor agent (`flow-assessor`), input shape, reply channel (`assess-reply`), delimiter rotation and typed option routes | #538 (assess reply channel, Q1 = F) | Layer 3 (Step 10) | landed in #538 (code in scripts/flow_driver); test not named (backfill #541) |
 | 2188-2191 | Fix-now carry rule (persisted in the answers file) | 2026-10-29 #380 | Layer 3 (Step 10) | re-pointed to the Layer 3 recovery follow-up (not wired in #487) |
+| n/a (#468) | Fix now clarification (2026-11-12): Fix now is unwired in v2 | 2026-11-12 #468 | Layer 3 (Step 10) | deferred to Layer 3 recovery follow-up (#513) |
 | 2192-2216 | Range overlap check for `fix:unknown` items; script-anchored already-done | 2026-11-02 #435 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); no test yet for the range overlap check or the script-anchored already-done check |
 | 2217-2218 | Already-done notice, always shown | 2026-10-27 #383 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_assess_next.py (test_done_items_ask_nothing); the always-shown notice itself has no test yet |
 | 2219-2255 | Ask split into forms, per-form persistence; every item must have a disposition before ship and merge | 2026-10-27 #383 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_assess_next.py (test_spawn_then_ask_then_gate, test_drop_needs_a_note_and_gate_catches_gaps) and tests/test_flow_driver_assess_loop.py (test_item_answer_without_batch_refused) |
 | 2256-2262 | Fixed is derived by re-running `--outstanding-set`, never self-reported | 2026-10-27 #383 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_assess_next.py (test_set_reads_ok_receipts, test_set_empty_and_malformed) |
-| 1200-1307 | Fidelity audit orchestration: the verifier owns counts, the audit owns judgment only | 2026-10-19 #318 | Layer 2 (Step 9) | port, pinned by test |
+| 1200-1307 | Fidelity audit orchestration: the verifier owns counts, the audit owns judgment only | 2026-10-19 #318 | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 1200-1307 (fidelity-audit spawn) | Fidelity audit agent is `general-purpose` in v2; v1 uses `expert-scout` (retained; ADR-0026 Decision 11 amendment) | #538 | Layer 5 (Step 12) | deferred to Layer 5 (#489) |
 | 1219-1221 | `fidelity audit failed: ledger unavailable` stop (unrecognised run-key source, or a failed locate) | 2026-10-19 #318 | Layer 2 (Step 9) | dropped: v2 re-renders the ledger snapshot from the run key instead of stopping (plan Layer 2 ledger bullet); a Layer 2 test pins the re-render |
-| 1328-1355 | Human ledger: per-step snapshot at spawn, fenced records only to allowed workers, `Addressed:` carry-forward, unaddressed-direction stop, ship-time close-out only | 2026-10-14 #287; 2026-10-30 #288 | Layer 2 (Step 9) | port, pinned by test |
+| 1328-1355 | Human ledger: per-step snapshot at spawn, fenced records only to allowed workers, `Addressed:` carry-forward, unaddressed-direction stop, ship-time close-out only | 2026-10-14 #287; 2026-10-30 #288 | Layer 2 (Step 9) | port, test not named (backfill #541) |
 | 1356-1372 | Relaying a question (common rules) | 2026-10-14 more human in the loop | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_relay.py (test_park_allocates_and_reenters, test_park_non_step_needs_nn) |
 | 1372-1447 | Report-kind questions (plan checkpoint, review checkpoint) | 2026-10-15 plan checkpoint; 2026-11-02 #421 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_relay.py (test_paths_per_kind, test_render_question); the report-kind checkpoint content has no test yet |
 | 1448-1516 | Form-kind questions (legacy path) | ADR base text | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_relay.py (test_exact_option_match, test_free_text_accepts_anything, test_answer_is_exclusive) |
@@ -92,33 +99,36 @@ Order matters. Rule 1b (heal in progress) runs before rules 4 and 5, so a heal i
 |---|---|---|---|---|
 | 2299-2301 | Merge gate: check PR state first; if already `MERGED`, skip the gate | #476 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_gates.py (test_merge_gate_already_merged_has_no_question) |
 | 2302-2307 | Healed run: the gate is always asked, even under `--auto-merge` (any `HEAL:` record, `healed: true`, or a `Flow-Heal:` commit) | 2026-10-29 #380 | Layer 3 (Step 10) | landed as: every merge asks, healed or not (Q3 = A) |
-| 2308-2316 | Merge gate question: Merge, Hold, Take over; fleet parks it as a `gate` ask | 2026-10-29 #380; 2026-11-02 #421 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_gates.py (test_merge_gate_asks_even_when_healed, test_merge_answer_rereads_by_number, test_merge_gate_stops) and tests/test_flow_driver_resume.py (test_resume_reasks_merge_hold) |
+| n/a (#538) | Merge run directory (merge step runs from the main worktree) | 2026-11-20 #487; #538 | Layer 3 (Step 10) | landed in #538 (code in scripts/flow_driver); test not named (backfill #541) |
+| 2308-2316 | Merge gate question: Merge, Hold, Take over; fleet parks it as a `gate` ask | 2026-10-29 #380; 2026-11-02 #421 | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_gates.py (test_merge_gate_asks_even_when_healed, test_merge_answer_rereads_by_number, test_merge_gate_stops) and tests/test_flow_driver_recover_loop.py (test_reverify_reasks_the_merge_gate) |
 | 91-96 | `--auto-merge` per-run only; a healed run suspends it | 2026-10-29 #380 | Layer 3 (Step 10) | refused by design (Q3 = A): v2 `start --auto-merge` stops `auto-merge-refused`; pinned by `tests/test_flow_driver_loop.py` (test_10_auto_merge_is_refused_before_any_state); the v2 case in `tests/test_fleet_invariants.py` is added alongside |
 | 2467 | No stored default for `--auto-merge`; resume never restores it | ADR base text | Layer 3 (Step 10) | refused by design (Q3 = A): v2 `start --auto-merge` stops `auto-merge-refused`; pinned by `tests/test_flow_driver_loop.py` (test_10_auto_merge_is_refused_before_any_state); the v2 case in `tests/test_fleet_invariants.py` is added alongside |
 | 97-103 | `--gates` stored per flow; inherited by epic children | 2026-10-16 third | Layer 3 (Step 10) | landed in #487 (code in scripts/flow_driver); pinned by tests/test_flow_driver_gates.py (test_gates_off_advances); per-flow storage has no test yet; epic inheritance is Layer 4 |
-| 2440-2451 | Exit paths (Hold at merge gate, Pause at step gate, Take over, Abort, Done) | ADR base text | Layer 2 (Step 9) | port, pinned by test |
+| 2440-2451 | Exit paths (Hold at merge gate, Pause at step gate, Take over, Abort, Done) | ADR base text | Layer 2 (Step 9) | port, test not named (backfill #541) |
 
 ### 1.6 Setup, fresh run, subcommands, epic and fleet
 
 | v1 lines | Rule | ADR section / amendment | Target layer | Disposition |
 |---|---|---|---|---|
-| 136-210 | Fleet mode section, including the foreground-`wait` rule at 200-207 (`fleet.py wait`, `--timeout 540`, Bash timeout 600000, no end-of-turn idle) | ADR base text (fleet mode) | Layer 4 (Step 11) | port, pinned by test (WAIT mode from `flags.fleet`) |
-| 211-293 | Setup and argument parsing | ADR base text | Layer 2 (Step 9) | port, pinned by test |
-| 282-293 | Project detection and repo key (primary resolver, never first-entry main worktree) | #472-#475 | Layer 2 (Step 9) | port, pinned by test (primary resolver only) |
-| 294-410 | No-argument run | 2026-10-15 bare `/expert-flow` in the ticket worktree (#302) | Layer 2 (Step 9) | port, pinned by test |
-| 411-449 | Where the orchestrator runs | 2026-10-15 #302; worktree-first | Layer 2 (Step 9) | port, pinned by test |
-| 450-470 | Newest-flow lookup (shared) | ADR base text | Layer 2 (Step 9) | port, pinned by test (v1 scans stay blind to v2 dirs, Q3) |
-| 471-505 | `--list` | ADR base text | Layer 2 (Step 9) | port, pinned by test |
-| 665-681 | `--abandon` | ADR base text | Layer 2 (Step 9) | port, pinned by test |
-| 682-703 | `--retro`, including closing retro gaps | 2026-10-21 #320 | Layer 2 (Step 9) | port, pinned by test |
-| 728-739 | Fresh run, rule 0: fleet run refuses an existing flow with a guard block | ADR base text (fleet mode) | Layer 4 (Step 11) | port, pinned by test |
-| 740-801 | Fresh run: Start fresh deletes the old flow's worktree (sanctioned destructive action) | 2026-10-13 Start fresh | Layer 2 (Step 9) | port, pinned by test |
-| 802-843 | Fresh run: resume path from Main (hand-off stop) | 2026-10-15 #302 | Layer 2 (Step 9) | port, pinned by test |
-| 844-852 | Telemetry begin | ADR base text | Layer 2 (Step 9) | port, pinned by test |
-| 2329-2388 | Epic mode (experimental): sub-issues sequentially; child flows inherit `--gates` | ADR base text | Layer 4 (Step 11) | port, pinned by test |
-| 2389-2437 | Every exit path (commands per exit) | ADR base text | Layer 2 (Step 9) | port, pinned by test |
-| 2452-2476 | What this command deliberately does not do (no `--stack`, no stored `--auto-merge`, no auto-remediation beyond the bounded exceptions) | ADR base text | Layer 2 (Step 9) | port, pinned by test (negative constraints) |
-| 47 | Bounded remediation exceptions: Rebase (base-stale), Unknown-skill retry, Retry with sonnet (manual), check heal and Fix now, fleet heal | 2026-10-29 #380; 2026-11-02 #425; 2026-11-04 | Layers 3 and 4 | port, pinned by test (five exceptions, none wider) |
+| 136-210 | Fleet mode section, including the foreground-`wait` rule at 200-207 (`fleet.py wait`, `--timeout 540`, Bash timeout 600000, no end-of-turn idle) | ADR base text (fleet mode) | Layer 4 (Step 11) | port, test not named (backfill #541) (WAIT mode from `flags.fleet`) |
+| 211-293 | Setup and argument parsing | ADR base text | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 282-293 | Project detection and repo key (primary resolver, never first-entry main worktree) | #472-#475 | Layer 2 (Step 9) | port, test not named (backfill #541) (primary resolver only) |
+| 294-410 | No-argument run | 2026-10-15 bare `/expert-flow` in the ticket worktree (#302) | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 411-449 | Where the orchestrator runs | 2026-10-15 #302; worktree-first | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 450-470 | Newest-flow lookup (shared) | ADR base text | Layer 2 (Step 9) | port, test not named (backfill #541) (v1 scans stay blind to v2 dirs, Q3) |
+| 471-505 | `--list` | ADR base text | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 665-681 | `--abandon` | ADR base text | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 682-703 | `--retro`, including closing retro gaps | 2026-10-21 #320 | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 728-739 | Fresh run, rule 0: fleet run refuses an existing flow with a guard block | ADR base text (fleet mode) | Layer 4 (Step 11) | port, test not named (backfill #541) |
+| 740-801 | Fresh run: Start fresh deletes the old flow's worktree (sanctioned destructive action) | 2026-10-13 Start fresh | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 802-843 | Fresh run: resume path from Main (hand-off stop) | 2026-10-15 #302 | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| n/a (#538) | Worktree and track run directory (run from the ticket worktree) | #538 | Layer 5 (Step 12) | deferred to Layer 5 (#489) |
+| 844-852 | Telemetry begin | ADR base text | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 2329-2388 | Epic mode (experimental): sub-issues sequentially; child flows inherit `--gates` | ADR base text | Layer 4 (Step 11) | port, test not named (backfill #541) |
+| n/a (#529) | Empty-string `live` is a hand-off, not a live session (fleet `is_handoff`) | 2026-11-02 #425; #529 | Layer 4 (Step 11) | deferred to Layer 4 (#488) |
+| 2389-2437 | Every exit path (commands per exit) | ADR base text | Layer 2 (Step 9) | port, test not named (backfill #541) |
+| 2452-2476 | What this command deliberately does not do (no `--stack`, no stored `--auto-merge`, no auto-remediation beyond the bounded exceptions) | ADR base text | Layer 2 (Step 9) | port, test not named (backfill #541) (negative constraints) |
+| 47 | Bounded remediation exceptions: Rebase (base-stale), Unknown-skill retry, Retry with sonnet (manual), check heal and Fix now, fleet heal | 2026-10-29 #380; 2026-11-02 #425; 2026-11-04 | Layers 3 and 4 | port, test not named (backfill #541) (five exceptions, none wider) |
 
 ### 1.7 Model-only primitives
 
@@ -126,12 +136,12 @@ The six primitives are model-only behaviour that a deterministic driver must rep
 
 | v1 lines | Primitive | Target layer | Disposition |
 |---|---|---|---|
-| 39, 58 | `Task`: spawn a step agent | Step 7 (verb set: SPAWN) | port, pinned by test |
-| 39 | `SendMessage`: resume a step agent | Step 7 (verb set: RESUME) | port, pinned by test |
-| 58, 202-207 | End-turn wait: an end-of-turn idle is not a wait (headless sessions abort background agents about ten minutes after an idle turn) | Step 7 (verb set: WAIT) | port, pinned by test |
+| 39, 58 | `Task`: spawn a step agent | Step 7 (verb set: SPAWN) | port, test not named (backfill #541) |
+| 39 | `SendMessage`: resume a step agent | Step 7 (verb set: RESUME) | port, test not named (backfill #541) |
+| 58, 202-207 | End-turn wait: an end-of-turn idle is not a wait (headless sessions abort background agents about ten minutes after an idle turn) | Step 7 (verb set: WAIT) | port, test not named (backfill #541) |
 | 58 | `ScheduleWakeup` (1800 seconds per step, fallback heartbeat) | Step 7 (verb set: WAIT) | dropped: the end-turn wait row above replaces it in v2 (no heartbeat, ADR-0026 Decision 3); v1 line 58 keeps it only as a fallback |
-| 200-207 | Fleet `wait` (foreground `fleet.py wait --timeout 540`) | Layer 4 (Step 11) | port, pinned by test |
-| 1356-1565 | `AskUserQuestion` (relay, step gate, merge gate, hard stop) | Layers 2 and 3 | port, pinned by test (fleet mode parks instead of asking) |
+| 200-207 | Fleet `wait` (foreground `fleet.py wait --timeout 540`) | Layer 4 (Step 11) | port, test not named (backfill #541) |
+| 1356-1565 | `AskUserQuestion` (relay, step gate, merge gate, hard stop) | Layers 2 and 3 | port, test not named (backfill #541) (fleet mode parks instead of asking) |
 
 ## 2. Fleet state contract
 
@@ -183,6 +193,7 @@ The v2 `state.json` schema (driver_format: 2) is defined by the frozen dataclass
 | `pr` | `str` or `null` | PR URL once ship has run |
 | `worktree` | `str` or `null` | Absolute worktree path, set at init and stored verbatim (never resolved; Layer 1 never calls the primary resolver; see #472-#475) |
 | `healed` | `bool` | True when a check heal has run (forces merge gate to ask). Never reset on resume |
+| `bases` | `object` | Frozen `Bases(implement, fix)` record mirroring `Heads`; each a sha string or `null` (W1) |
 | `attempt_log` | `object` | Per-step per-attempt outcome history: `{step: {"<attempt>": "receipt-landed" \| "cleared" \| "receipt-malformed" \| "abandoned"}}`. Kept separate from `attempts` so the fleet's `attempts.plan` keeps its meaning (PERMISSION-VOID) |
 | `applied` | `array[str]` | Canonical transition keys already applied; every key is unique; see apply_transition in scripts/flow_driver/state.py (Step 3) |
 | `extra` | `object` | Unknown top-level keys preserved verbatim; never interpreted by the driver |
@@ -231,7 +242,7 @@ From the plan's "Overlapping-issue dispositions" (Q2 and seq 1: fold the overlap
 | #424 | Layer 4: stop, fix and resume within the fleet |
 | #408 | Layer 3 |
 | #407 | Layer 2 (driver-side preflight) |
-| #406 and #430 | Not ported. v2 uses the existing hooks unchanged, so they stay open against the shared guards under the seq 1 hook freeze |
+| #406 and #430 | Not ported. v2 uses the existing hooks unchanged, so they stay open against the shared guards under the feature-parity rule (ADR-0026 2026-11-23 amendment) |
 | #446 | Split. The hook defect (#446, hook half — `flow-assessor` missing from `KNOWN_FLOW_AGENTS`) has been fixed independently (commit f33a8bff, 2026-11-05). v2's Layer 3 assess stage runs every check that needs Bash in driver Python, and `flow-assessor` is spawned only for read-and-judge work |
 | #304 | Layer 3 |
 | #472-#475 | Layers 1 and 2 use the primary resolver and never the first-entry main-worktree rule |
@@ -246,48 +257,48 @@ Headings marked `###` are amendment-tagged subsection headings. The subsection `
 
 | # | Heading (as written) | Rules | Target layer | Disposition |
 |---|---|---|---|---|
-| 1 | Amendment: worktree-first invocation | Worktree-first: the ticket worktree is created first, then the flow runs from inside it | Layer 2 | port, pinned by test |
+| 1 | Amendment: worktree-first invocation | Worktree-first: the ticket worktree is created first, then the flow runs from inside it | Layer 2 | port, test not named (backfill #541) |
 | 2 | Amendment (2026-10-13): gated Rebase on base-stale failures | Rebase was gated behind a human answer on base-stale failures | Layer 3 | dropped: superseded by #3 (automatic Rebase) |
-| 3 | Amendment (2026-10-14): base-stale Rebase is automatic, with an `/expert-rebase` worker fallback | Automatic naive rebase, then `/expert-rebase` worker on conflicts; never a push | Layer 3 | port, pinned by test |
-| 4 | Amendment (2026-10-13): Start fresh deletes the old flow's worktree | Start fresh removes the old flow's worktree (sanctioned destructive action) | Layer 2 | port, pinned by test |
-| 5 | Amendment (2026-10-14): more human in the loop — context-carrying relay, full checkpoint relay, step gates | Relay carries context; full checkpoint relay; step gates | Layer 3 | port, pinned by test |
-| 6 | Amendment (2026-10-14): receipt markers survive finalization | Receipt markers are kept through finalization | Layer 2 (Step 9) | port, pinned by test (marker preservation in the step loop) |
-| 7 | Amendment (2026-10-19): fidelity audit owns judgment only, verifier owns counts (#318) | Verifier owns counts; fidelity audit (expert-scout, Haiku) owns judgment only | Layer 2 | port, pinned by test |
-| 8 | Amendment (2026-10-15): bare /expert-flow in the ticket worktree (#302) | Bare `/expert-flow` in the ticket worktree auto-detects the issue; resumes silently only in the exact hand-off state | Layer 2 | port, pinned by test |
-| 9 | Amendment (2026-10-15): The plan checkpoint is a report and a conversation | Plan checkpoint is a report plus conversation; decision briefs shown through a report | Layer 3 | port, pinned by test |
-| 10 | Amendment (2026-10-16): a resumed `OK` the loop never validated is validated before its gate | Resumed `OK` is validated before its gate | Layer 1 | port, pinned by test |
-| 11 | Amendment (2026-10-16, second): a hand-finished `OK` is human-attested, not audited | Hand-finished `OK` is `taken-over`; human-attested, no audit | Layer 1 | port, pinned by test |
-| 12 | Amendment (2026-10-16, third): step gates are opt-in | Step gates opt-in; `flags.step_gates` restored on resume | Layer 3 | port, pinned by test |
-| 13 | Amendment (2026-10-14): per-flow human-input ledger (#287) | Per-flow `human.jsonl` written only by `scripts/flow-ledger.py`; snapshot at spawn; fenced records to allowed workers | Layer 2 | port, pinned by test |
-| 14 | Amendment (2026-10-16, fourth): one implementer escalation path (#315) | One escalation path: Retry, Keep previous, Take over, Abort, manual Retry with sonnet; `Retry, split finer` only before escalation; `### Amending §1` sub-rules | Layer 3 | port, pinned by test (manual path). Automatic escalation dropped: dormant (see row 20 and rule 1772-1783) |
-| 15 | Amendment (2026-10-20): Redo with notes at the plan and review gates (#286) | Redo with notes at plan and review; cap of two redos and two failures, counted separately; keep-previous | Layer 3 | port, pinned by test |
-| 16 | Amendment (2026-10-20): a bounded `implement-ledger.py locate` fails closed on unreadable records | `locate` is bounded and fails closed | Layer 2 | port, pinned by test |
-| 17 | Amendment (2026-10-21): relayed questions are counted from disk by attempt; plan/review freshness is a first-attempt identity floor (#310) | Counts from disk by attempt; first-attempt identity floor | Layer 1 | port, pinned by test |
-| 18 | Amendment (2026-10-21): multi-round report checkpoints verify across rounds (#335, #340) | Multi-round report checkpoints verify across rounds | Layer 2 | port, pinned by test |
-| 19 | Amendment (2026-10-21): Closing retro gaps from a dogfood run (#320) | `--retro` gaps closed | Layer 2 | port, pinned by test |
+| 3 | Amendment (2026-10-14): base-stale Rebase is automatic, with an `/expert-rebase` worker fallback | Automatic naive rebase, then `/expert-rebase` worker on conflicts; never a push | Layer 3 | port, test not named (backfill #541) |
+| 4 | Amendment (2026-10-13): Start fresh deletes the old flow's worktree | Start fresh removes the old flow's worktree (sanctioned destructive action) | Layer 2 | port, test not named (backfill #541) |
+| 5 | Amendment (2026-10-14): more human in the loop — context-carrying relay, full checkpoint relay, step gates | Relay carries context; full checkpoint relay; step gates | Layer 3 | port, test not named (backfill #541) |
+| 6 | Amendment (2026-10-14): receipt markers survive finalization | Receipt markers are kept through finalization | Layer 2 (Step 9) | port, test not named (backfill #541) (marker preservation in the step loop) |
+| 7 | Amendment (2026-10-19): fidelity audit owns judgment only, verifier owns counts (#318) | Verifier owns counts; fidelity audit (expert-scout, Haiku) owns judgment only | Layer 2 | port, test not named (backfill #541) |
+| 8 | Amendment (2026-10-15): bare /expert-flow in the ticket worktree (#302) | Bare `/expert-flow` in the ticket worktree auto-detects the issue; resumes silently only in the exact hand-off state | Layer 2 | port, test not named (backfill #541) |
+| 9 | Amendment (2026-10-15): The plan checkpoint is a report and a conversation | Plan checkpoint is a report plus conversation; decision briefs shown through a report | Layer 3 | port, test not named (backfill #541) |
+| 10 | Amendment (2026-10-16): a resumed `OK` the loop never validated is validated before its gate | Resumed `OK` is validated before its gate | Layer 1 | port, test not named (backfill #541) |
+| 11 | Amendment (2026-10-16, second): a hand-finished `OK` is human-attested, not audited | Hand-finished `OK` is `taken-over`; human-attested, no audit | Layer 1 | port, test not named (backfill #541) |
+| 12 | Amendment (2026-10-16, third): step gates are opt-in | Step gates opt-in; `flags.step_gates` restored on resume | Layer 3 | port, test not named (backfill #541) |
+| 13 | Amendment (2026-10-14): per-flow human-input ledger (#287) | Per-flow `human.jsonl` written only by `scripts/flow-ledger.py`; snapshot at spawn; fenced records to allowed workers | Layer 2 | port, test not named (backfill #541) |
+| 14 | Amendment (2026-10-16, fourth): one implementer escalation path (#315) | One escalation path: Retry, Keep previous, Take over, Abort, manual Retry with sonnet; `Retry, split finer` only before escalation; `### Amending §1` sub-rules | Layer 3 | port, test not named (backfill #541) (manual path). Automatic escalation dropped: dormant (see row 20 and rule 1772-1783) |
+| 15 | Amendment (2026-10-20): Redo with notes at the plan and review gates (#286) | Redo with notes at plan and review; cap of two redos and two failures, counted separately; keep-previous | Layer 3 | port, test not named (backfill #541) |
+| 16 | Amendment (2026-10-20): a bounded `implement-ledger.py locate` fails closed on unreadable records | `locate` is bounded and fails closed | Layer 2 | port, test not named (backfill #541) |
+| 17 | Amendment (2026-10-21): relayed questions are counted from disk by attempt; plan/review freshness is a first-attempt identity floor (#310) | Counts from disk by attempt; first-attempt identity floor | Layer 1 | port, test not named (backfill #541) |
+| 18 | Amendment (2026-10-21): multi-round report checkpoints verify across rounds (#335, #340) | Multi-round report checkpoints verify across rounds | Layer 2 | port, test not named (backfill #541) |
+| 19 | Amendment (2026-10-21): Closing retro gaps from a dogfood run (#320) | `--retro` gaps closed | Layer 2 | port, test not named (backfill #541) |
 | 20 | Amendment (2026-10-25): maxTurns look-back (#341) and the turns-exhaustion probe status | Turns look-back; the turns-exhaustion probe was not run; automatic escalation dormant | Layer 3 | dropped: no turns source exists and the probe was never run; automatic escalation stays dormant. Manual retry is kept |
-| 21 | Amendment (2026-10-25): Unambiguous post-tier checkpoint ledger (#344) | Post-tier checkpoint ledger is unambiguous | Layer 1 | port, pinned by test |
-| 22 | Amendment (2026-10-26): the implement/fix check gate is verifiable and fails closed (#338) | `CHECK`, `CHECK_EXIT`, `CHECK_SHA` keys; `check-not-run` and `check-not-configured`; K=3 fix loop; `checkOptOut` | Layer 3 | port, pinned by test |
-| 23 | Amendment (2026-10-26): cwd-drift as a hard stop (#336, #338) | cwd drift is a hard stop | Layer 2 | port, pinned by test |
-| 24 | Amendment (2026-11-05): verify, implement and fix check gates run the minimum check (#387) | Verify, implement and fix gates run `checks validate --mode minimum` | Layer 3 | port, pinned by test |
-| 25 | Amendment (2026-10-26): Restricted step agents for implement, fix, and review (#358) | `flow-implement` and `flow-review` restricted; prompt-scoped `Write` only for receipts and markers | Layer 3 | port, pinned by test (agent definitions unchanged under the hook freeze) |
-| 26 | Amendment (2026-10-27): assess outstanding items before ship (#383, slice 1) | Assess stage: `attempts.assess`, `failures.assess`, `stop_source.assess`, `outstanding_format: 2`, 8-item batches, Sonnet assessor, drop reasons of at least 15 characters; slice 2 (automatic finishing) out of scope | Layer 3 | port, pinned by test |
-| 27 | ### Plan step hard-stop on missing agent files (amendment 2026-11-03, #446) | Plan step hard-stops when its agent files are missing; the `flow-assessor` Bash-guard defect is split (see Overlapping-issue dispositions, #446) | Layer 2 | port, pinned by test; the hook defect has been fixed independently (commit f33a8bff, 2026-11-05) |
-| 28 | Amendment (2026-10-29): human-attested Accept and continue at the hard stop (#365) | Human-only Accept and continue; default-deny allowlist in `scripts/flow-accept.py`; `accepted (...)` log event | Layer 3 | port, pinned by test |
-| 29 | Amendment (2026-10-29): implement/fix receipts name their ledger run (#346) | `RUN_KEY` and `RECEIPT_CONTRACT` in implement and fix receipts | Layer 1 | port, pinned by test |
-| 30 | Amendment (2026-10-29): bounded self-heal for check failures and Fix now (#380) | `flow-healer` (one heal per flow, `lint` or deterministic `test` only); Fix now re-spawn; healed run forces the merge gate; `healed` in `state.json` | Layer 3 | port, pinned by test |
-| 31 | Amendment 2026-10-30: Issue comments through Ask-based "new comment since plan" relay | Issue comments reach the human through the Ask-based relay | Layer 3 | port, pinned by test |
-| 32 | Amendment (2026-11-01): fix-mode coverage reads the Doing-it File cell (#409) | Fix mode reads the Doing-it File cell for coverage | Layer 3 | port, pinned by test |
-| 33 | Amendment (2026-10-30): the human ledger is binding (#288) | Directions are binding through `Addressed:`; unaddressed direction is a stop; ledger marks happen only at ship close-out (Q1 = C) | Layer 2 | port, pinned by test |
-| 34 | Amendment (2026-11-01): environment chores before the check (#417) | `deps ensure` before worktree, implement, fix and verify; manifest change stops for approval | Layer 2 | port, pinned by test |
-| 35 | Amendment (2026-11-02): Pre-run unit sizing and sequential split for multi-unit runs (#419) | `MIN_UNITS` is a lower bound; ceilings of 8 steps, 12 files and 16 findings are provisional; sequential split; `UNIT_CEILINGS:` recorded | Layer 3 | port, pinned by test (ceilings recorded, not enforced, per #325) |
-| 36 | Amendment (2026-11-02): one question renderer for flow and fleet (#421) | `scripts/flow-render-questions.py` renders questions for flow and fleet alike | Layer 3 | port, pinned by test |
-| 37 | Amendment (2026-11-02) — fleet heal is a further bounded exception (#425) | Fleet heal: one allow-listed `install` per cause in a ticket's worktree; never answers a gate | Layer 4 | port, pinned by test |
-| 38 | Amendment (2026-11-04) — Unknown-skill auto-retry is a fifth bounded exception | One automatic retry on an Unknown skill failure, `skill_retries[STEP]`, once per step | Layer 3 | port, pinned by test |
-| 39 | Amendment (2026-11-02): resolved File-cell basenames and script-anchored already-done for unknown fix rows (#435) | Resolved File-cell basenames; script-anchored already-done for unknown fix rows | Layer 3 | port, pinned by test |
-| 40 | Amendment (2026-11-05, #462): force-push gates run the minimum check; the merge gate is authoritative | Force-push gates run the minimum check; the merge gate runs the full check and is authoritative | Layer 3 | port, pinned by test |
-| 41 | Amendment (2026-11-17): human-approved existing-test edits in the fix step (#497) | The fix step sets aside existing-test-edit items, asks per item, and applies approved edits in one approval commit scanned with `--allow-test-edit`; the verifier cross-checks the sha256-pinned answers file | Layer 3 | port, pinned by test |
-| 42 | Amendment (2026-11-20): the v2 merge step runs unrestricted (#487) | The v2 merge step runs unrestricted; the human-answered merge gate and the PR-state verification stay in the driver | Layer 3 | port, pinned by test |
+| 21 | Amendment (2026-10-25): Unambiguous post-tier checkpoint ledger (#344) | Post-tier checkpoint ledger is unambiguous | Layer 1 | port, test not named (backfill #541) |
+| 22 | Amendment (2026-10-26): the implement/fix check gate is verifiable and fails closed (#338) | `CHECK`, `CHECK_EXIT`, `CHECK_SHA` keys; `check-not-run` and `check-not-configured`; K=3 fix loop; `checkOptOut` | Layer 3 | port, test not named (backfill #541) |
+| 23 | Amendment (2026-10-26): cwd-drift as a hard stop (#336, #338) | cwd drift is a hard stop | Layer 2 | port, test not named (backfill #541) |
+| 24 | Amendment (2026-11-05): verify, implement and fix check gates run the minimum check (#387) | Verify, implement and fix gates run `checks validate --mode minimum` | Layer 3 | not ported: verify receipt is self-reported, no named check command, no exit-code world-check — D6 precondition (#540); implement/fix half: port, test not named (backfill #541) |
+| 25 | Amendment (2026-10-26): Restricted step agents for implement, fix, and review (#358) | `flow-implement` and `flow-review` restricted; prompt-scoped `Write` only for receipts and markers | Layer 3 | landed in #538 (code in scripts/flow_driver); test not named (backfill #541); wired; interactive guard firing observed 2026-11-23; headless/fleet unprobed (#488); flow-assessor is tools-only; guards fail open (#430); ADR-0008 text in #489 |
+| 26 | Amendment (2026-10-27): assess outstanding items before ship (#383, slice 1) | Assess stage: `attempts.assess`, `failures.assess`, `stop_source.assess`, `outstanding_format: 2`, 8-item batches, Sonnet assessor, drop reasons of at least 15 characters; slice 2 (automatic finishing) out of scope | Layer 3 | port, test not named (backfill #541) |
+| 27 | ### Plan step hard-stop on missing agent files (amendment 2026-11-03, #446) | Plan step hard-stops when its agent files are missing; the `flow-assessor` Bash-guard defect is split (see Overlapping-issue dispositions, #446) | Layer 2 | port, test not named (backfill #541); the hook defect has been fixed independently (commit f33a8bff, 2026-11-05) |
+| 28 | Amendment (2026-10-29): human-attested Accept and continue at the hard stop (#365) | Human-only Accept and continue; default-deny allowlist in `scripts/flow-accept.py`; `accepted (...)` log event | Layer 3 | port, test not named (backfill #541) |
+| 29 | Amendment (2026-10-29): implement/fix receipts name their ledger run (#346) | `RUN_KEY` and `RECEIPT_CONTRACT` in implement and fix receipts | Layer 1 | port, test not named (backfill #541) |
+| 30 | Amendment (2026-10-29): bounded self-heal for check failures and Fix now (#380) | `flow-healer` (one heal per flow, `lint` or deterministic `test` only); Fix now re-spawn; healed run forces the merge gate; `healed` in `state.json` | Layer 3 | port, test not named (backfill #541) |
+| 31 | Amendment 2026-10-30: Issue comments through Ask-based "new comment since plan" relay | Issue comments reach the human through the Ask-based relay | Layer 3 | port, test not named (backfill #541) |
+| 32 | Amendment (2026-11-01): fix-mode coverage reads the Doing-it File cell (#409) | Fix mode reads the Doing-it File cell for coverage | Layer 3 | port, test not named (backfill #541) |
+| 33 | Amendment (2026-10-30): the human ledger is binding (#288) | Directions are binding through `Addressed:`; unaddressed direction is a stop; ledger marks happen only at ship close-out (Q1 = C) | Layer 2 | port, test not named (backfill #541) |
+| 34 | Amendment (2026-11-01): environment chores before the check (#417) | `deps ensure` before worktree, implement, fix and verify; manifest change stops for approval | Layer 2 | port, test not named (backfill #541) |
+| 35 | Amendment (2026-11-02): Pre-run unit sizing and sequential split for multi-unit runs (#419) | `MIN_UNITS` is a lower bound; ceilings of 8 steps, 12 files and 16 findings are provisional; sequential split; `UNIT_CEILINGS:` recorded | Layer 3 | port, test not named (backfill #541) (ceilings recorded, not enforced, per #325) |
+| 36 | Amendment (2026-11-02): one question renderer for flow and fleet (#421) | `scripts/flow-render-questions.py` renders questions for flow and fleet alike | Layer 3 | port, test not named (backfill #541) |
+| 37 | Amendment (2026-11-02) — fleet heal is a further bounded exception (#425) | Fleet heal: one allow-listed `install` per cause in a ticket's worktree; never answers a gate | Layer 4 | port, test not named (backfill #541) |
+| 38 | Amendment (2026-11-04) — Unknown-skill auto-retry is a fifth bounded exception | One automatic retry on an Unknown skill failure, `skill_retries[STEP]`, once per step | Layer 3 | port, test not named (backfill #541) |
+| 39 | Amendment (2026-11-02): resolved File-cell basenames and script-anchored already-done for unknown fix rows (#435) | Resolved File-cell basenames; script-anchored already-done for unknown fix rows | Layer 3 | port, test not named (backfill #541) |
+| 40 | Amendment (2026-11-05, #462): force-push gates run the minimum check; the merge gate is authoritative | Force-push gates run the minimum check; the merge gate runs the full check and is authoritative | Layer 3 | port, test not named (backfill #541) |
+| 41 | Amendment (2026-11-17): human-approved existing-test edits in the fix step (#497) | The fix step sets aside existing-test-edit items, asks per item, and applies approved edits in one approval commit scanned with `--allow-test-edit`; the verifier cross-checks the sha256-pinned answers file | Layer 3 | port, test not named (backfill #541) |
+| 42 | Amendment (2026-11-20): the v2 merge step runs unrestricted (#487) | The v2 merge step runs unrestricted; the human-answered merge gate and the PR-state verification stay in the driver | Layer 3 | landed in #538 (code in scripts/flow_driver); test not named (backfill #541); superseded: v2 merge now spawns flow-merge from the main worktree; wired; interactive guard firing observed 2026-11-23; headless/fleet unprobed (#488); flow-assessor is tools-only; guards fail open (#430); ADR-0008 text in #489 |
 | 43 | Amendment (2026-11-20): human-approved existing-test edits and removals in the implement step, with redraft Retry (#511) | The implement step sets aside existing-test-edit and removal items, asks per item in a batched `Test changes` question, and applies approved edits and removals in one approval commit before Round 1; the redraft Retry path resets on approved-test-still-red and redrafts; the verifier cross-checks blob ids and parent invariant; the fix step gains removal items | Layer 3 | port, pinned by test |
 | 44 | Amendment (2026-11-23): step agents never end their turn to wait for children (#532) | Step agents and the skills they run collect children in the same turn (foreground return or `wait-files.py` file wait); a child-wait deadline is a FAILED receipt; the top-level orchestrator keeps its end-turn wait | Layer 3 | port, pinned by test (the rule lives in the step commands and `flow-step-contract.md`, which v2 steps run unchanged; `tests/test_step_agent_waits.py`) |
 | 45 | Amendment (2026-11-23): zero-unit runs close the implement/fix hatch parity difference (#526) | The implement step no longer stops on a test-only plan; a zero-unit run (`SPLIT_BASIS: zero-units`, `UNITS: 0`) goes straight to Round 2, the fidelity audit does not treat it as a reduced run, and the implement/fix parity table has no remaining intentional difference | Layer 3 | port, pinned by tests/test_zero_unit_wiring.py (ledger render with zero-units, verifier plan cross-check, status and exemption tokens, audit carve-out); the driver does not build the verifier arguments, so its wiring has no test |
@@ -298,7 +309,7 @@ Reference for the one `###` section-level amendment tag outside the amendment li
 
 | Heading (as written) | Rules | Target layer | Disposition |
 |---|---|---|---|
-| ### 2.2 Receipts are verified against artifacts, not trusted (amendment 2026-10-14, #276) | Receipts are verified against artifacts | Layer 1 | port, pinned by test |
+| ### 2.2 Receipts are verified against artifacts, not trusted (amendment 2026-10-14, #276) | Receipts are verified against artifacts | Layer 1 | port, test not named (backfill #541) |
 
 Totals: 43 `##` amendment headings (rows 1 to 26 and 28 to 44), one `###` amendment heading (row 27), and
 the section-level `###` amendment tag under ADR section 2.2 (listed above). The ADR's `### Amending §1`

@@ -457,3 +457,36 @@ and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.
 - **Audit and assess are opt-in** on `driver start` for now, so the approved Layer 2 loop tests are unchanged by default. The audit is wired behind `driver start --audit`, with its own `audit_gate` state record (keyed by step and attempt) beside `pending_spawn`, which stays the single landed-step slot. Accept and continue after an allowlisted audit rejection is wired as the human-only `recover --choice accept --note <why>` (it records the audit as passed and writes `steps/audit-<step>-a<k>.accepted.md`); `recover --choice reverify` re-reads the PR after a `merge-head-mismatch` stop at ship (the PR head differs from the shipped head): it clears the stop and any stale `merge_gate`, so the next `next` asks the merge gate only if the head now matches, else stops again (a mismatch after a merge receipt landed is not reopened this way). A spawned audit or assessor whose output never lands stops on `next --after wait-timeout` with `wait-timeout`, and `clear-live` drops its gate record so the next `next` re-spawns it with a fresh nonce. The assess stage is wired behind `driver start --assess`, with its own `assess_gate` record (the audit record's shape, step `assess`, keyed by the verify attempt). After a landed verify the driver derives the outstanding set from the latest landed implement and fix receipts, SPAWNs the assessor (records in `steps/07-assess-records.txt`), WAITs, then ASKs one batch (`questions/assess-1.json`) whose items are answered one at a time with `answer --item <id>`; the disposition marker and the outstanding gate run once every item has an answer, and the flow then advances to ship. The v2 outstanding set has no coverage-table or ledger-parked items yet.
   Audit rejections key on step and attempt; Accept is eligible only for allowlisted classes imported from `flow-accept.py`.
 - Folds #304, #408 and #476 (Session D3).
+
+### 2026-11-23 — v2 parity catch-up (#538): v1 freeze replaced by feature parity; restricted v2 step agents
+
+This amendment supersedes the seq 1 freeze in Decision 11 and records what the parity catch-up settles. Decision 11's
+prose is not edited. The tracker is #538; the inventory is `docs/v2-inventory/` (`rules.md`, `README.md`, and the
+content pins in `v1-content-pins.md`).
+
+1. **The "Freeze (seq 1)" paragraph of Decision 11 is superseded.** That paragraph's statement that "the hook files,
+   the agent definitions and the v1 orchestrator are not edited during the build" no longer holds. v1 may change.
+   Every v1 behaviour change lands with v2 parity: either code in `scripts/flow_driver`, or a `deferred to …` row in
+   `rules.md`. A watched v1 doc edit bumps its content pin in the same PR, and a pin bump is a human-only edit.
+2. **The drift test extends Decision 11; it does not replace it.** The drift test checks row truth (every cited test
+   is defined in the cited file), the closed disposition set in `docs/v2-inventory/README.md`, and the content pin
+   in `docs/v2-inventory/v1-content-pins.md`. It keeps the sentence "A test fails when ADR-0023 gains an amendment
+   that the inventory does not cover", which still applies to every ADR-0023 amendment.
+3. **v2 spawns the restricted agents per the step-to-agent map.** This conforms to ADR-0008's Standing Exception and
+   to ADR-0023 Decision 1. Merge runs from the main worktree. This closes ADR-0023 2026-11-20's merge residual, and it
+   corrects the claims behind the Layer 2 and Layer 3 amendments' rows 22, 24, 25 and 42 in `rules.md`. Guard coverage
+   (W6): the restricted agents are wired; settings-level guard firing was observed interactively on 2026-11-23
+   (`flow-plan` denied, `general-purpose` not); headless and fleet firing is unprobed, and the re-probe is owned by
+   #488; `flow-assessor` is tools-only; #406 and #430 remain open because the guards fail open; under a fleet launched
+   with `--permission-mode bypassPermissions`, the stub's Bash prefix grant does not gate trailing text.
+4. **Stop attribution.** There is no ownership claim for guard-denial, `step-failed` or `spawn-failed` stops. A human
+   attributes each such stop on a candidate D6 ticket. Follow-up: #542.
+5. **D6 preconditions.** The D6 exit criterion needs three things: the verify receipt (#540), this wiring, and stop
+   attribution (#542). Backfill of test names for the parity rows is tracked in #541. v2 flows started before #538
+   are pre-parity and never count toward D6 (W4).
+6. **Assess reply residuals.** The assess delimiter is readable by the assessor while it runs, and it is rotated once
+   the assessor Task returns. The rotation is hygiene only: it does not defeat an injected terminator in the current
+   reply (Q1 = F; the exposure covers the whole reply hand-off). The stub's reply hand-off is model transcription with
+   v1 parity, not byte-exact.
+7. **Out of scope here.** ADR-0008 text, CLAUDE.md, and the finalising of Decision 11 stay with Layer 5 (#489).
+   Recovery follow-ups stay with #513.
