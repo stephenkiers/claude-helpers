@@ -92,6 +92,58 @@ def test_parse_assessor_output_malformed() -> None:
     expect((recs == [] and err is None) or err is not None, "empty output handling acceptable")
 
 
+# ---------------------------------------------------------------------------
+# Parity catch-up (#538): v1 assessor grammar (agents/flow-assessor.md reply format) and fail-closed replies.
+# ---------------------------------------------------------------------------
+
+ASSESS_SENTINEL = "<!-- assessment-end -->"
+
+
+def _v1_record(rid: str, status: str = "unfinished", kind: str = "decision", scope: str = "in-scope",
+               safe: str = "no", cause: str = "cause text", evidence: str = "checked the tree",
+               options: str = "A => pause ;; B => issue") -> str:
+    return (f"{rid} | status={status} | kind={kind} | scope={scope} | leave_as_is_safe={safe} | "
+            f"cause={cause} | evidence={evidence} | finish_plan=finish it | verification_proof=ran it | "
+            f"options={options}")
+
+
+def test_v2_v1_grammar_reply_parses_into_two_records() -> None:
+    text = "\n".join([
+        _v1_record("a1", status="already-done", kind="mechanical", safe="yes",
+                   evidence="src/foo.py:12", options="A => pause"),
+        _v1_record("b2"),
+        ASSESS_SENTINEL,
+        "",
+    ])
+    recs, err = assess.parse_assessor_output(text)
+    expect(err is None, f"v1-grammar reply returned error {err!r}")
+    expect(len(recs) == 2, f"expected two records, got {len(recs)}")
+    expect(getattr(recs[0], "status", None) == "already-done",
+           f"first record status is {getattr(recs[0], 'status', None)!r}, expected already-done")
+    expect(getattr(recs[1], "status", None) == "unfinished",
+           f"second record status is {getattr(recs[1], 'status', None)!r}, expected unfinished")
+
+
+def test_v2_hostile_or_malformed_replies_fail_closed() -> None:
+    good = _v1_record("b2")
+    variants = {
+        "missing sentinel": good + "\n",
+        "status done": _v1_record("b2", status="done") + "\n" + ASSESS_SENTINEL + "\n",
+        "record with fewer than two pipes": "b2 | status=unfinished\n" + ASSESS_SENTINEL + "\n",
+        "option without a pause or issue route": _v1_record("b2", options="A => keep") + "\n" + ASSESS_SENTINEL + "\n",
+        "option labelled Open an issue": _v1_record("b2", options="Open an issue => issue ;; B => pause") + "\n" + ASSESS_SENTINEL + "\n",
+        "three options": _v1_record("b2", options="A => pause ;; B => issue ;; C => pause") + "\n" + ASSESS_SENTINEL + "\n",
+        "label of 121 characters": _v1_record("b2", options=("L" * 121) + " => pause ;; B => issue") + "\n" + ASSESS_SENTINEL + "\n",
+        "reason containing <<<ITEM": _v1_record("b2", cause="x <<<ITEM y") + "\n" + ASSESS_SENTINEL + "\n",
+    }
+    accepted = []
+    for name, text in variants.items():
+        _recs, err = assess.parse_assessor_output(text)
+        if err is None:
+            accepted.append(name)
+    expect(not accepted, f"malformed or hostile replies were accepted: {accepted}")
+
+
 SECTIONS = [
     ("[Audit]", [
         ("1: verdict parsing", test_audit_verdicts),

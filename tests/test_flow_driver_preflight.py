@@ -7,10 +7,13 @@ Tests preflight behavior: a gh command timeout maps to CANNOT_START, and OSError
 Run with: python3 tests/test_flow_driver_preflight.py
 """
 
+import json
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -98,12 +101,193 @@ def test_oserror_handling() -> None:
         raise AssertionError("preflight should handle OSError without raising")
 
 
+# ---------------------------------------------------------------------------
+# Parity catch-up (#538): agent-file, contract and guard-registration preflight; main worktree resolution.
+# ---------------------------------------------------------------------------
+
+GIT_ENV = {
+    "PATH": os.environ.get("PATH", ""),
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@t",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@t",
+}
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, env=GIT_ENV)
+
+
+def _repo_on_branch(root: Path, branch: str) -> Path:
+    root.mkdir(parents=True)
+    _git(root, "init", "-q", "-b", branch)
+    _git(root, "commit", "-q", "--allow-empty", "-m", "init")
+    return root
+
+
+def _agent_tree(base: Path, agents: Sequence[str], contract: bool) -> Tuple[Path, Path]:
+    agents_dir = base / "agents"
+    prompts_dir = base / "prompts"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    for agent in agents:
+        (agents_dir / f"{agent}.md").write_text("---\nname: probe\n---\n", encoding="utf-8")
+    if contract:
+        (prompts_dir / "flow-step-contract.md").write_text("contract\n", encoding="utf-8")
+    return agents_dir, prompts_dir
+
+
+def _settings_with_commands(base: Path, commands: Sequence[str]) -> Path:
+    path = base / "settings.json"
+    hooks = [{"type": "command", "command": command} for command in commands]
+    path.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": hooks}]}}), encoding="utf-8")
+    return path
+
+
+def _stop_detail(result: Any) -> str:
+    expect(isinstance(result, preflight.Stop), f"expected a Stop, got {result!r}")
+    return str(getattr(result, "detail", ""))
+
+
+def test_agent_preflight_general_purpose_never_stops() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        agents_dir, prompts_dir = _agent_tree(base, agents=(), contract=False)
+        result = preflight.check_agent_preflight("general-purpose", agents_dir, prompts_dir, base / "settings.json")
+        expect(result is None, f"general-purpose returned {result!r}, expected None")
+
+
+def test_agent_preflight_missing_restricted_agent_file_names_path_and_setup() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        agents_dir, prompts_dir = _agent_tree(base, agents=("flow-plan",), contract=True)
+        missing = agents_dir / "flow-review.md"
+        detail = _stop_detail(preflight.check_agent_preflight("flow-review", agents_dir, prompts_dir, base / "s.json"))
+        expect("agent file missing:" in detail and str(missing) in detail and "run /setup-local" in detail,
+               f"missing agent file message is {detail!r}")
+
+
+def test_agent_preflight_missing_step_contract_names_the_contract_path() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        agents_dir, prompts_dir = _agent_tree(base, agents=("flow-plan",), contract=False)
+        detail = _stop_detail(preflight.check_agent_preflight("flow-plan", agents_dir, prompts_dir, base / "s.json"))
+        expect(str(prompts_dir / "flow-step-contract.md") in detail, f"missing contract message is {detail!r}")
+
+
+def test_agent_preflight_missing_assessor_file_stops() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        agents_dir, prompts_dir = _agent_tree(base, agents=(), contract=True)
+        detail = _stop_detail(preflight.check_agent_preflight("flow-assessor", agents_dir, prompts_dir, base / "s.json"))
+        expect("flow-assessor.md" in detail, f"missing assessor message is {detail!r}")
+
+
+def test_agent_preflight_missing_bash_guard_registration_stops_with_setup_hint() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        agents_dir, prompts_dir = _agent_tree(base, agents=("flow-plan",), contract=True)
+        settings = _settings_with_commands(base, ["python3 ~/.claude/scripts/flow-skill-guard.py --agent auto"])
+        detail = _stop_detail(preflight.check_agent_preflight("flow-plan", agents_dir, prompts_dir, settings))
+        expect("flow-bash-guard" in detail and "run /setup-local" in detail,
+               f"missing registration message is {detail!r}")
+
+
+def test_agent_preflight_malformed_or_missing_settings_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        agents_dir, prompts_dir = _agent_tree(base, agents=("flow-plan",), contract=True)
+        malformed = base / "malformed.json"
+        malformed.write_text("{not json", encoding="utf-8")
+        _stop_detail(preflight.check_agent_preflight("flow-plan", agents_dir, prompts_dir, malformed))
+        _stop_detail(preflight.check_agent_preflight("flow-plan", agents_dir, prompts_dir, base / "absent.json"))
+
+
+def test_agent_preflight_registration_to_a_missing_script_stops() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        agents_dir, prompts_dir = _agent_tree(base, agents=("flow-plan",), contract=True)
+        settings = _settings_with_commands(base, [
+            f"python3 {base / 'no-such-dir-538' / 'flow-bash-guard.py'} --agent auto",
+        ])
+        _stop_detail(preflight.check_agent_preflight("flow-plan", agents_dir, prompts_dir, settings))
+
+
+def test_agent_preflight_assess_does_not_check_guard_registration() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        agents_dir, prompts_dir = _agent_tree(base, agents=("flow-assessor",), contract=True)
+        result = preflight.check_agent_preflight("flow-assessor", agents_dir, prompts_dir, base / "absent.json")
+        expect(result is None, f"assessor with no registration returned {result!r}, expected None")
+
+
+def test_resolve_main_worktree_returns_the_main_sibling_on_main() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp) / "ws"
+        main = _repo_on_branch(ws / "main", "main")
+        ticket = ws / "ticket"
+        _git(main, "worktree", "add", "-q", "-b", "feat", str(ticket))
+        result = preflight.resolve_main_worktree(str(ticket))
+        expect(isinstance(result, str), f"expected a path, got {result!r}")
+        expect(os.path.realpath(result) == os.path.realpath(str(main)),
+               f"resolved {result!r}, expected the main worktree {str(main)!r}")
+
+
+def test_resolve_main_worktree_returns_the_master_sibling() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp) / "ws"
+        master = _repo_on_branch(ws / "master", "master")
+        ticket = ws / "ticket"
+        _git(master, "worktree", "add", "-q", "-b", "feat", str(ticket))
+        result = preflight.resolve_main_worktree(str(ticket))
+        expect(isinstance(result, str), f"expected a path, got {result!r}")
+        expect(os.path.realpath(result) == os.path.realpath(str(master)),
+               f"resolved {result!r}, expected the master worktree {str(master)!r}")
+
+
+def test_resolve_main_worktree_never_falls_back_to_the_first_entry() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp) / "ws"
+        feature = _repo_on_branch(ws / "first", "feat")
+        ticket = ws / "ticket"
+        _git(feature, "worktree", "add", "-q", "-b", "feat2", str(ticket))
+        result = preflight.resolve_main_worktree(str(ticket))
+        expect(isinstance(result, preflight.Stop), f"no main or master resolved to {result!r}, expected a Stop")
+
+
+def test_resolve_main_worktree_parent_mismatch_is_a_stop() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main = _repo_on_branch(root / "a" / "main", "main")
+        (root / "b").mkdir()
+        ticket = root / "b" / "ticket"
+        _git(main, "worktree", "add", "-q", "-b", "feat", str(ticket))
+        result = preflight.resolve_main_worktree(str(ticket))
+        expect(isinstance(result, preflight.Stop), f"parent-mismatched main resolved to {result!r}, expected a Stop")
+
+
 SECTIONS = [
     ("[Preflight typed results]", [
         ("1: hook_preflight returns Ok or Stop", test_hook_preflight_returns_typed_result),
         ("2: north_star_preflight returns Ok/Warn/Stop", test_north_star_preflight_returns_typed_result),
         ("3: timeout does not raise TimeoutExpired", test_timeout_does_not_raise),
         ("4: OSError is handled without crashing", test_oserror_handling),
+    ]),
+    ("[Parity catch-up #538: agent preflight]", [
+        ("p01: general-purpose never stops", test_agent_preflight_general_purpose_never_stops),
+        ("p02: missing restricted agent file names the path and /setup-local", test_agent_preflight_missing_restricted_agent_file_names_path_and_setup),
+        ("p03: missing step contract names its path", test_agent_preflight_missing_step_contract_names_the_contract_path),
+        ("p04: missing assessor file stops", test_agent_preflight_missing_assessor_file_stops),
+        ("p05: missing bash-guard registration stops with /setup-local", test_agent_preflight_missing_bash_guard_registration_stops_with_setup_hint),
+        ("p06: malformed or missing settings fails closed", test_agent_preflight_malformed_or_missing_settings_fails_closed),
+        ("p07: registration to a missing script stops", test_agent_preflight_registration_to_a_missing_script_stops),
+        ("p08: assessor does not check registration", test_agent_preflight_assess_does_not_check_guard_registration),
+    ]),
+    ("[Parity catch-up #538: main worktree resolution]", [
+        ("p09: main sibling on main resolves to its realpath", test_resolve_main_worktree_returns_the_main_sibling_on_main),
+        ("p10: master sibling resolves", test_resolve_main_worktree_returns_the_master_sibling),
+        ("p11: no main or master is a Stop, first entry not used", test_resolve_main_worktree_never_falls_back_to_the_first_entry),
+        ("p12: parent mismatch is a Stop", test_resolve_main_worktree_parent_mismatch_is_a_stop),
     ]),
 ]
 

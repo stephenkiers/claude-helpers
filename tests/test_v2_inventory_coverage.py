@@ -300,6 +300,87 @@ def test_fixture_missing_inventory_dir_fails():
     return True, ""
 
 
+# ── Section 4: parity catch-up (#538) content checks on the inventory ───────
+
+def _inventory_text(name):
+    path = INVENTORY_DIR / name
+    if not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _inventory_lines(name):
+    text = _inventory_text(name)
+    return [] if text is None else text.splitlines()
+
+
+def test_parity_row_387_records_verify_receipt_as_not_ported():
+    """The rules inventory marks #387 as not ported for the verify receipt."""
+    rows = [line for line in _inventory_lines("rules.md") if "#387" in line]
+    if not rows:
+        return False, "no rules.md row mentions #387"
+    if not any("not ported: verify receipt" in line.lower() for line in rows):
+        return False, "the #387 row does not say 'not ported: verify receipt'"
+    return True, ""
+
+
+def test_parity_rows_42_and_2026_11_20_point_at_tests_and_headless():
+    """The 2026-11-20 amendment and row 42 reference tests/ and headless behaviour."""
+    lines = _inventory_lines("rules.md")
+    dated = [line for line in lines if "2026-11-20" in line]
+    if not dated:
+        return False, "no rules.md line carries 2026-11-20"
+    if not any("tests/" in line and "headless" in line.lower() for line in dated):
+        return False, "the 2026-11-20 entry does not name tests/ and headless"
+    row42 = [line for line in lines if re.match(r"^\W*42\b", line.strip().lstrip("|").strip() or "x")]
+    if row42 and not any("superseded" in line.lower() for line in row42):
+        return False, "row 42 is not marked superseded"
+    return True, ""
+
+
+def test_parity_no_resume_reasks_citations():
+    """No inventory file cites the removed test_resume_reasks_* tests."""
+    corpus = read_inventory(INVENTORY_DIR)
+    if "test_resume_reasks_" in corpus:
+        return False, "an inventory file still cites test_resume_reasks_*"
+    return True, ""
+
+
+def test_parity_table_rows_carry_issue_refs():
+    """#490, #529 and #488 each appear on a table row of the rules inventory."""
+    lines = _inventory_lines("rules.md")
+    for issue in ("#490", "#529", "#488"):
+        rows = [line for line in lines if issue in line and line.lstrip().startswith("|")]
+        if not rows:
+            return False, f"{issue} is not on any table row in rules.md"
+    return True, ""
+
+
+def test_parity_readme_drops_two_values_only_and_names_closed_sets():
+    """README no longer says 'There are two values only' and gives closed-set examples."""
+    text = _inventory_text("README.md")
+    if text is None:
+        return False, "README.md missing"
+    if "There are two values only" in text:
+        return False, "README still says 'There are two values only'"
+    if "closed set" not in text.lower() and "closed-set" not in text.lower():
+        return False, "README gives no closed-set examples"
+    return True, ""
+
+
+def test_parity_readme_cites_adr_0026_amendment_and_terms():
+    """README cites ADR-0026 2026-11-23 and uses the feature parity and pre-parity terms."""
+    text = _inventory_text("README.md")
+    if text is None:
+        return False, "README.md missing"
+    if "ADR-0026 2026-11-23" not in text:
+        return False, "README does not cite 'ADR-0026 2026-11-23'"
+    for term in ("feature parity", "pre-parity"):
+        if term not in text:
+            return False, f"README does not use the term {term!r}"
+    return True, ""
+
+
 def _check(h, label, fn):
     """Run one test function, recording a crash as a failure instead of aborting the suite."""
     try:
@@ -338,6 +419,18 @@ if __name__ == "__main__":
            test_fixture_non_amendment_and_fenced_headings_ignored)
     _check(h, "unclosed fence raises ValueError", test_fixture_unclosed_fence_raises_error)
     _check(h, "missing inventory dir leaves the heading uncovered", test_fixture_missing_inventory_dir_fails)
+    print()
+
+    print("[Section 4] parity catch-up (#538) inventory content")
+    _check(h, "row for #387 says not ported: verify receipt", test_parity_row_387_records_verify_receipt_as_not_ported)
+    _check(h, "2026-11-20 entry names tests/ and headless; row 42 superseded",
+           test_parity_rows_42_and_2026_11_20_point_at_tests_and_headless)
+    _check(h, "no test_resume_reasks_* citations remain", test_parity_no_resume_reasks_citations)
+    _check(h, "#490, #529 and #488 are on table rows", test_parity_table_rows_carry_issue_refs)
+    _check(h, "README drops 'There are two values only' and names closed sets",
+           test_parity_readme_drops_two_values_only_and_names_closed_sets)
+    _check(h, "README cites ADR-0026 2026-11-23 with parity terms",
+           test_parity_readme_cites_adr_0026_amendment_and_terms)
     print()
 
     h.summarize_and_exit()
