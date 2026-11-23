@@ -280,7 +280,7 @@ def read_json(path: Path) -> Optional[Dict[str, Any]]:
 
 def is_handoff(st: Dict[str, Any]) -> bool:
     """The exact post-worktree hand-off state /expert-flow's bare run resumes silently."""
-    return (st.get("step") == "plan" and st.get("status") == "paused" and st.get("live") is None
+    return (st.get("step") == "plan" and st.get("status") == "paused" and not st.get("live")
             and int((st.get("attempts") or {}).get("plan") or 0) == 0)
 
 
