@@ -19,13 +19,18 @@ comes back as a non-zero CommandResult, so an adapter maps it to its own Stop. T
 Python 3.8 floor: typing.Optional/Union/Tuple only, no match statements, no X | Y at runtime.
 """
 
+import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, FrozenSet, List, Literal, NamedTuple, Optional, Sequence, Set, Tuple, Union
+from typing import Callable, Dict, FrozenSet, List, Literal, NamedTuple, Optional, Sequence, Set, Tuple, Union, get_args
+
+from .model import GENERAL_PURPOSE_AGENT
+from .steps import AgentType, RestrictedAgent
 
 
 class CommandResult(NamedTuple):
@@ -75,7 +80,7 @@ class Warn:
 class Stop:
     """The preflight failed. `code` is the StopCode prefix; the reason is built as `<code>: <detail>`."""
 
-    code: Literal["hook-preflight", "north-star-preflight"]
+    code: Literal["hook-preflight", "north-star-preflight", "run-dir-unresolved"]
     detail: str
 
     def reason(self) -> str:
@@ -199,3 +204,130 @@ def check_north_star_files(
         return Warn(_NORTH_STAR_BLIND + first[len(_BLIND_PREFIX):])
     detail = first or result.stderr.strip() or f"exit {result.returncode}"
     return Stop("north-star-preflight", f"files phase did not pass: {detail}")
+
+
+# The guard hooks a restricted flow agent needs in settings.json (install.sh's flow_hook_command): the Bash guard, the
+# Skill guard and the agent-allowlist guard, each registered with `--agent auto`.
+REQUIRED_SETTINGS_GUARDS: Tuple[str, ...] = ("flow-bash-guard.py", "flow-skill-guard.py", "flow-agent-guard.py")
+_SETUP_HINT = "run /setup-local"
+
+
+def _registered_guard_commands(settings: object) -> Optional[List[str]]:
+    """The hook command strings under hooks.PreToolUse of a parsed settings.json, or None when the shape is wrong."""
+    if not isinstance(settings, dict):
+        return None
+    hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return None
+    entries = hooks.get("PreToolUse", [])
+    if not isinstance(entries, list):
+        return None
+    commands: List[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None
+        inner = entry.get("hooks", [])
+        if not isinstance(inner, list):
+            return None
+        for hook in inner:
+            if isinstance(hook, dict) and isinstance(hook.get("command"), str):
+                commands.append(hook["command"])
+    return commands
+
+
+def _registered_script(command: str, name: str) -> Optional[str]:
+    """The registered script path of a `<script> --agent auto` command for guard `name`, or None when it is not that."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    if len(tokens) != 3 or os.path.basename(tokens[0]) != name or tokens[1:] != ["--agent", "auto"]:
+        return None
+    return tokens[0]
+
+
+def check_agent_preflight(
+    agent_type: AgentType,
+    agents_dir: Path,
+    prompts_dir: Path,
+    settings_path: Path,
+) -> Optional[Stop]:
+    """
+    The per-spawn file and registration preflight for a flow agent (plan Step 3). None for general-purpose. For a
+    flow agent: its definition file and the step contract must exist; for a RestrictedAgent, settings.json must register
+    the three guard hooks with `--agent auto`, and each registered script must be an installed regular file. The
+    registration is read from settings.json, never from agent frontmatter. An unreadable or malformed settings.json fails
+    closed. A miss is Stop("hook-preflight") and records no step failure.
+    """
+    if agent_type == GENERAL_PURPOSE_AGENT:
+        return None
+    agent_file = agents_dir / f"{agent_type}.md"
+    if not agent_file.is_file():
+        return Stop("hook-preflight", f"agent file missing: {agent_file} — {_SETUP_HINT}")
+    contract = prompts_dir / "flow-step-contract.md"
+    if not contract.is_file():
+        return Stop("hook-preflight", f"agent file missing: {contract} — {_SETUP_HINT}")
+    if agent_type not in get_args(RestrictedAgent):
+        return None
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        return Stop("hook-preflight", f"cannot read {settings_path} ({exc.__class__.__name__}) — {_SETUP_HINT}")
+    commands = _registered_guard_commands(settings)
+    if commands is None:
+        return Stop("hook-preflight", f"{settings_path} has an unexpected hooks shape — {_SETUP_HINT}")
+    for name in REQUIRED_SETTINGS_GUARDS:
+        scripts = [path for path in (_registered_script(command, name) for command in commands) if path is not None]
+        if not scripts:
+            return Stop("hook-preflight", f"settings.json does not register guard hook {name} with --agent auto — {_SETUP_HINT}")
+        for path in scripts:
+            installed = Path(path.replace("$HOME", os.path.expanduser("~"), 1))
+            if not installed.is_file():
+                return Stop("hook-preflight", f"guard hook {installed} is not installed — {_SETUP_HINT}")
+    return None
+
+
+def _worktree_entries(text: str) -> List[Dict[str, str]]:
+    """The records of the porcelain worktree listing: each a dict of its `worktree` and `branch` lines."""
+    records: List[Dict[str, str]] = []
+    current: Dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            if current:
+                records.append(current)
+            current = {}
+            continue
+        key, _, value = line.partition(" ")
+        if key in ("worktree", "branch"):
+            current[key] = value
+    if current:
+        records.append(current)
+    return records
+
+
+def resolve_main_worktree(worktree: str) -> Union[str, Stop]:
+    """
+    The main (or master) worktree that is the sibling of `worktree`, for a merge run directory (plan Step 3). The entry
+    is found by its branch, main before master; the first entry is never used. It is accepted only when its realpath
+    is an existing directory other than the worktree's and shares the worktree's parent. A miss is Stop("run-dir-unresolved").
+    """
+    result = run_command(["git", "-C", worktree, "worktree", "list", "--porcelain"])
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        return Stop("run-dir-unresolved", f"{worktree}: git worktree list failed ({detail})")
+    records = _worktree_entries(result.stdout)
+    chosen: Optional[str] = None
+    for wanted in ("refs/heads/main", "refs/heads/master"):
+        for record in records:
+            if record.get("branch") == wanted and "worktree" in record:
+                chosen = record["worktree"]
+                break
+        if chosen is not None:
+            break
+    if chosen is None:
+        return Stop("run-dir-unresolved", f"{worktree}: no main or master worktree found")
+    main = os.path.realpath(chosen)
+    here = os.path.realpath(worktree)
+    if not os.path.isdir(main) or main == here or os.path.dirname(main) != os.path.dirname(here):
+        return Stop("run-dir-unresolved", f"{worktree}: the main or master worktree {chosen} is not its sibling checkout")
+    return main
