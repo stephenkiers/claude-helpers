@@ -35,7 +35,7 @@ points to, and obeys it. It never guesses a verb or a path, and it never writes 
 | `start --flow <dir> [--gates] [--audit] [--assess]` | The first `next` of an initialized flow. `--gates` turns on the step gates (an ASK after plan, implement, review, fix and verify). `--audit` (opt-in, off by default) runs a fidelity audit after each landed plan, implement, review or fix receipt: the driver emits a SPAWN for the auditor (prompt `audit-<step>`, verdict file `steps/audit-<step>-a<attempt>.md`), WAITs until the verdict line lands, advances on `pass`, and stops `audit-rejected` on `reject: <reason>` (recover with `retry`; for an allowlisted reason such as a reduced run the human may `recover --choice accept --note <why>`, which records the audit as passed. Never choose accept yourself). A malformed verdict halts `audit-error`. `--assess` (opt-in, off by default) runs the assess stage between a landed verify and ship: SPAWN for the assessor (records file `steps/07-assess-records.txt`), WAIT, then one ASK batch answered per item with `answer --flow <dir> --item <id> --text <option> [--note <why>]` (Drop needs a note); bad records halt `assess-error`. Also sweeps expired flows of this repo (see Retention). |
 | `next --flow <dir> [--after <label>]` | One loop step. With no `--after` it is a re-entry, which is how a later session resumes a parked flow. |
 | `answer --flow <dir> --text <answer> [--note <text>] [--item <id>]` | Record the human's answer for a parked attempt. Prints to stderr. One answer per attempt. `--note` only for an option that takes a note (Redo, Drop). `--item` answers one item of a parked assess batch. |
-| `recover --flow <dir> --choice retry\|take-over\|keep-previous\|resume` | Answer a stopped step. `retry` works only after a FAILED receipt or an audit rejection and at most twice per step. `resume` re-asks a step gate the human paused or a merge they held. `keep-previous` is refused: no redo lineage is built. |
+| `recover --flow <dir> --choice retry\|take-over\|keep-previous\|resume` | Answer a stopped step. `retry` works only after a FAILED receipt or an audit rejection and at most twice per step. `resume` re-asks a step gate the human paused or a merge they held, and re-spawns a step (or assessor) whose launch failed (a `spawn-failed` STOP). `keep-previous` is refused: no redo lineage is built. |
 | `clear-live --flow <dir> --reason <text>` | Clear a live record, logged with its nonce. Only for a `wait-timeout` or `resume-failed` STOP. A timed-out audit or assessor is cleared the same way and re-spawns on the next `next`. |
 | `abandon --flow <dir>` | Mark the flow abandoned. Refused while an attempt is `spawned` or `resumed`, and the refusal names `clear-live`. Deletes nothing. |
 | `retro --flow <dir>` | Not built for v2: it exits 3 (`not-yet-built`). Refused for v1 flows. |
@@ -65,9 +65,11 @@ After each event, run the directive's `next_command`, with ` --after <label>` ap
 
 - **SPAWN**: launch `Task` in the background with `subagent_type` set to the directive's `agent_type` and the prompt
   "Read and follow <prompt_file>". Keep the agent id this session gets for this step and attempt. Then run
-  `next --after spawn-launched`.
+  `next --after spawn-launched`. If the `Task` launch errors and gives no agent id (for example `Agent type '<agent>'
+  not found`), run `next --after spawn-failed`, print the launch error and the driver's STOP message, and end the turn.
 - **MERGE**: launch `Task` exactly as for SPAWN (`subagent_type` from the directive's `agent_type`, the prompt from its
-  prompt file). Never run MERGE without a directive file the driver printed.
+  prompt file). Never run MERGE without a directive file the driver printed. A launch error with no agent id is handled
+  as in SPAWN: `next --after spawn-failed`, print the error and the driver's message, end the turn.
 - **RESUME**: `SendMessage` to the agent this session spawned for this step and attempt, saying the answer is at the
   directive's `answer_file`. On success run `next --after resume-sent`, which yields WAIT. If this session does not hold
   that agent id, do not guess: run `next --after resume-failed`, then print `RESUME FAILED: no agent id in this session`
@@ -91,9 +93,15 @@ A FAILED step receipt is STOP `step-failed` and nothing more. The driver never r
 - `recover --flow <dir> --choice retry`, then `next --flow <dir>` (a new attempt, at most two retries per step), or
 - `recover --flow <dir> --choice take-over`, which leaves the step to the human.
 
+A `spawn-failed` STOP means the step agent (or the assessor) never launched: no attempt is recorded as failed and the
+live record is cleared. Restart the session (or run `/setup-local`), then `recover --flow <dir> --choice resume`, then
+`next --flow <dir>`, which re-spawns the same step with the same agent. A `run-dir-unresolved` STOP means the merge's run
+directory could not be resolved; print the reason and end, as for any other STOP.
+
 Stop and print the directive's reason for any other STOP, including `ship-head-differs`,
 `ship-pr-closed`, `expected-head-mismatch`, `north-star-preflight`, `hook-preflight`, `uncarried-direction`,
-`ledger-error`, `gh-error`, `retry-cap`, `malformed-cap` and `wait-timeout`. Do not work around any of them.
+`ledger-error`, `gh-error`, `retry-cap`, `malformed-cap`, `wait-timeout`, `spawn-failed` and `run-dir-unresolved`.
+Do not work around any of them.
 
 ## Receipt and markers
 

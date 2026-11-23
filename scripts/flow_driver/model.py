@@ -32,6 +32,7 @@ AfterEvent = Literal[
     "spawn-launched",
     "resume-sent",
     "resume-failed",
+    "spawn-failed",
     "wait-settled",
     "wait-timeout",
     "notification",

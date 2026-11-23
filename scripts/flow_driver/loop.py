@@ -82,6 +82,7 @@ from .steps import (
     ReceiptFact,
     RestrictedAgent,
     SpawnDirective,
+    SpawnFailed,
     StopCode,
     StopDirective,
     WaitDirective,
@@ -1162,8 +1163,14 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
     landed = _record_landed_edges(locked, flow, locked.require_state(), receipt_fact)
     ledger_line = ""
     extra = ""
-    audited = _audit_stage(locked, flow, receipt_fact, nonce, event) if landed is None else None
-    assessed = _assess_stage(locked, flow, receipt_fact, nonce, headless, event) if landed is None and audited is None else None
+    # A spawn-failed event means the launch produced no output: the stages that wait on an output are skipped for it.
+    launch_failed = isinstance(event, SpawnFailed)
+    audited = _audit_stage(locked, flow, receipt_fact, nonce, event) if landed is None and not launch_failed else None
+    assessed = (
+        _assess_stage(locked, flow, receipt_fact, nonce, headless, event)
+        if landed is None and audited is None and not launch_failed
+        else None
+    )
     if landed is not None:
         new_state, directive = landed
     elif audited is not None:
@@ -1419,6 +1426,20 @@ def _resume_held_gate(locked: LockedFlow, flow: Path, state: V2State) -> str:
     return f"recovered: resume {step} ({code} cleared; the next next asks the gate again)"
 
 
+def _resume_spawn_failed(locked: LockedFlow, state: V2State) -> str:
+    """
+    Resume a flow paused on spawn-failed (the launch of the step or assessor agent produced no agent id): clear the stop
+    and set the flow running. The next next re-spawns the same step with the same agent. Nothing is recorded as failed.
+    """
+    step = state.step
+    reasons: Dict[Step, str] = dict(state.stop_reason)
+    reasons.pop(step, None)
+    stop_sources = {k: v for k, v in state.stop_source.items() if k != step}
+    locked.commit(dataclasses.replace(state, status="running", parked=None, stop_reason=reasons, stop_source=stop_sources))
+    locked.log("recover", step=step, attempt=state.attempts.get(step, 0), choice="resume")
+    return f"recovered: resume {step} (spawn-failed cleared; the next next re-spawns {step} with the same agent)"
+
+
 def _accept_audit_rejection(locked: LockedFlow, flow: Path, state: V2State, note: Optional[str]) -> str:
     """
     Accept and continue past an audit rejection, a human-only choice. Eligible only when audit.lifecycle_check_audit_eligible
@@ -1481,6 +1502,8 @@ def run_recover(flow: Path, choice: str, note: Optional[str] = None) -> str:
     with mutating(flow) as locked:
         state = locked.require_state()
         if choice == "resume":
+            if state.status == "paused" and parse_stop_reason(state.stop_reason.get(state.step, ""))[0] == "spawn-failed":
+                return _resume_spawn_failed(locked, state)
             return _resume_held_gate(locked, flow, state)
         if choice == "reverify":
             return _reverify_merge(locked, flow, state)

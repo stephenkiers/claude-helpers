@@ -17,7 +17,7 @@ from typing import ClassVar, Dict, Literal, Optional, Tuple, Union, get_args
 
 from . import driver, receipts, relay
 from .model import AFTER_EVENTS, GENERAL_PURPOSE_AGENT, AfterEvent, assert_never, parse_after
-from .state import ALLOWED_TRANSITIONS, STEPS, LiveRecord, ParkedQuestion, PendingSpawn, Step, V2State
+from .state import ALLOWED_TRANSITIONS, STEPS, AttemptOutcome, LiveRecord, ParkedQuestion, PendingSpawn, Step, V2State
 
 # The happy path the driver spawns step by step. Ship is the last SPAWN; what follows it (the merge gate and MERGE) is
 # decided by gates.py in the loop and reaches transition() as a GateFact.
@@ -95,6 +95,11 @@ class SpawnLaunched:
 
 
 @dataclass(frozen=True)
+class SpawnFailed:
+    """The Task launch of a spawned step agent (or assessor) errored with no agent id (v1 parity: launch failure)."""
+
+
+@dataclass(frozen=True)
 class ResumeSent:
     """The stub sent the RESUME to the parked step agent."""
 
@@ -135,6 +140,7 @@ Event = Union[
     Start,
     Reentry,
     SpawnLaunched,
+    SpawnFailed,
     ResumeSent,
     ResumeFailed,
     WaitSettled,
@@ -147,6 +153,7 @@ Event = Union[
 _EVENT_BY_LABEL: Dict[AfterEvent, Event] = {
     "start": Start(),
     "spawn-launched": SpawnLaunched(),
+    "spawn-failed": SpawnFailed(),
     "resume-sent": ResumeSent(),
     "resume-failed": ResumeFailed(),
     "wait-settled": WaitSettled(),
@@ -497,6 +504,39 @@ def _wait_timed_out(state: V2State, facts: Facts) -> Optional[Tuple[V2State, Dir
     return _stop(state, facts, "wait-timeout", detail)
 
 
+def _spawn_failed(state: V2State, facts: Facts) -> Tuple[V2State, Directive]:
+    """
+    A launch that produced no agent id (v1 parity). The live spawned record (the assessor's, else the step's) is cleared
+    with no failure recorded, and the flow pauses on spawn-failed so the human can restart and resume. A merge keeps its
+    approved merge_gate. With no live spawned record this is the invalid-event stop.
+    """
+    gate = state.assess_gate
+    pending = state.pending_spawn
+    if gate is not None and gate.state == "spawned":
+        step: Step = "assess"
+        agent = STEP_AGENTS["assess"]
+        cleared = dataclasses.replace(state, assess_gate=None)
+    elif pending is not None and pending.state == "spawned":
+        step = pending.step
+        agent = STEP_AGENTS[pending.step]
+        outcomes: Dict[Step, Dict[int, AttemptOutcome]] = {s: dict(p) for s, p in state.attempt_log.items()}
+        if pending.attempt in outcomes.get(pending.step, {}):
+            raise RuntimeError(f"attempt_log {pending.step} attempt {pending.attempt} already has an outcome")
+        outcomes.setdefault(pending.step, {})[pending.attempt] = "cleared"
+        cleared = dataclasses.replace(_with_pending(state, None), attempt_log=outcomes)
+    else:
+        return _stop(state, facts, "unknown-event", "spawn-failed with no live spawned record")
+    detail = (
+        f"the {agent} agent for {step} did not launch; "
+        "restart the session (or run /setup-local) and resume with recover --choice resume"
+    )
+    reason = stop_reason("spawn-failed", detail)
+    reasons: Dict[Step, str] = dict(cleared.stop_reason)
+    reasons[state.step] = reason
+    paused = dataclasses.replace(cleared, status="paused", stop_reason=reasons)
+    return paused, StopDirective(next_command=driver.next_command(facts.flow), reason=reason)
+
+
 def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Directive]:
     """
     The one pure transition. Returns the state to commit and the directive to emit. Replaying an event against the
@@ -509,6 +549,8 @@ def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Dir
         return _stop(state, facts, "unknown-event", f"label {event.label!r} is not a stub event")
     if isinstance(event, ResumeFailed):
         return _stop(state, facts, "resume-failed", f"the resume of step {state.step} failed")
+    if isinstance(event, SpawnFailed):
+        return _spawn_failed(state, facts)
     if isinstance(event, WaitTimeout):
         timed = _wait_timed_out(state, facts)
         if timed is not None:
