@@ -841,7 +841,13 @@ e. **Ask.** One Ask call through the Ask block holds one question per item, head
 f. **Approval commit (run 4.7 steps 0–5 now).** Before Round 1 begins, apply and commit all approved changes together. Proceed to section 4.7 immediately below.
 g. **Fix now (`--only-units`).** A run with `--only-units` never asks or applies a test edit, so it never asks a test-edit question. Each `TEST_EDIT_ITEMS` entry is reported with its own reason: a coupled item `OUTSTANDING: <id> (test-edit-coupled: <path>)` and a pure edit/removal `OUTSTANDING: <id> (test-edit-not-approvable-in-fix-now: <path>)`. The Gate step 2 scan keeps `test-removed` armed (no `--allow-test-removal` for this run).
 h. **Redraft Retry (triggered by `--redraft-test-changes`).** When a human chooses a plain Retry after an `approved-test-still-red` stop and `still-red.txt` exists:
-   - **Reset and archive.** In one Bash command: `git reset --hard <bases[implement]>` (so HEAD equals `START_SHA`), then move `RECORD_DIR` to `<RECORD_DIR>.redraft-<attempt>` (the worktree's unit record for this attempt is archived), then write the marker `<TEST_EDIT_DIR>/redraft-reset.<attempt>`. The marker prevents a resume of the same attempt from resetting again. The hard reset discards the Round 1 commits from the branch; they survive only in the archived record, so a plain Retry after `approved-test-still-red:` always discards them.
+   - **Archive, verify, then reset.** The reset discards the Round 1 commits, so they are archived first, in order, and the reset runs only if every archive check passes:
+     1. Pin the Round 1 tip to a ref: `git update-ref "refs/implement-redraft/<attempt>/round1" HEAD`.
+     2. Write a bundle of the Round 1 commits when there are any: `git bundle create "<TEST_EDIT_DIR>/round1-<attempt>.bundle" HEAD "^<bases[implement]>"`, then `git bundle verify "<TEST_EDIT_DIR>/round1-<attempt>.bundle"`. When HEAD equals `<bases[implement]>` there is nothing to bundle and this sub-step is skipped.
+     3. Verify the ref resolves to the tip recorded in `still-red-head.txt`: `[ "$(git rev-parse --verify "refs/implement-redraft/<attempt>/round1^{commit}")" = "$(cat "<TEST_EDIT_DIR>/still-red-head.txt")" ]`, and the tip object exists (`git cat-file -e <sha>`).
+     If any check fails, stop with Reason `redraft-archive-failed: <step>` and `FAILURE_CLASS: other`; do not reset and do not move `RECORD_DIR`.
+   - **Reset and mark.** Only after the archive checks pass, in one Bash command: `git reset --hard <bases[implement]>` (so HEAD equals `START_SHA`), move `RECORD_DIR` to `<RECORD_DIR>.redraft-<attempt>` (the worktree's unit record for this attempt is archived), then write the marker with `printf '%s\n' "<attempt>" > "<TEST_EDIT_DIR>/redraft-reset.<attempt>"`. The marker prevents a resume of the same attempt from resetting again. After the reset, the Round 1 commits survive only as the `refs/implement-redraft/<attempt>/round1` ref, the bundle, the archived record, and `still-red-round1.diff`; a plain Retry after `approved-test-still-red:` always discards them from the branch.
+   - **Who clears the still-red files.** The writer in Integration Gate step 7 creates them; only this item's final cleanup removes them, after a passing scan. A Take over never clears them automatically: the human who takes over may delete the four files by hand once the approved tests are green in the worktree. Every re-run kind other than a plain Retry leaves them in place and stops with `approved-test-still-red-pending` (below), so a resume of the same attempt finds them again.
    - **Delete invalidated approvals.** Delete the still-red paths' lines from `approval-commit.txt` and their reload patches before any ask, so they cannot be reused.
    - **Redraft.** For each still-red path, draft a new change. The pre-image is the post-reset HEAD blob, and the post-image is shown with its full 40-hex blob id. The redraft brief carries the failing test tail from `still-red-tail.txt`, the pre-reset HEAD SHA from `still-red-head.txt`, and the Round 1 diff from `still-red-round1.diff`.
    - **Re-ask.** Ask only the still-red paths through the same `Test changes` batch, counting against the two-ask cap.
@@ -1714,20 +1720,22 @@ Max **K = 3** iterations. On each iteration:
    telemetry — see the Usage gate log note in the Final summary.
 6. If gate passes → exit loop, then write the passing verdict to `integration-gate.txt` and append the
    `integration-gate` row exactly as in Gate step 3. If still failing and iterations < K → repeat.
-7. If gate still fails after K iterations → check if an approval commit exists and if the only remaining test failures are in approved paths. If so, write the still-red files from Bash before the receipt:
+7. If gate still fails after K iterations → check if an approval commit exists and if the only remaining test failures are in approved paths. If so, write the still-red files from Bash before the receipt. `FAILING_TESTS` is the newline-separated list of failing test file paths the last gate run extracted from `CHECK_OUTPUT` (the same parser the gate uses; an empty extraction is not "approved paths only"). The writer is deterministic: it writes all four files only when every failing path is an approved path, and otherwise falls through to the `gate_not_converged` branch below:
    ```bash
-   # Determine which tests are failing in approved paths
-   # Write still-red.txt with paths that failed in approved paths
-   printf '%s\n' "<path from approved list>" > "${TEST_EDIT_DIR}/still-red.txt"
-   # (For each additional failing path in approved paths, append with >>)
-   # Write last 200 lines of failing check output
-   tail -n 200 <<< "$CHECK_OUTPUT" > "${TEST_EDIT_DIR}/still-red-tail.txt"
-   # Write pre-fix-loop HEAD SHA
-   printf '%s' "$(git rev-parse HEAD)" > "${TEST_EDIT_DIR}/still-red-head.txt"
-   # Write Round 1 diff
-   git diff --full-index "$APPROVAL_COMMIT" HEAD > "${TEST_EDIT_DIR}/still-red-round1.diff"
+   APPROVED_PATHS="$(cut -d' ' -f2 "${TEST_EDIT_DIR}/approval-commit.txt")"
+   FAILING_SORTED="$(printf '%s\n' "$FAILING_TESTS" | sed '/^$/d' | sort -u)"
+   OUTSIDE_APPROVED="$(printf '%s\n' "$FAILING_SORTED" | grep -Fxvf <(printf '%s\n' "$APPROVED_PATHS") || true)"
+   if [ -n "$FAILING_SORTED" ] && [ -z "$OUTSIDE_APPROVED" ]; then
+     printf '%s\n' "$FAILING_SORTED" > "${TEST_EDIT_DIR}/still-red.txt" &&
+     tail -n 200 <<< "$CHECK_OUTPUT" > "${TEST_EDIT_DIR}/still-red-tail.txt" &&
+     printf '%s\n' "$(git rev-parse HEAD)" > "${TEST_EDIT_DIR}/still-red-head.txt" &&
+     git diff --full-index "$APPROVAL_COMMIT" HEAD > "${TEST_EDIT_DIR}/still-red-round1.diff" &&
+     echo "still-red files written"
+   else
+     echo "still-red not written: failures outside approved paths or none extracted"
+   fi
    ```
-   Then close the integration-gate stage with the distinct failure class `approved_test_still_red` (a documented class: the gate failed only on paths the human approved, so it is not `gate_not_converged`), then **stop and surface to the human** with Reason `approved-test-still-red: <path>[, <path>…]` and `FAILURE_CLASS: other`. Write the FAILED receipt with the outstanding failures as its body. Do not proceed to Round 2.
+   The writer's `echo` line is the only evidence the four files exist; if it prints the "not written" line, or any `&&` step fails, do not stop with `approved-test-still-red` — take the `gate_not_converged` branch below. Only when it printed `still-red files written`, close the integration-gate stage with the distinct failure class `approved_test_still_red` (a documented class: the gate failed only on paths the human approved, so it is not `gate_not_converged`), then **stop and surface to the human** with Reason `approved-test-still-red: <path>[, <path>…]` and `FAILURE_CLASS: other`. Write the FAILED receipt with the outstanding failures as its body. Do not proceed to Round 2.
    ```bash
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage integration-gate --outcome failure --failure-class approved_test_still_red 2>/dev/null || true
    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class approved_test_still_red 2>/dev/null || true
