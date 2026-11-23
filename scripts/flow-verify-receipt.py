@@ -2932,7 +2932,7 @@ def _get_blob_id(repo: str, commit: str, path: str, is_preimage: bool = False) -
         result = subprocess.run(
             ["git", "-C", repo, "rev-parse", ref],
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             timeout=GIT_TIMEOUT_SECS,
         )
         if result.returncode == 0:
@@ -2954,7 +2954,7 @@ def _commit_mode_reason(repo: str, commit: str, paths: Set[str]) -> Optional[str
         result = subprocess.run(
             ["git", "-C", repo, "diff-tree", "--raw", "-z", "-r", "--no-renames", f"{commit}^", commit],
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             timeout=GIT_TIMEOUT_SECS,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -2997,7 +2997,7 @@ def _test_edit_commit_reason(repo: str, commit: str, paths_by_status: Dict[TestE
         result = subprocess.run(
             ["git", "-C", repo, "diff", "--name-status", "--no-renames", "-z", "--end-of-options", f"{commit}^", commit],
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             timeout=GIT_TIMEOUT_SECS,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -3035,7 +3035,7 @@ def _commit_ancestry_reason(repo: str, commit: str, base: str, branch: str, step
         try:
             result = subprocess.run(
                 ["git", "-C", repo, "merge-base", "--is-ancestor", older, newer],
-                capture_output=True, text=True, timeout=GIT_TIMEOUT_SECS)
+                capture_output=True, encoding="utf-8", errors="replace", timeout=GIT_TIMEOUT_SECS)
         except (subprocess.TimeoutExpired, OSError):
             return None
         if result.returncode == 0:
@@ -3069,7 +3069,7 @@ def _commit_parent_reason(repo: str, commit: str, base: Optional[str]) -> Option
         result = subprocess.run(
             ["git", "-C", repo, "rev-parse", f"{commit}^"],
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             timeout=GIT_TIMEOUT_SECS,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -3091,7 +3091,7 @@ def _approved_paths_untouched_reason(repo: str, commit: str, branch: str, paths:
             ["git", "-C", repo, "diff", "--name-status", "--no-renames", "-z", "--end-of-options",
              commit, branch, "--"] + sorted(paths),
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             timeout=GIT_TIMEOUT_SECS,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -3112,7 +3112,7 @@ def _commit_time(repo: str, commit: str) -> Optional[float]:
     try:
         result = subprocess.run(
             ["git", "-C", repo, "show", "-s", "--format=%ct", commit],
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECS)
+            capture_output=True, encoding="utf-8", errors="replace", timeout=GIT_TIMEOUT_SECS)
         return float(result.stdout.strip()) if result.returncode == 0 else None
     except (subprocess.TimeoutExpired, OSError, ValueError):
         return None
@@ -3160,7 +3160,13 @@ def _parse_receipt_test_lines(entries: List[TestEditEntry], step: TestEditStep) 
         if kind == "none":
             continue
         parts = value.split()
-        if len(parts) < 3 or not ref_re.fullmatch(parts[2]):
+        # Exactly three tokens: a finding id or path with whitespace splits into extra tokens and fails closed here.
+        if len(parts) != 3:
+            return [], (
+                f"test-edit: malformed TEST_{kind.upper()} line (must be exactly `<finding id> <path> <answers ref>`, "
+                f"no whitespace in the finding id or path): {value}"
+            )
+        if not ref_re.fullmatch(parts[2]):
             return [], f"test-edit: malformed TEST_{kind.upper()} line: {value}"
         lines.append(ReceiptTestEditLine(parts[0], parts[1], parts[2], kind))
     return lines, None
@@ -3182,7 +3188,7 @@ def _commit_message_reason(repo: str, commit: str) -> Optional[str]:
         result = subprocess.run(
             ["git", "-C", repo, "log", "-1", "--format=%B", commit],
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             timeout=GIT_TIMEOUT_SECS,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -3326,7 +3332,7 @@ def _check_ledger_records_implement(flow_dir: Path, refs_to_check: Dict[str, str
             attempt_match = line[len("ATTEMPT:"):].strip()
             break
     if not attempt_match or not attempt_match.isdigit():
-        return "test-changes: cannot determine receipt ATTEMPT"
+        return "test-edit: cannot determine receipt ATTEMPT"
     receipt_attempt = int(attempt_match)
 
     ledger_load = load_ledger(flow_dir)
@@ -3334,12 +3340,12 @@ def _check_ledger_records_implement(flow_dir: Path, refs_to_check: Dict[str, str
     if isinstance(ledger_load, LedgerAbsent):
         if refs_to_check:
             refs_list = ", ".join(sorted(refs_to_check.keys()))
-            return f"test-changes: no ledger record for {refs_list}"
+            return f"test-edit: no ledger record for {refs_list}"
         return None
 
     if isinstance(ledger_load, LedgerUnreadable):
         if refs_to_check:
-            return f"test-changes: cannot read human ledger: {ledger_load.detail}"
+            return f"test-edit: cannot read human ledger: {ledger_load.detail}"
         return None
 
     if not isinstance(ledger_load, LedgerRecords):
@@ -3373,11 +3379,13 @@ def _check_ledger_records_implement(flow_dir: Path, refs_to_check: Dict[str, str
     # Verify each ref
     for ref in sorted(refs_to_check.keys()):
         if ref not in ledger_map:
-            return f"test-changes: no ledger record for {ref}"
+            return f"test-edit: no ledger record for {ref}"
 
         sha256_val, attempt = ledger_map[ref]
-        if attempt != receipt_attempt:
-            return f"test-changes: ledger record for {ref} is attempt {attempt}, receipt is attempt {receipt_attempt}"
+        # An approval recorded in an earlier attempt stays valid for a later Retry/redraft that reuses it;
+        # the sha256 and blob-id checks still bind it to the exact approved content.
+        if attempt > receipt_attempt:
+            return f"test-edit: ledger record for {ref} is attempt {attempt}, after receipt attempt {receipt_attempt}"
 
         # Verify sha256 matches current file
         ref_path = flow_dir / ref
@@ -3385,10 +3393,10 @@ def _check_ledger_records_implement(flow_dir: Path, refs_to_check: Dict[str, str
             ref_bytes = ref_path.read_bytes()
             ref_sha256 = hashlib.sha256(ref_bytes).hexdigest()
         except (OSError, UnicodeDecodeError) as e:
-            return f"test-changes: cannot read answer file {ref}: {e}"
+            return f"test-edit: cannot read answer file {ref}: {e}"
 
         if ref_sha256 != sha256_val:
-            return f"test-changes: ledger record does not match {ref} (sha256 mismatch)"
+            return f"test-edit: ledger record does not match {ref} (sha256 mismatch)"
 
     return None
 
@@ -3420,7 +3428,7 @@ def _check_implement_recap(repo: str, commit: str, test_lines: List[ReceiptTestE
         result = subprocess.run(
             ["git", "-C", repo, "log", "-1", "--format=%B", commit],
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             timeout=GIT_TIMEOUT_SECS,
         )
         if result.returncode != 0:
@@ -4871,7 +4879,7 @@ def _parse_marker(text: str) -> Tuple[MarkerKind, Optional[AssessmentMode], List
     return ("v2", mode, dispositions, has_sentinel)
 
 
-_LEDGER_STEP_PREFIX = {"assess": "outstanding gate", "fix": "test-edit", "implement": "test-changes"}
+_LEDGER_STEP_PREFIX = {"assess": "outstanding gate", "fix": "test-edit", "implement": "test-edit"}
 
 
 def _check_ledger_records(flow_dir: Path, answer_refs: Set[str], step: str = "assess", not_before: float = 0.0) -> Optional[str]:
