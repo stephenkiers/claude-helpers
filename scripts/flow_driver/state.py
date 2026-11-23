@@ -34,6 +34,9 @@ kept verbatim in `extra` (Q5 = A):
                      Layer 1 file, which loads as zeros. Written in the same replace as the transition it gates
   heads              {verify, ship}: the driver-owned HEAD sources for the ship guard (Layer 2). Each is a
                      40 or 64 lowercase hex SHA or null. Absent in a Layer 1 file, which loads as nulls
+  bases              {implement, fix}: the worktree HEAD at the first SPAWN of each step (Layer 2 parity, Step 6),
+                     a 40 or 64 lowercase hex value or null. Recorded once, never overwritten on Retry or replay; a
+                     failed read leaves it null. Absent loads as nulls. `unavailable` is render-time only, never stored
 
   pending_spawn also carries (Layer 2, all optional on load): purpose (step, rebase, heal or retro), fleet
   (null or {run_id}; recorded only, session D7), receipt_first_seen (null or a UTC timestamp, the D4 anchor)
@@ -221,6 +224,7 @@ _KNOWN_KEYS: FrozenSet[str] = frozenset(
         "applied",
         "recovery",
         "heads",
+        "bases",
         "step_gates",
         "audit",
         "audit_gate",
@@ -309,6 +313,18 @@ class Heads:
 
 
 @dataclass(frozen=True)
+class Bases:
+    """
+    The worktree HEAD recorded at the first SPAWN of the implement and fix steps (Step 6). Each is a commit
+    hex value or None. Written once and never overwritten on Retry or replay; `unavailable` is a render-time string,
+    never stored here.
+    """
+
+    implement: Optional[Sha] = None
+    fix: Optional[Sha] = None
+
+
+@dataclass(frozen=True)
 class ParkedQuestion:
     """
     A question parked mid-flow by the driver or a step agent (Layer 3, Session D1).
@@ -375,6 +391,7 @@ class V2State:
     extra: Mapping[str, object]
     recovery: Recovery = Recovery()
     heads: Heads = Heads()
+    bases: Bases = Bases()
     step_gates: bool = False
     audit: bool = False
     audit_gate: Optional[AuditRecord] = None
@@ -593,6 +610,17 @@ def _load_head(value: object, field: str) -> Optional[Sha]:
     return Sha(text)
 
 
+def _load_bases(fields: _Fields) -> Bases:
+    """An absent block loads as both None, so a file without it needs no migration."""
+    if not fields.present("bases"):
+        return Bases()
+    block = _Fields(_as_object("bases", fields.raw("bases")), "bases.")
+    return Bases(
+        implement=_load_head(block.raw_or_none("implement"), block.field("implement")),
+        fix=_load_head(block.raw_or_none("fix"), block.field("fix")),
+    )
+
+
 def _load_heads(fields: _Fields) -> Heads:
     """An absent block loads as nulls, so a Layer 1 state.json needs no migration."""
     if not fields.present("heads"):
@@ -756,6 +784,7 @@ def load_v2_state(raw: object) -> V2State:
         extra={key: value for key, value in obj.items() if key not in _KNOWN_KEYS},
         recovery=_load_recovery(fields),
         heads=_load_heads(fields),
+        bases=_load_bases(fields),
         step_gates=fields.boolean("step_gates") if fields.present("step_gates") else False,
         audit=fields.boolean("audit") if fields.present("audit") else False,
         audit_gate=_load_audit_gate(fields.raw_or_none("audit_gate"), "audit_gate"),
@@ -869,6 +898,7 @@ def v2_state_to_dict(state: V2State) -> Dict[str, object]:
                 "retros": state.recovery.retros,
             },
             "heads": {"verify": state.heads.verify, "ship": state.heads.ship},
+            "bases": {"implement": state.bases.implement, "fix": state.bases.fix},
             "step_gates": state.step_gates,
             "audit": state.audit,
             "audit_gate": _audit_gate_to_dict(state.audit_gate),
@@ -1268,6 +1298,7 @@ def init_state(locked: LockedFlow, spec: InitSpec) -> None:
         pr=None,
         worktree=spec.worktree,
         healed=False,
+        assess=True,
         attempt_log={},
         applied=(),
         extra={},

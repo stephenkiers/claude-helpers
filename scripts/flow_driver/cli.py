@@ -25,7 +25,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from . import retention
 from .flowdir import FlowPathError, flows_v2_root, open_flow_dir, repo_key as _repo_key, resolve_read_flow_dir, validate_v2_flow_path
-from .loop import LoopRefusal, run_abandon, run_answer, run_clear_live, run_next, run_recover, run_start
+from .loop import LoopRefusal, run_abandon, run_answer, run_assess_reply, run_clear_live, run_next, run_recover, run_start
 from .model import MODES, WAIT_MODES, assert_never
 from .receipts import VerifierTimeout
 from .resume import CascadeExhausted, ResumeFacts, decide as resume_decide
@@ -124,7 +124,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
     retention.sweep(flow.parent, _now(), keep=flow)
     step_gates = getattr(args, "gates", False)
     audit = getattr(args, "audit", False)
-    assess = getattr(args, "assess", False)
+    assess = False if getattr(args, "no_assess", False) else None
     return _run_loop(lambda: run_start(flow, step_gates=step_gates, audit=audit, assess=assess), stream="stdout")
 
 
@@ -158,6 +158,11 @@ def _cmd_retro(args: argparse.Namespace) -> int:
         return _refuse(str(v1_owned_refusal(resolved_path.name)))
     print("not-yet-built: retro SPAWN (purpose retro) is not built in Layer 2", file=sys.stderr)
     return 3
+
+
+def _cmd_assess_reply(args: argparse.Namespace) -> int:
+    flow = _v2_flow(args)
+    return _run_loop(lambda: run_assess_reply(flow, args.nonce, sys.stdin.buffer), stream="stderr")
 
 
 def _cmd_answer(args: argparse.Namespace) -> int:
@@ -449,7 +454,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--flow", help="absolute flow dir (created by init)")
     start.add_argument("--auto-merge", action="store_true", help="refused: the v2 driver never auto-merges")
     start.add_argument("--audit", action="store_true", help="opt in to the fidelity audit after plan, implement, review and fix")
-    start.add_argument("--assess", action="store_true", help="opt in to the assess stage between verify and ship")
+    start.add_argument("--no-assess", action="store_true", help="skip the assess stage between verify and ship (assess is on by default)")
     start.add_argument("--gates", action="store_true", help="enable step gates (pauses after plan, implement, review, fix, verify)")
     # Skeleton-only flags, optional and ignored by the v2 start (kept so old invocations still parse)
     start.add_argument("--repo", help="OWNER/NAME (skeleton only, ignored by v2 start)")
@@ -466,6 +471,10 @@ def build_parser() -> argparse.ArgumentParser:
     ans.add_argument("--text", required=True)
     ans.add_argument("--note", help="optional note for Redo or Drop answers")
     ans.add_argument("--item", help="assess batch only: the item id this answer is for")
+
+    areply = sub.add_parser("assess-reply", help="record the assessor's reply (stdin) for the live assess spawn")
+    areply.add_argument("--flow", required=True, help="absolute flow dir")
+    areply.add_argument("--nonce", required=True, help="the nonce of the live assess spawn")
 
     clear = sub.add_parser("clear-live", help="clear a spawned or resumed record (logged)")
     clear.add_argument("--flow", required=True, help="absolute flow dir")
@@ -503,6 +512,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return _cmd_next(args)
         if args.command == "answer":
             return _cmd_answer(args)
+        if args.command == "assess-reply":
+            return _cmd_assess_reply(args)
         if args.command == "clear-live":
             return _cmd_clear_live(args)
         if args.command == "recover":

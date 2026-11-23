@@ -28,7 +28,7 @@ import secrets
 import shlex
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Dict, Mapping, Optional, Tuple, Union, cast, get_args
+from typing import BinaryIO, Callable, Dict, Mapping, Optional, Tuple, Union, cast, get_args
 
 from scripts.workflow.fsutil import atomic_write_text
 
@@ -48,11 +48,13 @@ from .state import (
     DRIVER_LOG_FILE,
     AttemptOutcome,
     AuditRecord,
+    Bases,
     Heads,
     LockedFlow,
     ParkedQuestion,
     PendingSpawn,
     Refusal,
+    Sha,
     Step,
     StopSource,
     TransitionKey,
@@ -992,7 +994,40 @@ def _decide(
     stamped, ledger_line, failure = _snapshot_for_spawn(flow, directive, before, new_state)
     if failure is not None:
         return failure[0], failure[1], "", ""
-    return stamped, directive, ledger_line, extra
+    return _with_base(stamped, directive, before), directive, ledger_line, extra
+
+
+_HEAD_HEX = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+
+
+def _worktree_head(worktree: Optional[str]) -> Optional[str]:
+    """The worktree HEAD as a validated hex value, or None when it cannot be read. Never stops a step."""
+    if worktree is None:
+        return None
+    result = pf.run_command(["git", "-C", worktree, "rev-parse", "HEAD"])
+    if result.returncode != 0:
+        return None
+    text = result.stdout.strip()
+    return text if _HEAD_HEX.fullmatch(text) else None
+
+
+def _with_base(state: V2State, directive: Union[SpawnDirective, MergeDirective], before: V2State) -> V2State:
+    """
+    Record bases[implement] or bases[fix] at the first SPAWN of that step. Never overwritten on Retry or replay: a base
+    already recorded stays. A failed read leaves it None and the step runs on.
+    """
+    if not isinstance(directive, SpawnDirective) or directive.step not in ("implement", "fix"):
+        return state
+    if directive.step == "implement" and before.bases.implement is not None:
+        return state
+    if directive.step == "fix" and before.bases.fix is not None:
+        return state
+    head = _worktree_head(before.worktree)
+    if head is None:
+        return state
+    if directive.step == "implement":
+        return dataclasses.replace(state, bases=Bases(implement=Sha(head), fix=before.bases.fix))
+    return dataclasses.replace(state, bases=Bases(implement=before.bases.implement, fix=Sha(head)))
 
 
 def _replay_unwritten(
@@ -1141,8 +1176,10 @@ def _assess_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, non
     if agent_stop is not None:
         return _halt(state, flow, agent_stop.code, agent_stop.detail)
     prompt_file = step_prompt_path(flow, "assess", attempt, nonce)
-    results = flow / "steps" / "07-assess-precomputed.json"
-    _write(prompt_file, assess.assessor_spawn(flow, attempt, nonce, results))
+    prompt, prompt_err = assess.assessor_spawn(flow, attempt, nonce, state.bases, DEFENCE_BLOCK)
+    if prompt_err is not None:
+        return _halt(state, flow, "assess-error", prompt_err)
+    _write(prompt_file, prompt)
     spawned = dataclasses.replace(state, assess_gate=AuditRecord(step="assess", attempt=attempt, nonce=nonce, state="spawned"))
     return spawned, SpawnDirective(
         next_command=driver.next_command(flow),
@@ -1151,7 +1188,19 @@ def _assess_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, non
         step="assess",
         attempt=attempt,
         nonce=nonce,
+        reply=assess.assess_reply_channel(flow, nonce),
     )
+
+
+def _rotate_failed_assess(state: V2State, flow: Path) -> None:
+    """A spawn-failed assessor: rotate its reply delimiter (best effort; the next SPAWN mints a fresh one anyway)."""
+    gate = state.assess_gate
+    if gate is None or gate.step != "assess" or gate.state != "spawned":
+        return
+    try:
+        assess.rotate_reply_delimiter(flow, gate.attempt, gate.nonce)
+    except (OSError, ValueError):
+        pass
 
 
 def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: datetime, headless: bool) -> str:
@@ -1165,6 +1214,8 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
     extra = ""
     # A spawn-failed event means the launch produced no output: the stages that wait on an output are skipped for it.
     launch_failed = isinstance(event, SpawnFailed)
+    if launch_failed:
+        _rotate_failed_assess(locked.require_state(), flow)
     audited = _audit_stage(locked, flow, receipt_fact, nonce, event) if landed is None and not launch_failed else None
     assessed = (
         _assess_stage(locked, flow, receipt_fact, nonce, headless, event)
@@ -1224,15 +1275,35 @@ def run_next(flow: Path, after: Optional[str], *, now: Clock = _utc_now, headles
         raise
 
 
-def run_start(flow: Path, *, step_gates: bool = False, audit: bool = False, assess: bool = False, now: Clock = _utc_now) -> str:
-    """The first `next` of a v2 flow, sent as the `start` label. The opt-in flags are stored first. Raises what run_next raises."""
-    if step_gates or audit or assess:
+def run_start(flow: Path, *, step_gates: bool = False, audit: bool = False, assess: Optional[bool] = None, now: Clock = _utc_now) -> str:
+    """
+    The first `next` of a v2 flow, sent as the `start` label. The opt-in flags are stored first. assess defaults on:
+    None keeps the stored value, False (from --no-assess) turns it off. Raises what run_next raises.
+    """
+    if step_gates or audit or assess is not None:
         with mutating(flow) as locked:
             state = locked.require_state()
-            wanted = dataclasses.replace(state, step_gates=step_gates or state.step_gates, audit=audit or state.audit, assess=assess or state.assess)
+            assess_wanted = state.assess if assess is None else assess
+            wanted = dataclasses.replace(state, step_gates=step_gates or state.step_gates, audit=audit or state.audit, assess=assess_wanted)
             if wanted != state:
                 locked.commit(wanted)
     return run_next(flow, "start", now=now)
+
+
+def run_assess_reply(flow: Path, nonce: str, stream: BinaryIO) -> str:
+    """
+    The assess-reply verb: the assessor's reply on stdin, validated and recorded under the flow lock. A refused nonce
+    writes nothing. A failed reply halts the flow as assess-error.
+    """
+    with mutating(flow) as locked:
+        outcome = assess.assess_reply(locked, flow, nonce, stream)
+        if isinstance(outcome, assess.Refused):
+            raise LoopRefusal(f"assess-reply refused: {outcome.reason}")
+        if isinstance(outcome, assess.AssessStop):
+            halted, _ = _halt(locked.require_state(), flow, "assess-error", outcome.reason)
+            locked.commit(halted)
+            return f"assess-error: {outcome.reason}"
+    return "assess reply recorded; run next"
 
 
 def _answer_assess_item(flow: Path, text: str, note: Optional[str], item: str) -> str:

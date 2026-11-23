@@ -206,6 +206,17 @@ if MERGE_AGENT != STEP_AGENTS["merge"]:
 
 
 @dataclass(frozen=True)
+class ReplyChannel:
+    """
+    How a reply-only agent (flow-assessor, which has no Write tool) returns its output: the stub runs `command` with the
+    reply on stdin through a heredoc quoted with `delimiter`. The delimiter is minted per SPAWN and rotated by the driver.
+    """
+
+    command: str
+    delimiter: str
+
+
+@dataclass(frozen=True)
 class SpawnDirective:
     verb: ClassVar[Literal["SPAWN"]] = "SPAWN"
     next_command: str
@@ -214,6 +225,7 @@ class SpawnDirective:
     step: Step
     attempt: int
     nonce: str
+    reply: Optional[ReplyChannel] = None  # set only for the assess SPAWN
 
 
 @dataclass(frozen=True)
