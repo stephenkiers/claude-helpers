@@ -312,7 +312,7 @@ def test_fix_test_edit_doc_contract(h):
                   _te_para_re(impl, r"Re-ask cap", r"asked\.txt", r"two lines"))
     h.test_result("lifecycle: Gate step 2 advances its base past a verified approval commit and never widens the flag",
                   _te_para_re(impl, r"Retry or resume of a fix step that already landed an approval commit",
-                              r"Do not pass `--allow-test-edit` here, ever", r"use that commit as `--base`"))
+                              r"Do not pass `--allow-test-edit` or `--allow-test-removal` here, ever", r"`<APPROVAL_COMMIT>` as `--base` in place of"))
     h.test_result("lifecycle: a failed ledger write prints the exact append and mark commands",
                   _te_para_re(flow_doc, r"the stop prints the exact commands still to run by hand",
                               r"--by steps/<NN>-fix\.md"))

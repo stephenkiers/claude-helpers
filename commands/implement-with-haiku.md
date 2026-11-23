@@ -38,6 +38,7 @@ each one marks:
 - `check_not_configured` — Final check, no check command resolved and no opt-out recorded
 - `implementer_shortfall` — Step 7, a single-unit implementer fell short, and the failure was escalated to Sonnet
 - `cwd_drift` — Step 4c or later, a unit wrote to the primary checkout (cwd drift detected)
+- `approved_test_still_red` — Gate step 7, a human-approved test change leaves a test still red
 
 `steps_skipped` marks a run whose ledger was missing or incomplete.
 
