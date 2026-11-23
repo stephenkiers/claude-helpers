@@ -92,6 +92,10 @@ def _basename(path: str) -> str:
     return path.rsplit("/", 1)[-1]
 
 
+# PARITY: is_test_path and is_test_case_path are duplicated in other scripts and must stay in
+# sync with them. Counterparts: the test-path predicate in scripts/test-change-check.py and the
+# test-path predicate in scripts/flow-verify-receipt.py. Changing a glob, extension, directory
+# name or allow-list pattern here means changing it there too; a parity test covers this.
 def is_test_path(path: str) -> bool:
     base = _basename(path)
     for glob in _TEST_BASENAME_GLOBS:
@@ -427,6 +431,26 @@ def check_revert_to_pass(
     return reasons
 
 
+_SYMLINK_MODE = "120000"
+
+
+def _mode_change_rejected(status: str, old_mode: str, new_mode: str) -> bool:
+    """True when an allow-listed test path's mode change must fail (`allow-test-change-mode`).
+
+    M (modified): modes must be equal and neither side may be a symlink.
+    D (deleted): the old side must not be a symlink (a real deletion passes).
+    A (added): the new side must not be a symlink.
+    Any other status (type change, copy, unmerged) is rejected.
+    """
+    if status == "M":
+        return old_mode == _SYMLINK_MODE or new_mode == _SYMLINK_MODE or old_mode != new_mode
+    if status == "D":
+        return old_mode == _SYMLINK_MODE
+    if status == "A":
+        return new_mode == _SYMLINK_MODE
+    return True
+
+
 # --- driver ----------------------------------------------------------------
 
 
@@ -481,31 +505,30 @@ def scan(
         for path in sorted(conflict):
             reasons.append("allow-test-change-conflict: %s" % path)
 
-    # Check that all allowed paths pass the test-case predicate and have no mode issues
-    files = changed_files(repo, base_sha := resolve_ref(repo, base), head_sha := resolve_ref(repo, head))
+    base_sha = resolve_ref(repo, base)
+    head_sha = resolve_ref(repo, head)
+    # One tree listing for the whole scan; every loop below reads from `files`.
+    files = changed_files(repo, base_sha, head_sha)
 
-    # Build mode maps
-    mode_map: Dict[str, Tuple[str, str]] = {}  # path -> (old_mode, new_mode)
+    # Map each changed path to its (status, old_mode, new_mode) so the allow-list
+    # checks can be status-aware.
+    status_map: Dict[str, Tuple[str, str, str]] = {}  # path -> (status, old_mode, new_mode)
     for status, path, modes in files:
         if modes:
-            mode_map[path] = modes
+            status_map[path] = (status, modes[0], modes[1])
 
     # Validate all allowed paths
     for path in allowed_test_edits:
         if not is_test_case_path(path):
             reasons.append("allow-test-edit-not-test-case: %s" % path)
-        if path in mode_map:
-            old_mode, new_mode = mode_map[path]
-            if old_mode == "120000" or new_mode == "120000" or old_mode != new_mode:
-                reasons.append("allow-test-change-mode: %s" % path)
+        if path in status_map and _mode_change_rejected(*status_map[path]):
+            reasons.append("allow-test-change-mode: %s" % path)
 
     for path in allowed_test_removals:
         if not is_test_case_path(path):
             reasons.append("allow-test-removal-not-test-case: %s" % path)
-        if path in mode_map:
-            old_mode, new_mode = mode_map[path]
-            if old_mode == "120000" or new_mode == "120000" or old_mode != new_mode:
-                reasons.append("allow-test-change-mode: %s" % path)
+        if path in status_map and _mode_change_rejected(*status_map[path]):
+            reasons.append("allow-test-change-mode: %s" % path)
 
     hunk_cache: Dict[str, List[Hunk]] = {}
     matched_allowed_edits = set()  # type: Set[str]
