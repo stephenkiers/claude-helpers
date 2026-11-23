@@ -882,6 +882,21 @@ After all applies, `git status --porcelain --untracked-files=no -- <approved pat
 
 **5. Parent invariant (implement step only).** For implement, before 4.7 step 4 commits, check that HEAD equals `START_SHA`. If it differs (Round 1 work from a prior attempt sits on top) and no live-verified approval commit already covers every approved path, stop with `approval-commit-not-at-start: <HEAD>`. After the commit, verify the approval commit's first parent equals `START_SHA`.
 
+**Differences between the steps (the complete list).** Everything not named here is identical in both steps; a parity test (`tests/test_implement_fix_hatch_parity.py`) fails on any other difference.
+
+| Aspect | implement | fix |
+|---|---|---|
+| When it runs | before Round 1 | after Round 4's last commit (or where it would have run) |
+| Apply method | `git apply`, no `--3way` | one `git apply --3way` per patch, in finding-id order; a conflicting patch is restored with `git checkout HEAD -- <path>`, skipped and reported `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>) [self-report]`, and never stops the step |
+| Items | edits (M) and removals (D) | edits and removals; the staged set (`git add -- <path> ...`, then `git diff --cached --no-renames --name-status`) must list exactly the applied paths with their status, else stop `existing-test-edit: <id> <path>` with `FAILURE_CLASS: other` |
+| Live re-verify (step 0) | ancestor of HEAD, recorded paths, and each blob matches the answered approval's 40-hex id | ancestor of HEAD and recorded paths with their status only; when it verifies, only patches for other findings are applied (a second approval commit replaces the record) |
+| Parent invariant (step 5) | HEAD equals `START_SHA` before the commit; first parent equals `START_SHA` after | none (the commit lands after Round 4) |
+| Answers file | `answers/implement-<SEQ>.json` | `answers/fix-<SEQ>.json` |
+| No Round 1 work left | stop `existing-test-edit` (never `test-only-plan` for a test-edit item); `test-only-plan` stays for plans with no non-test work at all until #526 | stop `existing-test-edit`; never `test-only-plan` |
+| Ledger | the orchestrator, not the step, appends the `answer` record pinning the answers file (`commands/expert-flow.md`, relay step 4a); the step never writes `human.jsonl` | same |
+
+Both steps pass `--allow-test-edit` and `--allow-test-removal` only to the single-commit scan of the approval commit, never to Gate step 2's range scan or any `ROUND2_START_SHA..HEAD` scan.
+
 **Fix step: existing-test-edit and existing-test-removal items (set aside; only human-approved edits are applied).** This block runs only when `STEP_NAME` is `fix`. Run its items in order, before `init` (item 3) and before any drafting or asking:
 
 0. **Test-edit directory.** `TEST_EDIT_DIR` is `${FLOW_DIR}/test-edits` when `FLOW_DIR` is set, otherwise `<SCRATCH_PATH>/test-edits`. Create it with `mkdir -p` from Bash. It holds the drafted patches, `asked.txt` and `approval-commit.txt` below, so a Retry or a resume of the fix step finds them again. Files there are written from Bash only (`git diff` redirects and `printf`), never with `Write`, and never hold repo content other than the patch text.
@@ -2589,23 +2604,15 @@ On a `--resume-after-round1` run, the skipped rounds' hygiene and overlap fields
 (`round4_deleted` and `round4_relocated` default to `0` when `round4.md` is absent), and `layout_names_given` is
 `false` when the flag file is absent.
 
-### 4.7 Approval commit: human-approved test edits (fix step only)
+### 4.7 Approval commit (fix step)
 
-Runs once per fix step, after Round 4's last commit (or at the point Round 4 would have run), and only when at least one test edit was approved at Step 3. It runs whether or not Round 4 ran. When no edit was approved, or every approved patch was skipped, make no commit and emit `TEST_EDIT: none` in the receipt.
-
-0. **Prior approval commit (Retry or resume).** When `<TEST_EDIT_DIR>/approval-commit.txt` exists, read it (first line `<APPROVAL_COMMIT>`, then one `<finding id> <path> answers/fix-<SEQ>.json` line per applied edit). Verify it live, never trust it: `git merge-base --is-ancestor <APPROVAL_COMMIT> HEAD` must succeed, and `git diff --no-renames --name-status <APPROVAL_COMMIT>^ <APPROVAL_COMMIT>` must list exactly the recorded paths, each `M`. When it verifies, those edits are already applied: do not re-apply, re-scan or re-commit them, take that commit as `<APPROVAL_COMMIT>`, report its edits on `TEST_EDIT:` lines as usual, and apply only approved patches for other findings in steps 1-4 below (a second approval commit, which replaces the record). When it does not verify, ignore the file and treat every approved patch as not yet applied. Never widen the flag to cover a prior commit.
-1. **Apply.** Apply each approved patch from `<TEST_EDIT_DIR>/<finding id>.patch` unchanged, with one `git apply --3way` invocation per patch, in finding-id order, so one conflict never aborts the others. If a patch conflicts, restore its path with `git checkout HEAD -- <path>`, skip that patch, and keep the others. The skipped item is reported `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>) [self-report]`. An apply conflict never stops the step.
-2. **Check the staged set.** Stage the paths that applied (`git add -- <path> ...`). `git diff --cached --no-renames --name-status` must list exactly those paths, each with status `M`. A mismatch stops the step FAILED with Reason `existing-test-edit: <finding id> <path>` and `FAILURE_CLASS: other`.
-3. **Commit.** Commit with the subject `test: apply human-approved existing-test edits (#<finding ids>)`. The body has one line per applied edit: its finding id, its path and `answers/fix-<SEQ>.json`. Record the new HEAD as `<APPROVAL_COMMIT>`.
-4. **Scan the approval commit alone.** Run this scan on this one commit, with the exact-path allowlist:
+The fix step runs the one shared procedure in "4.7 Human-approved test changes (shared by fix and implement)" above, after Round 4's last commit (or at the point Round 4 would have run), once per fix step, and only when at least one test edit was approved at Step 3. It runs whether or not Round 4 ran. When no edit was approved, or every approved patch was skipped, make no commit and emit `TEST_EDIT: none` in the receipt. The fix-only rules are listed under "Differences between the steps" in that section; this heading carries no procedure of its own beyond the fix call site of the single-commit scan (shared 4.7 step 4), pinned here by `tests/test_expert_flow.py`:
 
 ```bash
 python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <TICKET_WT_PATH> --base <APPROVAL_COMMIT>^ --head <APPROVAL_COMMIT> --profile implement --allow-test-edit <path1> --allow-test-edit <path2> ...
 ```
 
-   Repeat `--allow-test-edit <path>` for each applied path, using the exact repo-relative path. The flag suppresses the `test-edit` reason for those exact paths and nothing else. `test-removed` stays armed, and every other rule runs unchanged. The flag is passed to this one-commit scan only: Gate step 2's range scan and any scan over a `ROUND2_START_SHA..HEAD` range never receive it. A scan `fail` stops the step FAILED with Reason `existing-test-edit: <finding id> <path>` and `FAILURE_CLASS: other`.
-5. **Record.** After a passing scan, write `<TEST_EDIT_DIR>/approval-commit.txt` from Bash (`printf`): the first line is `<APPROVAL_COMMIT>`, then one `<finding id> <path> answers/fix-<SEQ>.json` line per applied edit, so a Retry finds it (step 0 and Gate step 2).
-6. **Ledger.** The orchestrator, not this step, appends the `answer` ledger record that pins `answers/fix-<SEQ>.json` (`commands/expert-flow.md`, relay step 4a). This step never writes `human.jsonl`.
+Repeat `--allow-test-edit <path>` for each applied path, using the exact repo-relative path, and add `--allow-test-removal <path>` for each approved removal as the shared step 4 shows.
 
 The receipt cites each applied edit's answers file on its `TEST_EDIT:` line (see the flow receipt in the Final summary).
 
