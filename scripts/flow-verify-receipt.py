@@ -3323,7 +3323,8 @@ def _check_ledger_records_implement(flow_dir: Path, refs_to_check: Dict[str, str
     """Check ledger records for implement step, with per-ref attempt binding.
 
     Each ref is bound to its own ledger record: kind='answer', step='implement', status != 'superseded',
-    sha256 matches current file, and the record's attempt equals the receipt's ATTEMPT.
+    sha256 matches current file, and the record's attempt is at most the receipt's ATTEMPT (approval reuse
+    across Retry/redraft). When several records name one ref, the highest attempt not after the receipt wins.
     """
     # Parse receipt ATTEMPT
     attempt_match = None
@@ -3374,7 +3375,15 @@ def _check_ledger_records_implement(flow_dir: Path, refs_to_check: Dict[str, str
                 sha256_val = text_line[len("sha256: "):].strip()
 
         if answer_ref and sha256_val:
-            ledger_map[answer_ref] = (sha256_val, attempt)
+            prior = ledger_map.get(answer_ref)
+            if prior is None:
+                ledger_map[answer_ref] = (sha256_val, attempt)
+            else:
+                prior_ok = prior[1] <= receipt_attempt
+                new_ok = attempt <= receipt_attempt
+                # Prefer the highest attempt not after the receipt; among later-attempt records keep the lowest.
+                if (new_ok and (not prior_ok or attempt > prior[1])) or (not new_ok and not prior_ok and attempt < prior[1]):
+                    ledger_map[answer_ref] = (sha256_val, attempt)
 
     # Verify each ref
     for ref in sorted(refs_to_check.keys()):
