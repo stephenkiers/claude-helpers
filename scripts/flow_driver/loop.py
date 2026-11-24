@@ -13,7 +13,8 @@ hold one `next`:
      hook and North Star preflights, then the ship ledger close-out) and takes a ledger snapshot; any failure replaces
      the spawn with a STOP. Then commits the returned state (state replace first);
   5. writes the step prompt (SPAWN only) and the verb-named directive file;
-  6. returns the one `NEXT: <VERB> <file>` line that cli.py prints.
+  6. returns the `NEXT: <VERB> <file>` line that cli.py prints. An assess SPAWN also returns a second line,
+     `REPLY-DELIMITER: <hex>`, minted for this emission and never persisted (the assessor's heredoc delimiter).
 
 A crash after step 4 leaves state.json ahead of the files. The next call rewrites the same files from the committed
 pending record, so the nonce, and therefore the file names, are the same (Q1 = A).
@@ -22,6 +23,7 @@ Python 3.8 floor: typing.Callable, Dict, Mapping, Optional, Tuple, Union only.
 """
 
 import dataclasses
+import io
 import json
 import re
 import secrets
@@ -146,6 +148,9 @@ _DECISION_RULE = (
 # The flow-command steps whose prompt names a Skill invocation (every other step names its command as prose).
 FLOW_COMMAND_STEPS = frozenset(get_args(FlowCommandStep))
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+_WHITESPACE = re.compile(r"\s")
+# The render inputs that come from a landed receipt and reach a Skill argument: they must be one plain path token.
+_RECEIPT_ARG_KEYS = frozenset(("plan_path", "review_dir"))
 
 Clock = Callable[[], datetime]
 Outcome = Tuple[V2State, Directive]
@@ -572,7 +577,11 @@ def split_step_command(step: FlowCommandStep, **fmt: str) -> Tuple[str, str]:
     """
     The (skill, args) of a flow-command step's STEP_COMMANDS entry, formatted with fmt. The leading `/` is dropped; the
     first token is the skill and the rest is the args. A value holding a `'` or a control character (newline included)
-    fails the render, never the agent. A step outside FlowCommandStep is a ValueError.
+    fails the render, never the agent. A receipt-derived path (plan_path, review_dir) must be one plain token: no
+    whitespace, no leading `-`, and not the `_NOT_RECORDED` stub. A step outside FlowCommandStep is a ValueError.
+
+    Raises:
+        ValueError: the step is not a flow-command step, or an argument cannot be passed to the Skill call.
     """
     if step not in FLOW_COMMAND_STEPS:
         raise ValueError(f"step {step!r} is not a flow-command step")
@@ -580,6 +589,8 @@ def split_step_command(step: FlowCommandStep, **fmt: str) -> Tuple[str, str]:
         value = str(raw)
         if "'" in value or _CONTROL_CHARS.search(value):
             raise ValueError(f"step {step} argument {key} holds a quote or a control character")
+        if key in _RECEIPT_ARG_KEYS and (value == _NOT_RECORDED or value.startswith("-") or _WHITESPACE.search(value)):
+            raise ValueError(f"step {step} argument {key} is not a plain path token: {value!r}")
     text = STEP_COMMANDS[step].format(**fmt)
     if text.startswith("/"):
         text = text[1:]
@@ -687,6 +698,39 @@ def _write_step_prompt(
         run_dir=run_dir,
     )
     _write(step_prompt_path(flow, directive.step, directive.attempt, directive.nonce), prompt)
+
+
+def _prompt_check(flow: Path, state: V2State, directive: Union[SpawnDirective, MergeDirective]) -> Optional[pf.Stop]:
+    """
+    Dry-run the step prompt render for a SPAWN or MERGE before anything is committed. The render takes the same inputs
+    _write_step_prompt takes, so a failure here (an argument the Skill call cannot carry, a leftover placeholder, a
+    missing merge run directory) becomes a named step-failed STOP instead of a defect after the spawn is committed.
+    """
+    run_dir: Optional[str] = None
+    if isinstance(directive, MergeDirective):
+        resolved = _merge_run_dir(state)
+        if isinstance(resolved, pf.Stop):
+            return resolved
+        run_dir = resolved
+    inputs = _step_inputs(flow, state, directive.step)
+    if isinstance(inputs, str):
+        return pf.Stop("step-failed", inputs)
+    try:
+        render_step_prompt(
+            flow,
+            directive.step,
+            directive.attempt,
+            directive.nonce,
+            issue=state.issue,
+            issue_url=_issue_url(state),
+            worktree=state.worktree,
+            ledger_line="",
+            inputs=inputs,
+            run_dir=run_dir,
+        )
+    except (KeyError, RuntimeError, ValueError) as exc:
+        return pf.Stop("step-failed", f"step prompt for {directive.step} cannot be rendered: {exc}")
+    return None
 
 
 def _snapshot_for_spawn(
@@ -991,10 +1035,14 @@ def _decide(
     edged, extra = _spawn_edges(flow, before, directive.step, event_is_start)
     if edged is not None:
         return edged[0], edged[1], "", ""
+    rendered = _prompt_check(flow, before, directive)
+    if rendered is not None:
+        halted_state, halted_directive = _halt(before, flow, rendered.code, rendered.detail)
+        return halted_state, halted_directive, "", ""
     stamped, ledger_line, failure = _snapshot_for_spawn(flow, directive, before, new_state)
     if failure is not None:
         return failure[0], failure[1], "", ""
-    return _with_base(stamped, directive, before), directive, ledger_line, extra
+    return _with_base(locked, stamped, directive, before), directive, ledger_line, extra
 
 
 _HEAD_HEX = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
@@ -1011,12 +1059,17 @@ def _worktree_head(worktree: Optional[str]) -> Optional[str]:
     return text if _HEAD_HEX.fullmatch(text) else None
 
 
-def _with_base(state: V2State, directive: Union[SpawnDirective, MergeDirective], before: V2State) -> V2State:
+def _with_base(
+    locked: LockedFlow, state: V2State, directive: Union[SpawnDirective, MergeDirective], before: V2State
+) -> V2State:
     """
-    Record bases[implement] or bases[fix] at the first SPAWN of that step. Never overwritten on Retry or replay: a base
-    already recorded stays. A failed read leaves it None and the step runs on.
+    Record bases[implement] or bases[fix] at the first SPAWN of that step (attempt 1 only). Never overwritten on Retry or
+    replay: a base already recorded stays, and a later attempt never backfills a base, so it can never record a post-work
+    HEAD. A failed read leaves it None, logged to locked.log, and the step runs on.
     """
     if not isinstance(directive, SpawnDirective) or directive.step not in ("implement", "fix"):
+        return state
+    if directive.attempt != 1:
         return state
     if directive.step == "implement" and before.bases.implement is not None:
         return state
@@ -1024,6 +1077,7 @@ def _with_base(state: V2State, directive: Union[SpawnDirective, MergeDirective],
         return state
     head = _worktree_head(before.worktree)
     if head is None:
+        locked.log("base-unavailable", step=directive.step, attempt=directive.attempt, nonce=directive.nonce, detail="worktree HEAD unreadable")
         return state
     if directive.step == "implement":
         return dataclasses.replace(state, bases=Bases(implement=Sha(head), fix=before.bases.fix))
@@ -1192,17 +1246,6 @@ def _assess_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, non
     )
 
 
-def _rotate_failed_assess(state: V2State, flow: Path) -> None:
-    """A spawn-failed assessor: rotate its reply delimiter (best effort; the next SPAWN mints a fresh one anyway)."""
-    gate = state.assess_gate
-    if gate is None or gate.step != "assess" or gate.state != "spawned":
-        return
-    try:
-        assess.rotate_reply_delimiter(flow, gate.attempt, gate.nonce)
-    except (OSError, ValueError):
-        pass
-
-
 def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: datetime, headless: bool) -> str:
     event = event_from_label(event_label)
     notified = isinstance(event, Notification)
@@ -1214,8 +1257,6 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
     extra = ""
     # A spawn-failed event means the launch produced no output: the stages that wait on an output are skipped for it.
     launch_failed = isinstance(event, SpawnFailed)
-    if launch_failed:
-        _rotate_failed_assess(locked.require_state(), flow)
     audited = _audit_stage(locked, flow, receipt_fact, nonce, event) if landed is None and not launch_failed else None
     assessed = (
         _assess_stage(locked, flow, receipt_fact, nonce, headless, event)
@@ -1245,7 +1286,11 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
         dfile = directive_file_path(flow, "assess", gate_record.attempt, gate_record.nonce, directive.verb)
         _write(dfile, json.dumps(directive_to_dict(directive), indent=2, sort_keys=True) + "\n")
         locked.log(directive.verb.lower(), step="assess", attempt=gate_record.attempt, nonce=gate_record.nonce)
-        return f"NEXT: {directive.verb} {dfile}"
+        line = f"NEXT: {directive.verb} {dfile}"
+        if isinstance(directive, SpawnDirective):
+            # The heredoc delimiter is minted per emission and printed only here: it is never stored or logged.
+            return f"{line}\nREPLY-DELIMITER: {assess.mint_reply_delimiter()}"
+        return line
     if isinstance(directive, (SpawnDirective, MergeDirective)):
         _write_step_prompt(flow, committed, directive, ledger_line, extra)
     dfile = _write_directive(flow, committed, directive)
@@ -1260,7 +1305,7 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
 def run_next(flow: Path, after: Optional[str], *, now: Clock = _utc_now, headless: bool = False) -> str:
     """
     One mutating `next`. after is the logged event label (None for a bare re-entry, `start` for the first call).
-    Returns the NEXT line.
+    Returns the NEXT line, followed by a REPLY-DELIMITER line when the directive is an assess SPAWN.
 
     Raises:
         Refusal: the flow cannot be driven (a locked flow, or a state.json that is missing or invalid).
@@ -1292,11 +1337,19 @@ def run_start(flow: Path, *, step_gates: bool = False, audit: bool = False, asse
 
 def run_assess_reply(flow: Path, nonce: str, stream: BinaryIO) -> str:
     """
-    The assess-reply verb: the assessor's reply on stdin, validated and recorded under the flow lock. A refused nonce
-    writes nothing. A failed reply halts the flow as assess-error.
+    The assess-reply verb: the assessor's reply on stdin, validated and recorded under the flow lock. The stdin bytes are
+    read to EOF before the lock is taken, so a slow writer never holds the flow; validation runs under the lock on the
+    buffered bytes (assess.assess_reply still enforces its size cap). A refused nonce writes nothing. A failed reply halts
+    the flow as assess-error.
+
+    Raises:
+        LoopRefusal: the nonce is refused (wrong or stale nonce, or a reply already recorded).
+        Refusal: the flow cannot be driven (a locked flow, or a state.json that is missing or invalid).
+        OSError: the stdin read fails.
     """
+    reply = io.BytesIO(stream.read())
     with mutating(flow) as locked:
-        outcome = assess.assess_reply(locked, flow, nonce, stream)
+        outcome = assess.assess_reply(locked, flow, nonce, reply)
         if isinstance(outcome, assess.Refused):
             raise LoopRefusal(f"assess-reply refused: {outcome.reason}")
         if isinstance(outcome, assess.AssessStop):
