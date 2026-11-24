@@ -18,9 +18,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from _flow_driver_loop_helpers import FakeGh, load_json, make_home, next_line, run_cli, state_of, write_receipt  # noqa: E402
 from _test_harness import Harness  # noqa: E402
 
+# v1 flow-assessor reply grammar (#538); a records file ends with the assessment-end sentinel.
+ASSESS_SENTINEL = "<!-- assessment-end -->"
 RECORD = (
-    "implement:Step 3 | status=open | kind=code | scope=isolated | leave_as_is_safe=false | cause=c | evidence=e"
-    " | finish_plan=f | verification_proof=v | options=Finish it"
+    "implement:Step 3 | status=unfinished | kind=decision | scope=in-scope | leave_as_is_safe=no | cause=c | evidence=e"
+    " | finish_plan=f | verification_proof=v | options=Finish it => pause"
 )
 
 
@@ -48,7 +50,7 @@ def to_landed_verify(base: Path, assess: bool, outstanding: bool = True) -> Tupl
     flow = home / ".claude" / "flows-v2" / "owner_name" / "486-probe-abc123"
     code, _, err = run_cli(home, "init", "--flow", str(flow), "--worktree", str(home / "wt"), "--repo", "owner/name")
     expect(code == 0, f"init exited {code}: {err}")
-    args = ["start", "--flow", str(flow)] + (["--assess"] if assess else [])
+    args = ["start", "--flow", str(flow)] + ([] if assess else ["--no-assess"])  # assess is on by default (#538)
     code, out, err = run_cli(home, *args, extra_env=env)
     expect(code == 0, f"start exited {code}: {err}")
     verb, path = next_line(out)
@@ -68,11 +70,6 @@ def to_landed_verify(base: Path, assess: bool, outstanding: bool = True) -> Tupl
     raise AssertionError("the loop never reached verify")
 
 
-def test_off_by_default(base: Path) -> None:
-    _, _, _, verb, nxt = to_landed_verify(base, assess=False)
-    expect(verb == "SPAWN" and nxt["step"] == "ship", f"without --assess verify did not advance to ship: {nxt}")
-
-
 def test_nothing_outstanding_skips(base: Path) -> None:
     _, flow, _, verb, nxt = to_landed_verify(base, assess=True, outstanding=False)
     expect(verb == "SPAWN" and nxt["step"] == "ship", f"an empty outstanding set must not spawn an assessor: {nxt}")
@@ -83,11 +80,13 @@ def test_spawn_wait_ask_answer_advance(base: Path) -> None:
     home, flow, env, verb, nxt = to_landed_verify(base, assess=True)
     expect(verb == "SPAWN" and nxt["step"] == "assess", f"expected the assessor SPAWN, got {nxt}")
     prompt = Path(str(nxt["prompt_file"])).read_text(encoding="utf-8")
-    expect("07-assess-records.txt" in prompt, "the assessor prompt does not name its records file")
+    # flow-assessor has no Write tool: it replies, and assess-reply writes the records file (#538).
+    expect("07-assess-records.txt" not in prompt, "the assessor prompt must not name a records file to write")
+    expect(ASSESS_SENTINEL in prompt, "the assessor prompt does not name the assessment-end reply sentinel")
     code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=env)
     verb, _ = next_line(out)
     expect(verb == "WAIT", f"an assessor with no records printed {verb}, expected WAIT")
-    (flow / "steps" / "07-assess-records.txt").write_text(RECORD + "\n", encoding="utf-8")
+    (flow / "steps" / "07-assess-records.txt").write_text(RECORD + "\n" + ASSESS_SENTINEL + "\n", encoding="utf-8")
     code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=env)
     verb, path = next_line(out)
     ask = load_json(path)
@@ -143,7 +142,7 @@ def test_assessor_wait_timeout_then_clear_live(base: Path) -> None:
 
 def test_plain_answer_refuses_assess_batch(base: Path) -> None:
     home, flow, env, _, _ = to_landed_verify(base, assess=True)
-    (flow / "steps" / "07-assess-records.txt").write_text(RECORD + "\n", encoding="utf-8")
+    (flow / "steps" / "07-assess-records.txt").write_text(RECORD + "\n" + ASSESS_SENTINEL + "\n", encoding="utf-8")
     run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=env)
     # Try to answer the assess batch without --item, which should be refused
     code, _, err = run_cli(home, "answer", "--flow", str(flow), "--text", "Finish it", extra_env=env)
@@ -154,7 +153,7 @@ def test_plain_answer_refuses_assess_batch(base: Path) -> None:
 def test_item_id_with_a_space_is_shell_quoted_in_the_answer_command(base: Path) -> None:
     home, flow, env, _, _ = to_landed_verify(base, assess=True)
     run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=env)
-    (flow / "steps" / "07-assess-records.txt").write_text(RECORD + "\n", encoding="utf-8")
+    (flow / "steps" / "07-assess-records.txt").write_text(RECORD + "\n" + ASSESS_SENTINEL + "\n", encoding="utf-8")
     _, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=env)
     verb, path = next_line(out)
     expect(verb == "ASK", f"expected the batch ASK, got {verb} {err}")
@@ -163,7 +162,6 @@ def test_item_id_with_a_space_is_shell_quoted_in_the_answer_command(base: Path) 
 
 
 CHECKS = [
-    ("1: assess is off by default", test_off_by_default),
     ("2: nothing outstanding skips the assessor", test_nothing_outstanding_skips),
     ("3: spawn, wait, ask, answer, advance", test_spawn_wait_ask_answer_advance),
     ("4: bad assessor records halt", test_bad_records_halt),

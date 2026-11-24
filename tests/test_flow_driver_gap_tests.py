@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from _flow_driver_loop_helpers import load_json, next_line, run_cli, state_of, write_receipt  # noqa: E402
 from _test_harness import Harness  # noqa: E402
-from test_flow_driver_assess_loop import RECORD, to_landed_verify  # noqa: E402
+from test_flow_driver_assess_loop import ASSESS_SENTINEL, RECORD, to_landed_verify  # noqa: E402
 
 from scripts.flow_driver import loop, relay  # noqa: E402
 from scripts.flow_driver.state import StateSchemaError, load_v2_state  # noqa: E402
@@ -46,7 +46,7 @@ def check(h: Harness, name: str, fn: Callable[[Path], None]) -> None:
 
 def parked_assess(base: Path) -> Any:
     home, flow, env, _, _ = to_landed_verify(base, assess=True)
-    (flow / "steps" / "07-assess-records.txt").write_text(RECORD + "\n", encoding="utf-8")
+    (flow / "steps" / "07-assess-records.txt").write_text(RECORD + "\n" + ASSESS_SENTINEL + "\n", encoding="utf-8")
     run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=env)
     _, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=env)
     verb, _ = next_line(out)
@@ -138,7 +138,7 @@ def test_item_directive_is_shell_quoted(base: Path) -> None:
     item = "Step 3; echo 'x' $(id)"
     write_receipt(flow, "implement", 1, extra=f"OUTSTANDING: {item} (tests missing) [self-report]\n")
     record = RECORD.replace("implement:Step 3", f"implement:{item}")
-    (flow / "steps" / "07-assess-records.txt").write_text(record + "\n", encoding="utf-8")
+    (flow / "steps" / "07-assess-records.txt").write_text(record + "\n" + ASSESS_SENTINEL + "\n", encoding="utf-8")
     run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=env)
     _, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=env)
     verb, path = next_line(out)

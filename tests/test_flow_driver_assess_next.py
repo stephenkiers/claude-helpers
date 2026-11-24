@@ -21,9 +21,11 @@ from _test_harness import Harness  # noqa: E402
 from scripts.flow_driver import assess, receipts  # noqa: E402
 from scripts.flow_driver.state import InitSpec, init_state, mutating  # noqa: E402
 
+# v1 flow-assessor reply grammar (#538); a records file ends with the assessment-end sentinel.
+ASSESS_SENTINEL = "<!-- assessment-end -->"
 RECORD = (
-    "{id} | status={status} | kind=code | scope=isolated | leave_as_is_safe=true | cause=c | evidence=e"
-    " | finish_plan=f | verification_proof=v | options=Finish it"
+    "{id} | status={status} | kind=decision | scope=in-scope | leave_as_is_safe=yes | cause=c | evidence=e"
+    " | finish_plan=f | verification_proof=v | options=Finish it => pause"
 )
 
 
@@ -87,7 +89,7 @@ def test_spawn_then_ask_then_gate(flow: Path) -> None:
     receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (tests missing) [self-report]\n")
     out = run_next(flow)
     expect(isinstance(out, assess.AssessSpawn), f"first call spawns: {out}")
-    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 3", status="open") + "\n", encoding="utf-8")
+    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 3", status="unfinished") + "\n" + ASSESS_SENTINEL + "\n", encoding="utf-8")
     out = run_next(flow)
     expect(isinstance(out, assess.AssessAsk), f"records land, the batch is asked: {out}")
     expect((flow / "questions" / "assess-1.json").exists(), "question file written")
@@ -101,23 +103,23 @@ def test_spawn_then_ask_then_gate(flow: Path) -> None:
 
 def test_bad_records_stop(flow: Path) -> None:
     receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (tests missing) [self-report]\n")
-    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 9", status="open") + "\n", encoding="utf-8")
+    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 9", status="unfinished") + "\n" + ASSESS_SENTINEL + "\n", encoding="utf-8")
     out = run_next(flow)
     expect(isinstance(out, assess.AssessStop), f"an id outside the set stops: {out}")
-    assess.assess_records_path(flow).write_text("", encoding="utf-8")
+    assess.assess_records_path(flow).write_text(ASSESS_SENTINEL + "\n", encoding="utf-8")
     out = run_next(flow)
     expect(isinstance(out, assess.AssessStop) and "no record" in out.reason, f"a missing record stops: {out}")
 
 
 def test_done_items_ask_nothing(flow: Path) -> None:
     receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (tests missing) [self-report]\n")
-    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 3", status="done") + "\n", encoding="utf-8")
+    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 3", status="already-done") + "\n" + ASSESS_SENTINEL + "\n", encoding="utf-8")
     expect(isinstance(run_next(flow), assess.AssessAdvance), "an already-done item needs no answer")
 
 
 def test_drop_needs_a_note_and_gate_catches_gaps(flow: Path) -> None:
     receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (tests missing) [self-report]\n")
-    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 3", status="open") + "\n", encoding="utf-8")
+    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 3", status="unfinished") + "\n" + ASSESS_SENTINEL + "\n", encoding="utf-8")
     run_next(flow)
     expect(assess.save_item_answer(flow, 1, "implement:Step 3", "Drop with a reason", None, set()) is not None, "Drop needs a note")
     (flow / "answers").mkdir(exist_ok=True)
@@ -127,7 +129,7 @@ def test_drop_needs_a_note_and_gate_catches_gaps(flow: Path) -> None:
 
 def test_save_item_answer_refuses_invalid_options(flow: Path) -> None:
     receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (tests missing) [self-report]\n")
-    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 3", status="open") + "\n", encoding="utf-8")
+    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 3", status="unfinished") + "\n" + ASSESS_SENTINEL + "\n", encoding="utf-8")
     run_next(flow)
     err = assess.save_item_answer(flow, 1, "implement:Step 3", "InvalidOption", None, set())
     expect(err is not None, "an invalid option must be refused")
@@ -138,8 +140,8 @@ def test_save_item_answer_refuses_invalid_options(flow: Path) -> None:
 def test_assess_disposition_gate_requires_all_answered(flow: Path) -> None:
     receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (tests missing) [self-report]\nOUTSTANDING: Step 4 (more) [verifier]\n")
     assess.assess_records_path(flow).write_text(
-        RECORD.format(id="implement:Step 3", status="open") + "\n" +
-        RECORD.format(id="implement:Step 4", status="open") + "\n",
+        RECORD.format(id="implement:Step 3", status="unfinished") + "\n" +
+        RECORD.format(id="implement:Step 4", status="unfinished") + "\n" + ASSESS_SENTINEL + "\n",
         encoding="utf-8"
     )
     run_next(flow)
@@ -147,14 +149,14 @@ def test_assess_disposition_gate_requires_all_answered(flow: Path) -> None:
     (flow / "answers" / "assess-1.json").write_text(json.dumps({"answers": {"implement:Step 3": "Finish it"}, "annotations": {}}), encoding="utf-8")
     err = assess.invoke_outstanding_gate(flow, 1)
     expect(err is not None, "gate must fail when not all items are answered")
-    (flow / "answers" / "assess-1.json").write_text(json.dumps({"answers": {"implement:Step 3": "Finish it", "implement:Step 4": "Leave as-is"}, "annotations": {}}), encoding="utf-8")
+    (flow / "answers" / "assess-1.json").write_text(json.dumps({"answers": {"implement:Step 3": "Leave as-is", "implement:Step 4": "Leave as-is"}, "annotations": {}}), encoding="utf-8")
     err = assess.invoke_outstanding_gate(flow, 1)
     expect(err is None, "gate must pass when all items are answered")
 
 
 def test_assess_disposition_gate_fails_on_missing_questions_file(flow: Path) -> None:
     receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (tests missing) [self-report]\n")
-    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 3", status="open") + "\n", encoding="utf-8")
+    assess.assess_records_path(flow).write_text(RECORD.format(id="implement:Step 3", status="unfinished") + "\n" + ASSESS_SENTINEL + "\n", encoding="utf-8")
     run_next(flow)
     (flow / "answers").mkdir(exist_ok=True)
     (flow / "answers" / "assess-1.json").write_text(json.dumps({"answers": {"implement:Step 3": "Finish it"}, "annotations": {}}), encoding="utf-8")
