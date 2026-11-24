@@ -2797,7 +2797,7 @@ def check_zero_unit_plan(plan_path: Path) -> Optional[str]:
     for step_content in re.split(r"^###\s+Step\s+\d+\b", impl_section, flags=re.M)[1:]:
         for file_path in step_file_paths(step_content):
             if not is_test_path(file_path):
-                return f"zero-unit plan lists non-test file in Implementation Steps: {file_path}"
+                return f"zero-unit-plan-incomplete: plan lists non-test file in Implementation Steps: {file_path}"
 
     # (b) Round 2 tests section must exist and be non-empty
     tests_heading = re.search(rf"^{re.escape(ZERO_UNITS_TESTS_HEADING)}[ \t]*$", text, re.M)
@@ -2814,12 +2814,19 @@ def check_zero_unit_plan(plan_path: Path) -> Optional[str]:
     return None
 
 
-def _check_zero_unit_receipt(receipt: str, decision: Optional[str], plan_path: Optional[Path]) -> Optional[str]:
-    """Run the zero-units plan cross-check for an OK zero-units implement/fix receipt (#526).
+def _check_zero_unit_receipt(
+    receipt: str, decision: Optional[str], plan_path: Optional[Path], step: str = "implement"
+) -> Optional[str]:
+    """Run the zero-units plan cross-check for an OK zero-units implement receipt (#526).
 
     Without --plan the receipt does not name its plan, so the check is skipped with a note.
+    A fix step's plan is a claude-action-plan.md, which has no Tests section or Targets line
+    (its zero-unit rule is the new-test anchor check in /implement-with-haiku), so the
+    cross-check is restricted to implement and a fix step is never failed by it.
     """
     if decision != "OK" or parse_receipt_field(receipt, SPLIT_BASIS_FIELD) != ZERO_UNITS_BASIS:
+        return None
+    if step != "implement":
         return None
     if plan_path is None:
         print("zero-units plan cross-check: plan unresolved (no --plan given)", file=sys.stderr)
@@ -3554,7 +3561,7 @@ def check_fix(
     split_basis_error = validate_split_basis_fields(receipt, decision)
     if split_basis_error:
         return split_basis_error
-    zero_unit_error = _check_zero_unit_receipt(receipt, decision, plan_path)
+    zero_unit_error = _check_zero_unit_receipt(receipt, decision, plan_path, step="fix")
     if zero_unit_error:
         return zero_unit_error
 
