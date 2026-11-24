@@ -181,7 +181,7 @@ class Absent(NamedTuple):
 
 
 class InProgress(NamedTuple):
-    """Incomplete receipt: either awaiting-answer on a parked or resumed record, or fingerprint changed on any record."""
+    """Incomplete receipt: either awaiting-answer on a parked or resumed record, or fingerprint changed on a spawned record."""
     fingerprint: ReceiptFingerprint
     basis: Literal["fingerprint-changed", "awaiting-answer"]
     state: Literal["in-progress"] = "in-progress"
@@ -292,7 +292,7 @@ def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
     Cadence assumption (Layer 2 must honour it): Layer 2's quiet interval and the D4 subagent_gone gate
     apply to spawned records with Malformed receipts. The D4 gate is wired for `next` in loop._malformed_gate
     but does not apply to parked or resumed records. The `resume` command still reruns a spawned record's
-    stable incomplete receipt (rule-1-live-step, no D4 gate).
+    stable incomplete receipt (rule-1-live-step, no D4 gate and no D5 cap; ADR-0026 2026-11-16).
     """
     path = receipt_path(locked.path, pending.step)
 

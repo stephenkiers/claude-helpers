@@ -36,7 +36,7 @@ points to, and obeys it. It never guesses a verb or a path, and it never writes 
 | `next --flow <dir> [--after <label>]` | One loop step. With no `--after` it is a re-entry, which is how a later session resumes a parked flow. |
 | `answer --flow <dir> --text <answer> [--note <text>] [--item <id>]` | Record the human's answer for a parked attempt. Prints to stderr. One answer per attempt. `--note` only for an option that takes a note (Redo, Drop). `--item` answers one item of a parked assess batch. |
 | `recover --flow <dir> --choice retry\|take-over\|keep-previous\|resume` | Answer a stopped step. `retry` works only after a FAILED receipt or an audit rejection and at most twice per step. `resume` re-asks a step gate the human paused or a merge they held. `keep-previous` is refused: no redo lineage is built. |
-| `clear-live --flow <dir> --reason <text>` | Clear a live record, logged with its nonce. Only for a `wait-timeout` or `resume-failed` STOP. A timed-out audit or assessor is cleared the same way and re-spawns on the next `next`. **Warning:** `clear-live` is only safe for an agent known to be gone. Clearing a record whose agent is alive re-spawns and recreates the concurrent-writer hazard (two step agents in one worktree). |
+| `clear-live --flow <dir> --reason <text>` | Clear a live `spawned` or `resumed` record, logged with its nonce. The step reopens only after a `wait-timeout` STOP. A timed-out audit or assessor is cleared the same way and re-spawns on the next `next`. **Warning:** `clear-live` is only safe for an agent known to be gone. Clearing a record whose agent is alive re-spawns and recreates the concurrent-writer hazard (two step agents in one worktree). |
 | `abandon --flow <dir>` | Mark the flow abandoned. Refused while an attempt is `spawned` or `resumed`, and the refusal names `clear-live`. Deletes nothing. |
 | `retro --flow <dir>` | Not built for v2: it exits 3 (`not-yet-built`). Refused for v1 flows. |
 | `status --json --flow <dir>` | Read-only JSON of the flow. |
@@ -75,9 +75,9 @@ After each event, run the directive's `next_command`, with ` --after <label>` ap
 - **WAIT, end-turn**: end the turn. The completion notification wakes the stub, which runs `next --after notification`.
 - **WAIT, foreground**: run `python3 "$HOME/.claude/scripts/fleet.py" wait <receipt_file>`. When the directive's
   `require_change` is true, run `python3 "$HOME/.claude/scripts/fleet.py" wait --require-change <receipt_file>`
-  instead, and `settled` then means the receipt differs from its bytes when the wait started. It prints `settled` when the
-  receipt holds a Decision line or the `<!-- awaiting-answers:` marker, and `timeout` otherwise. Run
-  `next --after wait-settled` on `settled` and `next --after wait-timeout` on `timeout`. A timeout never means success;
+  instead, and `settled` then means the receipt changed from its bytes at wait start and now holds a Decision line or the
+  `<!-- awaiting-answers:` marker. It prints `settled` when the receipt holds a Decision line or the `<!-- awaiting-answers:`
+  marker, and `timeout` otherwise. Run `next --after wait-settled` on `settled` and `next --after wait-timeout` on `timeout`. A timeout never means success;
   the driver decides from disk.
 - **ASK**: print the question file contents, the `answer_file` path and the `answer_command`, then end the turn. On the
   human's next message, run `answer_command` with the human's text in place of `<your answer>`, then run
@@ -117,7 +117,7 @@ old, and their whole flow directories. It never touches a running flow, the flow
   Their decisions exist only as table entries in `scripts/flow_driver/recovery.py` that the loop never reads.
   Retry and take-over are wired through `recover`, and redo is wired only through a step gate (`start --gates`).
   A failed step stops; see Recovery.
-- A parked or resumed step's incomplete receipt is held and never re-run. In end-turn mode a dead resumed agent has no
+- **parked-awaiting-answer, resumed:** an incomplete receipt is held and never re-run (ADR-0026 Decision 8: never malformed, fingerprint not stored; #549). In end-turn mode a dead resumed agent has no
   time bound: only the human's `clear-live` ends it. In foreground mode the 540s default `fleet.py wait --timeout`
   applies to a live resumed agent too, so a slow-but-alive agent reaches STOP `wait-timeout` the same as a dead one.
 - Fleet behaviour is a later layer (ADR-0026). `--auto-merge` is not supported, by design.
