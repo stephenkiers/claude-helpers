@@ -334,7 +334,9 @@ def test_parity_rows_42_and_2026_11_20_point_at_tests_and_headless():
     if not any("tests/" in line and "headless" in line.lower() for line in dated):
         return False, "the 2026-11-20 entry does not name tests/ and headless"
     row42 = [line for line in lines if re.match(r"^\W*42\b", line.strip().lstrip("|").strip() or "x")]
-    if row42 and not any("superseded" in line.lower() for line in row42):
+    if not row42:
+        return False, "no rules.md row 42 was found (an empty match would pass vacuously)"
+    if not any("superseded" in line.lower() for line in row42):
         return False, "row 42 is not marked superseded"
     return True, ""
 
@@ -452,7 +454,11 @@ def check_row_truth(rules_text, repo_root):
                 errors.append(f"rules.md:{line_no} row {key}: cited file {rel} does not exist")
                 continue
             names = [colon_name] if colon_name else [n.strip() for n in paren_names.split(",")]
+            raw_names = [n for n in names if n]
             names = [n for n in names if IDENT_RE.match(n)]
+            if raw_names and not names:
+                errors.append(f"rules.md:{line_no} row {key}: {rel} group has no test names (none of {raw_names} is an identifier)")
+                continue
             if rel not in sources:
                 sources[rel] = path.read_text(encoding="utf-8")
             for name in names:
@@ -566,6 +572,16 @@ def test_drift_row_truth_synthetic_rows():
     return True, ""
 
 
+def test_drift_row_truth_group_with_no_identifier_names_is_an_error():
+    """A parenthesised group whose names are all non-identifiers is reported, not silently dropped."""
+    real = "tests/test_flow_driver_gates.py"
+    for names in ("see section 3", "not a name!, also bad"):
+        errors = check_row_truth(_synthetic_rules(f"port, pinned by test {real} ({names})"), REPO_ROOT)
+        if not any("no test names" in err for err in errors):
+            return False, f"({names}) did not fail with 'no test names': {errors}"
+    return True, ""
+
+
 def test_drift_closed_set_synthetic_rows():
     """Existing prefix forms pass; 'maybe later' fails; a §3 row is not checked."""
     for ok in ("dropped: no longer needed", "landed in #1 (x); no test yet", "landed as: a flag",
@@ -605,12 +621,22 @@ def test_drift_wrong_pin_fails_with_human_only_message():
 
 
 def test_drift_check_runs_no_git():
-    """The drift check functions run no git command (a static scan of their source)."""
+    """The drift check functions run no git command: an AST scan for subprocess use and git-leading string literals."""
+    import ast
     import inspect
+    import textwrap
+    banned_names = {"subprocess", "Popen", "check_output", "check_call", "run_command", "system"}
     for fn in (check_row_truth, check_closed_set, parse_pins, check_content_pins, _table_rows):
-        if "subprocess" in inspect.getsource(fn) or "git " in inspect.getsource(fn):
-            return False, f"{fn.__name__} references git or subprocess"
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id in banned_names:
+                return False, f"{fn.__name__} uses {node.id}"
+            if isinstance(node, ast.Attribute) and node.attr in banned_names:
+                return False, f"{fn.__name__} uses .{node.attr}"
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.split(" ")[0] == "git":
+                return False, f"{fn.__name__} has a git command literal {node.value!r}"
     return True, ""
+
 
 def _check(h, label, fn):
     """Run one test function, recording a crash as a failure instead of aborting the suite."""
@@ -669,6 +695,7 @@ if __name__ == "__main__":
     _check(h, "real rules.md passes the closed set", test_drift_real_rules_pass_closed_set)
     _check(h, "prose 'pinned by test' line is not a row", test_drift_row_truth_skips_prose_line)
     _check(h, "row truth: synthetic failing and passing rows", test_drift_row_truth_synthetic_rows)
+    _check(h, "row truth: a group with no identifier names is an error", test_drift_row_truth_group_with_no_identifier_names_is_an_error)
     _check(h, "closed set: synthetic rows and §3 exclusion", test_drift_closed_set_synthetic_rows)
     _check(h, "real content pins match the watched v1 files", test_drift_real_content_pins_match)
     _check(h, "wrong pin fails with the human-only message", test_drift_wrong_pin_fails_with_human_only_message)

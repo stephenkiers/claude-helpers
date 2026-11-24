@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Sequence, Tuple
+from typing import Any, Callable, Dict, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -183,14 +183,54 @@ def test_agent_preflight_missing_assessor_file_stops() -> None:
         expect("flow-assessor.md" in detail, f"missing assessor message is {detail!r}")
 
 
-def test_agent_preflight_missing_bash_guard_registration_stops_with_setup_hint() -> None:
+def _installed_guards(base: Path) -> Dict[str, str]:
+    """Create the three guard scripts under base/scripts and return name -> path."""
+    scripts = base / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    paths: Dict[str, str] = {}
+    for name in preflight.REQUIRED_SETTINGS_GUARDS:
+        (scripts / name).write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        paths[name] = str(scripts / name)
+    return paths
+
+
+def test_agent_preflight_missing_guard_registration_stops_with_setup_hint() -> None:
+    """Dropping any one of the three guard registrations is a Stop naming that guard and the setup hint."""
+    expect(set(preflight.REQUIRED_SETTINGS_GUARDS) == {"flow-bash-guard.py", "flow-skill-guard.py", "flow-agent-guard.py"},
+           f"required guards are {preflight.REQUIRED_SETTINGS_GUARDS!r}")
+    for missing in preflight.REQUIRED_SETTINGS_GUARDS:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            agents_dir, prompts_dir = _agent_tree(base, agents=("flow-plan",), contract=True)
+            paths = _installed_guards(base)
+            commands = [f"{path} --agent auto" for name, path in paths.items() if name != missing]
+            settings = _settings_with_commands(base, commands)
+            detail = _stop_detail(preflight.check_agent_preflight("flow-plan", agents_dir, prompts_dir, settings))
+            expect(missing in detail and "run /setup-local" in detail,
+                   f"dropping {missing} gave the message {detail!r}")
+
+
+def test_agent_preflight_guard_registered_with_the_wrong_agent_arg_stops() -> None:
+    """A guard registered with an --agent value other than auto does not count as registered."""
+    for wrong in preflight.REQUIRED_SETTINGS_GUARDS:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            agents_dir, prompts_dir = _agent_tree(base, agents=("flow-plan",), contract=True)
+            paths = _installed_guards(base)
+            commands = [f"{path} --agent {'flow-plan' if name == wrong else 'auto'}" for name, path in paths.items()]
+            settings = _settings_with_commands(base, commands)
+            detail = _stop_detail(preflight.check_agent_preflight("flow-plan", agents_dir, prompts_dir, settings))
+            expect(wrong in detail, f"{wrong} registered with --agent flow-plan gave the message {detail!r}")
+
+
+def test_agent_preflight_all_three_guards_registered_and_installed_passes() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
         agents_dir, prompts_dir = _agent_tree(base, agents=("flow-plan",), contract=True)
-        settings = _settings_with_commands(base, ["python3 ~/.claude/scripts/flow-skill-guard.py --agent auto"])
-        detail = _stop_detail(preflight.check_agent_preflight("flow-plan", agents_dir, prompts_dir, settings))
-        expect("flow-bash-guard" in detail and "run /setup-local" in detail,
-               f"missing registration message is {detail!r}")
+        paths = _installed_guards(base)
+        settings = _settings_with_commands(base, [f"{path} --agent auto" for path in paths.values()])
+        result = preflight.check_agent_preflight("flow-plan", agents_dir, prompts_dir, settings)
+        expect(result is None, f"all three guards registered and installed returned {result!r}, expected None")
 
 
 def test_agent_preflight_malformed_or_missing_settings_fails_closed() -> None:
@@ -278,7 +318,9 @@ SECTIONS = [
         ("p02: missing restricted agent file names the path and /setup-local", test_agent_preflight_missing_restricted_agent_file_names_path_and_setup),
         ("p03: missing step contract names its path", test_agent_preflight_missing_step_contract_names_the_contract_path),
         ("p04: missing assessor file stops", test_agent_preflight_missing_assessor_file_stops),
-        ("p05: missing bash-guard registration stops with /setup-local", test_agent_preflight_missing_bash_guard_registration_stops_with_setup_hint),
+        ("p05: each missing guard registration stops with /setup-local", test_agent_preflight_missing_guard_registration_stops_with_setup_hint),
+        ("p05b: a guard registered with the wrong --agent value stops", test_agent_preflight_guard_registered_with_the_wrong_agent_arg_stops),
+        ("p05c: all three guards registered and installed passes", test_agent_preflight_all_three_guards_registered_and_installed_passes),
         ("p06: malformed or missing settings fails closed", test_agent_preflight_malformed_or_missing_settings_fails_closed),
         ("p07: registration to a missing script stops", test_agent_preflight_registration_to_a_missing_script_stops),
         ("p08: assessor does not check registration", test_agent_preflight_assess_does_not_check_guard_registration),

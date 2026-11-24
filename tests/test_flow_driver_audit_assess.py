@@ -128,23 +128,40 @@ def test_v2_v1_grammar_reply_parses_into_two_records() -> None:
 
 
 def test_v2_hostile_or_malformed_replies_fail_closed() -> None:
+    """Each hostile or malformed reply is refused by validate_assessor_output, with its own reason."""
     good = _v1_record("b2")
     variants = {
-        "missing sentinel": good + "\n",
-        "status done": _v1_record("b2", status="done") + "\n" + ASSESS_SENTINEL + "\n",
-        "record with fewer than two pipes": "b2 | status=unfinished\n" + ASSESS_SENTINEL + "\n",
-        "option without a pause or issue route": _v1_record("b2", options="A => keep") + "\n" + ASSESS_SENTINEL + "\n",
-        "option labelled Open an issue": _v1_record("b2", options="Open an issue => issue ;; B => pause") + "\n" + ASSESS_SENTINEL + "\n",
-        "three options": _v1_record("b2", options="A => pause ;; B => issue ;; C => pause") + "\n" + ASSESS_SENTINEL + "\n",
-        "label of 121 characters": _v1_record("b2", options=("L" * 121) + " => pause ;; B => issue") + "\n" + ASSESS_SENTINEL + "\n",
-        "reason containing <<<ITEM": _v1_record("b2", cause="x <<<ITEM y") + "\n" + ASSESS_SENTINEL + "\n",
+        "missing sentinel": (good + "\n", "sentinel"),
+        "status done": (_v1_record("b2", status="done") + "\n" + ASSESS_SENTINEL + "\n", "unparseable"),
+        "record with fewer than two pipes": ("b2 | status=unfinished\n" + ASSESS_SENTINEL + "\n", "missing status or kind"),
+        "option without a pause or issue route": (_v1_record("b2", options="A => keep") + "\n" + ASSESS_SENTINEL + "\n", "unparseable"),
+        "option labelled Open an issue": (_v1_record("b2", options="Open an issue => issue ;; B => pause") + "\n" + ASSESS_SENTINEL + "\n", "unparseable"),
+        "three options": (_v1_record("b2", options="A => pause ;; B => issue ;; C => pause") + "\n" + ASSESS_SENTINEL + "\n", "unparseable"),
+        "label of 121 characters": (_v1_record("b2", options=("L" * 121) + " => pause ;; B => issue") + "\n" + ASSESS_SENTINEL + "\n", "option label"),
+        "reason containing <<<ITEM": (_v1_record("b2", cause="x <<<ITEM y") + "\n" + ASSESS_SENTINEL + "\n", "reserved marker"),
+        "id outside the outstanding set": (_v1_record("zz9") + "\n" + ASSESS_SENTINEL + "\n", "not in outstanding set"),
     }
-    accepted = []
-    for name, text in variants.items():
-        _recs, err = assess.parse_assessor_output(text)
-        if err is None:
-            accepted.append(name)
-    expect(not accepted, f"malformed or hostile replies were accepted: {accepted}")
+    wrong = []
+    for name, (text, needle) in variants.items():
+        recs, err = assess.validate_assessor_output(text, ["b2"])
+        if recs is not None or err is None or needle not in err:
+            wrong.append(f"{name}: recs={recs!r} err={err!r}, expected an error containing {needle!r}")
+    expect(not wrong, "hostile or malformed replies were not refused with their own reason: " + "; ".join(wrong))
+
+
+def test_v2_label_length_boundary_and_labels_are_kept() -> None:
+    """A label of exactly LABEL_MAX characters is accepted and keeps its text and route; one more is refused."""
+    at_limit = "L" * assess.LABEL_MAX
+    text = _v1_record("b2", options=f"{at_limit} => pause ;; B => issue") + "\n" + ASSESS_SENTINEL + "\n"
+    recs, err = assess.validate_assessor_output(text, ["b2"])
+    expect(err is None and recs is not None, f"a label of {assess.LABEL_MAX} characters was refused: {err!r}")
+    assert recs is not None
+    options = recs[0].options
+    expect(options is not None and [label for label, _route in options] == [at_limit, "B"],
+           f"accepted option labels are {options!r}, expected [{at_limit!r}, 'B']")
+    over = _v1_record("b2", options=("L" * (assess.LABEL_MAX + 1)) + " => pause ;; B => issue") + "\n" + ASSESS_SENTINEL + "\n"
+    _recs, over_err = assess.validate_assessor_output(over, ["b2"])
+    expect(over_err is not None and "option label" in over_err, f"a label of {assess.LABEL_MAX + 1} characters returned {over_err!r}")
 
 
 SECTIONS = [
@@ -157,6 +174,8 @@ SECTIONS = [
     ("[Assess]", [
         ("5: assessor records", test_assessor_records),
         ("6: parse_assessor_output fails closed on malformed output", test_parse_assessor_output_malformed),
+        ("7: hostile or malformed replies fail closed", test_v2_hostile_or_malformed_replies_fail_closed),
+        ("8: label length boundary and labels are kept", test_v2_label_length_boundary_and_labels_are_kept),
     ]),
 ]
 

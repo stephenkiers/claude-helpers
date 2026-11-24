@@ -598,6 +598,10 @@ def test_p12_stub_doc_bash_grant_is_exactly_the_two_entries(base: Path) -> None:
         'Bash(python3 "$HOME/.claude/scripts/fleet.py" wait:*)',
     ])
     expect(found == expected, f"allowed-tools Bash grant is {found}, expected {expected}")
+    allowed = [line for line in frontmatter.splitlines() if line.startswith("allowed-tools:")]
+    expect(len(allowed) == 1, f"expected one allowed-tools line, found {len(allowed)}")
+    expect(re.search(r"\bBash\b(?!\()", allowed[0]) is None,
+           f"allowed-tools grants a bare Bash token: {allowed[0]!r}")
 
 
 def test_p13_stub_doc_pipes_the_assess_reply_through_a_quoted_heredoc(base: Path) -> None:
@@ -665,6 +669,7 @@ def test_p20_flow_assessor_tools_are_read_only(base: Path) -> None:
     expect(tools.strip() != "", "flow-assessor frontmatter has no tools: key")
     expect(not re.search(r"\bWrite\b", tools), "flow-assessor tools grant Write")
     expect(not re.search(r"\bEdit\b", tools), "flow-assessor tools grant Edit")
+    expect(re.search(r"\bBash\b(?!\()", tools) is None, f"flow-assessor tools grant a bare Bash token: {tools.strip()!r}")
     for entry in re.findall(r"Bash\(([^)]*)\)", tools):
         expect(re.match(r"^(git (diff|log|show|rev-parse|status)|ls)\b", entry.strip()) is not None,
                f"flow-assessor Bash entry {entry!r} is outside the read-only set")
