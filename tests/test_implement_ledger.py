@@ -1476,6 +1476,504 @@ def test_no_round1_units_rejected_without_zero_units_basis():
         sb.close()
 
 
+# --- implement-ledger.py append (#548, spec-blind Round 2) -------------------------------------
+
+APPEND_RE = re.compile(r'implement-ledger\.py"?\s+append\b')
+COMMAND_DOC = REPO_ROOT / "commands" / "implement-with-haiku.md"
+PROMPT_DOC = REPO_ROOT / "prompts" / "test-cleanup-reference.md"
+GUARD_PATH = REPO_ROOT / "scripts" / "flow-bash-guard.py"
+
+
+def _al_ledger_bytes(run):
+    return run.ledger.read_bytes() if run.ledger.exists() else None
+
+
+def _al_ev_forms(ev):
+    """Accept the evidence path as given or with symlinks resolved (macOS /var -> /private/var)."""
+    return {ev, str(Path(ev).resolve())}
+
+
+def _al_append(run, args, cwd=None):
+    return run.sb.run(["append", "--run-key", run.rk, *args], cwd=cwd)
+
+
+def _al_fenced_blocks(text):
+    """(info string, lines) for each fenced code block in a markdown text."""
+    blocks, cur, info = [], None, ""
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("```"):
+            if cur is None:
+                cur, info = [], s[3:].strip().lower()
+            else:
+                blocks.append((info, cur))
+                cur = None
+        elif cur is not None:
+            cur.append(line)
+    return blocks
+
+
+def _al_bash_blocks(text):
+    return [lines for info, lines in _al_fenced_blocks(text)
+            if info.split()[:1] and info.split()[0] in ("bash", "sh", "shell", "zsh")]
+
+
+def test_append_done_happy_path():
+    """append --done writes '<K> DONE <step> <evidence>' as the last ledger line, prints APPENDED, exits 0."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-done")
+        run.init()
+        ev = run.evidence("a")
+        r = _al_append(run, ["--done", "round1", "--evidence", ev])
+        last = run.ledger.read_text().splitlines()[-1] if run.ledger.exists() else ""
+        last_ok = any(last == f"{run.rk} DONE round1 {form}" for form in _al_ev_forms(ev))
+        out_ok = any(r.stdout.strip() == f"APPENDED: {run.rk} DONE round1 {form}" for form in _al_ev_forms(ev))
+        ends_nl = run.ledger.read_bytes().endswith(b"\n")
+        ok = r.returncode == 0 and last_ok and out_ok and ends_nl
+        return ok, f"{_brief(r)}; last_line={last!r}"
+    finally:
+        sb.close()
+
+
+def test_append_done_happy_path_subprocess():
+    """The same DONE append run as a real subprocess (end-to-end CLI path) exits 0 and writes the row."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-e2e")
+        run.init_e2e()
+        ev = run.evidence("a")
+        r = sb.run_e2e(["append", "--run-key", run.rk, "--done", "round1", "--evidence", ev])
+        last = run.ledger.read_text().splitlines()[-1] if run.ledger.exists() else ""
+        ok = r.returncode == 0 and any(last == f"{run.rk} DONE round1 {form}" for form in _al_ev_forms(ev))
+        return ok, f"{_brief(r)}; last_line={last!r}"
+    finally:
+        sb.close()
+
+
+def test_append_skip_happy_path():
+    """append --skip with a valid reason writes '<K> SKIPPED <step> <reason>' and exits 0."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-skip")
+        run.init()
+        r = _al_append(run, ["--skip", "partc-mutation-b", "--reason", "no-comparison-operator"])
+        last = run.ledger.read_text().splitlines()[-1] if run.ledger.exists() else ""
+        ok = r.returncode == 0 and last == f"{run.rk} SKIPPED partc-mutation-b no-comparison-operator"
+        return ok, f"{_brief(r)}; last_line={last!r}"
+    finally:
+        sb.close()
+
+
+def test_append_several_rows_per_step_in_order():
+    """Two DONE round1 rows with different evidence, and DONE then SKIPPED for one step, all exit 0 in order."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-multi")
+        run.init()
+        e1 = run.evidence("first", "one\n")
+        e2 = run.evidence("second", "two\n")
+        r1 = _al_append(run, ["--done", "round1", "--evidence", e1])
+        r2 = _al_append(run, ["--done", "round1", "--evidence", e2])
+        r3 = _al_append(run, ["--done", "partc-mutation-a", "--evidence", e1])
+        r4 = _al_append(run, ["--skip", "partc-mutation-a", "--reason", "dirty-file"])
+        codes_ok = all(r.returncode == 0 for r in (r1, r2, r3, r4))
+        lines = run.ledger.read_text().splitlines()
+        tail = lines[-4:]
+        order_ok = (len(tail) == 4
+                    and tail[0] in {f"{run.rk} DONE round1 {f}" for f in _al_ev_forms(e1)}
+                    and tail[1] in {f"{run.rk} DONE round1 {f}" for f in _al_ev_forms(e2)}
+                    and tail[2] in {f"{run.rk} DONE partc-mutation-a {f}" for f in _al_ev_forms(e1)}
+                    and tail[3] == f"{run.rk} SKIPPED partc-mutation-a dirty-file")
+        ok = codes_ok and order_ok
+        return ok, f"codes={[r.returncode for r in (r1, r2, r3, r4)]}; tail={tail!r}"
+    finally:
+        sb.close()
+
+
+def test_append_end_to_end_check_complete():
+    """Mechanical run written only through append: check exits 0 with CHECK: COMPLETE and no PROBLEM line."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-check")
+        run.init()
+        rcs = []
+        for step in ("round1", "integration-gate", "round-sizing", "full-check", "usage-check-final"):
+            content = "class=mechanical\n" if step == "round-sizing" else f"{step}: ok\n"
+            rcs.append(_al_append(run, ["--done", step, "--evidence", run.evidence(step, content)]).returncode)
+        c = run.check()
+        out = _out(c)
+        ok = all(rc == 0 for rc in rcs) and c.returncode == 0 and "CHECK: COMPLETE" in out and "PROBLEM:" not in out
+        return ok, f"append rcs={rcs}; check {_brief(c)}"
+    finally:
+        sb.close()
+
+
+def test_append_unknown_step_rejected():
+    """--done with an unknown step id exits 1, stderr says 'append: rejected:', ledger unchanged."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-unk-step")
+        run.init()
+        before = _al_ledger_bytes(run)
+        r = _al_append(run, ["--done", "not-a-step", "--evidence", run.evidence("a")])
+        ok = r.returncode == 1 and "append: rejected:" in _out(r) and _al_ledger_bytes(run) == before
+        return ok, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_append_unknown_skip_reason_rejected():
+    """--skip with a reason outside the vocabulary exits 1 and leaves the ledger byte-identical."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-unk-reason")
+        run.init()
+        before = _al_ledger_bytes(run)
+        r = _al_append(run, ["--skip", "round4", "--reason", "because"])
+        ok = r.returncode == 1 and _al_ledger_bytes(run) == before
+        return ok, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_append_evidence_rules_rejected():
+    """Relative path, absolute path outside scratch, missing file, empty file, whitespace-only file: each exit 1, ledger unchanged."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-evidence")
+        run.init()
+        outside = sb.root / "outside.txt"
+        outside.write_text("outside\n")
+        empty = run.scratch / "empty.txt"
+        empty.write_text("")
+        blank = run.scratch / "blank.txt"
+        blank.write_text("  \n\t\n")
+        cases = {
+            "relative": "a.txt",
+            "outside-scratch": str(outside),
+            "missing": str(run.scratch / "missing.txt"),
+            "empty": str(empty),
+            "whitespace-only": str(blank),
+        }
+        problems = []
+        for label, ev in cases.items():
+            before = _al_ledger_bytes(run)
+            r = _al_append(run, ["--done", "round1", "--evidence", ev])
+            if r.returncode != 1 or _al_ledger_bytes(run) != before:
+                problems.append(f"{label}: {_brief(r)}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_append_carried_evidence_rejected():
+    """carried:<sha>..<sha> evidence is rejected for append (W1): exit 1, stderr names carried, ledger unchanged."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-carried")
+        run.init()
+        before = _al_ledger_bytes(run)
+        r = _al_append(run, ["--done", "round1", "--evidence", "carried:abcdef1..1234567"])
+        ok = r.returncode == 1 and "carried" in _out(r) and _al_ledger_bytes(run) == before
+        return ok, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_append_injection_and_control_chars_rejected():
+    """Embedded newline, CR, tab in --evidence; control char in --done or --reason; trailing space in --reason: all exit 1, ledger unchanged."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-inject")
+        run.init()
+        ev = run.evidence("a")
+        cases = [
+            ("evidence newline injection", ["--done", "round1", "--evidence", f"{ev}\n{run.rk} FINISHED"]),
+            ("evidence CR", ["--done", "round1", "--evidence", ev + "\r"]),
+            ("evidence tab", ["--done", "round1", "--evidence", ev + "\t"]),
+            ("done control char", ["--done", "round1\x01", "--evidence", ev]),
+            ("reason newline", ["--skip", "partc-mutation-b", "--reason", "no-comparison-operator\n"]),
+            ("reason tab", ["--skip", "partc-mutation-b", "--reason", "no-comparison-operator\t"]),
+            ("reason trailing space", ["--skip", "partc-mutation-b", "--reason", "no-comparison-operator "]),
+        ]
+        problems = []
+        for label, args in cases:
+            before = _al_ledger_bytes(run)
+            r = _al_append(run, args)
+            if r.returncode != 1 or _al_ledger_bytes(run) != before:
+                problems.append(f"{label}: {_brief(r)}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_append_argument_shape_exit_2():
+    """Bad argument shapes and an invalid run key exit 2 and leave the ledger unchanged."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-shape")
+        run.init()
+        ev = run.evidence("a")
+        K = run.rk
+        cases = [
+            ("no --run-key", ["--done", "round1", "--evidence", ev]),
+            ("neither --done nor --skip", ["--run-key", K]),
+            ("both --done and --skip", ["--run-key", K, "--done", "round1", "--skip", "partc-mutation-a",
+                                        "--reason", "dirty-file", "--evidence", ev]),
+            ("--done without --evidence", ["--run-key", K, "--done", "round1"]),
+            ("--done with --reason", ["--run-key", K, "--done", "round1", "--evidence", ev, "--reason", "dirty-file"]),
+            ("--skip without --reason", ["--run-key", K, "--skip", "dirty-file"]),
+            ("--skip with --evidence", ["--run-key", K, "--skip", "dirty-file", "--reason", "dirty-file",
+                                        "--evidence", ev]),
+            ("invalid run key ../x", ["--run-key", "../x", "--done", "round1", "--evidence", ev]),
+        ]
+        problems = []
+        before = _al_ledger_bytes(run)
+        for label, args in cases:
+            r = sb.run(["append", *args])
+            if r.returncode != 2:
+                problems.append(f"{label}: rc={r.returncode}")
+        if _al_ledger_bytes(run) != before:
+            problems.append("ledger changed")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_append_no_pointer_exit_3():
+    """append for a run key that was never initialised exits 3 with the 'no pointer or tombstone' message."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "never-initialised")
+        ev = run.evidence("a")
+        r = sb.run(["append", "--run-key", "never-initialised", "--done", "round1", "--evidence", ev])
+        ok = r.returncode == 3 and "no pointer or tombstone found for run key never-initialised" in _out(r)
+        return ok, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_append_repo_guard_exit_4():
+    """append run from a different git repo exits 4, names both the recorded and the current repo, ledger unchanged."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-repo")
+        run.init()
+        before = _al_ledger_bytes(run)
+        other = sb.other_repo()
+        r = _al_append(run, ["--done", "round1", "--evidence", run.evidence("a")], cwd=other)
+        out = _out(r)
+        ok = (r.returncode == 4 and _mentions(out, sb.repo) and _mentions(out, other)
+              and _al_ledger_bytes(run) == before)
+        return ok, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_append_superseded_exit_5():
+    """After a second init in the same session supersedes the first, append to the first exits 5 and leaves it unchanged."""
+    sb = Sandbox()
+    try:
+        run1 = Run(sb, "run-app-sup-one", "s1-scratch")
+        run1.init(session="s1", sha=SHA_A)
+        run2 = Run(sb, "run-app-sup-two", "s2-scratch")
+        run2.init(session="s1", sha=SHA_B)
+        before = _al_ledger_bytes(run1)
+        r = _al_append(run1, ["--done", "round1", "--evidence", run1.evidence("a")])
+        ok = r.returncode == 5 and "superseded" in _out(r) and _al_ledger_bytes(run1) == before
+        return ok, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_append_finished_tombstone_exit_6():
+    """After a successful finish, append exits 6 with 'already finished' and leaves the ledger unchanged."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-tomb")
+        run.init()
+        run.append(mechanical_rows(run))
+        f = run.finish()
+        before = _al_ledger_bytes(run)
+        r = _al_append(run, ["--done", "round1", "--evidence", run.evidence("late")])
+        ok = (f.returncode == 0 and r.returncode == 6 and "already finished" in _out(r)
+              and _al_ledger_bytes(run) == before)
+        return ok, f"finish {_brief(f)}; append {_brief(r)}"
+    finally:
+        sb.close()
+
+
+def test_append_finished_row_without_tombstone_exit_6():
+    """A '<K> FINISHED' row in the ledger with the pointer still present: append exits 6, ledger unchanged."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-fin-row")
+        run.init()
+        run.append([f"{run.rk} FINISHED"])
+        before = _al_ledger_bytes(run)
+        r = _al_append(run, ["--done", "round1", "--evidence", run.evidence("a")])
+        ok = r.returncode == 6 and _al_ledger_bytes(run) == before
+        return ok, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_append_missing_ledger_exit_2():
+    """With the ledger deleted, append exits 2 and does not create the ledger."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-noledger")
+        run.init()
+        run.ledger.unlink()
+        r = _al_append(run, ["--done", "round1", "--evidence", run.evidence("a")])
+        ok = r.returncode == 2 and not run.ledger.exists()
+        return ok, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_append_symlinked_ledger_exit_2():
+    """A ledger that is a symlink: append exits 2 and the symlink target is not written."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-symlink")
+        run.init()
+        target = sb.root / "symlink-target.md"
+        target.write_text("target\n")
+        run.ledger.unlink()
+        os.symlink(target, run.ledger)
+        before = target.read_bytes()
+        r = _al_append(run, ["--done", "round1", "--evidence", run.evidence("a")])
+        ok = r.returncode == 2 and target.read_bytes() == before
+        return ok, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_append_never_writes_finished_or_hash_lines():
+    """Lines appended by successful calls are never '#' lines and never '<K> FINISHED'."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-noforbidden")
+        run.init()
+        before_lines = run.ledger.read_text().splitlines()
+        e1 = run.evidence("a")
+        rcs = [
+            _al_append(run, ["--done", "round1", "--evidence", e1]).returncode,
+            _al_append(run, ["--skip", "partc-mutation-b", "--reason", "no-comparison-operator"]).returncode,
+        ]
+        new = run.ledger.read_text().splitlines()[len(before_lines):]
+        bad = [ln for ln in new if ln.startswith("#") or ln == f"{run.rk} FINISHED"]
+        ok = all(rc == 0 for rc in rcs) and len(new) == 2 and not bad
+        return ok, f"rcs={rcs}; new={new!r}"
+    finally:
+        sb.close()
+
+
+def test_append_help_and_docstring():
+    """--help lists append; the module docstring has append in Usage and an append entry in Exit codes naming 0-6."""
+    sb = Sandbox()
+    try:
+        r = sb.run(["--help"])
+        help_ok = r.returncode == 0 and "append" in _out(r)
+        doc = il.__doc__ or ""
+        usage_idx = doc.find("Usage")
+        usage_ok = usage_idx >= 0 and "append" in doc[usage_idx:]
+        exit_idx = doc.find("Exit codes")
+        exit_ok = False
+        missing = []
+        if exit_idx >= 0:
+            sub = doc[exit_idx:]
+            a_idx = sub.find("append")
+            if a_idx >= 0:
+                block = sub[a_idx:a_idx + 600]
+                missing = [d for d in "0123456" if not re.search(rf"\b{d}\b", block)]
+                exit_ok = not missing
+        ok = help_ok and usage_ok and exit_ok
+        return ok, f"help_ok={help_ok} usage_ok={usage_ok} exit_ok={exit_ok} missing_codes={missing}"
+    finally:
+        sb.close()
+
+
+def test_append_doc_no_printf_redirect():
+    """No '>> \"<LEDGER_PATH>\"' redirect in the two target docs, and none under commands/ or prompts/."""
+    problems = []
+    pat = re.compile(r'>>\s*"?<LEDGER_PATH>')
+    for path in (COMMAND_DOC, PROMPT_DOC):
+        text = path.read_text()
+        if '>> "<LEDGER_PATH>"' in text:
+            problems.append(f"{path.name} contains the literal redirect")
+        if any(pat.search(ln) for ln in text.splitlines()):
+            problems.append(f"{path.name} has a redirect line")
+    for path in sorted(list((REPO_ROOT / "commands").glob("*.md")) + list((REPO_ROOT / "prompts").glob("*.md"))):
+        if '>> "<LEDGER_PATH>"' in path.read_text():
+            problems.append(f"{path.relative_to(REPO_ROOT)} contains the literal redirect")
+    return not problems, "; ".join(problems) or "ok"
+
+
+def test_append_doc_call_site_counts():
+    """Command doc has >=26 append lines inside bash fences, each with --run-key \"<RUN_KEY>\"; prompt doc has none."""
+    cmd_lines = [ln for block in _al_bash_blocks(COMMAND_DOC.read_text()) for ln in block if APPEND_RE.search(ln)]
+    prompt_lines = [ln for block in _al_bash_blocks(PROMPT_DOC.read_text()) for ln in block if APPEND_RE.search(ln)]
+    missing_key = [ln for ln in cmd_lines if '--run-key "<RUN_KEY>"' not in ln]
+    ok = len(cmd_lines) >= 26 and not prompt_lines and not missing_key
+    return ok, f"command append lines={len(cmd_lines)} prompt={len(prompt_lines)} without --run-key={len(missing_key)}"
+
+
+def test_append_doc_separation():
+    """No bash fence holds both an append line and a scratch redirect; append lines carry no &&, ;, ||, 2>/dev/null."""
+    problems = []
+    redirect = re.compile(r'>>?\s*"?<SCRATCH_PATH>/')
+    for path in (COMMAND_DOC, PROMPT_DOC):
+        for block in _al_bash_blocks(path.read_text()):
+            app = [ln for ln in block if APPEND_RE.search(ln)]
+            if app and any(redirect.search(ln) for ln in block):
+                problems.append(f"{path.name}: append and scratch redirect share a fence")
+            for ln in app:
+                for bad in ("&&", ";", "||", "2>/dev/null"):
+                    if bad in ln:
+                        problems.append(f"{path.name}: append line has {bad!r}: {ln.strip()[:120]}")
+    return not problems, "; ".join(problems[:5]) or "ok"
+
+
+def test_append_doc_contract_prose():
+    """Command doc states 'A non-zero `append` exit is a stop' and names printf, >> and Write as forbidden fallbacks."""
+    text = COMMAND_DOC.read_text()
+    has_stop = "A non-zero `append` exit is a stop" in text
+    names = all(tok in text for tok in ("printf", ">>", "Write"))
+    forbidden = re.search(r"(forbidden|fallback)", text, re.IGNORECASE) is not None
+    ok = has_stop and names and forbidden
+    return ok, f"stop_sentence={has_stop} names={names} forbidden_word={forbidden}"
+
+
+def test_append_doc_grants_unchanged():
+    """allowed-tools frontmatter keeps the scoped implement-ledger and printf grants, and no broad python3 grant."""
+    lines = COMMAND_DOC.read_text().splitlines()
+    front = []
+    if lines and lines[0].strip() == "---":
+        for ln in lines[1:]:
+            if ln.strip() == "---":
+                break
+            front.append(ln)
+    front_text = "\n".join(front)
+    scoped = 'Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*)' in front_text
+    printf_grant = "Bash(printf:*)" in front_text
+    broad = "Bash(python3:*)" in front_text or "Bash(python3 *)" in front_text
+    ok = scoped and printf_grant and not broad
+    return ok, f"scoped={scoped} printf={printf_grant} broad_python3={broad}"
+
+
+def test_append_guard_passes_append():
+    """flow-bash-guard does not deny the append form for flow-implement."""
+    spec = importlib.util.spec_from_file_location("_al_flow_bash_guard", GUARD_PATH)
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    cmd = 'python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "K" --done round1 --evidence "/tmp/s/a.txt"'
+    blocked, reason, _rule = guard.check_command_for_agent(cmd, "flow-implement")
+    return not blocked, f"blocked={blocked} reason={str(reason)[:200]!r}"
+
+
 TESTS = [
     ("STEP_IDS and SKIP_REASONS match the plan vocabulary", test_vocabulary_pinned),
     ("init writes ledger and pointer", test_init_writes_ledger_and_pointer),
@@ -1534,6 +2032,32 @@ TESTS = [
     ("check, render, finish without a key still do not resolve another session's tombstone", test_resolve_for_check_render_finish_unchanged_by_bound),
     ("zero-unit: no-round1-units permitted for round1 in class full only", test_zero_unit_skip_reason_matrix),
     ("zero-unit: SKIPPED round1 no-round1-units rejected without a zero-units basis", test_no_round1_units_rejected_without_zero_units_basis),
+    ("append: DONE happy path (CLI, stdout, last ledger line)", test_append_done_happy_path),
+    ("append: DONE happy path as a real subprocess", test_append_done_happy_path_subprocess),
+    ("append: SKIPPED happy path", test_append_skip_happy_path),
+    ("append: several rows per step, in order", test_append_several_rows_per_step_in_order),
+    ("append: mechanical run written by append passes check", test_append_end_to_end_check_complete),
+    ("append: unknown step rejected (exit 1)", test_append_unknown_step_rejected),
+    ("append: unknown skip reason rejected (exit 1)", test_append_unknown_skip_reason_rejected),
+    ("append: evidence rules (relative, outside, missing, empty, blank) exit 1", test_append_evidence_rules_rejected),
+    ("append: carried evidence rejected (W1)", test_append_carried_evidence_rejected),
+    ("append: injection and control characters rejected (exit 1)", test_append_injection_and_control_chars_rejected),
+    ("append: argument shape and run-key validation exit 2", test_append_argument_shape_exit_2),
+    ("append: no pointer exits 3", test_append_no_pointer_exit_3),
+    ("append: repo guard exits 4", test_append_repo_guard_exit_4),
+    ("append: superseded pointer exits 5", test_append_superseded_exit_5),
+    ("append: finished tombstone exits 6", test_append_finished_tombstone_exit_6),
+    ("append: FINISHED row without tombstone exits 6", test_append_finished_row_without_tombstone_exit_6),
+    ("append: missing ledger exits 2 and is not created", test_append_missing_ledger_exit_2),
+    ("append: symlinked ledger exits 2, target untouched", test_append_symlinked_ledger_exit_2),
+    ("append: never writes '#' or FINISHED lines", test_append_never_writes_finished_or_hash_lines),
+    ("append: --help and module docstring document append and exit codes 0-6", test_append_help_and_docstring),
+    ("append doc: no printf/>> ledger redirect in commands/ or prompts/", test_append_doc_no_printf_redirect),
+    ("append doc: call-site counts and --run-key form", test_append_doc_call_site_counts),
+    ("append doc: append never shares a fence with scratch redirects or chaining", test_append_doc_separation),
+    ("append doc: non-zero exit is a stop; printf, >> and Write named as forbidden", test_append_doc_contract_prose),
+    ("append doc: allowed-tools grants scoped and no broad python3 grant", test_append_doc_grants_unchanged),
+    ("append guard: flow-implement does not deny the append form", test_append_guard_passes_append),
 ]
 
 
