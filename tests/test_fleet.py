@@ -60,6 +60,111 @@ def write_state(root, issue, **kw):
     return d
 
 
+# Variant stand-in for the #526 contract test: the resumed ticket parks a `Test changes` relay question.
+BLOB_ID = "0123456789abcdef0123456789abcdef01234567"
+PATCH_TEXT = "-    assert old_value == 1\n+    assert old_value == 2"
+FAKE_CLAUDE_TEST_CHANGES = r'''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+prompt = sys.argv[-1]
+flows = Path(os.environ["HOME"]) / ".claude" / "flows" / "o_r"
+log = Path(os.environ["FAKE_LOG"])
+with open(log, "a") as f:
+    f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd()}) + "\n")
+issue = int(os.environ["FAKE_ISSUE"])
+fd = flows / f"{issue}-x-abc"
+def state(**kw):
+    fd.mkdir(parents=True, exist_ok=True)
+    st = {"issue": issue, "updated": "2026-10-16T00:00:00Z", "live": None, "attempts": {}}
+    st.update(kw)
+    (fd / "state.json").write_text(json.dumps(st))
+if prompt.startswith("/expert-flow --resume"):
+    state(step="implement", status="awaiting", worktree=os.getcwd(), attempts={"implement": 1})
+    (fd / "questions").mkdir(exist_ok=True)
+    q = {"kind": "form", "summary": "Test changes pending", "context_path": None, "questions": [{
+        "id": "t1", "question": "Apply this existing-test edit?", "header": "Test changes", "multiSelect": False,
+        "options": [{"label": "Approve", "description": "Apply the edit."},
+                    {"label": "Decline", "description": "Leave the test as is."}],
+        "brief": os.environ["FAKE_PATCH"] + "\nblob " + os.environ["FAKE_BLOB"]}]}
+    (fd / "questions" / "implement-01.json").write_text(json.dumps(q))
+    (fd / "fleet-ask.json").write_text(json.dumps({"status": "open", "kind": "relay", "step": "implement",
+        "question_file": "questions/implement-01.json", "report_file": None}))
+elif prompt.startswith("/expert-flow"):
+    wt = Path(os.environ["FAKE_WT"]); wt.mkdir(exist_ok=True)
+    state(step="plan", status="paused", worktree=str(wt))
+else:
+    (fd / "fleet-ask.json").write_text(json.dumps({"status": "answered"}))
+    state(step="merge", status="done", pr="https://x/pr/1")
+print(json.dumps([{"type": "system"}, {"type": "result", "session_id": "sess-9", "result": "ok", "is_error": False}]))
+'''
+
+
+def check_test_changes_ask_contract(h):
+    """Ask-file contract and fleet plumbing for a `Test changes` question (#526, Q2 merge gate).
+
+    This does NOT prove that the real implement step emits the ask under --fleet, and it does NOT show
+    that a test-only plan completes: fleet.py never reads the receipt's split basis, so those claims are
+    evidenced only by the recorded fleet run (plan Step 11) or its OUTSTANDING fallback.
+    """
+    print()
+    print("### Fleet: Test changes ask-file contract and plumbing")
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        home.mkdir()
+        bin_dir = Path(tmp) / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "claude"
+        fake.write_text(FAKE_CLAUDE_TEST_CHANGES)
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        main_wt = Path(tmp) / "main"
+        main_wt.mkdir()
+        wt = Path(tmp) / "wt-9"
+        log = Path(tmp) / "log.jsonl"
+        tickets = Path(tmp) / "t.json"
+        tickets.write_text(json.dumps([{"issue": 9, "title": "nine"}]))
+        env = {**os.environ, "HOME": str(home), "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+               "FAKE_LOG": str(log), "FAKE_ISSUE": "9", "FAKE_WT": str(wt),
+               "FAKE_PATCH": PATCH_TEXT, "FAKE_BLOB": BLOB_ID}
+
+        def cli(*args):
+            return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=env)
+
+        r = cli("init", "--repo", REPO, "--main-worktree", str(main_wt), "--epic", "https://g/o/r/issues/101",
+                "--tickets", str(tickets))
+        fleet_dir = Path(r.stdout.strip())
+        r = cli("run", str(fleet_dir), "9")
+        h.test_result("Test changes ask parks the ticket", "parked" in r.stdout, f"stdout={r.stdout!r} err={r.stderr!r}")
+
+        fdata = json.loads((fleet_dir / "fleet.json").read_text())
+        items = fl.inbox(fdata, home / ".claude" / "flows")
+        h.test_result("inbox carries the parked Test changes question",
+                      len(items) == 1 and items[0]["issue"] == 9
+                      and items[0]["question_data"]["questions"][0]["header"] == "Test changes",
+                      f"items={items!r}")
+        if len(items) != 1:
+            return
+        qfile = Path(tmp) / "q.json"
+        qfile.write_text(json.dumps(items[0]["question_data"]))
+        out = Path(tmp) / "rendered.json"
+        proc = subprocess.run([sys.executable, str(REPO_ROOT / "scripts" / "flow-render-questions.py"),
+                               str(qfile), "--out", str(out)], capture_output=True, text=True)
+        rendered = out.read_text() if out.exists() else ""
+        h.test_result("rendered question has the header, the patch text and the 40-hex blob id",
+                      proc.returncode == 0 and "Test changes" in rendered
+                      and "assert old_value == 2" in rendered and BLOB_ID in rendered,
+                      f"rc={proc.returncode} err={proc.stderr!r}")
+
+        msg = Path(tmp) / "m.txt"
+        msg.write_text("Fleet answer for Test changes:\nApprove")
+        r = cli("run", str(fleet_dir), "9", "--message-file", str(msg))
+        last = json.loads(log.read_text().splitlines()[-1])
+        h.test_result("answer resumes the same session id and the ticket reaches done",
+                      last["argv"][:3] == ["-p", "--resume", "sess-9"]
+                      and last["argv"][-1] == "Fleet answer for Test changes:\nApprove"
+                      and r.stdout.strip().startswith("FLEET #9 done"),
+                      f"argv={last['argv']!r} stdout={r.stdout!r}")
+
+
 def main():
     h = Harness("fleet")
 
@@ -361,6 +466,8 @@ def main():
         h.test_result("_run_cli returns None on timeout", out is None)
         h.test_result("_run_cli timeout is bounded under 4 seconds", elapsed < 4, f"elapsed={elapsed:.2f}s")
         h.test_result("_run_cli reports the child pid to on_spawn", len(spawned) == 1 and isinstance(spawned[0], int))
+
+    check_test_changes_ask_contract(h)
 
     h.summarize_and_exit()
 

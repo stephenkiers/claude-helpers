@@ -105,6 +105,37 @@ def run_implement(fx, receipt_path):
     return result.returncode, result.stdout + result.stderr, result.stderr
 
 
+def check_zero_unit_all_declined(h):
+    """#526 / #511 regression: a zero-units run whose Test changes were all declined stays an OK receipt.
+
+    The declined item is reported as OUTSTANDING (test-edit-declined: <path>) and the verifier raises
+    no split-basis or UNITS error for the zero-units basis. Plan cross-checks (resolved plan) are not
+    asserted here: how the plan is resolved is not visible from the verifier's CLI.
+    """
+    print("[Zero-unit run, every Test changes item declined (#526)]")
+    with tempfile.TemporaryDirectory() as td:
+        fx = build_fixture(td)
+        body = (
+            "ROUND 1\nCHECK: true\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\n"
+            f"CHECK_SHA: {fx['head']}\nSPLIT_BASIS: zero-units\nMIN_UNITS: 1\nPRIOR_SPLIT_BASIS: none\n"
+            "UNITS: 0\nTEST_EDIT: none\n"
+            "OUTSTANDING: D5 (test-edit-declined: tests/test_x.py) [self-report]\n"
+            "ATTEMPT: 1\nDecision: OK\n<!-- step-end -->\n"
+        ).encode("utf-8")
+        rc, out, _err = run_implement(fx, write_receipt_bytes(fx, body))
+        h.test_result(
+            "zero-units receipt with a declined item raises no split-basis or UNITS error",
+            "Traceback" not in out and "cannot be less than" not in out
+            and "requires UNITS: 0" not in out and "requires SPLIT_BASIS: zero-units" not in out,
+            f"rc={rc} out={out[-400:]}",
+        )
+        h.test_result(
+            "zero-units receipt with a declined item does not reject the test-edit-declined OUTSTANDING line",
+            "test-edit-declined" not in out or "OUTSTANDING" not in out.split("test-edit-declined")[0][-80:],
+            f"rc={rc} out={out[-400:]}",
+        )
+
+
 def main():
     h = Harness("FLOW-VERIFY-RECEIPT IMPLEMENT-STEP TEST-CHANGE TESTS (#511)")
 
@@ -178,6 +209,8 @@ def main():
             "Traceback" not in out,
             f"rc={rc} out={out[-400:]}",
         )
+
+    check_zero_unit_all_declined(h)
 
     h.summarize_and_exit()
 

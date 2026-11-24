@@ -65,6 +65,56 @@ def units_file(scratch):
     return Path(scratch) / "units" / "implement" / "units.json"
 
 
+def check_zero_unit_basis(h, root, plan):
+    """Plan Step 2 (#526): the zero-units basis is the only way to a zero-unit record."""
+    print("[zero-units] explicit basis for an empty units list")
+    for label, mu in (("1", 1), ("unknown", "unknown")):
+        scr = root / f"zu-{label}"
+        code, _, err = run(init_args(plan), scr, plan, payload(units=[], min_units=mu, basis="zero-units"))
+        rec = {}
+        if units_file(scr).exists():
+            rec = json.loads(units_file(scr).read_text())
+        h.test_result(f"zero-units init with empty units and min_units {label} succeeds",
+                      code == 0 and units_file(scr).exists(), f"rc={code} err={err!r}")
+        h.test_result(f"zero-units record (min_units {label}) has split_basis zero-units and no units",
+                      rec.get("split_basis") == "zero-units" and rec.get("units") == [], f"rec={rec!r}")
+
+    s_one = root / "zu-one"
+    code, _, err = run(init_args(plan), s_one, plan,
+                       payload(units=good_units()[:1], min_units=1, basis="zero-units"))
+    h.test_result("zero-units basis with one unit is rejected with the typed message",
+                  code != 0 and "unit-progress: init: zero-units basis requires 0 units, got 1" in err,
+                  f"rc={code} err={err!r}")
+    h.test_result("zero-units one-unit rejection writes no record", not units_file(s_one).exists())
+
+    for label, mu in (("1", 1), ("unknown", "unknown")):
+        scr = root / f"par-empty-{label}"
+        code, _, err = run(init_args(plan), scr, plan, payload(units=[], min_units=mu, basis="parallel"))
+        h.test_result(f"parallel basis with empty units (min_units {label}) is rejected with the typed message",
+                      code != 0 and "unit-progress: init: 0 units requires split_basis zero-units" in err,
+                      f"rc={code} err={err!r}")
+        h.test_result(f"empty-units rejection (min_units {label}) writes no record", not units_file(scr).exists())
+
+    s_par = root / "par-two"
+    code, _, err = run(init_args(plan), s_par, plan, payload(min_units=2, basis="parallel"))
+    h.test_result("parallel basis with two units and min_units 2 still succeeds",
+                  code == 0 and units_file(s_par).exists(), f"rc={code} err={err!r}")
+
+    s_zero_min = root / "zu-min0"
+    code, _, err = run(init_args(plan), s_zero_min, plan, payload(units=[], min_units=0, basis="zero-units"))
+    h.test_result("min_units 0 under zero-units still fails with sizing.min_units must be >= 1",
+                  code != 0 and "sizing.min_units must be >= 1" in err, f"rc={code} err={err!r}")
+
+    print("[zero-units] resume pending reports a zero-unit record")
+    s_pend = root / "zu-pending"
+    run(init_args(plan), s_pend, plan, payload(units=[], min_units=1, basis="zero-units"))
+    cmd = [sys.executable, str(PROGRESS), "--step", "implement", "--scratch", str(s_pend), "pending"]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    text = (res.stdout + res.stderr).lower()
+    h.test_result("pending on a zero-units record exits 0 and names it a zero-unit record",
+                  res.returncode == 0 and "zero" in text, f"rc={res.returncode} out={text!r}")
+
+
 def main():
     h = Harness("UNIT PROGRESS INIT VALIDATION")
     with tempfile.TemporaryDirectory() as tmp:
@@ -134,6 +184,8 @@ def main():
         h.test_result("invalid --supersede init is rejected", code != 0, f"rc={code} err={err!r}")
         h.test_result("rejected --supersede leaves the existing units.json byte-identical",
                       units_file(s_sup).exists() and units_file(s_sup).read_bytes() == before)
+
+        check_zero_unit_basis(h, root, plan)
 
     h.summarize_and_exit()
 

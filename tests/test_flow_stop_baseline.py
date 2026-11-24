@@ -247,6 +247,18 @@ def test_classify_unknown_reason_is_ambiguous():
     return True, ""
 
 
+def test_classify_zero_unit_plan_incomplete():
+    """#526: a zero-unit-plan-incomplete stop has its own label and the legacy test-only-plan label survives."""
+    module = baseline_module()
+    got = module.classify_stop_reason("zero-unit-plan-incomplete: no Targets")
+    legacy = module.classify_stop_reason("test-only-plan: legacy")
+    if got[1] != "zero-unit plan incomplete":
+        return False, f"zero-unit-plan-incomplete classified as {got!r}"
+    if legacy[1] != "test-only plan":
+        return False, f"test-only-plan classified as {legacy!r}"
+    return True, ""
+
+
 # ── Section 2: counts through main(argv) ─────────────────────────────────────
 
 def test_mixed_fixture_counts_json():
@@ -667,6 +679,7 @@ if __name__ == "__main__":
     _run(h, "'ledger unavailable' is orchestrator", test_classify_ledger_unavailable_is_orchestrator)
     _run(h, "'plan/awaiting' is ambiguous", test_classify_plan_awaiting_is_ambiguous)
     _run(h, "an unknown stop_reason is ambiguous", test_classify_unknown_reason_is_ambiguous)
+    _run(h, "zero-unit-plan-incomplete has its own label; test-only-plan keeps legacy label", test_classify_zero_unit_plan_incomplete)
     print()
 
     print("[Section 2] counts through main(argv)")

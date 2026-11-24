@@ -1596,4 +1596,54 @@ with tempfile.TemporaryDirectory() as doc_scratch:
 
 print()
 
+# ---------------------------------------------------------------------------
+# #526 zero-unit run: doc contract (regression guards on the prose, not proof of model behaviour)
+# ---------------------------------------------------------------------------
+print("[#526] zero-unit run doc contract")
+
+_iwh_doc = read(COMMANDS / "implement-with-haiku.md")
+_contract_doc = read(PROMPTS / "flow-step-contract.md")
+
+t("#526 doc no longer says test-only-plan: no Round 1 work; tests are a Round 2 deliverable",
+  _iwh_doc != "" and "test-only-plan: no Round 1 work; tests are a Round 2 deliverable" not in _iwh_doc)
+t("#526 doc no longer says 'until #526'", _iwh_doc != "" and "until #526" not in _iwh_doc)
+t("#526 doc names every zero-unit token",
+  all(tok in _iwh_doc for tok in (
+      "zero-units", "no-round1-units", "zero-unit-plan-incomplete: no Round 2 tests",
+      "zero-unit-plan-incomplete: no Targets", "test-correct-zero-unit")),
+  str([tok for tok in ("zero-units", "no-round1-units", "zero-unit-plan-incomplete: no Round 2 tests",
+                       "zero-unit-plan-incomplete: no Targets", "test-correct-zero-unit") if tok not in _iwh_doc]))
+t("#526 doc has no 'No Round 1 work left' row in the step-differences table",
+  "| No Round 1 work left" not in _iwh_doc and "|No Round 1 work left" not in _iwh_doc)
+
+_item_b = [p for p in _iwh_doc.split("\n\n") if "existing-test-edit" in p and "TEST_EDIT_ITEMS" in p
+           and "Round 1 work" in p]
+t("#526 implement and fix each carry an item b paragraph (two paragraphs name existing-test-edit and TEST_EDIT_ITEMS)",
+  len(_item_b) >= 2, f"found {len(_item_b)}")
+t("#526 no item b paragraph says 'Do not stop with `test-only-plan`'",
+  all("Do not stop with `test-only-plan`" not in p for p in _item_b))
+
+
+def _sentences_with_stop(paragraph):
+    return {s.strip() for s in re.split(r"(?<=[.])\s+", paragraph) if "existing-test-edit" in s}
+
+
+if len(_item_b) >= 2:
+    _sets = [_sentences_with_stop(p) for p in _item_b]
+    t("#526 item b paragraphs share one identical existing-test-edit condition sentence",
+      bool(set.intersection(*_sets)), str(_sets)[:400])
+
+t("#526 IMPL_FILES definition names the Targets line for zero-unit runs",
+  any("IMPL_FILES" in p and "Targets" in p for p in _iwh_doc.split("\n\n")))
+t("#526 gate 6 text tolerates test-correct-zero-unit and still names test-correct-blocking",
+  any("test-correct-zero-unit" in p and "test-correct-blocking" in p for p in _iwh_doc.split("\n\n")))
+
+_nrr = _contract_doc.find("No reduced runs")
+_nrr_para = _contract_doc[_nrr:].split("\n\n")[0] if _nrr >= 0 else ""
+_nrr_section = _contract_doc[_nrr:_nrr + 3000] if _nrr >= 0 else ""
+t("#526 flow-step-contract 'No reduced runs' text names zero-units",
+  _nrr >= 0 and "zero-units" in _nrr_section.split("\n#", 1)[0], f"para={_nrr_para[:200]!r}")
+
+print()
+
 h.summarize_and_exit()
