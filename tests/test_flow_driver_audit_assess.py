@@ -75,13 +75,16 @@ def test_rejection_question_offers_retry_always() -> None:
 
 
 def test_assessor_records() -> None:
-    line = "i1 | status=open | kind=fix | scope=isolated | leave_as_is_safe=true | cause=c | options=a, b"
-    recs, err = assess.parse_assessor_output(line)
-    expect(err is None and len(recs) == 1 and recs[0].options == ["a", "b"] and recs[0].leave_as_is_safe, f"{recs} {err}")
-    _, err = assess.parse_assessor_output(line + "\n" + line)
+    # The v1 flow-assessor grammar, ending in the trailing assessment-end sentinel (#538).
+    line = _v1_record("i1", safe="yes", options="A => pause ;; B => issue")
+    recs, err = assess.parse_assessor_output(line + "\n" + ASSESS_SENTINEL)
+    expect(err is None and len(recs) == 1 and len(recs[0].options) == 2 and recs[0].leave_as_is_safe, f"{recs} {err}")
+    _, err = assess.parse_assessor_output(line + "\n" + line + "\n" + ASSESS_SENTINEL)
     expect(err is not None and "duplicate" in err, "duplicate ids fail closed")
-    _, err = assess.parse_assessor_output("garbage")
+    _, err = assess.parse_assessor_output("garbage\n" + ASSESS_SENTINEL)
     expect(err is not None, "a line with no fields fails")
+    _, err = assess.parse_assessor_output(line)
+    expect(err is not None and "sentinel" in err, "a reply without the trailing sentinel fails closed")
 
 
 def test_parse_assessor_output_malformed() -> None:

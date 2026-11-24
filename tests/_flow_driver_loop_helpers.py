@@ -141,6 +141,16 @@ def make_home(base: Path) -> Path:
     prompts = REPO_ROOT / "prompts"
     if prompts.is_dir():
         os.symlink(str(prompts), str(home / ".claude" / "prompts"))
+    # The per-spawn agent preflight reads settings.json for the three guard hooks registered with `--agent auto`.
+    guards = ("flow-bash-guard.py", "flow-skill-guard.py", "flow-agent-guard.py")
+    settings = {
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "*", "hooks": [{"type": "command", "command": f"{scripts / g} --agent auto"} for g in guards]}
+            ]
+        }
+    }
+    (home / ".claude" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
     (home / "wt").mkdir()
     git_env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
     for git_args in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "init"]):
