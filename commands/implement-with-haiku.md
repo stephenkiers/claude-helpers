@@ -1,6 +1,6 @@
 ---
 description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
-allowed-tools: Read, Write, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/test-change-check.py":*), Bash(python3 "$HOME/.claude/scripts/test-cleanup-check.py":*), Bash(python3 "$HOME/.claude/scripts/primary-checkout-drift.py":*), Bash(python3 "$HOME/.claude/scripts/unit-sizing.py":*), Bash(python3 "$HOME/.claude/scripts/plan-test-paths.py":*), Bash(python3 "$HOME/.claude/scripts/unit-progress.py":*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks:*), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*), Bash(cd:*), Bash(jq:*), Agent
+allowed-tools: Read, Write, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/test-change-check.py":*), Bash(python3 "$HOME/.claude/scripts/test-cleanup-check.py":*), Bash(python3 "$HOME/.claude/scripts/primary-checkout-drift.py":*), Bash(python3 "$HOME/.claude/scripts/unit-sizing.py":*), Bash(python3 "$HOME/.claude/scripts/plan-test-paths.py":*), Bash(python3 "$HOME/.claude/scripts/unit-progress.py":*), Bash(python3 "$HOME/.claude/scripts/wait-files.py":*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks:*), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*), Bash(cd:*), Bash(jq:*), Agent
 ---
 
 # Implement with Haiku
@@ -1020,7 +1020,7 @@ git diff --name-only "$START_SHA" >> "<SCRATCH_PATH>/planned-paths.txt"
 sort -u "<SCRATCH_PATH>/planned-paths.txt" -o "<SCRATCH_PATH>/planned-paths.txt"
 ```
 
-**Single-unit fallback:** If the persisted basis is `single`, skip Steps 4a–4d entirely. Run `plan-implementer` directly in the ticket worktree (background, `run_in_background: true`) with `model: <IMPLEMENTER_MODEL>` and the same self-contained prompt described in Step 4b.
+**Single-unit fallback:** If the persisted basis is `single`, skip Steps 4a–4d entirely. Run `plan-implementer` directly in the ticket worktree (background, `run_in_background: true`) with `model: <IMPLEMENTER_MODEL>` and the same self-contained prompt described in Step 4b (run `wait-files.py mark --phase "<STEP>:round1" --state-dir "$WAIT_STATE"` right after the launch, as Step 4b does, then wait). It is a file-wait site: collect it exactly as Step 4b's **Collecting units** says, with the one unit id.
 
 Each prompt must include:
 - Block B: `Working directory: <TICKET_WT_PATH>` (the literal absolute path recorded in Step 2)
@@ -1028,7 +1028,7 @@ Each prompt must include:
 - The unit's sub-task text, owned files, forbidden files, and report-file instruction (all per Step 4b's template)
 - When `IMPLEMENTER_MODEL` is set (escalated attempt), `--split-finer` is set, or `--partial-base` is given and HEAD or the working tree differs from `START_SHA`, add a line `Partial work since: <START_SHA>` right after the working-directory line. Any subsequent retry with the escalated model carries the same `model: <IMPLEMENTER_MODEL>` and `Partial work since:` flags.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
 
 The agent stages its changes (`git add -A`, no commit); you commit them yourself in the ticket worktree once `STAGED: yes` is confirmed via `git status --porcelain`. After commit, run `unit-progress.py mark --unit-id <id> --status committed --sha <new HEAD>` (pass `--flow-dir "$FLOW_DIR"` in flows; use `--scratch "<SCRATCH_PATH>"` otherwise). On failure, run `mark --status failed` with the same progress argument. Proceed to the Integration Gate when it completes.
 
@@ -1118,17 +1118,27 @@ Track the created worktrees: `[{id, branch: WT_BRANCH, path: WT_PATH, status: "r
 
 ## Step 4b: Launch round-1 implementers (parallel or sequential)
 
-**For `parallel` basis:** launch all units simultaneously (`run_in_background: true`), one per unit. Model is `<IMPLEMENTER_MODEL>`.
+**For `parallel` basis:** launch all units simultaneously (`run_in_background: true`), one per unit, in one message. Model is `<IMPLEMENTER_MODEL>`. Run the `mark` of **Collecting units** below immediately before this launch.
 
-**For `sequential` basis:** launch one unit at a time. Before launching each unit, create its worktree (branched from ticket HEAD after the previous unit committed), then launch it and wait for its completion before creating the next worktree.
+**For `sequential` basis:** launch one unit at a time (`run_in_background: true`). Before launching each unit, create its worktree (branched from ticket HEAD after the previous unit committed), run the `mark`, launch it, and collect it with its own `wait` before creating the next worktree.
 
 When `IMPLEMENTER_MODEL` is set (escalated attempt) or `--split-finer` is set or `--partial-base` is given and work differs from `START_SHA`, add a line `Partial work since: <START_SHA>` to each prompt right after the working-directory line.
 
 For sequential runs, each unit prompt must also note that earlier units' code is already present and committed, it may modify files owned by earlier units, and its `forbidden-files` list is only the files owned by later units.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
 
-**Waiting (sequential):** wait for each unit's completion before launching the next.
+**Collecting units (file wait).** Round-1 units, and the single-unit fallback, are a *file-wait* site: they run in the background and you block on their report files in the foreground, in the same turn (`~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier, rule 6). `<STATE_DIR>` is `FLOW_DIR` when set, otherwise `<SCRATCH_PATH>`. The phase is `<STEP>:round1` (`implement:round1` outside a flow); a sequential run uses `<STEP>:round1-<unit-id>`, one phase per unit.
+```bash
+if [[ -n "${FLOW_DIR}" ]]; then WAIT_STATE="${FLOW_DIR}"; else WAIT_STATE="<SCRATCH_PATH>"; fi
+python3 "$HOME/.claude/scripts/wait-files.py" mark --phase "<STEP>:round1" --state-dir "$WAIT_STATE"
+# ... launch the units (one message) ...
+python3 "$HOME/.claude/scripts/wait-files.py" wait --phase "<STEP>:round1" --state-dir "$WAIT_STATE" \
+  --deadline 5400 --sentinel '<!-- unit-end -->' \
+  "<unit-id>=<SCRATCH_PATH>/round1-<unit-id>-report.md" [one ID=PATH per unit]
+```
+Issue the Bash tool call that runs this `wait` with its `timeout` parameter set to `600000` (milliseconds). If that call is killed or exits 2, re-issue it once; if it still fails, write the FAILED receipt (`~/.claude/prompts/join-barrier-pattern.md` rule 6).
+Exit 3 (`pending:`) means re-issue the same `wait` at once; exit 0 closes the barrier; exit 4 is the deadline hard stop of rule 8 (stage-end `--failure-class timeout`, and in a flow the FAILED receipt `Reason: child-wait deadline: phase <P>, outstanding <ids>, attempt <n>`). Never relaunch an outstanding unit yourself. A unit that never writes its report file holds the barrier until the deadline, which is why every unit prompt below makes the report file, ending in the sentinel, the unit's last action whether it succeeded or not.
 
 Each prompt must be **fully self-contained** (the agent has no other context). Include:
 - The unit's sub-task text (verbatim, from Step 3)
@@ -1161,11 +1171,13 @@ Each prompt must be **fully self-contained** (the agent has no other context). I
   ends in `REPORT_FILE: <path> | none`, not a commit)
 - A literal line `Report file: <SCRATCH_PATH>/round1-<unit-id>-report.md` (absolute path, with
   `<unit-id>` substituted for this unit and `<SCRATCH_PATH>` the literal path recorded in Step 2).
-  Instruct the agent: "When you finish, use the `Write` tool to write your report — steps
-  completed, deviations, verification result — to that exact path, and set `REPORT_FILE:` in your
-  trailer to it. Keep what you return in your reply to the trailer plus at most two sentences."
+  Instruct the agent: "When you finish, whether you succeeded or not, and after staging, your last
+  action is to use the `Write` tool to write your report to that exact path: steps completed,
+  deviations, verification result, then your full report trailer, then a final line
+  `<!-- unit-end -->`. Set `REPORT_FILE:` in your trailer to that path. Keep what you return in your
+  reply to the trailer plus at most two sentences."
 
-Confirm to the user: "Launched N round-1 unit(s) in parallel. Waiting for completions." (parallel) or "Launched first round-1 unit. Waiting for completion." (sequential).
+Confirm to the user: "Launched N round-1 unit(s) in parallel. Waiting on their report files." (parallel) or "Launched first round-1 unit. Waiting on its report file." (sequential).
 
 **Note on usage-gate seams:** No usage-gate check is inserted inside this round-1 fan-out. Both
 round-1's parallel per-unit launches (here) and the post-gate four-way concurrent launch are atomic,
@@ -1176,8 +1188,10 @@ gates run only after all concurrent agents in a fan-out have completed.
 
 ## Step 4c: Process unit completions (serialized apply-and-commit)
 
-When each unit's `plan-implementer` agent returns, **immediately** process it before the next
-one arrives. The orchestrator serializes all applies/commits — never concurrently.
+Once the Round-1 wait closes (sequential: once that unit's wait closes), process each unit in
+turn. The orchestrator serializes all applies/commits — never concurrently. The unit's trailer is
+read from its report file (the lines above `<!-- unit-end -->`); a returned reply or task
+notification carrying the same trailer is equivalent, and a late one is a no-op.
 
 **First: validate the report.** All four handoff-critical trailer lines must be present:
 - `ELAPSED_SECONDS: <n | unknown>`
@@ -1421,9 +1435,9 @@ The script fixes the Reason values and class: drift writes `Reason: primary-chec
 **Do not advance to the Integration Gate until every unit is in a terminal state** (recorded `committed`,
 `failed`, or `skipped` in the unit record; a conflict-resolved unit is `committed` once its resolved commit lands). Track state per `id` — never count notifications (they interleave); a notification for a unit id moves that id to returned/terminal, and the ban is on a running tally.
 
-Unit outcomes map to join-barrier states: `committed` (including conflict-resolved) or `skipped` → `ok`; `failed` → `bad`. Units do not automatically retry; they use the existing Incomplete-report menu (Re-run / Inspect / Skip / Abort) if a unit's report or diff is incomplete, rather than the join-barrier's automatic retry mechanism.
+Unit outcomes map to join-barrier states: `committed` (including conflict-resolved) or `skipped` → `ok`; `failed` → `bad`. Units do not automatically retry; they use the existing Incomplete-report menu (Re-run / Inspect / Skip / Abort) if a unit's report or diff is incomplete, rather than the join-barrier's automatic retry mechanism. Accepted tradeoff: a dead child is invisible until the barrier deadline, and a self-heal follow-up is to be filed.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
 
 **Checkpoint — Round 1 join (opt-in via `--pause`).** If `PAUSE` is not `yes`, do **not** pause: close
 the stage with the two telemetry commands below, skip the rest of the checkpoint (command-id capture,
@@ -1618,7 +1632,7 @@ pnpm run typecheck
 
 Record: **build pass | fail** and any error output.
 
-Never wrap any gate or check command in `timeout` or `gtimeout`. Any command that can exceed the 600s foreground Bash ceiling runs with `run_in_background` and is waited on under the join-barrier rule (end your turn; never poll).
+Never wrap any gate or check command in `timeout` or `gtimeout`. Any command that can exceed the 600s foreground Bash ceiling runs with `run_in_background`, writes its exit status to a file atomically, and is collected with a foreground `wait-files.py --exists` wait under the join-barrier rule (as the Final check below does); never end your turn while it runs.
 
 ### Gate step 2: Anti-tamper scan
 
@@ -1695,8 +1709,7 @@ that were built but never connected to anything).
 
 Max **K = 3** iterations. On each iteration:
 
-1. Launch a fix `plan-implementer` agent (background) in an isolated worktree branched from current
-   HEAD (not START_SHA). Prompt it with:
+1. Launch a fix `plan-implementer` agent in the foreground (`run_in_background: false`): the call blocks on its foreground return, so no file wait or collector is needed. It runs in an isolated worktree branched from current HEAD (not START_SHA). Prompt it with:
    - A literal line **`Working directory: <FIX_WT_PATH>`** (this exact prefix —
      `plan-implementer`'s first step greps for it verbatim to `cd` there before doing anything else),
      where `<FIX_WT_PATH>` is the absolute path of this iteration's fix worktree
@@ -1790,7 +1803,19 @@ The gate and anti-tamper scan are never skippable — they already ran — and n
 Launch all of the following **in a single message** (background, parallel) once round sizing says
 to proceed.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+**Collecting the fan-out (file wait).** The fan-out is a *file-wait* site (`~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier, rule 6). Every agent in it writes a report file whose last line is `<!-- report-end -->`. Run `mark` immediately before the launch and block on the report files in the same turn; launch only the agents the round sizing kept, and wait only on their files:
+```bash
+if [[ -n "${FLOW_DIR}" ]]; then WAIT_STATE="${FLOW_DIR}"; else WAIT_STATE="<SCRATCH_PATH>"; fi
+python3 "$HOME/.claude/scripts/wait-files.py" mark --phase "<STEP>:fanout" --state-dir "$WAIT_STATE"
+# ... launch the fan-out (one message) ...
+python3 "$HOME/.claude/scripts/wait-files.py" wait --phase "<STEP>:fanout" --state-dir "$WAIT_STATE" \
+  --deadline 3600 --sentinel '<!-- report-end -->' \
+  "round2=<SCRATCH_PATH>/round2-author-report.md" "round3-pass1=<SCRATCH_PATH>/round3-pass1-report.md" \
+  "duplication-sweep=<SCRATCH_PATH>/duplication-sweep-report.md" "doc-drift-sweep=<SCRATCH_PATH>/doc-drift-sweep-report.md"
+```
+Exit 3 means re-issue the same `wait` at once; exit 0 closes the barrier; exit 4 is the deadline hard stop of rule 8. Never relaunch an outstanding agent yourself. Issue the Bash tool call that runs this `wait` with its `timeout` parameter set to `600000` (milliseconds). If that call is killed or exits 2, re-issue it once; if it still fails, write the FAILED receipt (`~/.claude/prompts/join-barrier-pattern.md` rule 6).
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
 
 Round 2 gets its own worktree with the diff-handoff protocol, which is what makes running
 it alongside Round 3 pass 1 safe — Round 3 pass 1 only reads the ticket worktree's round-1 result and
@@ -1885,6 +1910,7 @@ Launch a background `plan-implementer` in `$R2_WT_PATH` with a **spec-blind test
 > 8. **Self-check (required):** end your report with a line `SPEC_BLIND: yes` if you did not read
 >    any forbidden file or run `git diff`/`git status`, or `SPEC_BLIND: no` followed by what you
 >    read and why. Be honest — this is for evaluating whether the spec-blind constraint holds.
+>    After it, the report file's final line is `<!-- report-end -->`; write the file last, whether you succeeded or not.
 >
 > [Full report trailer per plan-implementer instructions, ending in `REPORT_FILE: <path> | none`]
 >
@@ -1927,7 +1953,8 @@ Launch a background `plan-implementer` (ticket worktree, read-only in practice �
 >    whether it looks unambiguous or needs human judgment.
 > 4. Write your numbered findings to `<SCRATCH_PATH>/round3-pass1-report.md` using the `Write`
 >    tool: a numbered list, each item with *finding*, *proposed fix (description, not a diff)*,
->    and *unambiguous | needs-human-judgment*. Set `REPORT_FILE:` in your trailer to that path.
+>    and *unambiguous | needs-human-judgment*, and end the file with the line `<!-- report-end -->`
+>    (write it whether or not you found anything). Set `REPORT_FILE:` in your trailer to that path.
 >    In your reply, return only a one-or-two-line summary plus the trailer — do not repeat the
 >    findings inline.
 >
@@ -1951,7 +1978,9 @@ reporting findings into the final summary only:
 >
 > From this diff's new/changed symbols [IMPL_FILES], `rg` the repo for the same logic shape
 > repeated at 3 or more call sites. Report each as: symbol/pattern, call sites (file:line), and a
-> one-line suggested extraction. Do not edit anything.
+> one-line suggested extraction. Do not edit anything except your report: `Write` your findings (or
+> `none`) to `<SCRATCH_PATH>/duplication-sweep-report.md`, ending with the line `<!-- report-end -->`,
+> and set `REPORT_FILE:` to that path.
 >
 > [Full report trailer per plan-implementer instructions — `STAGED: no (read-only pass)`, ending in `REPORT_FILE: <path> | none`]
 >
@@ -1969,7 +1998,9 @@ reporting findings into the final summary only:
 > This diff is: [IMPL_FILES]. If it touches, or the plan below names, any ADR/CHANGELOG/README
 > file, verify each doc claim against the actual code — flag anything the doc asserts that the
 > diff contradicts or doesn't support. Also flag code changes that contradict an ADR named in the
-> plan even if that ADR wasn't touched. Report findings only; do not edit anything.
+> plan even if that ADR wasn't touched. Report findings only; do not edit anything except your
+> report: `Write` your findings (or `none`) to `<SCRATCH_PATH>/doc-drift-sweep-report.md`, ending with
+> the line `<!-- report-end -->`, and set `REPORT_FILE:` to that path.
 >
 > **Plan:** [verbatim plan]
 >
@@ -2241,7 +2272,7 @@ Also record the pre-Round-3 SHA for the fence, before the agent launches:
 git rev-parse HEAD > "<SCRATCH_PATH>/pre-round3-sha.txt"
 ```
 
-Launch a background `plan-implementer` (main worktree) with:
+Launch a foreground `plan-implementer` (`run_in_background: false`, main worktree); the call blocks on its foreground return, so no file wait is needed, with:
 
 > `Working directory: <TICKET_WT_PATH>` (this exact prefix — `plan-implementer`'s first step greps for
 > it verbatim to `cd` there before doing anything else)
@@ -2671,8 +2702,11 @@ jq -r '.failure_reason // empty' <SCRATCH_PATH>/resolve-check.json
 launched with `run_in_background`. The run's timeout is the JSON's `timeout_secs`, never a value you pick
 or hardcode. The check runs from `<WORKTREE>`: `checks validate` takes its repo root from the current
 directory, so a run started anywhere else checks the wrong tree. Only the resolved command runs, not the
-cache's full lint/test/build set; that is deliberate.
+cache's full lint/test/build set; that is deliberate. The block's `trap` writes its exit status to
+`<SCRATCH_PATH>/check-exit` atomically (a temp file, then `mv`) on every exit path, so the foreground wait
+below never reads a half-written status.
 ```bash
+trap 'rc=$?; printf "%s\n" "$rc" > <SCRATCH_PATH>/check-exit.tmp && mv <SCRATCH_PATH>/check-exit.tmp <SCRATCH_PATH>/check-exit' EXIT
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 if [ -n "$(cd <WORKTREE> && git status --porcelain)" ]; then printf '%s\n' "check-not-run: worktree not clean" >&2; exit 2; fi
 CHECK_CMD=$(jq -r '.command // empty' <SCRATCH_PATH>/resolve-check.json)
@@ -2689,8 +2723,16 @@ output exits `2` without starting the run, which is the not-run outcome `check-n
 (see the table). `CHECK_SHA` attests a commit, not a tree, so the
 clean-tree checks before and after the run are what tie the check to the tree the step hands on. They are deliberately strict: an untracked file that is not gitignored counts as a dirty tree, so the project's check command must write only gitignored output (build artifacts, caches, coverage); a check that litters the tree is `check-not-run: worktree not clean` by design.
 
-Launch the run with `run_in_background` and wait for it with the join-barrier wait.
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while the background task is outstanding; never poll. The launched set is this one background Bash run. Its completion notification closes the barrier, and the background task's exit status is the runner's exit status. A turn that begins for any other reason while the run is outstanding (including the barrier's 1800s status wakeup) only reports that the check is still running and ends the turn: it starts no second run and does not kill the first. The runner's own `timeout_secs` bounds the run, so a notification always arrives; a notification that reports the task killed or lost with no exit status is `check-not-run`.
+Launch the run with `run_in_background` and collect it with the join-barrier file wait, in the same turn.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children. Never poll on a short interval of your own (`wait-files.py` is the only polling); never poll the background run. The launched set is this one background Bash run. Immediately before the launch, record the mark (a status file left from an earlier run predates the mark, so it reads as stale, never as this run's exit); after the launch, repeat the `wait` until it exits 0 or 4 (exit 3: re-issue it at once):
+```bash
+if [[ -n "${FLOW_DIR}" ]]; then WAIT_STATE="${FLOW_DIR}"; else WAIT_STATE="<SCRATCH_PATH>"; fi
+python3 "$HOME/.claude/scripts/wait-files.py" mark --phase "<STEP>:check" --state-dir "$WAIT_STATE"
+# ... launch the check block above with run_in_background ...
+python3 "$HOME/.claude/scripts/wait-files.py" wait --phase "<STEP>:check" --state-dir "$WAIT_STATE" \
+  --deadline <timeout_secs + 300> --exists "check=<SCRATCH_PATH>/check-exit"
+```
+`<timeout_secs + 300>` is the JSON's `timeout_secs` plus 300, computed as a literal before the call. On exit 0, the number in `<SCRATCH_PATH>/check-exit` is the runner's exit status. Exit 4 with no status file is `check-not-run` (Reason `check-not-run: child-wait deadline: phase <STEP>:check, outstanding check, attempt <n>`): the runner's own `timeout_secs` bounds the run, so a missing file past the extra 300 s means the task was killed or lost. Never start a second run while one is outstanding, and never kill the first. A task notification for the run that arrives later is a no-op. Issue the Bash tool call that runs this `wait` with its `timeout` parameter set to `600000` (milliseconds). If that call is killed or exits 2, re-issue it once; if it still fails, write the FAILED receipt (`~/.claude/prompts/join-barrier-pattern.md` rule 6).
 
 **3. Check that HEAD and the tree did not move.** After the run exits, re-read the tree:
 ```bash

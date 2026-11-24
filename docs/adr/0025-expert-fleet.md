@@ -39,7 +39,7 @@ The default is `auto`, and `auto`, `acceptEdits`, `bypassPermissions`, and `dont
 
 ### 5. Never idle while a step runs (known workaround)
 
-The 540-second `fleet.py wait` loop is a known workaround. Headless sessions abort their background agents about ten minutes after the session's own turn goes idle (observed 2026-10-16: a plan step killed at exactly 10:00). In fleet mode, the orchestrator calls `fleet.py wait` in the foreground after every step launch and `SendMessage`, repeating until it prints `settled` or a completion notification arrives. This is not a constraint on future implementations; it sits beside the "headless step agents idle" gap (see §6).
+The 540-second `fleet.py wait` loop is a known workaround. Headless sessions abort their background agents about ten minutes after the session's own turn goes idle (observed 2026-10-16: a plan step killed at exactly 10:00). In fleet mode, the orchestrator calls `fleet.py wait` in the foreground after every step launch and `SendMessage`, repeating until it prints `settled` or a completion notification arrives. This is not a constraint on future implementations; it sits beside the "headless step agents idle" gap (see §6). Since 2026-11-23 (#532, ADR-0023 amendment) step agents no longer end their turn to wait for their own children, which closes the step-side half of that gap; this orchestrator-side loop is unchanged.
 
 ### 6. Known gaps
 

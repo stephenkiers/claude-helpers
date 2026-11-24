@@ -1360,3 +1360,57 @@ The `implement` step now gains a pre-Round-1 hatch that sets aside existing-test
 - **(d) Ledger header parameterisation.** The relay step 4a (commands/expert-flow.md) records two separate approval records, one per step: `Test edit` for the fix step (unchanged from #497), `Test changes` for the implement step. Each cites its own answers file (`answers/fix-<SEQ>.json` or `answers/implement-<SEQ>.json`) and step name in the ledger `--step` argument. The verifier reads both.
 - **(e) Redraft Retry and approved-test-still-red stop.** When the Integration Gate's bounded fix loop leaves only test failures in approved paths, the step stops with Reason `approved-test-still-red: <path>[, <path>…]`. Only a plain **Retry** chosen by the human (not Retry with sonnet, Retry split finer, or Fix now) is marked with `--redraft-test-changes`, which triggers a reset to `bases[implement]` and a redraft of the still-red paths against the current code. That reset hard-resets the worktree to `bases[implement]` and archives the Round 1 commits made by the failed attempt, so the human should expect that work to be set aside. The Retry option text discloses this before the human chooses it. Other re-run kinds, when `still-red.txt` is present, stop with Reason `approved-test-still-red-pending: <path>[, <path>…]` instead of resetting, so the human can choose the plain Retry if they wish.
 - **Unchanged rules.** Round 1 never edits tests. Test-removal checks are static and never run repo code. `existing-test-edit` stays a STEP_AGENT stop for coupled items and hard cases. All new stop reasons are classified in `scripts/flow-stop-baseline.py`.
+
+## Amendment (2026-11-23): step agents never end their turn to wait for children (#532)
+
+**Problem.** Step agents followed the join-barrier end-turn protocol (ADR-0018 #216 amendment): launch
+children in the background, end the turn, wake on a notification or a 1800 s `ScheduleWakeup`. Inside
+a step, a turn end is a hand-back. The orchestrator read the step as finished with no receipt, and a
+headless step (`claude -p`, fleet) simply ended.
+
+**Probe.** `prompts/headless-wait-probe.md` checked the current harness inside `claude -p` (results
+table, 2026-11-23): nested Tasks launched with `run_in_background: false` block, run in parallel, and
+return their reports synchronously, and a 967 s child survives. That chose Branch F.
+
+**Decision.**
+- Every subagent and skill collects its children in the same turn. The only sanctioned end of turn
+  inside a step is the Ask relay's `AWAITING ANSWERS` (`prompts/flow-step-contract.md`).
+- *Foreground sites* (panels, scouts, Router, Q&A, Pass 2, Carl, Amalgamator, Triage, Pat, plan
+  synthesis and auditors) launch every call with `run_in_background: false`. A launch acknowledgement
+  there is a hard failure.
+- *File-wait sites* (implement round-1 units and the single-unit fallback, the post-gate fan-out, the
+  Final check, the merge-and-cleanup apply and the queued-merge enqueue) launch in the background and
+  block on the children's output files with `scripts/wait-files.py` in the foreground: `mark` before
+  the launch, then `wait` slices of 300–570 s polling every 5 s, until closed (exit 0) or the
+  per-phase deadline (exit 4). Children write their report file last, ending in a sentinel, whether
+  they succeeded or not; exit-status files are written atomically by a shell `trap`.
+- A deadline is a hard stop, never a relaunch or stand-in: a FAILED receipt with
+  `Reason: child-wait deadline: phase <P>, outstanding <ids>, attempt <n>`, handled by the existing
+  Retry / Take over / Abort stop. `child-wait.jsonl` and `child-wait-attempts.json` in the state dir
+  (`FLOW_DIR`, else the run dir) record closes and deadlines for calibration.
+- `ScheduleWakeup` is never used to wait for children. `flow-plan` keeps its grant (agent files are
+  frozen for this change) but does not use it for child waits.
+- **Carve-out:** `commands/expert-flow.md`, the top-level orchestrator, is not a step agent and keeps
+  its N=1 end-turn wait with at most one 1800 s status-only heartbeat per step. Fleet mode keeps its
+  own `fleet.py wait` loop (ADR-0025 §5).
+
+**Accepted tradeoff.** At a file-wait site, a child that dies without writing its file holds the
+barrier until the phase deadline. Per-id retry there needs per-id freshness and a defined `bad`
+marker; it belongs to the self-heal follow-up. A dead child is therefore invisible until the full
+deadline. A self-heal follow-up issue is to be filed. A failure marker written on non-zero child exit
+is optional and stays within plan Q4 (hard stop, no relaunch).
+
+**Scope ruling.** Shared skills and commands (such as the join-barrier pattern and the commands it
+edits) are outside the v1 freeze (ADR-0026 §11), so this bug-fix change to them is permitted, per the
+human ruling on Q5 of the #532 ticket.
+
+**Concurrent work.** Open PR #547 takes the opposite remedy for #520 on the same files (it keeps
+end-turn waiting). This PR's waiting protocol lands first, and #547 must be rebased onto it or closed.
+Plan ruling D2 already narrowed #520 to this PR's waiting protocol. Issue #520 should be updated to
+match. That update is not made in this change.
+
+**Deferred follow-up.** `agents/flow-plan.md` still carries `ScheduleWakeup` wording.
+Rewording it is the deferred W2/#538 follow-up, because agent files are frozen for this change.
+
+**Canonical text:** `prompts/join-barrier-pattern.md` § Waiting for the barrier, rules 1–9.
+

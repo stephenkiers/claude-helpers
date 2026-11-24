@@ -51,7 +51,7 @@ own PR bot — not a lint/test gate). The `justfile` at the repo root is the act
   `scripts/flow-accept.py`, `scripts/spike-effort.py`, `scripts/precedent-log.py`,
   `scripts/precedent-digest.py`, `scripts/flow-ledger.py`, `scripts/primary-checkout-drift.py`,
   `scripts/flow-verify-receipt.py`, `scripts/review-ruling.py`, `scripts/unit-sizing.py`,
-  `scripts/unit-progress.py`, `scripts/flow-render-questions.py`, `scripts/flow_driver/`, `scripts/test-cleanup-check.py`, and `scripts/test-change-check.py`. Requires
+  `scripts/unit-progress.py`, `scripts/flow-render-questions.py`, `scripts/flow_driver/`, `scripts/test-cleanup-check.py`, `scripts/test-change-check.py`, and `scripts/wait-files.py`. Requires
   `pip install -r requirements-dev.txt` to get `mypy==1.16.1`. Type-checks the workflow CLI layer
   and all its dependencies at signature level, targeting Python 3.8+. `flow-verify-receipt.py` also
   opts into `strict-equality` with an inline `# mypy: strict-equality`.
@@ -92,7 +92,7 @@ See the ADRs for the full rationale:
 - [ADR-0007 Triage and decision memory](docs/adr/0007-triage-and-decision-memory.md) — the pipeline
   ends in triage, not synthesis; see the amendment for what was removed in chore/29.
 - [ADR-0021 Local merge queue](docs/adr/0021-local-merge-queue.md) — serialized per-repo merge queue for testing every PR against the exact base it lands on, with unverified-main detection and the force-push carve-out.
-- [ADR-0023 /expert-flow](docs/adr/0023-expert-flow.md) — lifecycle orchestrator with a file-based question relay; subagent-per-step engine (spike #246), behaviour-neutral conversions of the lifecycle commands, no auto-remediation, except five bounded exceptions: the base-stale Rebase; the one-shot Unknown-skill auto-retry (2026-11-04, a registry-not-ready skill failure re-spawned once); the manual `Retry with sonnet` for single-unit implement/fix shortfalls; the 2026-10-29 bounded self-heal of lint/test check failures (run by the `flow-healer` agent) and Fix now (a `--only-units` re-spawn) (#380); and the fleet heal harness (ADR-0025, 2026-11-02, #425), which runs one allow-listed `install` per cause in a ticket's worktree and never answers a gate. Sequential epics.
+- [ADR-0023 /expert-flow](docs/adr/0023-expert-flow.md) — lifecycle orchestrator with a file-based question relay; subagent-per-step engine (spike #246), behaviour-neutral conversions of the lifecycle commands, no auto-remediation, except five bounded exceptions: the base-stale Rebase; the one-shot Unknown-skill auto-retry (2026-11-04, a registry-not-ready skill failure re-spawned once); the manual `Retry with sonnet` for single-unit implement/fix shortfalls; the 2026-10-29 bounded self-heal of lint/test check failures (run by the `flow-healer` agent) and Fix now (a `--only-units` re-spawn) (#380); and the fleet heal harness (ADR-0025, 2026-11-02, #425), which runs one allow-listed `install` per cause in a ticket's worktree and never answers a gate. Sequential epics. Step agents never end their turn to wait for children: they block on a foreground return or a `scripts/wait-files.py` file wait (2026-11-23 amendment, #532).
 - [ADR-0024 Precedent Pat](docs/adr/0024-precedent-pat.md) — a prompt-the-human design that surfaces the user's past answers and the project's curated rules beside pending questions, display-only, never suppresses or pre-selects, triage never reads it.
 - [ADR-0025 /expert-fleet](docs/adr/0025-expert-fleet.md) — parallel epic execution via a headless dispatcher over `/expert-flow --fleet`; the merge gate stays human-answered by prose and the `--auto-merge` rejection as a shell block in `commands/expert-flow.md`; a bounded fleet heal harness (`scripts/workflow/heal.py`, called by `fleet.py`; one `install` tool, a closed table, one attempt per cause per ticket) runs before a stopped ticket's stop is shown and never answers a gate, and its known gaps are tabled in ADR-0025 §6 (the 2026-11-02 amendment retires the earlier byte-identical claim).
 
@@ -431,7 +431,7 @@ avoidable, so this relies on self-report rather than a lint rule.
 - `flow-plan` — agent for the `plan` step of `/expert-flow` (used by `/expert-plan` when invoked as
   a step agent). Model pinned to `sonnet` (restores the documented `/expert-plan` panel default);
   contributors and synthesis inherit it. No `Edit` tool. `Skill` allowlist (`{expert-plan}` only).
-  `Agent` allowlist (`{expert-reviewer, expert-scout}` only, no general-purpose fallback). `ScheduleWakeup` granted for status-only barriers. Best-effort
+  `Agent` allowlist (`{expert-reviewer, expert-scout}` only, no general-purpose fallback). `ScheduleWakeup` is still granted but never used to wait for children (ADR-0023 amendment 2026-11-23, #532). Best-effort
   publish-deny Bash guard (denies git push, gh pr/issue create|edit|comment|close|merge, non-GET gh api,
   interpreter verb-pair forms; allows other commands including scripts). Hook wiring for this Skill-invoked
   agent shape is unprobed, including headless/fleet firing (see ADR-0008 2026-11-03 amendment).

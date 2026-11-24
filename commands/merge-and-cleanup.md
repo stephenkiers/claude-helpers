@@ -280,8 +280,20 @@ Auto-detected, no config key (repo-cache.json is gitignored and per-worktree; se
 **Invoke the block below with the Bash tool's `run_in_background: true`.** The `just merge` path
 commonly runs a full build + E2E boot, which routinely takes several minutes — long enough to hit a
 foreground Bash call's timeout ceiling even though the merge itself is still proceeding fine. A
-backgrounded call has no such ceiling; wait for its completion notification, then move on to Phase 4,
-which reads the result from disk (`$MC_STATE_DIR/apply_result.json` and `$MC_STATE_DIR/apply_exit_code`) rather than from captured stdout.
+backgrounded call has no such ceiling. Collect it in the same turn with a foreground file wait, then
+move on to Phase 4, which reads the result from disk (`$MC_STATE_DIR/apply_result.json` and
+`$MC_STATE_DIR/apply_exit_code`) rather than from captured stdout.
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while the background merge is outstanding; block on its exit-status file with `wait-files.py` in the foreground. Once its ownership guards pass, the block's `trap` writes `$MC_STATE_DIR/phase3_exit` atomically on every exit path. `<STATE_DIR>` is `FLOW_DIR` when set, otherwise `$MC_STATE_DIR`. The deadline is `MERGE_APPLY_TIMEOUT_SECS` (default 1800) plus 300, as a literal. Run `mark` immediately before the launch (an exit file from an earlier attempt predates the mark, so it reads as stale), then repeat `wait` until it exits 0 or 4 (exit 3: re-issue it at once):
+```bash
+python3 "$HOME/.claude/scripts/wait-files.py" mark --phase merge:apply --state-dir <STATE_DIR>
+# ... launch the Phase 3 block with run_in_background: true ...
+python3 "$HOME/.claude/scripts/wait-files.py" wait --phase merge:apply --state-dir <STATE_DIR> \
+  --deadline <MERGE_APPLY_TIMEOUT_SECS + 300> --exists "apply=/tmp/merge-and-cleanup.pr-<PR number>/phase3_exit"
+```
+Issue each `wait` call as a foreground Bash tool call with the Bash tool's `timeout` parameter set explicitly to `600000` (milliseconds). If that call is killed by the tool timeout or exits 2, re-issue the same `wait` once; if the re-issued call is also killed or exits 2, fail the step. See `~/.claude/prompts/join-barrier-pattern.md` rule 6.
+
+Exit 0: read the number in `phase3_exit`; non-zero means Phase 3 failed — print its error output and stop without Phase 4. Exit 4 is the deadline hard stop (in a flow, a FAILED receipt with `Reason: child-wait deadline: phase merge:apply, outstanding apply, attempt <n>`); check `gh pr view <PR number> --json state` before anything else, since the merge may have landed after all, and never re-run the merge yourself.
 
 The `just merge` subprocess timeout defaults to 1800s and is configurable per-repo by exporting
 `MERGE_APPLY_TIMEOUT_SECS` (a positive integer, in seconds; anything else falls back to the default).
@@ -298,6 +310,11 @@ echo "=== Phase 3: Merge Gate (backgrounded — may take several minutes) ==="
 
 PR_NUM=<PR number resolved in Phase 1>   # substitute the literal number; this is a new Bash call
 MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
+
+# The foreground file wait blocks on this file: install the exit-status trap before any
+# command below can exit early, and write it atomically on every exit from here on. The trap never
+# writes through a symlink or into a directory the user does not own (a refused state directory stays untouched).
+trap 'rc=$?; { [ -L "$MC_STATE_DIR" ] || [ ! -O "$MC_STATE_DIR" ]; } && exit "$rc"; printf "%s\n" "$rc" > "$MC_STATE_DIR/phase3_exit.tmp" && mv "$MC_STATE_DIR/phase3_exit.tmp" "$MC_STATE_DIR/phase3_exit"' EXIT
 
 # Re-verify we own the state directory (same guard as Phase 1, in case ownership changed)
 if [ -L "$MC_STATE_DIR" ]; then
@@ -336,7 +353,8 @@ source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: c
 # this file rather than depending on variables from this shell.
 printf '%s' "$PLAN_JSON" | (cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge apply -) \
   > "$MC_STATE_DIR/apply_result.json" 2> "$MC_STATE_DIR/apply_result.stderr"
-echo $? > "$MC_STATE_DIR/apply_exit_code"
+APPLY_RC=$?
+printf '%s\n' "$APPLY_RC" > "$MC_STATE_DIR/apply_exit_code.tmp" && mv "$MC_STATE_DIR/apply_exit_code.tmp" "$MC_STATE_DIR/apply_exit_code"
 
 # Guard: ensure exit code file exists, is non-empty, contains numeric value, and equals 0
 APPLY_RESULT_CODE="$(cat "$MC_STATE_DIR/apply_exit_code" 2>/dev/null)"
@@ -368,7 +386,7 @@ fi
 
 Confirm the merge actually landed, then invoke `/cleanup` via the Skill tool. Pre-verify the path expands to exactly one directory. This phase is used only for the direct (non-queue) merge route.
 
-**Only start this phase after the Phase 3 background call's completion notification arrives.** This is
+**Only start this phase after Phase 3's `wait-files.py` wait exits 0 and `phase3_exit` reads `0`.** This is
 a separate Bash call from Phase 3, so substitute the literal PR number (from the `PR #$PR_NUM` output in Phase 1)
 in the assignment below, then re-derive `WT` from the state directory rather than assuming it's still set in this shell.
 
@@ -415,7 +433,7 @@ case "$APPLY_RESULT_CODE" in
   ''|*[!0-9]*) APPLY_RESULT_CODE="missing-or-malformed" ;;
 esac
 if [ "$APPLY_RESULT_CODE" != "0" ]; then
-  echo "ERROR: Phase 3 merge apply has not completed successfully yet — wait for its notification first"
+  echo "ERROR: Phase 3 merge apply has not completed successfully yet — wait for its exit-status file first (the Phase 3 file wait)"
   exit 1
 fi
 
