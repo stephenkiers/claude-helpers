@@ -1159,7 +1159,8 @@ reply, and any failure below is `FAILED` with the stated reason:
    experts, comma-separated>`; match `^Panel:` anchored, never a substring elsewhere in the body) —
    containing `NOT dispatched` or the word `none` (plan); a `ROUND [2-4]` line reading `NOT RUN`
    while `ROUND SIZING:` is not `mechanical` (implement, fix; a `test-only` run legitimately skips
-   Round 2 only); or the phrase `implemented directly` or `without dispatching` anywhere in the body.
+   Round 2 only; a `SPLIT_BASIS: zero-units` run skips Round 1 with `SKIPPED round1 no-round1-units`
+   and runs Round 2, which is not a reduced run); or the phrase `implemented directly` or `without dispatching` anywhere in the body.
    Also append an audit-telemetry line (see "Fidelity audit") with `verdict: "reduced"` and `reason`
    prefixed `receipt:`. This is a cheap orchestrator-side check and runs before the fidelity audit.
 8. For `Decision: OK` only, verify the step's on-disk artifacts with the read-only verifier. This rule runs after rules 1–7 and before the `OK` branch clears `live` or records `PLAN_PATH` / `REVIEW_DIR`:
@@ -1204,7 +1205,7 @@ never dispatched, "implemented directly by the orchestrator", checkpoint questio
 their recommended defaults adopted). A reduced run is a failure, and a cheap
 second reader checks for it. It applies only to `plan`, `implement`, `review`, and `fix` — never
 worktree, track, verify, ship, or merge themselves. Run it after the receipt validates as `OK` and rule 8's
-verifier (`flow-verify-receipt.py --flow-dir`) exits 0 before the stage is closed.
+verifier (`flow-verify-receipt.py --flow-dir`) exits 0 before the stage is closed. A zero-unit `implement` run (`SPLIT_BASIS: zero-units`, Round 1 skipped under the zero-unit rule, Round 2 run) is not a reduced run; a zero-unit receipt that carries OUTSTANDING items (declined test edits, `test-correct-zero-unit`) is an OK run that the assess stage handles, not a reduced run.
 
 **Healer receipt (the one added artifact).** The `flow-healer` receipt `steps/<NN>-verify.heal-<n>.md` is also audited, by the same `expert-scout` audit, as the "Check heal (verify)" block's sub-step 7 (output file `steps/<NN>-verify.heal-<n>.audit.md`, same stub-then-read-from-disk discipline, same `audits.jsonl` line with `step: verify-heal`). This does not extend the audit to verify, ship or merge: the verifier still owns every mechanical fact (counts, SHAs, trailers, record presence). The audit judges only evidence quality and wording: did the summary claim more than the diff does; was a `NEEDS_HUMAN` warranted but skipped; is the receipt wording honest. A `FIDELITY: reduced` verdict (or a missing, stub or malformed audit file) rejects the heal: `state=rejected:audit`, log `heal-rejected (audit)`, and go to the Check-heal menu (Take over / Abort only). `failures` is unchanged beyond what the budget already charged. Fix now's re-spawned `fix`/`implement` step is already audited as that step.
 
