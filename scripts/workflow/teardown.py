@@ -275,7 +275,8 @@ def discover_ticket(
     lsof_runner: Optional[Callable] = None,
     no_sizes: bool = False,
     get_idle_threshold: Optional[Callable[[], Optional[int]]] = None,
-    tty_atime: Optional[Callable[[str], Optional[float]]] = None
+    tty_atime: Optional[Callable[[str], Optional[float]]] = None,
+    check_fleet: bool = False
 ) -> TeardownPlan:
     """
     Discover ticket's resources and build a TeardownPlan.
@@ -289,6 +290,7 @@ def discover_ticket(
         no_sizes: Skip sizing build directories
         get_idle_threshold: Injectable function to get sessionIdleMinutes preference
         tty_atime: Injectable function to get tty activity time
+        check_fleet: If True, discover fleet supervisors for this repo
 
     Returns:
         TeardownPlan with numbered items
@@ -446,15 +448,48 @@ def discover_ticket(
         # Ticket worktree
         ticket_wt = target_path
         liveness = procs.live_in(str(ticket_wt), caller_pids)
+
+        # Check if caller chain is Unknown; if so, downgrade liveness to list-only
+        if isinstance(caller_pids, Unknown):
+            liveness = procs.UNKNOWN
+
+        # Probe dirty/unpushed state for ticket worktree
+        dirty_state, dirty_detail = cleanup.worktree_dirty_state(ticket_wt)
+        dirty = dirty_state == "dirty"
+
+        # Probe unpushed state
+        unpushed_state, unpushed_detail = cleanup.unpushed_state(str(ticket_wt))
+        unpushed = unpushed_state == "unpushed"
+
+        # Build reason list for selectability
+        reasons = []
+        if liveness == procs.LIVE:
+            reasons.append("has live session(s)")
+        elif liveness == procs.UNKNOWN:
+            reasons.append("unknown liveness")
+        if dirty:
+            reasons.append("has uncommitted changes")
+        if unpushed:
+            reasons.append("has unpushed commits")
+
+        # Also mark non-selectable if dirty/unpushed state is UNKNOWN (can't verify)
+        if dirty_state == "unknown":
+            reasons.append("dirty state unknown")
+        if unpushed_state == "unknown":
+            reasons.append("unpushed state unknown")
+
         item = TeardownItem(
             number=item_number,
             kind="worktree",
             group=2,
             name=f"Ticket worktree ({ticket_wt.name})",
             path=str(ticket_wt),
-            selectable=liveness != procs.LIVE and liveness != procs.UNKNOWN,
-            reason="has live session(s)" if liveness == procs.LIVE else ("unknown liveness" if liveness == procs.UNKNOWN else ""),
-            status="ok" if liveness != procs.UNKNOWN else "unknown"
+            dirty=dirty,
+            unpushed=unpushed,
+            not_merged=(plan.pr_signal_state != MERGED),
+            selectable=liveness != procs.LIVE and liveness != procs.UNKNOWN and not dirty and not unpushed and dirty_state != "unknown" and unpushed_state != "unknown",
+            reason=" + ".join(reasons) if reasons else "",
+            status="ok" if liveness != procs.UNKNOWN and dirty_state != "unknown" and unpushed_state != "unknown" else "unknown"
         )
         plan.items.append(item)
         item_number += 1
@@ -621,6 +656,31 @@ def discover_ticket(
             pass
     except Exception:
         pass
+
+    # 4b. Discover fleet supervisors (if check_fleet is True)
+    if check_fleet:
+        try:
+            project_root = worktrees.detect_project_root(cwd=target_path)
+            if project_root:
+                # Try to extract repo name for fleet lookup
+                repo_name = Path(project_root).name
+                fleet_tickets = procs.fleet_live_tickets(repo_name, ps_runner=ps_runner)
+                if not isinstance(fleet_tickets, Unknown):
+                    for issue_num, (state, detail, pid_started) in fleet_tickets.items():
+                        item = TeardownItem(
+                            number=item_number,
+                            kind="fleet_supervisor",
+                            group=4,
+                            name=f"Fleet supervisor for issue #{issue_num} ({state})",
+                            path=None,
+                            selectable=False,
+                            reason=f"fleet supervisor: {detail}",
+                            status="ok"
+                        )
+                        plan.items.append(item)
+                        item_number += 1
+        except Exception:
+            pass
 
     # Get PR signal for the ticket branch
     try:
@@ -828,8 +888,9 @@ def apply_teardown(
 
             # Signal descendants first, then the session
             for pid in reversed(item.pids):
-                # Verify process before signaling
+                # Verify process before signaling using real verify_process
                 try:
+                    # Get current process info for verification
                     ps_output = subprocess.run(
                         ["ps", "-o", "pid=,lstart=,comm=", "-p", str(pid)],
                         capture_output=True,
@@ -838,20 +899,43 @@ def apply_teardown(
                     ).stdout.strip()
 
                     if ps_output:
-                        sent, reason = procs.signal_process(
-                            pid,
-                            signal.SIGTERM,
-                            "",  # We'll check without strict lstart verification
-                            "",
-                            os.getuid(),
-                            ["/"],  # Allow any cwd
-                            verify_runner=lambda p, l, c, u, r: True,  # Simplified check
-                            kill_runner=kill_fn
-                        )
-                        if sent:
-                            done.append(f"Signaled session PID {pid}")
+                        # Parse ps output to get lstart and comm
+                        parts = ps_output.split(None, 2)
+                        if len(parts) >= 3:
+                            lstart = parts[1]
+                            comm = parts[2]
+
+                            # Verify using real procs.verify_process
+                            is_valid = procs.verify_process(
+                                pid,
+                                lstart,
+                                comm,
+                                os.getuid(),
+                                ["/"],
+                                ps_runner=ps_runner,
+                                lsof_runner=lsof_runner,
+                                caller_pids=caller_pids if isinstance(caller_pids, list) else None
+                            )
+
+                            if is_valid:
+                                sent, reason = procs.signal_process(
+                                    pid,
+                                    signal.SIGTERM,
+                                    lstart,
+                                    comm,
+                                    os.getuid(),
+                                    ["/"],
+                                    verify_runner=procs.verify_process,
+                                    kill_runner=kill_fn
+                                )
+                                if sent:
+                                    done.append(f"Signaled session PID {pid}")
+                                else:
+                                    skipped.append(f"Could not signal session PID {pid}: {reason}")
+                            else:
+                                skipped.append(f"Could not verify session PID {pid}: process identity mismatch or in caller chain")
                         else:
-                            skipped.append(f"Could not signal session PID {pid}: {reason}")
+                            skipped.append(f"Could not parse ps output for PID {pid}")
                 except Exception as e:
                     skipped.append(f"Error signaling session PID {pid}: {e}")
 
@@ -910,16 +994,26 @@ def apply_teardown(
                 confirmed = item.number in per_item_yes
 
                 try:
-                    # Validate target (simplified for now)
+                    # Validate target
                     if not item.path:
                         continue
 
+                    # Detect primary worktree and compute trash root
+                    primary_wt = None
+                    try:
+                        primary_wt = worktrees.detect_main_worktree()
+                    except Exception:
+                        pass
+
+                    worktrees_parent = str(Path(item.path).parent) if item.path else ""
+                    trash_root = str(teardown_guard.trash_root_for(worktrees_parent)) if worktrees_parent else ""
+
                     ctx = teardown_guard.GuardContext(
-                        worktrees_parent=str(Path(item.path).parent) if item.path else "",
-                        primary_worktree="",
+                        worktrees_parent=worktrees_parent,
+                        primary_worktree=primary_wt or "",
                         registered=[str(p) for p in [rec[0] for rec in worktree_records]],
                         plan_paths=[i.path for i in plan.items if i.path],
-                        trash_root=""
+                        trash_root=trash_root
                     )
 
                     result = cleanup.remove_worktree(
@@ -1032,21 +1126,54 @@ def apply_sigkill(
 
     for pid in pids:
         try:
-            # Verify the process still exists and matches our records
-            sent, reason = procs.signal_process(
-                pid,
-                signal.SIGKILL,
-                "",  # Simplified check
-                "",
-                os.getuid(),
-                ["/"],  # Allow any cwd
-                verify_runner=lambda p, l, c, u, r: True,  # Simplified verification
-                kill_runner=kill_fn
-            )
-            if sent:
-                signalled.append(f"SIGKILL sent to {pid}")
+            # Get current process info for verification
+            ps_output = subprocess.run(
+                ["ps", "-o", "pid=,lstart=,comm=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=5
+            ).stdout.strip()
+
+            if ps_output:
+                # Parse ps output to get lstart and comm
+                parts = ps_output.split(None, 2)
+                if len(parts) >= 3:
+                    lstart = parts[1]
+                    comm = parts[2]
+
+                    # Verify using real procs.verify_process
+                    is_valid = procs.verify_process(
+                        pid,
+                        lstart,
+                        comm,
+                        os.getuid(),
+                        ["/"],
+                        ps_runner=ps_runner,
+                        lsof_runner=lsof_runner,
+                        caller_pids=caller_pids if isinstance(caller_pids, list) else None
+                    )
+
+                    if is_valid:
+                        sent, reason = procs.signal_process(
+                            pid,
+                            signal.SIGKILL,
+                            lstart,
+                            comm,
+                            os.getuid(),
+                            ["/"],
+                            verify_runner=procs.verify_process,
+                            kill_runner=kill_fn
+                        )
+                        if sent:
+                            signalled.append(f"SIGKILL sent to {pid}")
+                        else:
+                            failed.append(f"Could not send SIGKILL to {pid}: {reason}")
+                    else:
+                        failed.append(f"Could not verify process {pid}: identity mismatch or in caller chain")
+                else:
+                    failed.append(f"Could not parse ps output for PID {pid}")
             else:
-                failed.append(f"Could not send SIGKILL to {pid}: {reason}")
+                failed.append(f"Process {pid} not found")
         except Exception as e:
             failed.append(f"Error sending SIGKILL to {pid}: {e}")
 

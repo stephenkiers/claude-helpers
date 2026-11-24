@@ -39,7 +39,7 @@ import sys
 import argparse
 import json
 from pathlib import Path
-from typing import Callable, Any, Tuple
+from typing import Callable, Any, Tuple, Optional
 
 from . import cleanup, merge, shipit, checks, deps, track, verify_queue, issue_comments, heal, teardown, stale
 from .models import MODES, parse_mode
@@ -618,7 +618,28 @@ def main() -> None:
             except Exception as e:
                 print(f"VALIDATION=fail — verdict unreadable (fail-closed): {e}")
         elif args.cleanup_action == "discover":
-            plan = teardown.discover_ticket(args.target, in_flow=args.in_flow)
+            # Wire get_idle_threshold from preferences
+            def get_idle_threshold_from_prefs() -> Optional[int]:
+                try:
+                    prefs_path = Path.home() / ".claude" / "preferences.yaml"
+                    if prefs_path.exists():
+                        try:
+                            import yaml  # type: ignore[import-untyped]
+                            with open(prefs_path) as f:
+                                prefs = yaml.safe_load(f) or {}
+                                # Return in minutes; default is 10080 (7 days)
+                                return prefs.get("cleanup", {}).get("sessionIdleMinutes", 10080) if isinstance(prefs.get("cleanup"), dict) else 10080
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                return None
+
+            plan = teardown.discover_ticket(
+                args.target,
+                in_flow=args.in_flow,
+                get_idle_threshold=get_idle_threshold_from_prefs
+            )
             output = plan.to_dict()
             print(json.dumps(output))
         elif args.cleanup_action == "teardown":

@@ -361,8 +361,7 @@ while i < len(fields):
   if [ -n "$MEANINGFUL" ]; then
     echo "WARNING: Uncommitted changes that may be real work:"
     printf '%s' "$MEANINGFUL"
-    echo "NEEDS_CONFIRMATION=uncommitted_changes"
-    # Do NOT exit — let the LLM ask the user before proceeding
+    # Dirty/unpushed state is now probed by teardown discovery and handled via teardown confirmation ask
   fi
 fi
 
@@ -373,7 +372,7 @@ if git -C "$CURRENT_WORKTREE" rev-parse --verify "$REMOTE_BRANCH" >/dev/null 2>&
   if [ -n "$UNPUSHED" ]; then
     echo "WARNING: Unpushed commits on $CURRENT_BRANCH:"
     echo "$UNPUSHED"
-    echo "NEEDS_CONFIRMATION=unpushed_commits"
+    # Unpushed state is now probed by teardown discovery and handled via teardown confirmation ask
   fi
 else
   # No remote tracking branch — check if there are commits beyond where main diverged
@@ -382,7 +381,7 @@ else
   if [ -n "$LOCAL_ONLY" ] && [ -z "$REMOTE_EXISTS" ]; then
     echo "WARNING: Branch was never pushed to remote. Local commits:"
     echo "$LOCAL_ONLY"
-    echo "NEEDS_CONFIRMATION=unpushed_commits"
+    # Unpushed state is now probed by teardown discovery and handled via teardown confirmation ask
   fi
 fi
 
