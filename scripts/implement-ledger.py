@@ -8,6 +8,7 @@ Usage:
     implement-ledger.py check [--run-key K] [--split-basis B]
     implement-ledger.py render [--run-key K] [--repo R] [--flow-dir D --step {implement,fix}] [--split-basis B]
     implement-ledger.py finish [--run-key K] [--log P --state-dir D] [--split-basis B]
+    implement-ledger.py append --run-key K (--done STEP --evidence PATH | --skip STEP --reason R)
 
 --split-basis (default empty) names the run's split basis. Only the value zero-units marks a zero-unit run (a
 plan whose only work is new tests; no Round 1 units). For such a run, check requires round1 to be
@@ -25,6 +26,12 @@ Each run has a ledger at <SCRATCH>/ledger.md with one line per mandatory step:
 Lines starting with '#' and blank lines are ignored. Any other line that does not parse, names a
 foreign run key, an unknown step or reason, or carries bad evidence is malformed: it is reported by
 check and never satisfies a step.
+
+DONE and SKIPPED rows are written by `append`; FINISHED and `# finish-event` lines are written only by
+`finish`. `append` accepts several rows for one step: the last DONE wins, and a DONE beats any permitted
+SKIPPED for the row's status, but a SKIPPED whose reason is not permitted stays a problem that `check`
+reports whatever follows it (`check` judges the skip matrix). Every row `append` writes is one `check`
+parses without a syntax or evidence error.
 
 The run's pointer is <STATE_ROOT>/<run-key>.pointer (JSON). STATE_ROOT is
 $IMPLEMENT_LEDGER_STATE_DIR when set, else ~/.claude/state/implement-with-haiku. Finished runs are
@@ -52,6 +59,11 @@ Exit codes:
     finish  0 success, or already finished (no-op); 1 gate failed (command-end recorded as
             steps_skipped), or success event could not be recorded (FINISHED not written);
             3 no pointer or tombstone found (steps_skipped recorded); 2 bad arguments.
+    append  0 row written; 1 row rejected (control character or surrounding whitespace in a field, unknown
+            step or reason, bad or carried evidence; nothing written); 2 bad arguments, invalid run key, or
+            ledger I/O failure (missing, symlinked, not a regular file, write error); 3 no pointer or tombstone
+            for the run key; 4 the record belongs to another repo (repo guard); 5 the run was superseded by a
+            newer init; 6 the run is already finished (tombstone or FINISHED row).
 
 Importable API (tests load this file with importlib, since the name is hyphenated):
 STEP_IDS, SKIP_REASONS, CLASSES, ClassLiteral, SkipReasonLiteral, LedgerError, state_root,
@@ -63,6 +75,7 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -1068,6 +1081,101 @@ def cmd_finish(args: argparse.Namespace) -> int:
     return 0
 
 
+def _hygiene_error(flag: str, value: Optional[str]) -> Optional[str]:
+    """Reject control characters and surrounding whitespace in an append field; None when clean."""
+    if value is None:
+        return None
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        return f"control character in {flag}"
+    if value != value.strip():
+        return f"leading or trailing whitespace in {flag}"
+    return None
+
+
+def _append_reject(message: str) -> int:
+    print(f"append: rejected: {message}", file=sys.stderr)
+    return 1
+
+
+def cmd_append(args: argparse.Namespace) -> int:
+    # Order: field hygiene (1), run-key format (2), resolve (3/4/5/6), compose and validate (1),
+    # finished check (6), write (2). Nothing is written on any failure.
+    step = args.done if args.done is not None else args.skip
+    for flag, value in (("--run-key", args.run_key), ("--done" if args.done is not None else "--skip", step),
+                        ("--evidence", args.evidence), ("--reason", args.reason)):
+        problem = _hygiene_error(flag, value)
+        if problem is not None:
+            return _append_reject(problem)
+
+    run_key = args.run_key
+    if not RUN_KEY_RE.match(run_key):
+        raise LedgerError(f"invalid run key {run_key!r}")
+
+    found = _resolve(run_key)
+    if found is not None:
+        _path, is_tombstone, _data = found
+        if is_tombstone:
+            print(f"append: run {run_key} is already finished; no row written", file=sys.stderr)
+            return 6
+    else:
+        toplevel = git_toplevel()
+        raw = locate_record(state_root(), None, None, run_key)
+        if raw is not None and raw[2].get("repo") != toplevel:
+            print(
+                f"append: run key {run_key} belongs to repo {raw[2].get('repo')}, but the current directory's "
+                f"toplevel is {toplevel}; run append from the worktree where init ran",
+                file=sys.stderr,
+            )
+            return 4
+        if (state_root() / f"{run_key}{SUPERSEDED_SUFFIX}").is_file():
+            print(f"append: run key {run_key} was superseded by a newer init", file=sys.stderr)
+            return 5
+        print(f"append: no pointer or tombstone found for run key {run_key}", file=sys.stderr)
+        return 3
+    data = found[2]
+    scratch = Path(data["scratch"])
+    ledger = scratch / LEDGER_NAME
+
+    if args.done is not None:
+        line = f"{run_key} DONE {args.done} {args.evidence}"
+    else:
+        line = f"{run_key} SKIPPED {args.skip} {args.reason}"
+    if args.evidence is not None and args.evidence.startswith("carried:"):
+        return _append_reject("carried evidence is written only by init --carried")
+    if not ROW_RE.fullmatch(line):
+        return _append_reject("row does not match the ledger row syntax")
+    entry = _parse_row(line, 0, data["run_key"], scratch)
+    if entry["error"]:
+        return _append_reject(str(entry["error"]))
+
+    _entries, finished = parse_ledger(ledger, data["run_key"], scratch)
+    if finished:
+        print(f"append: run {run_key} is already finished; no row written", file=sys.stderr)
+        return 6
+
+    payload = (line + "\n").encode("utf-8")
+    try:
+        fd = os.open(str(ledger), os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+    except OSError as e:
+        print(f"append: cannot write ledger {ledger}: {e}", file=sys.stderr)
+        return 2
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            print(f"append: cannot write ledger {ledger}: not a regular file", file=sys.stderr)
+            return 2
+        written = os.write(fd, payload)
+        if written != len(payload):
+            print(f"append: cannot write ledger {ledger}: short write", file=sys.stderr)
+            return 2
+    except OSError as e:
+        print(f"append: cannot write ledger {ledger}: {e}", file=sys.stderr)
+        return 2
+    finally:
+        os.close(fd)
+    print(f"APPENDED: {line}")
+    return 0
+
+
 def _iso_utc_arg(value: str) -> str:
     """argparse type for --since: an ISO-8601 UTC Z timestamp. Naive or malformed values are rejected."""
     if not flow_log.ISO_UTC_Z_RE.fullmatch(value):
@@ -1142,6 +1250,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_finish.add_argument("--log", default=None)
     p_finish.add_argument("--state-dir", default=None, dest="state_dir")
     p_finish.add_argument("--split-basis", default="", dest="split_basis", help="run split basis; zero-units marks a zero-unit run")
+
+    p_append = sub.add_parser("append", help="append one validated DONE or SKIPPED row to the run ledger")
+    p_append.add_argument("--run-key", required=True, dest="run_key")
+    which = p_append.add_mutually_exclusive_group(required=True)
+    which.add_argument("--done", default=None, metavar="STEP")
+    which.add_argument("--skip", default=None, metavar="STEP")
+    p_append.add_argument("--evidence", default=None)
+    p_append.add_argument("--reason", default=None)
     return parser
 
 
@@ -1157,12 +1273,24 @@ def main(argv: List[str]) -> int:
     if args.command == "render":
         if (args.flow_dir is None) != (args.step is None):
             parser.error("render: --step is required with --flow-dir, and must be omitted without it")
+    if args.command == "append":
+        if args.done is not None:
+            if args.evidence is None:
+                parser.error("append: --done requires --evidence")
+            if args.reason is not None:
+                parser.error("append: --done rejects --reason")
+        else:
+            if args.reason is None:
+                parser.error("append: --skip requires --reason")
+            if args.evidence is not None:
+                parser.error("append: --skip rejects --evidence")
     handlers = {
         "init": cmd_init,
         "locate": cmd_locate,
         "check": cmd_check,
         "render": cmd_render,
         "finish": cmd_finish,
+        "append": cmd_append,
     }
     try:
         return handlers[args.command](args)
