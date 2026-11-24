@@ -524,6 +524,7 @@ def apply_cleanup(
 
             # Check if any process is live in the worktree
             caller_chain_result = procs.caller_chain()
+            caller_pids: Union[List[int], Unknown]
             if isinstance(caller_chain_result, Unknown):
                 caller_pids = caller_chain_result
             else:
@@ -732,7 +733,7 @@ def remove_worktree(
     confirmed: bool,
     *,
     repo: Optional[Path] = None,
-    live_probe: Optional[Callable[[str, Union[List[int], Unknown]], str]] = None,
+    live_probe: Optional[Callable] = None,
     caller_pids: Optional[Union[List[int], Unknown]] = None,
     dirty_probe: Optional[Callable[[Path], Tuple[str, str]]] = None,
     unpushed_probe: Optional[Callable[[str, Optional[str], Optional[Path]], Tuple[str, str]]] = None,
@@ -761,7 +762,7 @@ def remove_worktree(
 
     # Inject defaults
     if live_probe is None:
-        live_probe = procs.live_in
+        live_probe = procs.live_in  # type: ignore[assignment]
     if dirty_probe is None:
         dirty_probe = worktree_dirty_state
     if unpushed_probe is None:

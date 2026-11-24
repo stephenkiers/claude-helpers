@@ -710,16 +710,16 @@ def main() -> None:
     elif args.command == "merge":
         if args.merge_action == "plan":
             # Custom handler for merge plan to support --cwd and exit 3 on queue refusal
-            plan_obj, error = merge.plan_merge(
+            plan_obj, merge_error = merge.plan_merge(
                 args.arguments,
                 cwd=Path(args.cwd) if args.cwd else None
             )
-            if error:
-                output = {"success": False, "error": str(error)}
+            if merge_error:
+                output = {"success": False, "error": str(merge_error)}
             else:
                 output = plan_obj.to_dict() if plan_obj else {"success": False}
             print(json.dumps(output))
-            if error:
+            if merge_error:
                 sys.exit(1)
             # Check if queue guard refused
             if plan_obj and plan_obj.queue.get("decision") == "refuse":

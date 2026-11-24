@@ -98,7 +98,7 @@ def parse_lsof_cwd(text: str) -> Dict[int, str]:
 
 
 def list_claude_processes(
-    runner: Optional[Callable[[List[str], int], str]] = None
+    runner: Optional[Callable[..., Any]] = None
 ) -> Union[List[ProcRow], Unknown]:
     """
     List all claude processes via ps.
@@ -135,7 +135,7 @@ def list_claude_processes(
 
 def process_cwds(
     pids: List[int],
-    runner: Optional[Callable[[List[str], int], str]] = None
+    runner: Optional[Callable[..., Any]] = None
 ) -> Union[Dict[int, str], Unknown]:
     """
     Get current working directories for a list of pids via lsof.
@@ -174,7 +174,7 @@ def process_cwds(
 
 
 def caller_chain(
-    runner: Optional[Callable[[List[str], int], str]] = None
+    runner: Optional[Callable[..., Any]] = None
 ) -> Union[List[ProcRow], Unknown]:
     """
     Walk the PPID chain up from the current process.
@@ -225,7 +225,7 @@ def caller_chain(
 def descendants(
     pid: int,
     all_procs: Optional[List[ProcRow]] = None,
-    runner: Optional[Callable[[List[str], int], str]] = None
+    runner: Optional[Callable[..., Any]] = None
 ) -> Union[List[ProcRow], Unknown]:
     """
     Find all descendants of a process by walking down the process tree.
@@ -513,7 +513,7 @@ def live_in(
     path: str,
     caller_pids: Union[List[int], Unknown],
     allowed_roots: Optional[List[str]] = None,
-    runner: Optional[Callable[[List[str], int], str]] = None
+    runner: Optional[Callable[..., Any]] = None
 ) -> Union[str, Unknown]:
     """
     Tri-state answer to "does any process other than the caller chain have its cwd inside path?".

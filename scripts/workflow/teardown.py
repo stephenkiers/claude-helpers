@@ -16,7 +16,7 @@ import time
 import os
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Tuple, Optional, Dict, Callable, List, Union, Any
+from typing import Tuple, Optional, Dict, Callable, List, Union, Any, cast
 
 from .cache import hash_file_content
 from .safety import Unknown
@@ -46,7 +46,7 @@ def pr_merged_by_head(
     branch: str,
     local_tip: str,
     repo: Optional[str] = None,
-    runner: Optional[Callable[[List[str], int], Tuple[int, str, str]]] = None,
+    runner: Optional[Callable[..., Any]] = None,
     cache: Optional[Dict[Tuple[str, str, str], Tuple[str, Optional[str], str]]] = None
 ) -> Tuple[str, Optional[str], str]:
     """
@@ -160,9 +160,9 @@ def pr_merged_by_head(
 
     # Compare headRefOid to local_tip
     if merged_oid == local_tip:
-        result = (MERGED, merged_oid, f"MERGED PR #{merged_pr.get('number')}")
-        cache[cache_key] = result
-        return result
+        cached_result: Tuple[str, Optional[str], str] = (MERGED, merged_oid, f"MERGED PR #{merged_pr.get('number')}")
+        cache[cache_key] = cached_result
+        return cached_result
     else:
         result = (NOT_MERGED, None, f"MERGED PR headRefOid {merged_oid} != local tip {local_tip}")
         cache[cache_key] = result
@@ -957,6 +957,18 @@ def apply_teardown(
             "caller_cwd_removed": caller_cwd_removed,
             "bytes_freed": bytes_freed,
             "rss_freed": rss_freed,
+        }
+    else:
+        # Should never reach here due to guard clause at line 778, but mypy requires it
+        return {
+            "success": False,
+            "error": f"Invalid phase: {phase}",
+            "done": [],
+            "skipped": [],
+            "failed": [],
+            "caller_cwd_removed": False,
+            "bytes_freed": 0,
+            "rss_freed": 0,
         }
 
 

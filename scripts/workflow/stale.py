@@ -61,7 +61,7 @@ def discover_stale_repos(
             prefs_path = Path.home() / ".claude" / "preferences.yaml"
             if prefs_path.exists():
                 try:
-                    import yaml
+                    import yaml  # type: ignore[import-untyped]
                     with open(prefs_path) as f:
                         prefs = yaml.safe_load(f) or {}
                         repos_root = prefs.get("reposRoot")

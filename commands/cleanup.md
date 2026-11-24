@@ -170,7 +170,7 @@ If `$ARGUMENTS` contains `--stale`, run a machine-wide sweep instead of single-t
 
 ```bash
 # Check if --stale is passed
-if printf '%s' "$ARGUMENTS" | grep -q -e '--stale' || [ "$1" = "--stale" ]; then
+if printf '%s' "$ARGUMENTS" | grep -q -e '--stale' || [ "${1}" = "--stale" ]; then
   python3 -m scripts.workflow.cli cleanup stale --sizes 2>/dev/null | jq -r '.repos[] | .path' | while read repo; do
     echo "Stale worktrees in $repo:"
     python3 -m scripts.workflow.cli cleanup stale --sizes 2>/dev/null | jq -r ".repos[] | select(.path == \"$repo\") | .items[] | \"\(.number): \(.name)\"" || true
@@ -812,7 +812,7 @@ PY_RENDER
 if [ -n "$GROUPS_WITH_SELECTABLE" ]; then
   echo ""
   echo "What should be removed? (multiSelect below — select groups, or use Other to exclude item numbers)"
-  
+
   # Render ask options for the teardown confirmation
   ASK_MSG="Select groups to remove:"
   for GRP in $GROUPS_WITH_SELECTABLE; do
@@ -830,12 +830,12 @@ if [ -n "$GROUPS_WITH_SELECTABLE" ]; then
   ASK_MSG="$ASK_MSG
 
 (Other: exclude specific item numbers, space-separated)"
-  
+
   # AskUserQuestion via Ask block from ~/.claude/prompts/flow-reference.md (Cleanup section, Step 2.5)
   # This ask is relayed through the flow if FLOW_DIR is set, or returns answers directly.
   # Answer format (from the Ask block): multiSelect result with selected group numbers + Other free text for exclusions
   # The Ask block will capture this and return SELECTED_GROUPS and EXCLUDED_NUMBERS variables.
-  
+
   # For now, placeholder: the Ask block processes the above ASK_MSG and sets:
   # SELECTED_GROUPS (space-separated group numbers) and EXCLUDED_NUMBERS (space-separated item numbers)
   SELECTED_GROUPS=""
@@ -866,7 +866,7 @@ if [ -n "$ITEMS_NEEDING_YES" ]; then
   echo ""
   echo "Items requiring individual confirmation (UNKNOWN, dirty, or unpushed):"
   printf '%s' "$TEARDOWN_PLAN" | jq -r '.items[] | select((.status == "unknown" or .dirty or .unpushed) and .selectable == false) | "  [\(.number)] \(.kind): \(.name)"'
-  
+
   # AskUserQuestion via Ask block: per-item yes for each of these items (W6)
   # Format: "Confirm removal of item N?" × number of items
   # Result: space-separated item numbers the user confirmed
@@ -909,17 +909,17 @@ if [ "$SURVIVOR_COUNT" -gt 0 ]; then
     echo ""
     echo "⚠ $SURVIVOR_COUNT process(es) still running. SIGKILL needed."
     echo "PIDs: $(printf '%s' "$SIGKILL_PIDS" | tr '\n' ' ')"
-    
+
     # AskUserQuestion via Ask block: "Send SIGKILL to these processes?"
     # Result: boolean SIGKILL_CONFIRM
     SIGKILL_CONFIRM="false"
-    
+
     if [ "$SIGKILL_CONFIRM" = "true" ]; then
       # Run SIGKILL
       SIGKILL_CMD="python3 -m scripts.workflow.cli cleanup sigkill - $(printf '%s' "$SIGKILL_PIDS" | tr '\n' ' ')"
       SIGKILL_RESULT=$(printf '%s' "$TEARDOWN_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $SIGKILL_CMD 2>&1)
       SIGKILL_CODE=$?
-      
+
       if [ $SIGKILL_CODE -ne 0 ]; then
         echo "SIGKILL failed or in-flow — see message below:"
         printf '%s\n' "$SIGKILL_RESULT"
@@ -950,17 +950,24 @@ if [ "$PR_SIGNAL_STATE" = "merged" ]; then
     APPLY_CMD="$APPLY_CMD --confirm-dirty"
   fi
   APPLY_CMD="$APPLY_CMD -"
-  
-  APPLY_RESULT=$(printf '%s' "$TEARDOWN_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $APPLY_CMD 2>&1)
+
+  APPLY_RESULT=$(printf '%s' "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $APPLY_CMD 2>&1)
   APPLY_CODE=$?
-  
+
   if [ $APPLY_CODE -ne 0 ]; then
     echo "ERROR: Merged-path apply failed"
-    printf '%s\n' "$APPLY_RESULT"
+    printf '%s' "$APPLY_RESULT" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup render-validation -
     python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome failure --failure-class other 2>/dev/null || true
     exit 1
   fi
-  
+
+  # Render validation result and notes
+  VALIDATION_OUTPUT=$(printf '%s' "$APPLY_RESULT" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup render-validation -)
+  printf '%s\n' "$VALIDATION_OUTPUT"
+
+  # Print non-fatal notes from apply result
+  printf '%s' "$APPLY_RESULT" | jq -r '.notes[]? | "NOTE: " + .'
+
   # Then remove siblings and agent worktrees with --skip-ticket-worktree
   SIBLINGS_CMD="python3 -m scripts.workflow.cli cleanup teardown - --phase remove --skip-ticket-worktree"
   if [ -n "$SELECTED_GROUPS" ]; then
@@ -970,7 +977,7 @@ if [ "$PR_SIGNAL_STATE" = "merged" ]; then
   if [ -n "$EXCLUDED_NUMBERS" ]; then
     SIBLINGS_CMD="$SIBLINGS_CMD --exclude $(printf '%s' "$EXCLUDED_NUMBERS" | tr ' ' ' ')"
   fi
-  
+
   SIBLINGS_RESULT=$(printf '%s' "$TEARDOWN_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $SIBLINGS_CMD 2>&1)
   FINAL_RESULT="$APPLY_RESULT"  # Use apply result for disk/memory accounting (hook runs once in apply)
 else
@@ -986,10 +993,10 @@ else
   if [ -n "$PER_ITEM_YES" ]; then
     TEARDOWN_CMD="$TEARDOWN_CMD --yes-items $(printf '%s' "$PER_ITEM_YES" | tr ' ' ' ')"
   fi
-  
+
   FINAL_RESULT=$(printf '%s' "$TEARDOWN_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $TEARDOWN_CMD 2>&1)
   FINAL_CODE=$?
-  
+
   if [ $FINAL_CODE -ne 0 ]; then
     echo "ERROR: Teardown-only path failed"
     printf '%s\n' "$FINAL_RESULT"
