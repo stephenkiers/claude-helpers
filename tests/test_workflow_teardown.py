@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-Spec-blind test suite for cleanup teardown, procs, and stale modules.
+Test suite for cleanup teardown, procs, and stale modules.
 
-Written ONLY from the plan specification (34 test statements) without reading
-implementation details of the modules under test. Each test verifies a specific
-behaviour described in the plan's "Tests (written spec-blind in Round 2)" section.
+Each test verifies a specific behaviour described in the plan's Tests section.
 
-Run with: python3 tests/test_cleanup_teardown_procs_spec_blind.py
+Run with: python3 tests/test_workflow_teardown.py
 """
 
 import sys
@@ -24,7 +22,7 @@ from _test_harness import Harness
 
 
 def main():
-    h = Harness("CLEANUP TEARDOWN PROCS SPEC-BLIND TEST SUITE")
+    h = Harness("WORKFLOW TEARDOWN TEST SUITE")
 
     # Test 1: Caller-tree exclusion (behavioural: actual result call)
     try:
