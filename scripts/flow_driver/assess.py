@@ -25,7 +25,7 @@ from . import relay
 from .model import RUNNER_PREFIX
 from .preflight import run_command
 from .state import Bases, LockedFlow, Step, V2State, mutating
-from .steps import AgentType, ReplyChannel, directive_file_path
+from .steps import AgentType, ReplyChannel
 
 # The closed assess vocabularies. One Literal each, so mypy catches drift; the tuples are derived from them.
 AssessStatus = Literal["already-done", "unfinished"]
@@ -53,14 +53,28 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 class _OptionsModule(Protocol):
     """flow-verify-receipt.py's option parser, loaded by path (Step 6). The real shape is Tuple[Tuple[AssessorOption, ...], Optional[str]]."""
 
+    FIXED_CHOICE_LABELS: Tuple[str, ...]
+
     def parse_options(self, text: str) -> Tuple[Tuple[object, ...], Optional[str]]:
         """Parse the assessor's option lines; returns (options, error-or-None)."""
 
 
 _OPTIONS_MODULE: Optional[_OptionsModule] = None
 
+# The fixed choices the assess batch appends to an assessor's own options (prepare_assess_batch), on top of the
+# verifier's FIXED_CHOICE_LABELS. An assessor label may equal none of them, compared case-insensitively.
+_BATCH_FIXED_LABELS = ("Open an issue", "Leave as-is", "Pause to finish by hand", "Drop with a reason")
+
 
 def _load_options_module() -> _OptionsModule:
+    """
+    Load flow-verify-receipt.py by path, once.
+
+    Raises:
+        ImportError: the verifier file cannot be located or loaded as a module.
+        OSError: the verifier file cannot be read.
+        SyntaxError: the verifier file does not compile.
+    """
     global _OPTIONS_MODULE
     if _OPTIONS_MODULE is None:
         path = Path(__file__).resolve().parents[1] / "flow-verify-receipt.py"
@@ -104,9 +118,14 @@ def _route_of(value: object) -> Optional[OptionRoute]:
 def _parse_options(text: str) -> Tuple[Optional[List[Tuple[str, OptionRoute]]], Optional[str]]:
     """
     The one typed adapter over flow-verify-receipt.parse_options. Each option becomes (label, route), and the route is
-    validated before anything else uses it. An error, or an option the adapter returned malformed, is (None, reason).
+    validated before anything else uses it. An error, or an option the adapter returned malformed, is (None, reason),
+    including a verifier that cannot be loaded (never a raise).
     """
-    options, err = _load_options_module().parse_options(text)
+    try:
+        module = _load_options_module()
+    except (ImportError, OSError, SyntaxError) as e:
+        return None, f"cannot load the option parser: {e}"
+    options, err = module.parse_options(text)
     if err:
         return None, err
     out: List[Tuple[str, OptionRoute]] = []
@@ -130,6 +149,11 @@ def _shown(text: str) -> str:
     if len(cleaned) > REASON_MAX:
         return cleaned[:REASON_MAX] + REASON_TRUNCATED
     return cleaned
+
+
+def _shown_optional(text: Optional[str]) -> Optional[str]:
+    """_shown for a field that may be absent: None stays None, so the report prints it as the record holds it."""
+    return None if text is None else _shown(text)
 
 
 def _flat(value: object) -> str:
@@ -440,8 +464,9 @@ def write_assessment_results(flow: Path, assessments: List[AssessmentItem]) -> P
     return results_file
 
 
-_TRUE_WORDS = ("true", "yes", "1")
-_FALSE_WORDS = ("false", "no", "0")
+RECORD_FIELDS = (
+    "status", "kind", "scope", "leave_as_is_safe", "cause", "evidence", "finish_plan", "verification_proof", "options",
+)
 
 
 def parse_assessor_record(line: str) -> Optional[AssessRecord]:
@@ -451,9 +476,10 @@ def parse_assessor_record(line: str) -> Optional[AssessRecord]:
     Format: <id> | status=<status> | kind=<kind> | scope=<scope> | leave_as_is_safe=<yes|no> | cause=<cause> |
             evidence=<evidence> | finish_plan=<plan> | verification_proof=<proof> | options=<label => route ;; ...>
 
-    An absent field is None (not a default). Returns None, failing closed, when the line has no id, a segment is not
-    key=value, a value is outside its vocabulary (checked by explicit membership, never a cast), or the options fail the
-    adapter.
+    A `|` inside a value is tolerated: a segment that does not start with a known field name is joined back onto the
+    previous field's value with " | ". An absent field is None (not a default). Returns None, failing closed, when the
+    line has no id, the first segment is not a known key=value, a value is outside its vocabulary (checked by explicit
+    membership, never a cast), or the options fail the adapter.
     """
     parts = [p.strip() for p in line.split("|")]
 
@@ -465,11 +491,19 @@ def parse_assessor_record(line: str) -> Optional[AssessRecord]:
         return None
     fields: Dict[str, str] = {}
 
+    last_key: Optional[str] = None
     for part in parts[1:]:
-        if "=" not in part:
-            return None
-        key, _, value = part.partition("=")
-        fields[key.strip()] = value.strip()
+        key, sep, value = part.partition("=")
+        key = key.strip()
+        if not sep or key not in RECORD_FIELDS:
+            # A `|` inside a value splits the segment. A segment that does not start with a known field name continues
+            # the previous field's value; before any field it is malformed.
+            if last_key is None:
+                return None
+            fields[last_key] = f"{fields[last_key]} | {part.strip()}"
+            continue
+        last_key = key
+        fields[key] = value.strip()
 
     status = _status_of(fields.get("status"))
     if "status" in fields and status is None:
@@ -580,10 +614,10 @@ def write_assess_report(flow: Path, assessments: List[AssessmentItem], assessor_
             lines.append(f"Kind: {record.kind}")
             lines.append(f"Scope: {record.scope}")
             lines.append(f"Leave as-is safe: {record.leave_as_is_safe}")
-            lines.append(f"Cause: {record.cause}")
-            lines.append(f"Evidence: {record.evidence}")
-            lines.append(f"Finish plan: {record.finish_plan}")
-            lines.append(f"Verification proof: {record.verification_proof}")
+            lines.append(f"Cause: {_shown_optional(record.cause)}")
+            lines.append(f"Evidence: {_shown_optional(record.evidence)}")
+            lines.append(f"Finish plan: {_shown_optional(record.finish_plan)}")
+            lines.append(f"Verification proof: {_shown_optional(record.verification_proof)}")
             if record.options:
                 lines.append(f"Options: {', '.join(label for label, _ in record.options)}")
 
@@ -897,28 +931,20 @@ whole output: nothing may follow the sentinel. Each record line is:
 
 
 def assess_reply_channel(flow: Path, nonce: str) -> ReplyChannel:
-    """The reply channel of the assess SPAWN: the driver's assess-reply command and a freshly minted delimiter."""
+    """
+    The reply channel of the assess SPAWN: the driver's assess-reply command only. The heredoc delimiter is not part of
+    it; `next` prints it on stdout (see mint_reply_delimiter), so it is never stored in the directive file.
+    """
     command = f"{RUNNER_PREFIX} assess-reply --flow {shlex.quote(str(flow))} --nonce {nonce}"
-    return ReplyChannel(command=command, delimiter=secrets.token_hex(16))
+    return ReplyChannel(command=command)
 
 
-def rotate_reply_delimiter(flow: Path, attempt: int, nonce: str) -> bool:
+def mint_reply_delimiter() -> str:
     """
-    Rewrite the assess SPAWN directive with a freshly minted reply delimiter. Returns False when the directive file is
-    absent. Raises OSError or ValueError when it cannot be read or rewritten; the caller decides what that means.
+    A fresh heredoc delimiter for one assess reply: 32 hex characters from the secrets module. The caller prints it on
+    `next` stdout and never persists or logs it; each `next` emission of an assess SPAWN mints its own.
     """
-    path = directive_file_path(flow, "assess", attempt, nonce, "SPAWN")
-    if not path.exists():
-        return False
-    data = json.loads(path.read_text(encoding="utf-8"))
-    reply = data.get("reply") if isinstance(data, dict) else None
-    if not isinstance(reply, dict):
-        raise ValueError("the assess SPAWN directive has no reply channel")
-    reply["delimiter"] = secrets.token_hex(16)
-    tmp = path.with_name(path.name + ".rotate")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
-    return True
+    return secrets.token_hex(16)
 
 
 @dataclass(frozen=True)
@@ -928,7 +954,10 @@ class Accepted:
 
 @dataclass(frozen=True)
 class Refused:
-    """assess-reply: the nonce is not the live assessor spawn. Nothing was written or rotated."""
+    """
+    assess-reply: the nonce is not the live assessor spawn, or the records were already written for this spawn. Nothing
+    was written or overwritten.
+    """
 
     reason: str
 
@@ -945,18 +974,21 @@ def _inside(path: Path, root: Path) -> bool:
 def assess_reply(locked: LockedFlow, flow: Path, nonce: str, stream: BinaryIO) -> AssessReplyOutcome:
     """
     All validation of one assessor reply, under the flow lock, in order: the nonce equals the live assess_gate nonce in
-    state spawned (else Refused, nothing written); the delimiter is rotated; the body is read with read(cap + 1) and
-    fails closed on over-cap, NUL bytes or non-UTF-8; its last non-blank line is the sentinel and no other line is; the
-    records are written exclusively (O_NOFOLLOW) under FLOW_DIR. Any other failure is an AssessStop.
+    state spawned (else Refused, nothing written); the body is read with read(cap + 1) and fails closed on over-cap, NUL
+    bytes or non-UTF-8; its last non-blank line is the sentinel and no other line is; the records are written
+    exclusively (O_EXCL, O_NOFOLLOW) under FLOW_DIR. Any other failure is an AssessStop.
+
+    Single-reply rule: exactly one reply is accepted per assess spawn. Once the records file exists, a second delivery
+    is Refused and nothing is overwritten, so a replay never halts the flow. A validation failure writes nothing and is
+    an AssessStop (fail closed), so the records file is never left half-written by a rejected reply.
+
+    Raises:
+        OSError: reading the stream fails before any validation (the caller owns the stream).
     """
     state = locked.require_state()
     record = state.assess_gate
     if record is None or record.step != "assess" or record.state != "spawned" or record.nonce != nonce:
         return Refused("assess-reply refused: the nonce is not the live assessor spawn")
-    try:
-        rotate_reply_delimiter(flow, record.attempt, record.nonce)
-    except (OSError, ValueError) as e:
-        return AssessStop(code="assess-error", reason=f"cannot rotate the assess reply delimiter: {e}")
     raw = stream.read(REPLY_CAP + 1)
     if len(raw) > REPLY_CAP:
         return AssessStop(code="assess-error", reason="assessor reply is over the 256 KiB cap")
@@ -977,6 +1009,8 @@ def assess_reply(locked: LockedFlow, flow: Path, nonce: str, stream: BinaryIO) -
         fd = os.open(records_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
         with os.fdopen(fd, "wb") as handle:
             handle.write(raw)
+    except FileExistsError:
+        return Refused("assess-reply refused: the assessor records were already written for this spawn")
     except OSError as e:
         return AssessStop(code="assess-error", reason=f"cannot write the assessor records: {e}")
     return Accepted()
@@ -1195,6 +1229,21 @@ def validate_assessor_output(assessor_output: str, outstanding_ids: List[str]) -
                 if not clean or len(clean) > LABEL_MAX:
                     return None, f"assessor record {record.id} has an option label that is empty or over {LABEL_MAX} characters"
                 options.append((clean, route))
+            # The fixed-label and duplicate checks ran on the raw labels in the verifier; re-run them on the cleaned labels,
+            # since sanitising can make two labels, or a label and a fixed choice, collide (compared case-insensitively).
+            try:
+                verifier_fixed = _load_options_module().FIXED_CHOICE_LABELS
+            except (ImportError, OSError, SyntaxError) as e:
+                return None, f"cannot load the option parser: {e}"
+            fixed = {f.casefold() for f in verifier_fixed} | {f.casefold() for f in _BATCH_FIXED_LABELS}
+            seen_labels: Set[str] = set()
+            for clean, _ in options:
+                key = clean.casefold()
+                if key in fixed:
+                    return None, f"assessor record {record.id} has option label {clean!r} that equals a fixed choice label"
+                if key in seen_labels:
+                    return None, f"assessor record {record.id} has duplicate option label {clean!r} after cleaning"
+                seen_labels.add(key)
         checked.append(dataclasses.replace(record, options=options))
     records = checked
 
