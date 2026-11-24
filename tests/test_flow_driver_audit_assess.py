@@ -194,14 +194,12 @@ def test_v2_pipe_in_evidence_does_not_break_parsing() -> None:
     text = _v1_record("b2", evidence="grep found 'pattern|other' in src/file.py") + "\n" + ASSESS_SENTINEL + "\n"
     recs, err = assess.validate_assessor_output(text, ["b2"])
     # The parser must handle the pipe within evidence without breaking field parsing
-    # Either it succeeds, or the error must clearly indicate the issue (not a silent field corruption)
-    if err is not None:
-        # Error is acceptable if it clearly states the issue
-        expect("evidence" in err.lower() or "field" in err.lower() or "separator" in err.lower(),
-               f"pipe in evidence caused unclear error: {err!r}")
-    else:
-        # Success is also acceptable if the pipe was properly handled
-        expect(recs is not None and len(recs) > 0, "parsing succeeded but no records returned")
+    # Pipes inside field values are rejoined and preserved (with spaces around the pipe)
+    expect(err is None and recs is not None and len(recs) > 0,
+           f"pipe in evidence should not break parsing: recs={recs}, err={err!r}")
+    # Verify the pipe character is preserved in the evidence field (parser rejoins with spaces: " | ")
+    expect("|" in recs[0].evidence if recs and recs[0].evidence else False,
+           f"pipe character should be preserved in evidence: {recs[0].evidence if recs else None}")
 
 
 # ---------
@@ -212,15 +210,16 @@ def test_v2_parse_assessor_record_load_errors_caught() -> None:
     """parse_assessor_record should catch load errors from lazy verifier loading (D11)."""
     # This tests that if _load_options_module() raises, the error is caught and returned
     # rather than propagating. The actual test would require mocking the loader, so we
-    # test the happy path: that parse_assessor_record returns a tuple with optional error
+    # verify the happy path: that parse_assessor_output succeeds with valid records
     line = _v1_record("b2", options="A => pause ;; B => issue")
 
     # Call the parsing function (happy path)
-    # assess module has parse_assessor_record which should handle load errors
-    # For now, we test that the parsing returns the expected type
     result = assess.parse_assessor_output(line + "\n" + ASSESS_SENTINEL + "\n")
     expect(isinstance(result, tuple) and len(result) == 2,
            f"parse_assessor_output should return a tuple of (records, error), got {type(result)}")
+    recs, err = result
+    expect(err is None and recs is not None and len(recs) == 1,
+           f"valid input should parse without error: recs={recs}, err={err!r}")
 
 
 # ---------

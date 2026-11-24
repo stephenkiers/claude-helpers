@@ -75,6 +75,10 @@ def test_delimiter_printed_on_next_stdout(base: Path) -> None:
            f"expected assess SPAWN, got {verb} {nxt.get('step')}")
     # The next_line helper already validates the REPLY-DELIMITER format
     # This test passes if next_line succeeds without raising
+    # Verify the reply field exists and contains only command (no delimiter)
+    reply = nxt.get("reply")
+    expect(reply is not None and "command" in reply and "delimiter" not in reply,
+           f"assess SPAWN directive reply should have command but not delimiter: {reply}")
 
 
 def test_delimiter_not_in_spawn_directive(base: Path) -> None:
@@ -135,15 +139,16 @@ def test_pipe_in_evidence_handled(base: Path) -> None:
     # D6: pipe in evidence should not halt the flow
     # Test that evidence with pipe character is properly handled
     text = (f"i1 | status=unfinished | kind=decision | scope=in-scope | leave_as_is_safe=no | "
-            f"cause=test | evidence=grep found 'pattern\\|other' in src/file.py | "
+            f"cause=test | evidence=grep found 'pattern|other' in src/file.py | "
             f"finish_plan=test | verification_proof=test | options=A => pause\n{ASSESS_SENTINEL}\n")
 
     recs, err = assess.validate_assessor_output(text, ["i1"])
     # The parser should handle pipe as part of evidence, not as a field separator
-    # If pipes in evidence break parsing, err will be non-None
-    # The requirement is that this should work (evidence can contain pipes)
-    expect(recs is not None or err is not None,
-           f"pipe in evidence handling unclear: recs={recs}, err={err}")
+    # Pipes in evidence must be rejoined and preserved in the value
+    expect(err is None and recs is not None and len(recs) == 1,
+           f"pipe in evidence should be handled without error: recs={recs}, err={err}")
+    expect("|" in recs[0].evidence if recs and recs[0].evidence else False,
+           f"pipe character should be preserved in evidence field: {recs[0].evidence if recs else None}")
 
 
 def test_assess_reply_duplicate_handling(base: Path) -> None:
@@ -191,13 +196,24 @@ def test_spawn_failed_on_assess_spawn_idempotent(base: Path) -> None:
     code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=env)
     expect(code == 0, f"spawn-launched exited {code}: {err}")
 
-    # Send a spawn-failed event (normally from a task timeout or failure)
-    # The driver should handle this gracefully even if sent twice
     state1 = state_of(flow)
     expect(state1["pending_spawn"] is not None, "no pending spawn after spawn-launched")
 
-    # The test verifies that spawn_failed can be called multiple times without changing behavior
-    # (This is implicit in the other tests; a more explicit test would need direct access to spawn_failed)
+    # Send a spawn-failed event twice and verify idempotency
+    code1, out1, err1 = run_cli(home, "next", "--flow", str(flow), "--after", "spawn-failed", extra_env=env)
+    expect(code1 == 0, f"first spawn-failed exited {code1}: {err1}")
+    state2_1 = state_of(flow)
+
+    # Send spawn-failed again (duplicate delivery)
+    code2, out2, err2 = run_cli(home, "next", "--flow", str(flow), "--after", "spawn-failed", extra_env=env)
+    expect(code2 == 0, f"second spawn-failed exited {code2}: {err2}")
+    state2_2 = state_of(flow)
+
+    # Status should remain the same (idempotent)
+    expect(state2_1.get("status") == state2_2.get("status"),
+           f"spawn-failed changed status on duplicate: {state2_1.get('status')} -> {state2_2.get('status')}")
+    expect(state2_1.get("step") == state2_2.get("step"),
+           f"spawn-failed changed step on duplicate: {state2_1.get('step')} -> {state2_2.get('step')}")
 
 
 SECTIONS = [
