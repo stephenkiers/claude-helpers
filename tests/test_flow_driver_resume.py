@@ -17,8 +17,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from _test_harness import Harness  # noqa: E402
 
+from scripts.flow_driver import receipts, resume  # noqa: E402
 from scripts.flow_driver.loop import LoopRefusal, run_recover  # noqa: E402
 from scripts.flow_driver.state import InitSpec, PendingSpawn, init_state, mutating  # noqa: E402
+
+HELD_RECEIPT = "ATTEMPT: 1\n<!-- awaiting-answers: questions/fix-01.json -->\n"
 
 
 def expect(condition: bool, message: str) -> None:
@@ -116,12 +119,55 @@ def test_resume_needs_landed_attempt(flow: Path) -> None:
     raise AssertionError("resume without a landed attempt was not refused")
 
 
+def held_pending_flow(flow: Path, state: str) -> None:
+    """A fix record in the given state with an incomplete awaiting-answers receipt on disk and no fingerprint."""
+    flow.mkdir(parents=True)
+    spec = InitSpec(repo="o/n", issue=1, worktree=str(flow))
+    with mutating(flow, create=spec) as locked:
+        init_state(locked, spec)
+        current = locked.require_state()
+        pending = PendingSpawn(step="fix", attempt=1, nonce="n0", state=state, receipt_seen=None)  # type: ignore[arg-type]
+        locked.commit(
+            dataclasses.replace(current, step="fix", attempts={"fix": 1}, pending_spawn=pending)  # type: ignore[arg-type]
+        )
+    path = receipts.receipt_path(flow, "fix")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(HELD_RECEIPT, encoding="utf-8")
+
+
+def rule_one_on_held(flow: Path) -> str:
+    with mutating(flow) as locked:
+        return resume._rule_1_action(locked, locked.require_state().pending_spawn)  # type: ignore[arg-type]
+
+
+def test_resume_holds_resumed_incomplete_receipt(flow: Path) -> None:
+    held_pending_flow(flow, "resumed")
+    for _ in range(3):
+        action = rule_one_on_held(flow)
+        expect(action == "wait", f"resume on a resumed incomplete receipt returned {action!r}, expected 'wait'")
+    with mutating(flow) as locked:
+        stored = locked.require_state().pending_spawn.receipt_seen  # type: ignore[union-attr]
+    expect(stored is None, "resume stored a fingerprint for a held resumed receipt")
+
+
+def test_resume_holds_parked_incomplete_receipt(flow: Path) -> None:
+    held_pending_flow(flow, "parked-awaiting-answer")
+    for _ in range(3):
+        action = rule_one_on_held(flow)
+        expect(action == "wait", f"resume on a parked incomplete receipt returned {action!r}, expected 'wait'")
+    with mutating(flow) as locked:
+        stored = locked.require_state().pending_spawn.receipt_seen  # type: ignore[union-attr]
+    expect(stored is None, "resume stored a fingerprint for a held parked receipt")
+
+
 CHECKS = [
     ("1: resume clears a paused step gate stop and archives its answer", test_resume_clears_step_gate_pause),
     ("2: resume clears a held merge gate stop and archives the Hold answer", test_resume_clears_merge_hold),
     ("3: other stops are refused", test_resume_refused_for_other_stops),
     ("4: a failed flow is refused", test_resume_refused_when_failed),
     ("5: no landed attempt is refused", test_resume_needs_landed_attempt),
+    ("6: resume holds a resumed incomplete receipt as wait and stores no fingerprint", test_resume_holds_resumed_incomplete_receipt),
+    ("6b: resume holds a parked incomplete receipt as wait and stores no fingerprint", test_resume_holds_parked_incomplete_receipt),
 ]
 
 
