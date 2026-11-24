@@ -138,8 +138,8 @@ def test_audit_carveout_in_auditor_criteria_and_both_steps():
     return carve and "SPLIT_BASIS: zero-units" in criteria and "not a reduced run" in criteria, "carve-out"
 
 
-def test_inventory_row_44_names_this_test():
-    row = [ln for ln in _doc("docs/v2-inventory/rules.md").splitlines() if ln.startswith("| 44 | Amendment (2026-11-23)")]
+def test_inventory_row_45_names_this_test():
+    row = [ln for ln in _doc("docs/v2-inventory/rules.md").splitlines() if ln.startswith("| 45 | Amendment (2026-11-23): zero-unit")]
     return len(row) == 1 and "tests/test_zero_unit_wiring.py" in row[0], repr(row)[:200]
 
 
@@ -152,7 +152,7 @@ TESTS = [
     ("stop-code lists carry zero-unit-plan-incomplete", test_stop_code_lists_agree_on_prefix),
     ("test-correct-zero-unit in status list and exemptions", test_zero_unit_status_and_exemption_tokens),
     ("audit carve-out covers implement, fix and auditor criteria", test_audit_carveout_in_auditor_criteria_and_both_steps),
-    ("inventory row 44 names its pinning test", test_inventory_row_44_names_this_test),
+    ("inventory row 45 names its pinning test", test_inventory_row_45_names_this_test),
 ]
 
 if __name__ == "__main__":
