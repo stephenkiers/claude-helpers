@@ -32,17 +32,22 @@ units, sweeps, check runs and merge applies collect by a file wait).
 
 3. **Per-id state** is `launched → returned → ok | bad`, with a branch to `launched (retry)` on first failure. An id becomes *returned* when its final report arrives: a synchronous result containing the report, an `<agent-message from="{id}">` hand-back, or a task notification whose `<result>` contains the report. A synchronous result that only says the agent was launched ("Async agent launched", "working in the background") is a launch acknowledgement: the id stays `launched`. A notification whose `<result>` only points at a hand-back marks the id *returned*, but the receipt is read from the hand-back message. The hand-back and the notification for one id may arrive in separate turns: that is two partial turns and one state change, never a retry. A second or late notification for an id that has already returned, or that a file wait already closed, is a no-op, including one that arrives after that id's stand-in was written: it never overwrites the stand-in or triggers another retry. Never keep a running count of notifications.
 
-4. **On return**, check that id's checkpoint file and sentinel and mark it `ok` or `bad`. For agents that write no checkpoint file and return their result inline (Router, Q&A), the report carried by the hand-back (or synchronous result or notification, whichever contains it) is the whole receipt. **After context compaction, or whenever remembered state is uncertain,** an id whose checkpoint file exists with its sentinel is `ok` regardless of remembered receipt state; only ids without a valid file remain outstanding, and a missing file still never triggers a retry. A present-but-invalid file (exists, but lacks a sentinel or is unreadable) is `bad`.
+4. **On return**, check that id's checkpoint file and sentinel and mark it `ok` or `bad`. This applies at **foreground sites**, where a `bad` id is retried once per rule 5. At **file-wait sites** the same file check decides `ok` or not-yet-`ok`, but a `bad` file never triggers a retry or stand-in; rule 5 governs that case. For agents that write no checkpoint file and return their result inline (Router, Q&A), the report carried by the hand-back (or synchronous result or notification, whichever contains it) is the whole receipt. **After context compaction, or whenever remembered state is uncertain,** an id whose checkpoint file exists with its sentinel is `ok` regardless of remembered receipt state; only ids without a valid file remain outstanding, and a missing file still never triggers a retry. A present-but-invalid file (exists, but lacks a sentinel or is unreadable) is `bad`.
 
 5. **Retry once** only at a foreground site, when an id has *returned* and is `bad` — state becomes `launched (retry)`. Evaluate the next return once: if still `bad`, write the stand-in file per the existing pattern. **File-wait sites have no "returned bad" state, no retry and no stand-in:** a child is `ok`, or the phase ends at its deadline with the hard stop of rule 8. (A per-id retry there needs per-id freshness and a defined `bad` marker; that belongs to the self-heal follow-up.)
 
 6. **Never end your turn while any launched id is outstanding.** Collect the children in the same turn:
-   - **Foreground sites** collect by the foreground return: the dispatch call blocks until every child returns and carries its report.
+   - **Foreground sites** collect by the foreground return: the dispatch call blocks until every child returns and carries its report. The bound here is the harness and each child's own turn limits; a foreground return has no `wait-files.py` deadline. An outer step deadline, where one is named, still applies.
    - **File-wait sites** collect with `~/.claude/scripts/wait-files.py`. Run `mark` immediately before the launch, then repeat `wait` in the foreground until it exits 0 (closed) or 4 (deadline). Exit 3 (`pending: <ids>`) means the slice ended: re-issue the same `wait` call at once. Each call blocks for up to `--timeout` seconds (default 540, never below 300) and polls the files every 5 s, so it costs no model tokens while it waits.
+     - **Bash tool timeout.** Every Bash tool call that runs `wait-files.py wait` must pass an explicit `timeout: 600000` (milliseconds) parameter on the tool call. The default Bash tool timeout is shorter than the 540 s slice, so without it the call is killed mid-slice.
+     - **Killed or exit 2.** If a `wait` Bash call is killed or returns exit 2, re-issue the same `wait` exactly once. If that re-issue is also killed or returns exit 2, write the FAILED receipt (rule 8 wording, `Reason: child-wait call failed: phase <P>`) and stop. Do not relaunch the children.
+     - **Setup.** This requires `/setup-local` to have been run after pulling, so that `~/.claude/scripts/wait-files.py` exists.
+     - **Marks.** `mark` refuses to overwrite an open phase without `--force`. There is one phase per `STATE_DIR`. After context compaction, pass an explicit `--since <EPOCH>` to `wait` (the epoch recorded at the mark) rather than relying on the recorded mark.
 
      ```bash
      python3 "$HOME/.claude/scripts/wait-files.py" mark --phase <STEP or command>:<phase> --state-dir <STATE_DIR>
      # ... launch the batch ...
+     # Bash tool call, with timeout: 600000 (milliseconds)
      python3 "$HOME/.claude/scripts/wait-files.py" wait --phase <STEP or command>:<phase> --state-dir <STATE_DIR> \
        --deadline <SECS> --sentinel '<sentinel>' <id>=<path> [<id>=<path> ...]   # or --exists for exit-status files
      ```
@@ -58,6 +63,8 @@ units, sweeps, check runs and merge applies collect by a file wait).
    - never relaunch and never write a stand-in for an outstanding id. The flow's existing Retry / Take over / Abort stop handles it; a repeated deadline is visible in the receipt and in `child-wait-attempts.json`.
 
 9. **The barrier closes** when every id is `ok` (or stood-in, at a foreground site). A launch acknowledgement alone never closes it.
+
+**Known tradeoff.** At a file-wait site, a dead child is invisible until the full phase deadline expires; nothing reports it earlier. This is accepted for now (plan Q4: hard stop, no relaunch). A self-heal follow-up issue is to be filed to address per-id freshness and a defined `bad` marker.
 
 **Carve-out: the top-level orchestrator.** `commands/expert-flow.md` is not a step agent. It waits on its one step subagent at a time (N=1) and may still end its turn to await that single step's completion, with at most one `ScheduleWakeup` of 1800 seconds per step as a heartbeat that writes a status report only. Rules 6 to 8 bind every subagent and skill it runs, and every other caller.
 
