@@ -314,7 +314,7 @@ if __name__ == "__main__":
         os.environ["PATH"] = str(sleeper_dir) + os.pathsep + (saved["PATH"] or "")
         os.environ["PIDFILE"] = str(pid_file)
         try:
-            timed = deps.ensure_deps(feat, main, timeout=1)
+            timed = deps.ensure_deps(feat, main, timeout=4)
         finally:
             for key, value in saved.items():
                 if value is None:

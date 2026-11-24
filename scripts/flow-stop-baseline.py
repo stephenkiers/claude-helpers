@@ -96,6 +96,11 @@ RULES: List[Tuple[str, str, str]] = [
     (r"^planned-change-breaks-test", STEP_AGENT, "planned change breaks test"),
     (r"^test-only-plan", STEP_AGENT, "test-only plan"),
     (r"^existing-test-edit", STEP_AGENT, "existing test edit"),
+    # Not anchored (no ^): these phrases are matched anywhere in the reason text, and anchoring
+    # has not been checked against the existing stop reasons, so it could change classifications.
+    (r"approved[- ]test[- ]still[- ]red", STEP_AGENT, "approved test still red"),
+    (r"approval[- ]commit[- ]not[- ]at[- ]start", STEP_AGENT, "approval commit not at start"),
+    (r"approved[- ]path[- ]touched", STEP_AGENT, "approved path touched"),
     (r"^test-path-in-units", STEP_AGENT, "test path in units"),
     (r"^plan-test-paths", STEP_AGENT, "plan test-path check"),
 ]

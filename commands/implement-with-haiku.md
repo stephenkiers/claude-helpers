@@ -1,6 +1,6 @@
 ---
 description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
-allowed-tools: Read, Write, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/test-cleanup-check.py":*), Bash(python3 "$HOME/.claude/scripts/primary-checkout-drift.py":*), Bash(python3 "$HOME/.claude/scripts/unit-sizing.py":*), Bash(python3 "$HOME/.claude/scripts/plan-test-paths.py":*), Bash(python3 "$HOME/.claude/scripts/unit-progress.py":*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks:*), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*), Bash(cd:*), Bash(jq:*), Agent
+allowed-tools: Read, Write, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*), Bash(python3 "$HOME/.claude/scripts/anti-cheat-scan.py":*), Bash(python3 "$HOME/.claude/scripts/test-change-check.py":*), Bash(python3 "$HOME/.claude/scripts/test-cleanup-check.py":*), Bash(python3 "$HOME/.claude/scripts/primary-checkout-drift.py":*), Bash(python3 "$HOME/.claude/scripts/unit-sizing.py":*), Bash(python3 "$HOME/.claude/scripts/plan-test-paths.py":*), Bash(python3 "$HOME/.claude/scripts/unit-progress.py":*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks:*), Bash(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments fetch:*), Bash(cd:*), Bash(jq:*), Agent
 ---
 
 # Implement with Haiku
@@ -38,6 +38,7 @@ each one marks:
 - `check_not_configured` — Final check, no check command resolved and no opt-out recorded
 - `implementer_shortfall` — Step 7, a single-unit implementer fell short, and the failure was escalated to Sonnet
 - `cwd_drift` — Step 4c or later, a unit wrote to the primary checkout (cwd drift detected)
+- `approved_test_still_red` — Gate step 7, a human-approved test change leaves a test still red
 
 `steps_skipped` marks a run whose ledger was missing or incomplete.
 
@@ -55,7 +56,7 @@ the model for the implementing agent (unset defaults to the frontmatter model). 
 carries a prior partial-work base for an escalated attempt; note that `--partial-base` alone only
 replaces `START_SHA` and does not scope the run to specific units. `--split-finer` forces more granular
 unit splitting (requires `--partial-base`; only valid with an existing partial-work context). `--only-units "<comma-separated unit ids>"`
-(e.g., `"Step 8,Step 10"`) scopes the run to only those plan units; other units are treated as already built.
+(e.g., `"Step 8,Step 10"`) scopes the run to only those plan units; other units are treated as already built. `--redraft-test-changes` (implement step only) triggers a redraft Retry after an `approved-test-still-red` stop; always used with `--partial-base`.
 
 ```bash
 RESUMED_FROM=""
@@ -64,6 +65,7 @@ IMPLEMENTER_MODEL=""
 PARTIAL_BASE=""
 SPLIT_FINER=""
 ONLY_UNITS=""
+REDRAFT_TEST_CHANGES=""
 for arg in "$@"; do
   if [[ "$prev_arg" == "--resumed-from" ]]; then
     RESUMED_FROM="$arg"
@@ -82,6 +84,9 @@ for arg in "$@"; do
   fi
   if [[ "$arg" == "--split-finer" ]]; then
     SPLIT_FINER="yes"
+  fi
+  if [[ "$arg" == "--redraft-test-changes" ]]; then
+    REDRAFT_TEST_CHANGES="yes"
   fi
   prev_arg="$arg"
 done
@@ -806,23 +811,122 @@ On success with nothing pending, skip Steps 4a–4d and proceed directly to the 
 
 In the `implement` step, when no non-test Round 1 work remains once test requirements are set aside, do not invent a unit to satisfy `MIN_UNITS`. Stop with Reason `test-only-plan: no Round 1 work; tests are a Round 2 deliverable`. The `fix` step does not stop with `test-only-plan`; item b below governs it.
 
-When a plan step requires changing an existing test's assertion or removing a test (work Round 1 may not do and Round 2 cannot do), stop with Reason `existing-test-edit: <step or finding id> <path>`. In the `implement` step this stop is unconditional. In the `fix` step (a review action-plan item) the stop is replaced by the set-aside rules below and applies only when no Round 1 work is left. A finding that asks for a *new* test is not a stop; it goes to Round 2 through the plan text.
+When a plan step requires changing an existing test's assertion or removing a test (work Round 1 may not do and Round 2 cannot do), the item is classified and set aside. In the `implement` step, the set-aside rules below apply before Round 1. In the `fix` step (a review action-plan item) the same set-aside rules apply. A finding that asks for a *new* test is not a stop; it goes to Round 2 through the plan text.
 
-**Fix step: existing-test-edit items (set aside; only human-approved edits are applied).** This block runs only when `STEP_NAME` is `fix`. Run its items in order, before `init` (item 3) and before any drafting or asking:
+**Implement step: existing-test-edit and existing-test-removal items (set aside; human-approved changes only).** This block runs only when `STEP_NAME` is `implement`. Run its items in order, before Round 1:
+
+0. **Test-edit directory.** `TEST_EDIT_DIR` is `${FLOW_DIR}/test-edits` when `FLOW_DIR` is set, otherwise `<SCRATCH_PATH>/test-edits`. Create it with `mkdir -p` from Bash. It holds the drafted patches, `asked.txt`, `approval-commit.txt`, and when the integration gate detects remaining red tests in approved paths, the files `still-red.txt`, `still-red-tail.txt`, `still-red-head.txt`, and `still-red-round1.diff`, so a Retry or resume of the implement step finds them again. The `still-red.txt` file holds the paths that failed; `still-red-tail.txt` holds the last 200 lines of the failing check output for those paths; `still-red-head.txt` holds the pre-reset HEAD SHA (40-hex); `still-red-round1.diff` holds the Round 1 diff (patch text). Files there are written from Bash only (`git diff` redirects and `printf`), never with `Write`, and never hold repo content other than the patch text and check output.
+a. **Classify.** Sort each plan step finding or unit change that needs an existing test modified or deleted into `TEST_EDIT_ITEMS`. Each entry is `edit` (status M: an existing test's assertion or logic changes) or `removal` (status D: a whole test or test file is deleted). An entry is `coupled` when the same finding or unit also changes non-test code. Items whose path contains whitespace cannot be carried on a receipt `TEST_EDIT:` line (the verifier reads space-separated fields), so they are set aside before any asking as `OUTSTANDING: <id> (test-edit-declined: <path>)` and are never asked about. **Classifier skip.** An item whose exact change is already present in a live-verified approval commit (see 4.7 step 0) is not re-classified or re-asked. A change present only in an unapproved commit is never skipped; the split range scan in Gate step 2 catches it. Otherwise ordinary items proceed to the ask.
+b. **No Round 1 work left.** This check runs before any drafting or asking, and it does not run in a `--only-units` run (item h governs there: the units named by `--only-units` are the Round 1 work, and a test-edit item is reported with item h's reasons whether or not any unit remains). If no Round 1 work remains once `TEST_EDIT_ITEMS` and the test requirements are set aside, stop with Reason `existing-test-edit: <step or finding id> <path>`. Do not stop with `test-only-plan`. Otherwise a test-edit item never stops the step while ordinary units remain; it is set aside and the step continues.
+c. **Coupled items are split.** A coupled item's test half is asked about and drafted. The code half is withheld from `units.json` and becomes an ordinary unit only if the test half is approved. If the test half is declined, the code half is set aside and reported `OUTSTANDING: <id> (test-edit-declined: <path>)`.
+d. **Drafting.** For each item (edit or removal):
+   - **Edits (M):** draft the change as a unified diff with `git diff --full-index` after the coordinator's own edit to the worktree copy. The file is then restored with `git checkout HEAD -- <path>`. The patch is checked with `git apply --check`. A draft that does not pass the check is set aside as `OUTSTANDING: <id> (test-edit-apply-conflict: <path>)` and is not asked about.
+   - **Removals (D):** record the removal as a patch from `git diff --full-index` after `git rm -- <path>`, then restore the file with `git checkout HEAD -- <path>`.
+   - **Reload first:** when `<TEST_EDIT_DIR>/<finding id>.patch` already exists (a Retry or resume), and it passes `git apply --check` on the current tree, reuse it byte for byte and do not redraft, so a prior answer can match it.
+   - After drafting all items, run `python3 "$HOME/.claude/scripts/test-change-check.py" --repo . --base HEAD --remove <path> [--remove <path>…] --json` once over all removal items. Record its findings in each removal item's brief.
+e. **Ask.** One Ask call through the Ask block holds one question per item, header `Test changes`. Edits come first, removals last. Each question carries:
+   - The full patch text (edits) or the removal path (removals)
+   - The blob ids: for edits, the post-image full 40-hex id; for removals, the pre-image full 40-hex id
+   - The `test-change-check.py` findings (removals only; for edits, findings are `check unavailable: <reason>` if the check failed with exit 2)
+   - The WHY recap: the business need and context from the plan step
+   
+   Options (exactly these, neither marked recommended or pre-selected):
+   - `Decline — leave OUTSTANDING`
+   - `Approve edit: <id> <path> <post-image blob>` (edits only)
+   - `Approve removal: <id> <path> <pre-image blob>` (removals only)
+   
+   Only a plain single-select answer equal to an offered label approves. **Re-ask cap:** before asking about an id, append one line `<id>` to `<TEST_EDIT_DIR>/asked.txt`; when the file already holds two lines for the id, do not ask again and report `OUTSTANDING: <id> (test-edit-declined: <path>)`. Declined items are reported `OUTSTANDING: <id> (test-edit-declined: <path>)`.
+
+   **Fail-closed answer mapping.** A missing, list-shaped, free-text or unmappable answer counts as declined, so a human mistake never auto-approves an edit. Only a plain single-select answer that exactly matches an offered label approves.
+
+f. **Approval commit (run 4.7 steps 0–5 now).** Before Round 1 begins, apply and commit all approved changes together. Proceed to section 4.7 immediately below.
+g. **Fix now (`--only-units`).** A run with `--only-units` never asks or applies a test edit, so it never asks a test-edit question. Each `TEST_EDIT_ITEMS` entry is reported with its own reason: a coupled item `OUTSTANDING: <id> (test-edit-coupled: <path>)` and a pure edit/removal `OUTSTANDING: <id> (test-edit-not-approvable-in-fix-now: <path>)`. The Gate step 2 scan keeps `test-removed` armed (no `--allow-test-removal` for this run).
+h. **Redraft Retry (triggered by `--redraft-test-changes`).** When a human chooses a plain Retry after an `approved-test-still-red` stop and `still-red.txt` exists:
+   - **Archive, verify, then reset.** The reset discards the Round 1 commits, so they are archived first, in order, and the reset runs only if every archive check passes:
+     1. Pin the Round 1 tip to a ref: `git update-ref "refs/implement-redraft/<attempt>/round1" HEAD`.
+     2. Write a bundle of the Round 1 commits when there are any: `git bundle create "<TEST_EDIT_DIR>/round1-<attempt>.bundle" HEAD "^<bases[implement]>"`, then `git bundle verify "<TEST_EDIT_DIR>/round1-<attempt>.bundle"`. When HEAD equals `<bases[implement]>` there is nothing to bundle and this sub-step is skipped.
+     3. Verify the ref resolves to the tip recorded in `still-red-head.txt`: `[ "$(git rev-parse --verify "refs/implement-redraft/<attempt>/round1^{commit}")" = "$(cat "<TEST_EDIT_DIR>/still-red-head.txt")" ]`, and the tip object exists (`git cat-file -e <sha>`).
+     If any check fails, stop with Reason `redraft-archive-failed: <step>` and `FAILURE_CLASS: other`; do not reset and do not move `RECORD_DIR`.
+   - **Reset and mark.** Only after the archive checks pass, in one Bash command: `git reset --hard <bases[implement]>` (so HEAD equals `START_SHA`), move `RECORD_DIR` to `<RECORD_DIR>.redraft-<attempt>` (the worktree's unit record for this attempt is archived), then write the marker with `printf '%s\n' "<attempt>" > "<TEST_EDIT_DIR>/redraft-reset.<attempt>"`. The marker prevents a resume of the same attempt from resetting again. After the reset, the Round 1 commits survive only as the `refs/implement-redraft/<attempt>/round1` ref, the bundle, the archived record, and `still-red-round1.diff`; a plain Retry after `approved-test-still-red:` always discards them from the branch.
+   - **Who clears the still-red files.** The writer in Integration Gate step 7 creates them; only this item's final cleanup removes them, after a passing scan. A Take over never clears them automatically: the human who takes over may delete the four files by hand once the approved tests are green in the worktree. Every re-run kind other than a plain Retry leaves them in place and stops with `approved-test-still-red-pending` (below), so a resume of the same attempt finds them again.
+   - **Delete invalidated approvals.** Delete the still-red paths' lines from `approval-commit.txt` and their reload patches before any ask, so they cannot be reused.
+   - **Redraft.** For each still-red path, draft a new change. The pre-image is the post-reset HEAD blob, and the post-image is shown with its full 40-hex blob id. The redraft brief carries the failing test tail from `still-red-tail.txt`, the pre-reset HEAD SHA from `still-red-head.txt`, and the Round 1 diff from `still-red-round1.diff`.
+   - **Re-ask.** Ask only the still-red paths through the same `Test changes` batch, counting against the two-ask cap.
+   - **Reapply.** Apply every other still-approved patch with its existing answer, without re-asking.
+   - **Commit.** Create a single approval commit whose parent equals `START_SHA`.
+   - **Cleanup.** After a passing scan, remove `still-red.txt`, `still-red-tail.txt`, `still-red-head.txt` and `still-red-round1.diff`.
+   
+   Every other re-run kind (Retry with sonnet, Retry split finer, coverage retry, Fix now) with `still-red.txt` present stops before Round 1 with Reason `approved-test-still-red-pending: <path>[, <path>…]` and `FAILURE_CLASS: other`.
+i. **Misclassification.** An item classified ordinary whose change turns an existing test red reaches the Integration Gate step 4 or Final check fix-loop stop `planned-change-breaks-test: <path>` (extracted from the implementer's `NEEDS_TEST_UPDATE` line). It is never `gate-not-converged` with no path.
+
+### 4.7 Human-approved test changes (shared by fix and implement)
+
+This procedure runs before Round 1 in the implement step (Step 2 item f above, with its own ask and approval flow), and after Round 4 in the fix step. Both steps invoke it by reference with the exact same scan and commit semantics, differing only in apply-method (`--3way` for fix, no `--3way` for implement) and the verifier's blob-comparison (implement only).
+
+**0. Live re-verify (implement step only).** When resuming or retrying the implement step, before proceeding with the approval commit, check that:
+- If a prior approval-commit is on disk at `<APPROVAL_COMMIT>` (`--base` from 4.7 step 4 below), verify it is an ancestor of HEAD, all its touched paths match the saved record, and (for implement only) each touched blob matches the answered approval's 40-hex id. Any commit that fails any of these is ignored; never reused.
+
+**1. Apply edits and removals.** For each approved item:
+- **Edits (M):** `git apply <TEST_EDIT_DIR>/<id>.patch` (without `--3way` in implement, with `--3way` in fix).
+- **Removals (D):** `git rm -- <path>`.
+
+After all applies, `git status --porcelain --untracked-files=no -- <approved paths>` must show each path with status `M` (edit) or `D` (removal) exactly, with no mode changes. Any discrepancy is a stop, `existing-test-edit: <id> <path>`.
+
+**2. Commit.** Write the message to a file under `TEST_EDIT_DIR` and commit with `git commit -F <file>`:
+- Subject: `test: apply human-approved existing-test changes (<ids>)`
+- Body: one recap line per applied item in the form `> <id> <path>: <WHY recap>` (the WHY recap is from the item's ask brief). Every recap line is prefixed with `> ` so no line starts with `Token:`.
+- Trailer: the approval record from approved answers, one line per item: `<id> <path> <M|D> answers/<step>-<SEQ>.json` (the full 40-hex blob ids are in the question's approval label, not the commit message).
+
+**3. Write approval record.** Write `<TEST_EDIT_DIR>/approval-commit.txt` with one line per approved item in the W2 schema: `<id> <path> <M|D> answers/<step>-<SEQ>.json` (a missing status reads as `M` for backward compatibility with #510-format records; the schema is defined here, and `scripts/flow-verify-receipt.py` reads it the same way). This is the single statement of the approval-commit record. The approval commit's 40-hex SHA (`<APPROVAL_COMMIT>`) is not stored in that file; it is recorded on the step's receipt as `TEST_EDIT_COMMIT: <sha>` (see the receipt contract), and every other mention in this document points here.
+
+**4. Scan.** Exactly one anti-cheat invocation carries both `--allow-test-edit <path> …` and `--allow-test-removal <path> …` flags:
+   ```bash
+   python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo . --base <APPROVAL_COMMIT>^ --head <APPROVAL_COMMIT> --profile implement \
+     --allow-test-edit <edit path> [--allow-test-edit …] \
+     --allow-test-removal <removal path> [--allow-test-removal …]
+   ```
+   Both `--base` and `--head` must be as shown (single-commit scan). Any `test-edit` or `test-removed` reason is a failure.
+
+**5. Parent invariant (implement step only).** For implement, before 4.7 step 4 commits, check that HEAD equals `START_SHA`. If it differs (Round 1 work from a prior attempt sits on top) and no live-verified approval commit already covers every approved path, stop with `approval-commit-not-at-start: <HEAD>`. After the commit, verify the approval commit's first parent equals `START_SHA`.
+
+**Differences between the steps (the complete list).** Everything not named here is identical in both steps; a parity test (`tests/test_implement_fix_hatch_parity.py`) fails on any other difference.
+
+| Aspect | implement | fix |
+|---|---|---|
+| When it runs | before Round 1 | after Round 4's last commit (or where it would have run) |
+| Apply method | `git apply`, no `--3way` | one `git apply --3way` per patch, in finding-id order; a conflicting patch is restored with `git checkout HEAD -- <path>`, skipped and reported `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>) [self-report]`, and never stops the step |
+| Items | edits (M) and removals (D) | edits and removals; the staged set (`git add -- <path> ...`, then `git diff --cached --no-renames --name-status`) must list exactly the applied paths with their status, else stop `existing-test-edit: <id> <path>` with `FAILURE_CLASS: other` |
+| Live re-verify (step 0) | ancestor of HEAD, recorded paths, and each blob matches the answered approval's 40-hex id | ancestor of HEAD and recorded paths with their status only; when it verifies, only patches for other findings are applied (a second approval commit replaces the record) |
+| Parent invariant (step 5) | HEAD equals `START_SHA` before the commit; first parent equals `START_SHA` after | none (the commit lands after Round 4) |
+| Answers file | `answers/implement-<SEQ>.json` | `answers/fix-<SEQ>.json` |
+| No Round 1 work left | stop `existing-test-edit` (never `test-only-plan` for a test-edit item); `test-only-plan` stays for plans with no non-test work at all until #526 | stop `existing-test-edit`; never `test-only-plan` |
+| Ledger | the orchestrator, not the step, appends the `answer` record pinning the answers file (`commands/expert-flow.md`, relay step 4a); the step never writes `human.jsonl` | same |
+
+Both steps pass `--allow-test-edit` and `--allow-test-removal` only to the single-commit scan of the approval commit, never to Gate step 2's range scan or any `ROUND2_START_SHA..HEAD` scan.
+
+**Fix step: existing-test-edit and existing-test-removal items (set aside; only human-approved edits are applied).** This block runs only when `STEP_NAME` is `fix`. Run its items in order, before `init` (item 3) and before any drafting or asking:
 
 0. **Test-edit directory.** `TEST_EDIT_DIR` is `${FLOW_DIR}/test-edits` when `FLOW_DIR` is set, otherwise `<SCRATCH_PATH>/test-edits`. Create it with `mkdir -p` from Bash. It holds the drafted patches, `asked.txt` and `approval-commit.txt` below, so a Retry or a resume of the fix step finds them again. Files there are written from Bash only (`git diff` redirects and `printf`), never with `Write`, and never hold repo content other than the patch text.
 a. **Classify.** Sort each Doing-it item `D<n>` that needs an existing test changed into `TEST_EDIT_ITEMS`. Each entry is `edit` (an existing assertion changes) or `removal` (an existing test or test file is deleted). An entry is `coupled` when the same item also changes non-test code. An `edit` whose path contains whitespace cannot be carried on a receipt `TEST_EDIT:` line (the verifier reads three space-separated fields), so it is set aside before any asking as `OUTSTANDING: D<n> (test-edit-declined: <path>)`; this is a known limitation, and such a path is never asked about. Ordinary items stay Round 1 work.
 b. **No Round 1 work left.** This check runs before any drafting or asking, and it does not run in a `--only-units` run (item h governs there: the units named by `--only-units` are the Round 1 work, and a test-edit item is reported with item h's reasons whether or not any unit remains). If no Round 1 work remains once `TEST_EDIT_ITEMS` and the test requirements are set aside, stop with Reason `existing-test-edit: <finding id> <path>`, as the `implement` step does. Do not stop with `test-only-plan`. Otherwise a test-edit item never stops the step while ordinary units remain; it is set aside and the step continues.
 c. **Coupled items are set aside whole.** A coupled item's code half is withheld from `units.json`. It is never drafted or asked about, and it is reported `OUTSTANDING: D<n> (test-edit-coupled: <path>)`.
-d. **Removals are set aside.** A `removal` item is never asked about. It is reported `OUTSTANDING: D<n> (test-removal: <path>)`.
+d. **Drafting (edits and removals).** Drafting is the same as the implement step's Step 2 item d (edits, removals, reload rule and the `test-change-check.py` run), with `<finding id>` in place of `<id>` and the set-aside label `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>)`. Do not restate it here; the implement step's wording is the one source. Its removal check runs as written there:
+   - After drafting all items, run `python3 "$HOME/.claude/scripts/test-change-check.py" --repo . --base HEAD --remove <path> [--remove <path>…] --json` once over all removal items. Record its findings in each removal item's brief.
 e. **Units.** The test-edit worker is never a unit. No `TEST_EDIT_ITEMS` path enters `units.json`; the `plan-test-paths.py units` preflight (item 6b) already rejects test paths in `owned_files`. `UNITS:` counts ordinary units only.
-f. **Draft pure edits.** For each `edit` item the coordinator works directly, with no subagent and no unit, as Round 4 does. **Reload first:** when `<TEST_EDIT_DIR>/<finding id>.patch` already exists (a Retry or a resume), and it passes `git apply --check` on the current tree, reuse it byte for byte and do not redraft, so the question text is identical and a prior answer can match it. A reloaded patch that no longer applies (it was already applied by a prior attempt's approval commit, or the file moved on) is handled by the approval record in 4.7 step 0, or else redrafted below. Otherwise draft the change as a unified diff saved to `<TEST_EDIT_DIR>/<finding id>.patch`. The patch is produced with `git diff --full-index` after the coordinator's own edit to the worktree copy, so it carries the preimage blob ids that `git apply --3way` needs. The file is then restored with `git checkout HEAD -- <path>`, and `git status --porcelain --untracked-files=no -- <path>` must print nothing; if it prints anything, restore again and set the item aside as a conflict (a drafting step never leaves the live worktree dirty). The patch is checked with `git apply --check`. A draft that does not pass the check is set aside as `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>)` and is not asked about. The patch must change exactly the item's one path: its `diff --git a/<path> b/<path>` header must name the same path the question's label will carry, or the item is set aside as a conflict.
-g. **Ask, before Round 1.** Ask one question per drafted `edit` item through the Ask block (`~/.claude/prompts/flow-reference.md`), header `Test edit`, batched up to four per question set. Outside a flow it is a plain `AskUserQuestion`; in a flow the Ask block relays it, and in `/expert-fleet` the Ask block parks it. Each question's text embeds the finding id, the path and the full patch text, so `PRIOR_ANSWERS` reuse matches exactly (a changed diff is a new question). Its `brief` carries the action-plan item text. The options are exactly these two, in this order, neither marked recommended and none pre-selected:
+f. **Ask.** One Ask call through the Ask block holds one question per item, header `Test edit`. Edits come first, removals last. Each question carries:
+   - The full patch text (edits) or the removal path (removals)
+   - The blob ids: for edits, the post-image full 40-hex id; for removals, the pre-image full 40-hex id
+   - The `test-change-check.py` findings (removals only; for edits, findings are `check unavailable: <reason>` if the check failed with exit 2)
+   - The WHY recap: the business need and context from the action-plan item
+   
+   Options (exactly these, neither marked recommended or pre-selected):
    - `Decline — leave OUTSTANDING`
-   - `Approve edit: <finding id> <path>`
-
-   Only a plain single-select answer equal to one of the two option labels above counts. A missing, list-shaped, free-text or unmappable answer counts as declined. (Free text typed under "Other" that reproduces the Approve label letter for letter is indistinguishable from picking it and counts as the same approval; the receipt verifier accepts an approval only when it is exactly a label that question offered.) **Re-ask cap:** before asking about a finding id, append one line `<finding id>` to `<TEST_EDIT_DIR>/asked.txt`; when that file already holds two lines for the id, do not ask again and report `OUTSTANDING: D<n> (test-edit-declined: <path>)`. A declined item is reported `OUTSTANDING: D<n> (test-edit-declined: <path>)`.
-h. **Fix now (`--only-units`).** A run with `--only-units` never drafts, asks or applies a test edit, so it never asks a test-edit question. Each `TEST_EDIT_ITEMS` entry is reported with its own reason: a coupled item `OUTSTANDING: D<n> (test-edit-coupled: <path>)`, a removal `OUTSTANDING: D<n> (test-removal: <path>)`, and a pure edit `OUTSTANDING: D<n> (test-edit-not-approvable-in-fix-now: <path>)`. The `fix-now` scan keeps `test-removed` armed.
+   - `Approve edit: <finding id> <path>` (edits only)
+   - `Approve removal: <finding id> <path>` (removals only)
+   
+   Only a plain single-select answer equal to an offered label approves. **Re-ask cap:** before asking about a finding id, append one line `<finding id>` to `<TEST_EDIT_DIR>/asked.txt`; when the file already holds two lines for the id, do not ask again and report `OUTSTANDING: D<n> (test-edit-declined: <path>)`. Declined items are reported `OUTSTANDING: D<n> (test-edit-declined: <path>)`.
+g. **Approval commit (run 4.7 steps 0–5 now).** Apply and commit all approved changes together. Proceed to section 4.7 immediately below.
+h. **Fix now (`--only-units`).** A run with `--only-units` never drafts, asks or applies a test edit, so it never asks a test-edit question. Each `TEST_EDIT_ITEMS` entry is reported with its own reason: a coupled item `OUTSTANDING: D<n> (test-edit-coupled: <path>)` and a pure edit/removal `OUTSTANDING: D<n> (test-edit-not-approvable-in-fix-now: <path>)`. The `fix-now` scan keeps `test-removed` armed (no `--allow-test-removal` for this run).
 i. **Misclassification.** An item classified ordinary whose change turns an existing test red reaches the Integration Gate step 4 or Final check fix-loop stop `planned-change-breaks-test: <path>` (extracted from the implementer's `NEEDS_TEST_UPDATE` line). It is never `gate-not-converged` with no path.
 
 **3. Call `unit-progress.py init`.** Once the split is decided (basis, units, owned-files):
@@ -1037,6 +1141,13 @@ Each prompt must be **fully self-contained** (the agent has no other context). I
 - The shared contracts/interfaces extracted in Step 3
 - `OWNED FILES (only touch these):` — the unit's owned-files list
 - `FORBIDDEN FILES (do not read or modify):` — all other units' owned files (or for sequential, only later units' owned files)
+- **When an approval commit exists (the implement step with pre-approved test changes),** include a canonical block after FORBIDDEN FILES:
+  > **APPROVED TEST PATHS (read-only; human-approved changes):**
+  > The following test paths have human-approved changes already applied and must not be modified:
+  > - `<path 1>`
+  > - `<path 2>`
+  > 
+  > Failures confined to these paths are expected before the code exists (they are addressed by the approval commit). Your implementation must not edit these paths. Any edit to an approved path will be caught as a gate failure.
 - **"Do not write tests in this pass. A separate pass will write tests from the plan."**
 - **"Stage your changes (`git add -A`) and do not commit. The orchestrator applies your diff and
   commits it."**
@@ -1517,11 +1628,22 @@ Run the shared scan script (substitute the literal `TICKET_WT_PATH` recorded in 
 `git diff` itself, prints `{"verdict": "pass"|"fail", "reasons": [...]}` on stdout, and exits 1 on
 fail (a bad ref or unreadable diff also fails closed):
 
+**Implement step:** When no approval commit exists (`<TEST_EDIT_DIR>/approval-commit.txt` absent or unverified), run the single flagged scan:
 ```bash
 python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <TICKET_WT_PATH> --base "$START_SHA" --head HEAD --profile implement
 ```
 
-**Retry or resume of a fix step that already landed an approval commit.** `START_SHA..HEAD` then contains the human-approved test edit, which the plain `implement` scan would reject as `test-edit`. Do not pass `--allow-test-edit` here, ever: this range scan never receives the flag. Instead advance the base. When `<TEST_EDIT_DIR>/approval-commit.txt` exists and verifies live as in 4.7 step 0 (ancestor of HEAD, name-status exactly the recorded paths, all `M`), use that commit as `--base` in place of `"$START_SHA"`: everything up to and including it was scanned already (Round 1 commits by this gate, the approval commit alone by 4.7 step 4). When the file is missing or does not verify, the base stays `"$START_SHA"` and a `test-edit` reason fails the gate as usual.
+When an approval commit exists and verifies live (see 4.7 step 0: ancestor of HEAD, name-status exactly the recorded paths, correct blob ids), run two plain scans with no `--allow-test-edit` or `--allow-test-removal` flags:
+```bash
+python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <TICKET_WT_PATH> --base "$START_SHA" --head <APPROVAL_COMMIT>^ --profile implement
+python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <TICKET_WT_PATH> --base <APPROVAL_COMMIT> --head HEAD --profile implement
+```
+Both invocations must run and both must pass. If either fails, the gate fails. Neither line contains the exact substring `--base "$START_SHA" --head HEAD`.
+
+**Fix step (retry or resume of a prior fix attempt):** Retry or resume of a fix step that already landed an approval commit advances its base past the approval commit. When an approval commit exists and verifies live, run the one scan below with `<APPROVAL_COMMIT>` as `--base` in place of `"$START_SHA"`, so only changes after the approval commit are scanned. Do not pass `--allow-test-edit` or `--allow-test-removal` here, ever. When the file is missing or does not verify, the base stays `"$START_SHA"` and a `test-edit` reason fails the gate as usual.
+```bash
+python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <TICKET_WT_PATH> --base <APPROVAL_COMMIT> --head HEAD --profile implement
+```
 
 Any `fail` verdict is a gate failure; each reason names the check and the file/line. The three
 paragraphs below document what the `implement` profile checks mechanically. "Wired but never
@@ -1599,8 +1721,28 @@ Max **K = 3** iterations. On each iteration:
    telemetry — see the Usage gate log note in the Final summary.
 6. If gate passes → exit loop, then write the passing verdict to `integration-gate.txt` and append the
    `integration-gate` row exactly as in Gate step 3. If still failing and iterations < K → repeat.
-7. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
-   failures. Do not proceed to Round 2. Let the human decide. Close the integration-gate stage with gate_not_converged:
+7. If gate still fails after K iterations → check if an approval commit exists and if the only remaining test failures are in approved paths. If so, write the still-red files from Bash before the receipt. `FAILING_TESTS` is the newline-separated list of failing test file paths the last gate run extracted from `CHECK_OUTPUT` (the same parser the gate uses; an empty extraction is not "approved paths only"). The writer is deterministic: it writes all four files only when every failing path is an approved path, and otherwise falls through to the `gate_not_converged` branch below:
+   ```bash
+   APPROVED_PATHS="$(cut -d' ' -f2 "${TEST_EDIT_DIR}/approval-commit.txt")"
+   FAILING_SORTED="$(printf '%s\n' "$FAILING_TESTS" | sed '/^$/d' | sort -u)"
+   OUTSIDE_APPROVED="$(printf '%s\n' "$FAILING_SORTED" | grep -Fxvf <(printf '%s\n' "$APPROVED_PATHS") || true)"
+   if [ -n "$FAILING_SORTED" ] && [ -z "$OUTSIDE_APPROVED" ]; then
+     printf '%s\n' "$FAILING_SORTED" > "${TEST_EDIT_DIR}/still-red.txt" &&
+     tail -n 200 <<< "$CHECK_OUTPUT" > "${TEST_EDIT_DIR}/still-red-tail.txt" &&
+     printf '%s\n' "$(git rev-parse HEAD)" > "${TEST_EDIT_DIR}/still-red-head.txt" &&
+     git diff --full-index "$APPROVAL_COMMIT" HEAD > "${TEST_EDIT_DIR}/still-red-round1.diff" &&
+     echo "still-red files written"
+   else
+     echo "still-red not written: failures outside approved paths or none extracted"
+   fi
+   ```
+   The writer's `echo` line is the only evidence the four files exist; if it prints the "not written" line, or any `&&` step fails, do not stop with `approved-test-still-red` — take the `gate_not_converged` branch below. Only when it printed `still-red files written`, close the integration-gate stage with the distinct failure class `approved_test_still_red` (a documented class: the gate failed only on paths the human approved, so it is not `gate_not_converged`), then **stop and surface to the human** with Reason `approved-test-still-red: <path>[, <path>…]` and `FAILURE_CLASS: other`. Write the FAILED receipt with the outstanding failures as its body. Do not proceed to Round 2.
+   ```bash
+   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage integration-gate --outcome failure --failure-class approved_test_still_red 2>/dev/null || true
+   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class approved_test_still_red 2>/dev/null || true
+   ```
+   
+   If the approval commit does not exist, or if failures exist outside the approved paths, **stop and surface to the human** with all outstanding failures. Do not proceed to Round 2. Let the human decide. Close the integration-gate stage with gate_not_converged:
    ```bash
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage integration-gate --outcome failure --failure-class gate_not_converged 2>/dev/null || true
    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class gate_not_converged 2>/dev/null || true
@@ -2475,23 +2617,15 @@ On a `--resume-after-round1` run, the skipped rounds' hygiene and overlap fields
 (`round4_deleted` and `round4_relocated` default to `0` when `round4.md` is absent), and `layout_names_given` is
 `false` when the flag file is absent.
 
-### 4.7 Approval commit: human-approved test edits (fix step only)
+### 4.7 Approval commit (fix step)
 
-Runs once per fix step, after Round 4's last commit (or at the point Round 4 would have run), and only when at least one test edit was approved at Step 3. It runs whether or not Round 4 ran. When no edit was approved, or every approved patch was skipped, make no commit and emit `TEST_EDIT: none` in the receipt.
-
-0. **Prior approval commit (Retry or resume).** When `<TEST_EDIT_DIR>/approval-commit.txt` exists, read it (first line `<APPROVAL_COMMIT>`, then one `<finding id> <path> answers/fix-<SEQ>.json` line per applied edit). Verify it live, never trust it: `git merge-base --is-ancestor <APPROVAL_COMMIT> HEAD` must succeed, and `git diff --no-renames --name-status <APPROVAL_COMMIT>^ <APPROVAL_COMMIT>` must list exactly the recorded paths, each `M`. When it verifies, those edits are already applied: do not re-apply, re-scan or re-commit them, take that commit as `<APPROVAL_COMMIT>`, report its edits on `TEST_EDIT:` lines as usual, and apply only approved patches for other findings in steps 1-4 below (a second approval commit, which replaces the record). When it does not verify, ignore the file and treat every approved patch as not yet applied. Never widen the flag to cover a prior commit.
-1. **Apply.** Apply each approved patch from `<TEST_EDIT_DIR>/<finding id>.patch` unchanged, with one `git apply --3way` invocation per patch, in finding-id order, so one conflict never aborts the others. If a patch conflicts, restore its path with `git checkout HEAD -- <path>`, skip that patch, and keep the others. The skipped item is reported `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>) [self-report]`. An apply conflict never stops the step.
-2. **Check the staged set.** Stage the paths that applied (`git add -- <path> ...`). `git diff --cached --no-renames --name-status` must list exactly those paths, each with status `M`. A mismatch stops the step FAILED with Reason `existing-test-edit: <finding id> <path>` and `FAILURE_CLASS: other`.
-3. **Commit.** Commit with the subject `test: apply human-approved existing-test edits (#<finding ids>)`. The body has one line per applied edit: its finding id, its path and `answers/fix-<SEQ>.json`. Record the new HEAD as `<APPROVAL_COMMIT>`.
-4. **Scan the approval commit alone.** Run this scan on this one commit, with the exact-path allowlist:
+The fix step runs the one shared procedure in "4.7 Human-approved test changes (shared by fix and implement)" above, after Round 4's last commit (or at the point Round 4 would have run), once per fix step, and only when at least one test edit was approved at Step 3. It runs whether or not Round 4 ran. When no edit was approved, or every approved patch was skipped, make no commit and emit neither `TEST_EDIT:` nor `TEST_EDIT_COMMIT:` lines in the receipt (the receipt contract's rule, in the Final summary). The fix-only rules are listed under "Differences between the steps" in that section; this heading carries no procedure of its own beyond the fix call site of the single-commit scan (shared 4.7 step 4), pinned here by `tests/test_expert_flow.py`:
 
 ```bash
 python3 "$HOME/.claude/scripts/anti-cheat-scan.py" --repo <TICKET_WT_PATH> --base <APPROVAL_COMMIT>^ --head <APPROVAL_COMMIT> --profile implement --allow-test-edit <path1> --allow-test-edit <path2> ...
 ```
 
-   Repeat `--allow-test-edit <path>` for each applied path, using the exact repo-relative path. The flag suppresses the `test-edit` reason for those exact paths and nothing else. `test-removed` stays armed, and every other rule runs unchanged. The flag is passed to this one-commit scan only: Gate step 2's range scan and any scan over a `ROUND2_START_SHA..HEAD` range never receive it. A scan `fail` stops the step FAILED with Reason `existing-test-edit: <finding id> <path>` and `FAILURE_CLASS: other`.
-5. **Record.** After a passing scan, write `<TEST_EDIT_DIR>/approval-commit.txt` from Bash (`printf`): the first line is `<APPROVAL_COMMIT>`, then one `<finding id> <path> answers/fix-<SEQ>.json` line per applied edit, so a Retry finds it (step 0 and Gate step 2).
-6. **Ledger.** The orchestrator, not this step, appends the `answer` ledger record that pins `answers/fix-<SEQ>.json` (`commands/expert-flow.md`, relay step 4a). This step never writes `human.jsonl`.
+Repeat `--allow-test-edit <path>` for each applied path, using the exact repo-relative path, and add `--allow-test-removal <path>` for each approved removal as the shared step 4 shows.
 
 The receipt cites each applied edit's answers file on its `TEST_EDIT:` line (see the flow receipt in the Final summary).
 
@@ -2629,7 +2763,13 @@ last run.
   `CHECK_EXIT: 0`, `CHECK_SOURCE:` is the resolver's `source`, and `CHECK_SHA:` is the SHA the run used.
   On an opt-out, `CHECK: opted-out`, `CHECK_EXIT: none`, `CHECK_SOURCE: opt-out`, and `CHECK_SHA:` is the
   current HEAD. The Final summary's OK receipt carries these lines (see the receipt section below).
-- Then continue to step 6 below, and then to the Final summary, which carries the `Full check:` line.
+- Then continue to step 5a below, and then to step 6 below, and then to the Final summary, which carries the `Full check:` line.
+
+**5a. Approved-path gate (implement step only).** When an approval commit exists (`${TEST_EDIT_DIR}/approval-commit.txt` file is present and verified), verify that approved paths were not modified after the approval commit. Read the approved paths from the approval-commit.txt file (each line's second field, whitespace-separated) and run:
+```bash
+git diff --name-status "$APPROVAL_COMMIT" HEAD -- <approved-path-1> <approved-path-2> ...
+```
+If this prints nothing, approved paths are untouched — continue to step 6. If it prints any paths (even a single path with status `A`), the step **fails**: write the FAILED receipt with Reason `approved-path-touched: <path>[, <path>…]` (comma-separated list of all touched paths), `FAILURE_CLASS: other`, and the CHECK key lines from the Final check. Stop. Outside a flow, stop with the same receipt. This gate runs only when the check passed (exit 0) and only for the implement step.
 
 **6. Spec-blind gate (W1, ruling 1a).** Read `<SCRATCH_PATH>/disagreements.json` and count its
 `test-correct-blocking` entries as `<n>`. A missing file means `<n>` is 0. This runs whatever the check outcome was, before the Final summary.
@@ -2969,12 +3109,13 @@ RUN_KEY: <RUN_KEY>
 RECEIPT_CONTRACT: 1
 OUTSTANDING: <line>
 Addressed: <line>
-TEST_EDIT: <finding id> <path> answers/fix-<SEQ>.json
+TEST_EDIT: <finding id> <path> answers/<step>-<SEQ>.json
+TEST_REMOVAL: <finding id> <path> answers/<step>-<SEQ>.json
 TEST_EDIT_COMMIT: <40-hex sha>
 <!-- step-end -->
 ```
 
-**Test-edit lines (fix step only).** The `TEST_EDIT:` and `TEST_EDIT_COMMIT:` lines sit after `Addressed:`. Emit one `TEST_EDIT: <finding id> <path> answers/fix-<SEQ>.json` line per applied edit, and `TEST_EDIT_COMMIT: <sha>` with the 40-hex approval commit from 4.7. When no edit was applied, emit `TEST_EDIT: none` and no `TEST_EDIT_COMMIT` line. The `implement` step omits both lines. `UNITS:` counts ordinary units only (Step 3, fix-step items e).
+**Test-edit and test-removal lines (implement and fix steps).** The `TEST_EDIT:`, `TEST_REMOVAL:` and `TEST_EDIT_COMMIT:` lines sit after `Addressed:`. Implement and fix emit `TEST_EDIT: <finding id> <path> answers/<step>-<SEQ>.json` per applied edit and `TEST_REMOVAL: <finding id> <path> answers/<step>-<SEQ>.json` per applied removal. When the hatch applied a change, emit these lines and `TEST_EDIT_COMMIT: <sha>` with the 40-hex approval commit from 4.7. When no change was applied, emit neither line (there is no `TEST_EDIT: none` token; the absence of these lines is the rule). The approval record schema and where the commit SHA lives are stated once in 4.7 step 3. `UNITS:` counts ordinary units only (Step 3, item e).
 
 **Header block.** The verifier reads `CHECK`, `CHECK_EXIT`, `CHECK_SOURCE`, `CHECK_SHA`, `ATTEMPT`, `Decision`, `Reason`, `RUN_KEY`, `RECEIPT_CONTRACT` and
 `OUTSTANDING` only up to the first blank line, so write the receipt as one contiguous block with no blank line from the first

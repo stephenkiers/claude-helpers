@@ -368,7 +368,7 @@ def section_process_group(t):
         os.environ["PATH"] = str(sleeper_dir) + os.pathsep + (saved["PATH"] or "")
         os.environ["PIDFILE"] = str(pid_file)
         try:
-            result = deps.ensure_deps(feat, main, timeout=1)
+            result = deps.ensure_deps(feat, main, timeout=4)
         finally:
             for key, value in saved.items():
                 if value is None:
