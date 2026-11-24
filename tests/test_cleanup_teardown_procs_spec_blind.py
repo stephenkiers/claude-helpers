@@ -110,7 +110,7 @@ def main():
             pid=1234,
             lstart="Mon Jan 1 10:00:00 2026",  # Original
             comm="test",
-            uid=1000,
+            uid=os.getuid(),
             allowed_roots=["/tmp"],
             ps_runner=fake_ps_runner_changed
         )
@@ -128,7 +128,7 @@ def main():
             pid=1234,
             lstart="Mon Jan 1 10:00:00 2026",
             comm="test",
-            uid=1000,
+            uid=os.getuid(),
             allowed_roots=["/tmp"],
             ps_runner=fake_ps_runner_comm_match
         )
@@ -144,13 +144,13 @@ def main():
 
         def fake_lsof_runner_match(argv, timeout):
             # Return lsof output with cwd inside allowed root
-            return "test 1234 user cwd /tmp/testdir"
+            return "test 1234 user cwd DIR 1,4 64 2 /tmp/testdir"
 
         is_valid = verify_process(
             pid=1234,
             lstart="Mon Jan 1 10:00:00 2026",
             comm="test",
-            uid=1000,
+            uid=os.getuid(),
             allowed_roots=["/tmp"],
             ps_runner=fake_ps_runner_match,
             lsof_runner=fake_lsof_runner_match,
