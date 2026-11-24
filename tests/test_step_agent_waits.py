@@ -23,6 +23,8 @@ from test_flow_ask_sites import ROSTER  # noqa: E402
 EXEMPT = {"commands/expert-flow-v2.md"}
 EXTRA = ["commands/queued-merge.md", "prompts/flow-step-contract.md"]
 
+# Presence ratchet: the checks below assert a marker appears somewhere in the doc. They do not
+# prove that every launch site is covered, so a new site must be reviewed by hand.
 FILE_WAIT_DOCS = {
     "commands/implement-with-haiku.md": ["round1", "fanout", "check"],
     "commands/merge-and-cleanup.md": ["merge:apply"],
@@ -34,7 +36,7 @@ FOREGROUND_DOCS = [
     "prompts/expert-review-panel.md",
 ]
 
-END_TURN = re.compile(r"(?i)\bend (?:your|the) turn\b[^.\n]*\b(?:while|until|to wait|and wait)\b")
+END_TURN = re.compile(r"(?i)\bend (?:your|the) turn\b(?:[^.\n]|\n(?![ \t]*\n))*?\b(?:while|until|to wait|and wait)\b")
 NEGATED = re.compile(r"(?i)\b(?:never|not|don't|do not)\s+(?:\w+\s+){0,2}end (?:your|the) turn")
 
 
@@ -49,11 +51,10 @@ def main() -> None:
         text = path.read_text()
         bad_end = []
         bad_wake = []
+        for m in END_TURN.finditer(text):  # whole-text scan so a sentence wrapped across lines is seen
+            if not NEGATED.search(text[max(0, m.start() - 40):m.end()]):
+                bad_end.append(text.count("\n", 0, m.start()) + 1)
         for lineno, line in enumerate(text.splitlines(), start=1):
-            for m in END_TURN.finditer(line):
-                prefix = line[max(0, m.start() - 40):m.end()]
-                if not NEGATED.search(prefix):
-                    bad_end.append(lineno)
             if "ScheduleWakeup" in line and not re.search(r"(?i)never (?:use )?`?ScheduleWakeup|is never used to wait", line):
                 bad_wake.append(lineno)
         h.test_result(rel + ": no instruction to end the turn while children run", not bad_end,

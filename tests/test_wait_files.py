@@ -134,6 +134,8 @@ def main() -> None:
 
         # wait_once never touches watched files
         before = c.read_text(), os.stat(str(c)).st_mtime
+        wf.wait_once("p:untouched", d / "state-untouched", [("c", c)], since, 1800, 540, sentinel=SENT,
+                     clock=FakeClock(since + 6000).clock, sleep=lambda s: None)
         h.test_result("watched file untouched", (c.read_text(), os.stat(str(c)).st_mtime) == before)
 
         # CLI
@@ -145,10 +147,12 @@ def main() -> None:
         code, out, _ = run_cli(["wait", "--phase", "q:x", "--state-dir", str(sd), "--deadline", "60",
                                 "--sentinel", SENT, "ok=" + str(ok)])
         h.test_result("cli wait closed exits 0", code == 0 and out.strip() == "closed: 1 ids")
-        code, out, _ = run_cli(["wait", "--phase", "q:x", "--state-dir", str(sd), "--deadline", "1",
+        code, out, _ = run_cli(["wait", "--phase", "q:x", "--state-dir", str(d / "state-cli-dl1"), "--deadline", "1",
                                 "--since", "1", "--exists", "gone=" + str(d / "gone")])
         h.test_result("cli wait past deadline exits 4", code == 4 and out.startswith("deadline: outstanding gone"))
-        code, out, _ = run_cli(["wait", "--phase", "q:x", "--state-dir", str(sd), "--deadline", "1",
+        run_cli(["wait", "--phase", "q:x", "--state-dir", str(d / "state-cli-dl2"), "--deadline", "1",
+                 "--since", "1", "--exists", "gone=" + str(d / "gone")])
+        code, out, _ = run_cli(["wait", "--phase", "q:x", "--state-dir", str(d / "state-cli-dl2"), "--deadline", "1",
                                 "--since", "1", "--exists", "gone=" + str(d / "gone")])
         h.test_result("cli repeated deadline prints loop line", code == 4 and "loop: repeated child-wait deadline" in out)
 
