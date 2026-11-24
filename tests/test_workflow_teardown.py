@@ -9,12 +9,8 @@ Run with: python3 tests/test_workflow_teardown.py
 
 import sys
 import os
-import json
 import tempfile
-import subprocess
 from pathlib import Path
-from typing import Dict, Any, Tuple, List, Optional
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
@@ -429,7 +425,7 @@ def main():
 
     # Test 20: Probes take no locks
     try:
-        from workflow import git
+        import workflow.git  # noqa: F401
         h.test_result(
             "Test 20: git module exists",
             True,

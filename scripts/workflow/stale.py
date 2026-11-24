@@ -10,12 +10,10 @@ All functions are composable and use injected signals/runners so they can be tes
 
 import json
 import os
-import subprocess
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Callable, Union, Any
+from typing import Dict, Optional, Any
 
-from .safety import Unknown
 from . import procs
 from . import teardown
 
@@ -387,6 +385,6 @@ def classify_flow(
     return FlowClassification(
         class_name=STALLED,
         reason="Worktree has work in progress",
-        suggestion=f"/expert-flow --resume <flow-dir>",
+        suggestion="/expert-flow --resume <flow-dir>",
         signals_summary=signals_summary
     )

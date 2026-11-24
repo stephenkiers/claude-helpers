@@ -16,9 +16,8 @@ import time
 import os
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Tuple, Optional, Dict, Callable, List, Union, Any, cast
+from typing import Tuple, Optional, Dict, Callable, List, Union, Any
 
-from .cache import hash_file_content
 from .safety import Unknown
 from . import procs
 from . import cleanup
@@ -419,11 +418,8 @@ def discover_ticket(
         try:
             # List all worktrees
             from . import git
-            porcelain = git.get_worktree_list_porcelain(cwd=target_path)
-            worktree_records = worktrees.parse_worktree_records(porcelain)
-            registered_worktrees = {Path(p).resolve(): b for p, b in worktree_records}
         except Exception:
-            registered_worktrees = {}
+            pass
 
         # List actual directories
         actual_dirs = set()
@@ -826,7 +822,7 @@ def apply_teardown(
     if plan.plan_hash and plan.plan_hash != current_hash:
         return {
             "success": False,
-            "error": f"Plan has been modified since discovery (hash mismatch)",
+            "error": "Plan has been modified since discovery (hash mismatch)",
             "done": [],
             "skipped": [],
             "failed": [],
@@ -1109,7 +1105,7 @@ def apply_sigkill(
     if plan.plan_hash and plan.plan_hash != current_hash:
         return {
             "success": False,
-            "error": f"Plan has been modified since discovery (hash mismatch)",
+            "error": "Plan has been modified since discovery (hash mismatch)",
         }
 
     if kill_fn is None:

@@ -701,7 +701,7 @@ def unpushed_state(
         if not output:
             # Empty output: tip is reachable from remotes
             return PUSHED, "reachable from remote-tracking refs"
-    except (subprocess.CalledProcessError, RuntimeError, Exception) as e:
+    except (subprocess.CalledProcessError, RuntimeError, Exception):
         # On error, fall through to check (b) if headRefOid is available
         pass
 
@@ -777,9 +777,9 @@ def remove_worktree(
     # 1. Live-session check
     liveness = live_probe(path, caller_pids)
     if liveness == procs.LIVE:
-        return RemovalResult(path, SKIPPED, f"worktree has live session(s)", pids=[])
+        return RemovalResult(path, SKIPPED, "worktree has live session(s)", pids=[])
     elif liveness == procs.UNKNOWN:
-        return RemovalResult(path, SKIPPED, f"liveness check failed: cannot determine if worktree is in use", pids=[])
+        return RemovalResult(path, SKIPPED, "liveness check failed: cannot determine if worktree is in use", pids=[])
 
     # Extract pids if liveness was not determined but we have a list
     pids_list: List[int] = []

@@ -265,7 +265,7 @@ def move_to_trash(path: str, ctx: GuardContext, kind: str = KIND_WORKTREE) -> Tu
         trash_stat = os.stat(str(trash_root))
 
         if source_stat.st_dev != trash_stat.st_dev:
-            return False, f"source and trash root on different devices", None
+            return False, "source and trash root on different devices", None
     except (OSError, ValueError) as e:
         return False, f"device check failed: {e}", None
 

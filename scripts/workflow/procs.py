@@ -7,7 +7,6 @@ any failure, timeout, or implausible result is UNKNOWN, never "clean" or "no ses
 
 import json
 import os
-import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
