@@ -110,6 +110,15 @@ def test_zero_units_constant_has_one_definition():
     return defs == ["zero_units.py"], repr(defs)
 
 
+def test_zero_unit_preconditions_precede_test_changes_ask():
+    text = _doc("commands/implement-with-haiku.md")
+    marker = "Zero-unit preconditions run here, before any drafting or asking"
+    start = text.index("**Implement step: existing-test-edit and existing-test-removal items")
+    ask = text.index("e. **Ask.**", start)
+    first = text.find(marker, start)
+    return text.count(marker) == 2 and 0 < first < ask, f"count={text.count(marker)} first={first} ask={ask}"
+
+
 def test_receipt_check_runs_for_implement_only():
     receipt = "Decision: OK\nSPLIT_BASIS: zero-units\n"
     with tempfile.TemporaryDirectory() as td:
@@ -170,6 +179,7 @@ TESTS = [
     ("verifier plan cross-check returns typed prefix on every failure", test_verifier_plan_check_prefix_and_pass),
     ("verifier and plan-test-paths share the Targets rules", test_verifier_shares_targets_rules_with_plan_test_paths),
     ("ZERO_UNITS_BASIS has one definition", test_zero_units_constant_has_one_definition),
+    ("zero-unit preconditions precede the Test changes ask", test_zero_unit_preconditions_precede_test_changes_ask),
     ("receipt cross-check runs for implement, never fails fix or other bases", test_receipt_check_runs_for_implement_only),
     ("expert-flow passes --plan for implement", test_expert_flow_passes_plan_for_implement),
     ("expert-flow render sites bind the receipt SPLIT_BASIS", test_render_sites_bind_receipt_split_basis),
