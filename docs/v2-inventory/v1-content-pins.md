@@ -25,6 +25,9 @@ workers.
 
 ## Watched files
 
+Changes to these files are sequenced with #547 and #532. The pin bump lands in the same PR as the v1 edit, as the
+bump procedure above requires.
+
 | path | sha256 | reviewed | ref |
 |---|---|---|---|
 | commands/expert-flow.md | 61fdcfc9f8964ec3b04c810ead8860fa7f99a47241c591a4df48e5fc5859692e | 2026-11-23 | #538 |

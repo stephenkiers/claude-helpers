@@ -89,6 +89,15 @@ content pin in `v1-content-pins.md`. The amendment extends the sentence above; i
   `ref` in the same PR as the v1 edit. Only a human edits the pin file. An automated worker (implementer,
   `flow-healer`, rebase worker) that hits a pin mismatch stops with `NEEDS_HUMAN` / `Decision: FAILED`
   (W2; follow-up #543 adds the pin file to the never-edit rules of those workers).
+- The pin watch list has three files, and that is deliberate. The plan rules out widening it to the agent
+  files and the guard scripts. "Pin them" was considered and is not taken: those files change through the
+  restricted-agent and guard work, which has its own review path.
+
+## Closed sets
+
+Two value sets in the driver are closed: the StopCodes and the Decision values. Their source of truth is
+`scripts/flow_driver/steps.py`, and the code comments there say the sets are closed. A new value must come
+with a `rules.md` row that says where the behaviour is recorded, or the drift check does not see it.
 
 ## Pre-parity flows
 
