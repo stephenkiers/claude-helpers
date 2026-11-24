@@ -165,6 +165,12 @@ def main() -> None:
         default=None,
         help="Queue start timestamp for skip proof (optional)"
     )
+    cleanup_apply_parser.add_argument(
+        "--confirm-dirty",
+        action="store_true",
+        default=False,
+        help="Confirm removal of dirty or unpushed worktrees"
+    )
 
     cleanup_render_parser = cleanup_subparsers.add_parser("render-validation", help="Render validation result")
     cleanup_render_parser.add_argument(
@@ -501,6 +507,16 @@ def main() -> None:
             plan_json = args.plan
             if plan_json == "-":
                 plan_json = sys.stdin.read()
+
+            # Parse and modify plan to set confirmed_dirty if flag is set
+            if args.confirm_dirty:
+                try:
+                    plan_data = json.loads(plan_json)
+                    plan_data["confirmed_dirty"] = True
+                    plan_json = json.dumps(plan_data)
+                except (json.JSONDecodeError, TypeError):
+                    # If plan is invalid, let apply_cleanup handle the error
+                    pass
 
             def apply_cleanup_wrapper(pj: str) -> Tuple[Any, Any]:
                 return cleanup.apply_cleanup(pj, queue_started_at=args.queue_started_at)
