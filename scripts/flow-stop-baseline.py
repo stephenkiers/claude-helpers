@@ -94,7 +94,8 @@ RULES: List[Tuple[str, str, str]] = [
     (r"^reduced run", STEP_AGENT, "reduced run (fidelity audit)"),
     (r"^fidelity audit failed", STEP_AGENT, "fidelity audit failed (other)"),
     (r"^planned-change-breaks-test", STEP_AGENT, "planned change breaks test"),
-    (r"^test-only-plan", STEP_AGENT, "test-only plan"),
+    (r"^test-only-plan", STEP_AGENT, "test-only plan"),  # legacy: never emitted since #526; kept so archived receipts classify
+    (r"^zero-unit-plan-incomplete", STEP_AGENT, "zero-unit plan incomplete"),
     (r"^existing-test-edit", STEP_AGENT, "existing test edit"),
     # Not anchored (no ^): these phrases are matched anywhere in the reason text, and anchoring
     # has not been checked against the existing stop reasons, so it could change classifications.

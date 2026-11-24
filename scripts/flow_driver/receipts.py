@@ -149,15 +149,16 @@ def parse_receipt(step: Step, text: str) -> Optional[Receipt]:
 TEST_PATH_CODES: Tuple[str, ...] = (
     "plan-test-paths",
     "test-path-in-units",
-    "test-only-plan",
+    "test-only-plan",  # legacy: never emitted since #526; kept so archived receipts classify
     "existing-test-edit",
     "planned-change-breaks-test",
+    "zero-unit-plan-incomplete",
 )
 
 
 def failed_test_path_stop(text: str) -> Optional[Tuple[str, str]]:
     """
-    The (code, detail) of a FAILED receipt whose first `Reason:` line starts with one of the five test-path codes
+    The (code, detail) of a FAILED receipt whose first `Reason:` line starts with one of the six test-path codes
     (`<code>:` or `<code> `), or None. The detail is the rest of the reason line. A step receipt is data: only the
     closed code set is ever returned, never receipt text as a code.
     """
