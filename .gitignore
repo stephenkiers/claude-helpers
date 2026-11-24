@@ -10,3 +10,4 @@ worktrees/
 tests/.forbidden-terms
 .claude/check-receipt.json
 .ruff_cache/
+.cleanup-removal.lock

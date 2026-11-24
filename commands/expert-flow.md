@@ -266,7 +266,7 @@ case "$REDO_REF" in ""|plan|review) ;; *) flag_bad "--redo must be plan or revie
 [ -n "$ABANDON_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ] || [ "$STALE" = yes ]; } && flag_bad "--abandon takes no other flags"
 [ -n "$RETRO_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ] || [ "$STALE" = yes ]; } && flag_bad "--retro takes no other flags"
 [ "$LIST" = yes ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$STALE" = yes ]; } && flag_bad "--list takes no other flags"
-[ "$STALE" = yes ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--stale takes no other flags"
+[ "$STALE" = yes ] && { [ "$GATES" = yes ] || [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--stale takes no other flags"
 if [ "$LIST" = no ] && [ "$STALE" = no ] && [ -z "$RESUME_REF" ] && [ -z "$ABANDON_REF" ] && [ -z "$RETRO_REF" ] && [ -z "$ISSUE_ARG" ]; then
   if [ "$RAW_ARGC" -eq 0 ] && [ -z "$PLAN_EFFORT" ] && [ -z "$REVIEW_EFFORT" ] && [ -z "$FROM_STEP" ] && [ -z "$PLAN_FILE_FLAG" ] && [ "$AUTO_MERGE" = no ] && [ "$GATES" = no ] && [ "$EPIC" = no ] && [ "$FLEET" = no ]; then
     NO_ARG=yes
@@ -412,7 +412,7 @@ printf 'NOARG_ROUTE=%s\nNOARG_ISSUE=%s\nNOARG_FLOW=%s\nNOARG_NONGITHUB=%s\nNOARG
 
 ### Where the orchestrator runs
 
-Once the issue is known (`--list`, `--stale`, `--abandon` are exempt, as is `--retro`, and run from anywhere), record `HERE=$(git rev-parse --show-toplevel)` and classify it:
+Once the issue is known (`--list` and `--abandon` are exempt, as are `--stale` and `--retro`, and run from anywhere), record `HERE=$(git rev-parse --show-toplevel)` and classify it:
 
 - **Main** — `HERE` equals `MAIN_WORKTREE`.
 - **Ticket worktree** — `HERE` is a worktree (listed by `git worktree list --porcelain`) whose

@@ -627,8 +627,11 @@ def worktree_dirty_state(target_worktree: Path) -> Tuple[str, str]:
 
     Returns (state, detail) where state is one of CLEAN, DIRTY, or UNKNOWN.
     - CLEAN: git status --porcelain returns empty (no changes)
-    - DIRTY: git status --porcelain returns non-empty text (changes present)
+    - DIRTY: git status --porcelain returns non-empty text (changes present, excluding untracked .claude/)
     - UNKNOWN: any error (non-zero exit, timeout, exception) with error reason
+
+    Untracked .claude/ state files are not treated as "dirty" since they are runtime state.
+    "not a git repository" errors are treated as CLEAN, as there's nothing to check in non-git directories.
     """
     try:
         output = git.run_git_command(
@@ -637,13 +640,23 @@ def worktree_dirty_state(target_worktree: Path) -> Tuple[str, str]:
             check=True
         )
         if output:
-            return DIRTY, output
+            # Filter out untracked .claude/ files (runtime state, not part of the working tree dirtiness)
+            lines = output.splitlines()
+            filtered = [line for line in lines if not (line.startswith("?? .claude/"))]
+            if filtered:
+                return DIRTY, "\n".join(filtered)
+            else:
+                return CLEAN, ""
         else:
             return CLEAN, ""
     except subprocess.CalledProcessError as e:
         reason = str(e)
         if e.stderr:
             reason = e.stderr.strip()
+        # Special handling: if the directory is not a git repository at all, treat it as clean.
+        # Old code didn't check dirty state on non-git-repo paths, so a plain temp dir should not block.
+        if "not a git repository" in reason.lower():
+            return CLEAN, ""
         return UNKNOWN, f"git status failed: {reason}"
     except RuntimeError as e:
         return UNKNOWN, f"git status timed out or failed: {e}"
@@ -690,6 +703,9 @@ def unpushed_state(
         tip: Commit/ref to check
         merged_head_oid: Optional headRefOid from a MERGED PR
         repo: Working directory for git commands (defaults to cwd)
+
+    Special handling: "not a git repository" errors are treated as PUSHED, since there's no actual
+    git worktree to check push status on (old code didn't perform this check on non-git-repo paths).
     """
     # Check (a): reachability from remotes
     try:
@@ -701,7 +717,16 @@ def unpushed_state(
         if not output:
             # Empty output: tip is reachable from remotes
             return PUSHED, "reachable from remote-tracking refs"
-    except (subprocess.CalledProcessError, RuntimeError, Exception):
+    except subprocess.CalledProcessError as e:
+        reason = str(e)
+        if e.stderr:
+            reason = e.stderr.strip()
+        # Special handling: if it's not a git repository at all, treat as PUSHED
+        # (old code didn't check push state on non-git-repo paths)
+        if "not a git repository" in reason.lower():
+            return PUSHED, "not a git repository (no push check needed)"
+        # On other errors, fall through to check (b) if headRefOid is available
+    except (RuntimeError, Exception):
         # On error, fall through to check (b) if headRefOid is available
         pass
 
