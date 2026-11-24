@@ -41,7 +41,7 @@ import json
 from pathlib import Path
 from typing import Callable, Any, Tuple
 
-from . import cleanup, merge, shipit, checks, deps, track, verify_queue, issue_comments, heal, teardown
+from . import cleanup, merge, shipit, checks, deps, track, verify_queue, issue_comments, heal, teardown, stale
 from .models import MODES, parse_mode
 from .providers import GithubProvider, LocalProvider
 from .providers.base import Provider, ProviderError
@@ -221,6 +221,17 @@ def main() -> None:
     cleanup_sigkill_parser.add_argument(
         "pids", nargs="*", type=int,
         help="PIDs to SIGKILL"
+    )
+
+    cleanup_stale_parser = cleanup_subparsers.add_parser("stale", help="Discover stale worktrees machine-wide")
+    cleanup_stale_parser.add_argument(
+        "--sizes", action="store_true",
+        help="Include build directory sizes (opt-in)"
+    )
+
+    cleanup_classify_flows_parser = cleanup_subparsers.add_parser("classify-flows", help="Classify flows")
+    cleanup_classify_flows_parser.add_argument(
+        "flows_root", help="Path to flows root directory (~/.claude/flows/)"
     )
 
     merge_parser = subparsers.add_parser("merge", help="Merge a PR")
@@ -681,6 +692,17 @@ def main() -> None:
             result = teardown.apply_sigkill(plan_json, args.pids)
             print(json.dumps(result))
             if not result.get("success"):
+                sys.exit(1)
+        elif args.cleanup_action == "stale":
+            output = stale.discover_stale_repos(with_sizes=args.sizes)
+            print(json.dumps(output))
+            if not output.get("success"):
+                sys.exit(1)
+        elif args.cleanup_action == "classify-flows":
+            flows_root = args.flows_root
+            output = stale.classify_all_flows(flows_root)
+            print(json.dumps(output))
+            if not output.get("success"):
                 sys.exit(1)
         else:
             cleanup_parser.print_help()

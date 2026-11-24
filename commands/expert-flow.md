@@ -214,7 +214,7 @@ rewrite `fleet-ask.json` with `"status": "answered"` and an `"answered": "<ISO-8
 
 ```bash
 PLAN_EFFORT=""; REVIEW_EFFORT=""; AUTO_MERGE=no; GATES=no; FROM_STEP=""; PLAN_FILE_FLAG=""; EPIC=no; FLEET=no
-RESUME_REF=""; REDO_REF=""; ABANDON_REF=""; RETRO_REF=""; LIST=no; ISSUE_ARG=""; ISSUE_SEEN=no; NO_ARG=no; BAD=""
+RESUME_REF=""; REDO_REF=""; ABANDON_REF=""; RETRO_REF=""; LIST=no; STALE=no; ISSUE_ARG=""; ISSUE_SEEN=no; NO_ARG=no; BAD=""
 RAW_ARGC=$#
 flag_bad() { [ -n "$BAD" ] || BAD="${1}"; }
 while [ $# -gt 0 ]; do
@@ -246,6 +246,7 @@ while [ $# -gt 0 ]; do
     --epic) EPIC=yes ;;
     --fleet) FLEET=yes ;;
     --list) LIST=yes ;;
+    --stale) STALE=yes ;;
     --*) flag_bad "unknown flag: ${1}" ;;
     *) if [ -z "${1}" ]; then flag_bad "an empty argument is not an issue number or URL"; elif [ "$ISSUE_SEEN" = yes ]; then flag_bad "only one issue argument is allowed"; else ISSUE_SEEN=yes; ISSUE_ARG="${1}"; fi ;;
   esac
@@ -260,12 +261,13 @@ case "$PLAN_FILE_FLAG" in *[!A-Za-z0-9._/~+:=@,-]*) flag_bad "--plan-file path m
 [ -n "$FROM_STEP" ] && [ "$EPIC" = yes ] && flag_bad "--from cannot be combined with --epic"
 [ -n "$REDO_REF" ] && [ -z "$RESUME_REF" ] && flag_bad "--redo requires --resume"
 case "$REDO_REF" in ""|plan|review) ;; *) flag_bad "--redo must be plan or review" ;; esac
-[ "$FLEET" = yes ] && { [ "$GATES" = yes ] || [ -n "$ABANDON_REF$RETRO_REF$FROM_STEP$REDO_REF" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--fleet combines only with an issue, --resume, --plan-effort, and --review-effort"
-[ -n "$RESUME_REF" ] && { [ -n "$ISSUE_ARG$RETRO_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--resume takes no other flags"
-[ -n "$ABANDON_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--abandon takes no other flags"
-[ -n "$RETRO_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--retro takes no other flags"
-[ "$LIST" = yes ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ]; } && flag_bad "--list takes no other flags"
-if [ "$LIST" = no ] && [ -z "$RESUME_REF" ] && [ -z "$ABANDON_REF" ] && [ -z "$RETRO_REF" ] && [ -z "$ISSUE_ARG" ]; then
+[ "$FLEET" = yes ] && { [ "$GATES" = yes ] || [ -n "$ABANDON_REF$RETRO_REF$FROM_STEP$REDO_REF" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$LIST" = yes ] || [ "$STALE" = yes ]; } && flag_bad "--fleet combines only with an issue, --resume, --plan-effort, and --review-effort"
+[ -n "$RESUME_REF" ] && { [ -n "$ISSUE_ARG$RETRO_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ] || [ "$STALE" = yes ]; } && flag_bad "--resume takes no other flags"
+[ -n "$ABANDON_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ] || [ "$STALE" = yes ]; } && flag_bad "--abandon takes no other flags"
+[ -n "$RETRO_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ] || [ "$STALE" = yes ]; } && flag_bad "--retro takes no other flags"
+[ "$LIST" = yes ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$STALE" = yes ]; } && flag_bad "--list takes no other flags"
+[ "$STALE" = yes ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--stale takes no other flags"
+if [ "$LIST" = no ] && [ "$STALE" = no ] && [ -z "$RESUME_REF" ] && [ -z "$ABANDON_REF" ] && [ -z "$RETRO_REF" ] && [ -z "$ISSUE_ARG" ]; then
   if [ "$RAW_ARGC" -eq 0 ] && [ -z "$PLAN_EFFORT" ] && [ -z "$REVIEW_EFFORT" ] && [ -z "$FROM_STEP" ] && [ -z "$PLAN_FILE_FLAG" ] && [ "$AUTO_MERGE" = no ] && [ "$GATES" = no ] && [ "$EPIC" = no ] && [ "$FLEET" = no ]; then
     NO_ARG=yes
   else
@@ -410,7 +412,7 @@ printf 'NOARG_ROUTE=%s\nNOARG_ISSUE=%s\nNOARG_FLOW=%s\nNOARG_NONGITHUB=%s\nNOARG
 
 ### Where the orchestrator runs
 
-Once the issue is known (`--list` and `--abandon` are exempt, as is `--retro`, and run from anywhere), record `HERE=$(git rev-parse --show-toplevel)` and classify it:
+Once the issue is known (`--list`, `--stale`, `--abandon` are exempt, as is `--retro`, and run from anywhere), record `HERE=$(git rev-parse --show-toplevel)` and classify it:
 
 - **Main** — `HERE` equals `MAIN_WORKTREE`.
 - **Ticket worktree** — `HERE` is a worktree (listed by `git worktree list --porcelain`) whose
@@ -502,6 +504,16 @@ Damaged lines are dropped first, so one bad line does not break the tally:
 Print the table (or `no flows for <REPO>`), the `reduced runs:` line, the `escalations:` line, and stop with no telemetry. A `running` or `awaiting` flow
 whose `updated` is more than 3 hours old prints as `running (stale)` / `awaiting (stale)`. A stale flow
 is not touched by `--list`; `--resume` or `--abandon` is the human's call.
+
+### `--stale`
+
+Classify all flows in this repo's flows root using read-only classification (Step 10 of ADR-0013). This prints a table with issue, class, signals summary, suggested command, and directory for each flow, then exits.
+
+```bash
+python3 -m scripts.workflow.cli cleanup classify-flows "$FLOWS_ROOT"
+```
+
+The classification is read-only: no `state.json` is modified, no `live` is cleared, and no flow is marked abandoned. See `/expert-flow --abandon <flow-dir>` to mark a flow abandoned or `/cleanup <worktree>` to remove its worktree.
 
 ### `--resume`
 

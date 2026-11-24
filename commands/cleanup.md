@@ -164,6 +164,21 @@ if log_path.exists():
 
 See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full mechanism.
 
+### 0.1 Machine-wide stale sweep (--stale mode)
+
+If `$ARGUMENTS` contains `--stale`, run a machine-wide sweep instead of single-ticket cleanup.
+
+```bash
+# Check if --stale is passed
+if printf '%s' "$ARGUMENTS" | grep -q -e '--stale' || [ "$1" = "--stale" ]; then
+  python3 -m scripts.workflow.cli cleanup stale --sizes 2>/dev/null | jq -r '.repos[] | .path' | while read repo; do
+    echo "Stale worktrees in $repo:"
+    python3 -m scripts.workflow.cli cleanup stale --sizes 2>/dev/null | jq -r ".repos[] | select(.path == \"$repo\") | .items[] | \"\(.number): \(.name)\"" || true
+  done
+  exit 0
+fi
+```
+
 ### 1. Resolve Target and Capture Context (SINGLE COMMAND)
 
 Supports three modes:
