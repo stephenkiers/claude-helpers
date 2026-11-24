@@ -6,12 +6,17 @@ A step agent or skill never ends its turn to wait for children
 background, it blocks on their output files with this script instead.
 
 Usage:
-  wait-files.py mark --phase P --state-dir D
+  wait-files.py mark --phase P --state-dir D [--force]
   wait-files.py wait --phase P --state-dir D --deadline SECS [--timeout SECS] [--since EPOCH]
                      (--sentinel TEXT | --exists) ID=PATH [ID=PATH ...]
 
 mark   records the current epoch for phase P in D/child-wait-since.json (atomic write) and prints
        it. Call it immediately before the launch, so the launch time survives context compaction.
+       The epoch is math.ceil(time.time()), a whole second, so it never lands before the launch.
+       mark refuses to overwrite an open phase: one that has a recorded mark with no closed row in
+       D/child-wait.jsonl for that same mark. It exits 2 and names --force. Pass --force to re-mark
+       a phase deliberately. Use one phase per STATE_DIR. After context compaction, pass an
+       explicit --since to wait instead of re-marking.
 
 wait   polls the files every 5 s (no model tokens) for one slice of --timeout seconds (default
        540, allowed 300..570: the floor stops the wait being tuned down into polling). --since
@@ -28,18 +33,27 @@ wait   polls the files every 5 s (no model tokens) for one slice of --timeout se
             deadline SECSs)", plus "loop: repeated child-wait deadline for phase P" when n >= 2
          2  usage error
        On closed and deadline (never pending) one JSON line is appended to D/child-wait.jsonl.
-       D/child-wait-attempts.json counts deadlines per phase and resets to 0 on closed.
+       D/child-wait-attempts.json counts deadlines per phase. The count is consecutive per phase:
+       each deadline adds one, and a closed outcome resets it to 0. mark does NOT reset the count;
+       it only records the epoch.
+
+Time anchor: --since and --deadline share one epoch anchor. The deadline is measured from since,
+so a long gap between the mark and the wait eats into the deadline. After a long gap, re-run mark
+with --force to re-anchor the phase, or pass an explicit --since for the original launch time.
+Bookkeeping (attempt counter, telemetry) is best-effort: an OSError there prints a one-line stderr
+warning and never changes the outcome or exit code. An unreadable attempts file counts as empty.
 
 The script never relaunches a child, retries, writes a stand-in, or touches a watched file.
 """
 import argparse
 import json
+import math
 import os
 import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, NamedTuple, NoReturn, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Literal, NamedTuple, NoReturn, Optional, Sequence, Tuple
 
 SINCE_FILE = "child-wait-since.json"
 ATTEMPTS_FILE = "child-wait-attempts.json"
@@ -55,20 +69,29 @@ EXIT_USAGE = 2
 EXIT_PENDING = 3
 EXIT_DEADLINE = 4
 
+# Closed-set values, as Literal aliases (Python 3.8 compatible).
+State = Literal["ok", "stale", "writing", "missing"]
+Outcome = Literal["closed", "pending", "deadline"]
+
 
 class UsageError(Exception):
     pass
 
 
 class WaitResult(NamedTuple):
-    status: str  # "closed" | "pending" | "deadline"
+    status: Outcome
     outstanding: List[str]
-    states: Dict[str, str]
+    states: Dict[str, State]
     attempt: int  # attempt number on deadline; 0 otherwise
     elapsed_secs: int
 
 
+def _warn(message: str) -> None:
+    print("warning: %s" % message, file=sys.stderr)
+
+
 def _read_json_object(path: Path) -> Dict[str, int]:
+    """Read a JSON object of int values. Non-int entries are dropped with one warning each."""
     try:
         data = json.loads(path.read_text())
     except FileNotFoundError:
@@ -81,6 +104,8 @@ def _read_json_object(path: Path) -> Dict[str, int]:
     for key, value in data.items():
         if isinstance(value, int) and not isinstance(value, bool):
             out[str(key)] = value
+        else:
+            _warn("dropped non-int entry %r in %s" % (key, path))
     return out
 
 
@@ -100,11 +125,36 @@ def _write_json_atomic(path: Path, data: Dict[str, int]) -> None:
         raise
 
 
-def mark(phase: str, state_dir: Path, now: Optional[int] = None) -> int:
-    """Record the launch epoch for `phase` and return it."""
-    epoch = int(time.time()) if now is None else now
+def _phase_closed_since(state_dir: Path, phase: str, since: int) -> bool:
+    """True when a closed telemetry row exists for this phase and mark epoch."""
+    try:
+        lines = (state_dir / TELEMETRY_FILE).read_text().splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if (isinstance(row, dict) and row.get("phase") == phase and row.get("outcome") == "closed"
+                and row.get("since") == since):
+            return True
+    return False
+
+
+def mark(phase: str, state_dir: Path, now: Optional[int] = None, force: bool = False) -> int:
+    """Record the launch epoch for `phase` and return it.
+
+    Refuses (UsageError naming --force) when the phase is open: it has a recorded mark that has
+    not yet closed. `force` re-marks it deliberately.
+    """
     path = state_dir / SINCE_FILE
     data = _read_json_object(path)
+    prior = data.get(phase)
+    if prior is not None and not force and not _phase_closed_since(state_dir, phase, prior):
+        raise UsageError("phase %r is already open (marked at %d and not closed); pass --force to "
+                         "re-mark it, or pass an explicit --since to wait" % (phase, prior))
+    epoch = math.ceil(time.time()) if now is None else now
     data[phase] = epoch
     _write_json_atomic(path, data)
     return epoch
@@ -129,13 +179,18 @@ def _last_nonempty_line(path: Path) -> Optional[str]:
     return None
 
 
-def file_state(path: Path, since: int, sentinel: Optional[str]) -> str:
-    """Return ok | stale | writing | missing for one watched file (read-only)."""
+def file_state(path: Path, since: int, sentinel: Optional[str]) -> State:
+    """Return ok | stale | writing | missing for one watched file (read-only).
+
+    A missing file is "missing". Other OSErrors (permission, I/O) also yield "missing", but print
+    a one-line stderr warning so the cause is visible.
+    """
     try:
         mtime = os.stat(str(path)).st_mtime
     except FileNotFoundError:
         return "missing"
-    except OSError:
+    except OSError as exc:
+        _warn("cannot stat %s: %s" % (path, exc))
         return "missing"
     if mtime < since:
         return "stale"
@@ -144,14 +199,42 @@ def file_state(path: Path, since: int, sentinel: Optional[str]) -> str:
     return "ok" if _last_nonempty_line(path) == sentinel.strip() else "writing"
 
 
-def _states(ids: Sequence[Tuple[str, Path]], since: int, sentinel: Optional[str]) -> Dict[str, str]:
+def _states(ids: Sequence[Tuple[str, Path]], since: int, sentinel: Optional[str]) -> Dict[str, State]:
     return {i: file_state(p, since, sentinel) for i, p in ids}
 
 
-def _append_telemetry(state_dir: Path, row: Dict[str, object]) -> None:
-    state_dir.mkdir(parents=True, exist_ok=True)
-    with open(str(state_dir / TELEMETRY_FILE), "a") as fh:
-        fh.write(json.dumps(row, sort_keys=True) + "\n")
+def _read_attempts(state_dir: Path) -> Dict[str, int]:
+    """Best-effort read of the attempt counter: an unreadable file counts as empty."""
+    try:
+        return _read_json_object(state_dir / ATTEMPTS_FILE)
+    except UsageError as exc:
+        _warn("%s; treating attempt counter as empty" % exc)
+        return {}
+
+
+def _record_outcome(phase: str, state_dir: Path, result: WaitResult, since: int, deadline: int,
+                    ts: int) -> None:
+    """Best-effort bookkeeping for a closed or deadline outcome. Never changes the result."""
+    if result.status == "pending":
+        return
+    try:
+        attempts = _read_attempts(state_dir)
+        attempts[phase] = result.attempt
+        _write_json_atomic(state_dir / ATTEMPTS_FILE, attempts)
+    except OSError as exc:
+        _warn("could not update %s: %s" % (state_dir / ATTEMPTS_FILE, exc))
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        row = {
+            "ts": ts, "phase": phase, "outcome": result.status, "since": since,
+            "deadline_secs": deadline, "elapsed_secs": result.elapsed_secs, "ids": result.states,
+            "outstanding": result.outstanding if result.status == "deadline" else [],
+            "attempt": result.attempt,
+        }
+        with open(str(state_dir / TELEMETRY_FILE), "a") as fh:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    except OSError as exc:
+        _warn("could not append telemetry to %s: %s" % (state_dir / TELEMETRY_FILE, exc))
 
 
 def wait_once(
@@ -168,8 +251,9 @@ def wait_once(
 ) -> WaitResult:
     """One wait slice. No CLI timeout floor here; the CLI enforces it.
 
-    `sentinel` None means --exists mode. Records telemetry and the attempt counter on closed and
-    deadline outcomes only.
+    Polling is computed first; the attempt counter and telemetry are written afterwards by a
+    best-effort helper, so a bookkeeping failure never changes the outcome.
+    `sentinel` None means --exists mode. Bookkeeping runs on closed and deadline outcomes only.
     """
     if not ids:
         raise UsageError("no ids to wait on")
@@ -180,26 +264,14 @@ def wait_once(
         outstanding = sorted(i for i, s in states.items() if s != "ok")
         elapsed = int(now - since)
         if not outstanding:
-            attempts = _read_json_object(state_dir / ATTEMPTS_FILE)
-            attempts[phase] = 0
-            _write_json_atomic(state_dir / ATTEMPTS_FILE, attempts)
-            _append_telemetry(state_dir, {
-                "ts": int(now), "phase": phase, "outcome": "closed", "since": since,
-                "deadline_secs": deadline, "elapsed_secs": elapsed, "ids": states,
-                "outstanding": [], "attempt": 0,
-            })
-            return WaitResult("closed", [], states, 0, elapsed)
+            result = WaitResult("closed", [], states, 0, elapsed)
+            _record_outcome(phase, state_dir, result, since, deadline, int(now))
+            return result
         if now >= since + deadline:
-            attempts = _read_json_object(state_dir / ATTEMPTS_FILE)
-            attempt = attempts.get(phase, 0) + 1
-            attempts[phase] = attempt
-            _write_json_atomic(state_dir / ATTEMPTS_FILE, attempts)
-            _append_telemetry(state_dir, {
-                "ts": int(now), "phase": phase, "outcome": "deadline", "since": since,
-                "deadline_secs": deadline, "elapsed_secs": elapsed, "ids": states,
-                "outstanding": outstanding, "attempt": attempt,
-            })
-            return WaitResult("deadline", outstanding, states, attempt, elapsed)
+            attempt = _read_attempts(state_dir).get(phase, 0) + 1
+            result = WaitResult("deadline", outstanding, states, attempt, elapsed)
+            _record_outcome(phase, state_dir, result, since, deadline, int(now))
+            return result
         if now - start >= timeout:
             return WaitResult("pending", outstanding, states, 0, elapsed)
         remaining = min(poll, timeout - (now - start), since + deadline - now)
@@ -235,12 +307,15 @@ def _build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("mark")
     m.add_argument("--phase", required=True)
     m.add_argument("--state-dir", required=True)
+    m.add_argument("--force", action="store_true",
+                   help="re-mark a phase that is already open (see the module docstring)")
     w = sub.add_parser("wait")
     w.add_argument("--phase", required=True)
     w.add_argument("--state-dir", required=True)
     w.add_argument("--deadline", required=True, type=int)
     w.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
-    w.add_argument("--since", type=int)
+    w.add_argument("--since", type=int,
+                   help="epoch anchor shared with --deadline; pass it explicitly after a long gap")
     mode = w.add_mutually_exclusive_group(required=True)
     mode.add_argument("--sentinel")
     mode.add_argument("--exists", action="store_true")
@@ -253,7 +328,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         args = _build_parser().parse_args(argv)
         if args.cmd == "mark":
-            print(mark(args.phase, Path(args.state_dir)))
+            print(mark(args.phase, Path(args.state_dir), force=args.force))
             return EXIT_CLOSED
         if args.cmd != "wait":
             raise UsageError("expected a subcommand: mark or wait")
