@@ -23,6 +23,7 @@ from scripts.flow_driver import receipts  # noqa: E402
 
 MAIN = REPO_ROOT / "scripts" / "flow_driver" / "__main__.py"
 NEXT_LINE_RE = re.compile(r"NEXT: (SPAWN|RESUME|WAIT|ASK|PARK|STOP|DONE|MERGE) (/\S+)")
+REPLY_DELIMITER_RE = re.compile(r"REPLY-DELIMITER: [0-9a-f]{32}")
 HAPPY_STEPS = ["worktree", "plan", "track", "implement", "review", "fix", "verify", "ship"]
 
 FAKE_GH = """#!/bin/sh
@@ -83,14 +84,23 @@ def run_cli(home: Path, *args: str, extra_env: Optional[Dict[str, str]] = None) 
 
 
 def next_line(stdout: str) -> Tuple[str, Path]:
-    """The stdout must be exactly one NEXT line. Returns (verb, directive file)."""
+    """
+    The stdout must be exactly one NEXT line, except an assess SPAWN, which must be the NEXT line followed by exactly
+    one `REPLY-DELIMITER: <32 hex>` line. Returns (verb, directive file).
+    """
     lines = stdout.splitlines()
-    if len(lines) != 1:
-        raise AssertionError(f"expected exactly one stdout line, got {lines!r}")
+    if not lines:
+        raise AssertionError(f"expected a NEXT line on stdout, got {lines!r}")
     match = NEXT_LINE_RE.fullmatch(lines[0])
     if match is None:
         raise AssertionError(f"stdout line does not match the NEXT contract: {lines[0]!r}")
-    return match.group(1), Path(match.group(2))
+    verb, dfile = match.group(1), Path(match.group(2))
+    if verb == "SPAWN" and dfile.name.startswith("spawn-assess-"):
+        if len(lines) != 2 or REPLY_DELIMITER_RE.fullmatch(lines[1]) is None:
+            raise AssertionError(f"an assess SPAWN must print the NEXT line and one REPLY-DELIMITER line, got {lines!r}")
+    elif len(lines) != 1:
+        raise AssertionError(f"expected exactly one stdout line, got {lines!r}")
+    return verb, dfile
 
 
 def load_json(path: Path) -> Dict[str, Any]:
