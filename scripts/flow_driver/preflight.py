@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Callable, Dict, FrozenSet, List, Literal, NamedTuple, Optional, Sequence, Set, Tuple, Union, get_args
 
 from .model import GENERAL_PURPOSE_AGENT
-from .steps import AgentType, RestrictedAgent
+from .steps import STOP_CODES, AgentType, RestrictedAgent
 
 
 class CommandResult(NamedTuple):
@@ -76,11 +76,18 @@ class Warn:
     line: str
 
 
+# The stop codes this module can return. steps.py asserts at import that each one is also a StopCode, so the two
+# closed sets cannot drift apart.
+PreflightStopCode = Literal["hook-preflight", "north-star-preflight", "run-dir-unresolved"]
+if not set(get_args(PreflightStopCode)) <= set(STOP_CODES):
+    raise RuntimeError("preflight.PreflightStopCode is not a subset of steps.StopCode")
+
+
 @dataclass(frozen=True)
 class Stop:
     """The preflight failed. `code` is the StopCode prefix; the reason is built as `<code>: <detail>`."""
 
-    code: Literal["hook-preflight", "north-star-preflight", "run-dir-unresolved"]
+    code: PreflightStopCode
     detail: str
 
     def reason(self) -> str:
@@ -258,6 +265,9 @@ def check_agent_preflight(
     the three guard hooks with `--agent auto`, and each registered script must be an installed regular file. The
     registration is read from settings.json, never from agent frontmatter. An unreadable or malformed settings.json fails
     closed. A miss is Stop("hook-preflight") and records no step failure.
+
+    This proves registration text plus that each registered script is an installed regular file. It is registration-only:
+    it does not check the hook matcher, the script's exec bit or realpath target, or `disableAllHooks`.
     """
     if agent_type == GENERAL_PURPOSE_AGENT:
         return None
@@ -310,6 +320,9 @@ def resolve_main_worktree(worktree: str) -> Union[str, Stop]:
     The main (or master) worktree that is the sibling of `worktree`, for a merge run directory (plan Step 3). The entry
     is found by its branch, main before master; the first entry is never used. It is accepted only when its realpath
     is an existing directory other than the worktree's and shares the worktree's parent. A miss is Stop("run-dir-unresolved").
+
+    Known gap (ADR-0026 D15): this runs only at the merge step, so a worktree with no sibling main checkout fails late, at
+    merge, not at the worktree or start step. Resolving earlier is not done here; the late failure is accepted and named.
     """
     result = run_command(["git", "-C", worktree, "worktree", "list", "--porcelain"])
     if result.returncode != 0:

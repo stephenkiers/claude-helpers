@@ -395,6 +395,8 @@ class V2State:
     step_gates: bool = False
     audit: bool = False
     audit_gate: Optional[AuditRecord] = None
+    # Assess is default-on for a fresh flow (new_state sets True). An absent `assess` key loads False, so a state written
+    # before the default-on change keeps its opt-out behaviour. Pre-PR flows never recorded the key, hence the split.
     assess: bool = False
     assess_gate: Optional[AuditRecord] = None  # same shape as the audit record; step is always "assess" here
     parked: Optional[ParkedQuestion] = None
@@ -788,6 +790,7 @@ def load_v2_state(raw: object) -> V2State:
         step_gates=fields.boolean("step_gates") if fields.present("step_gates") else False,
         audit=fields.boolean("audit") if fields.present("audit") else False,
         audit_gate=_load_audit_gate(fields.raw_or_none("audit_gate"), "audit_gate"),
+        # An absent key loads False (pre-PR flows, which never wrote it); a fresh flow writes True (see the field comment).
         assess=fields.boolean("assess") if fields.present("assess") else False,
         assess_gate=_load_audit_gate(fields.raw_or_none("assess_gate"), "assess_gate", expected_step="assess"),
         parked=_load_parked(fields.raw_or_none("parked"), "parked"),
@@ -1298,6 +1301,7 @@ def init_state(locked: LockedFlow, spec: InitSpec) -> None:
         pr=None,
         worktree=spec.worktree,
         healed=False,
+        # Fresh flows default assess on (the `--no-assess` opt-out); a loaded pre-PR state with no key stays False.
         assess=True,
         attempt_log={},
         applied=(),

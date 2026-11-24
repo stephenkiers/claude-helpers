@@ -61,6 +61,8 @@ StopCode = Literal[
     "spawn-failed",
     "run-dir-unresolved",
 ]
+# The StopCode set is closed: a new code needs a StopCode entry here and a matching rules row in docs/v2-inventory/rules.md.
+# The inventory (docs/v2-inventory/README.md) documents the closed set.
 STOP_CODES: Tuple[StopCode, ...] = get_args(StopCode)
 _STOP_BY_NAME: Dict[str, StopCode] = {code: code for code in STOP_CODES}
 
@@ -177,9 +179,9 @@ def event_from_label(label: Optional[str]) -> Event:
 
 
 # Directives. The closed union; the verb is a class constant, never a field.
-AgentType = Literal["general-purpose", "flow-plan", "flow-implement", "flow-review", "flow-ship", "flow-merge", "flow-assessor"]
 # The five restricted step agents: the ones with a guard profile. flow-assessor has no hooks block, so it is not one.
 RestrictedAgent = Literal["flow-plan", "flow-implement", "flow-review", "flow-ship", "flow-merge"]
+AgentType = Union[RestrictedAgent, Literal["general-purpose", "flow-assessor"]]
 # The steps that run a flow command (their spawn is a restricted agent, or the merge step).
 FlowCommandStep = Literal["plan", "implement", "fix", "review", "ship", "merge"]
 STEP_AGENTS: Dict[Step, AgentType] = {
@@ -203,17 +205,21 @@ if STEP_AGENTS["worktree"] != GENERAL_PURPOSE_AGENT:
 MERGE_AGENT: Literal["flow-merge"] = "flow-merge"
 if MERGE_AGENT != STEP_AGENTS["merge"]:
     raise RuntimeError("steps.MERGE_AGENT does not match STEP_AGENTS['merge']")
+# The flow-command steps are exactly the steps whose agent is restricted (the merge step included).
+if set(get_args(FlowCommandStep)) != {step for step, agent in STEP_AGENTS.items() if agent in get_args(RestrictedAgent)}:
+    raise RuntimeError("steps.FlowCommandStep does not match the steps whose STEP_AGENTS entry is a RestrictedAgent")
 
 
 @dataclass(frozen=True)
 class ReplyChannel:
     """
-    How a reply-only agent (flow-assessor, which has no Write tool) returns its output: the stub runs `command` with the
-    reply on stdin through a heredoc quoted with `delimiter`. The delimiter is minted per SPAWN and rotated by the driver.
+    How a reply-only agent (flow-assessor, which has no Write tool) returns its output. `command` is run with the reply on
+    stdin through a heredoc. The heredoc's quoted delimiter is the `REPLY-DELIMITER:` line that `next` prints on stdout
+    beside the SPAWN line, minted fresh per emission and never stored in the directive file. So there is no delimiter
+    field here: the directive file carries only `command`.
     """
 
     command: str
-    delimiter: str
 
 
 @dataclass(frozen=True)
@@ -518,28 +524,39 @@ def _wait_timed_out(state: V2State, facts: Facts) -> Optional[Tuple[V2State, Dir
 
 def _spawn_failed(state: V2State, facts: Facts) -> Tuple[V2State, Directive]:
     """
-    A launch that produced no agent id (v1 parity). The live spawned record (the assessor's, else the step's) is cleared
-    with no failure recorded, and the flow pauses on spawn-failed so the human can restart and resume. A merge keeps its
-    approved merge_gate. With no live spawned record this is the invalid-event stop.
+    A launch that produced no agent id (v1 parity). The live spawned record (the assessor's, the audit's, else the step's)
+    is cleared with no failure recorded, and the flow pauses on spawn-failed so the human can restart and resume. A merge
+    keeps its approved merge_gate. A duplicate delivery against a flow already paused on spawn-failed returns that same
+    stop unchanged (idempotent), so it cannot mask the stop or flip the status. With no live spawned record and no earlier
+    spawn-failed stop this is the invalid-event stop.
+
+    The SpawnFailed event carries no nonce, so the live record is matched by its spawned state alone. Binding the event to
+    the spawn nonce needs the event to carry it, which the stub's label does not do (a known residual).
     """
     gate = state.assess_gate
     pending = state.pending_spawn
+    audit = state.audit_gate
     if gate is not None and gate.state == "spawned":
-        step: Step = "assess"
-        agent = STEP_AGENTS["assess"]
+        who = f"the {STEP_AGENTS['assess']} agent for assess"
         cleared = dataclasses.replace(state, assess_gate=None)
     elif pending is not None and pending.state == "spawned":
-        step = pending.step
-        agent = STEP_AGENTS[pending.step]
+        who = f"the {STEP_AGENTS[pending.step]} agent for {pending.step}"
         outcomes: Dict[Step, Dict[int, AttemptOutcome]] = {s: dict(p) for s, p in state.attempt_log.items()}
         if pending.attempt in outcomes.get(pending.step, {}):
             raise RuntimeError(f"attempt_log {pending.step} attempt {pending.attempt} already has an outcome")
         outcomes.setdefault(pending.step, {})[pending.attempt] = "cleared"
         cleared = dataclasses.replace(_with_pending(state, None), attempt_log=outcomes)
+    elif audit is not None and audit.state == "spawned":
+        who = f"the fidelity audit for {audit.step}"
+        cleared = dataclasses.replace(state, audit_gate=None)
     else:
+        prior_code, _ = parse_stop_reason(state.stop_reason.get(state.step, ""))
+        if state.status == "paused" and prior_code == "spawn-failed":
+            # A duplicate or late delivery after the first spawn-failed stop: report that stop again, change nothing.
+            return state, StopDirective(next_command=driver.next_command(facts.flow), reason=state.stop_reason[state.step])
         return _stop(state, facts, "unknown-event", "spawn-failed with no live spawned record")
     detail = (
-        f"the {agent} agent for {step} did not launch; "
+        f"{who} did not launch; "
         "restart the session (or run /setup-local) and resume with recover --choice resume"
     )
     reason = stop_reason("spawn-failed", detail)
