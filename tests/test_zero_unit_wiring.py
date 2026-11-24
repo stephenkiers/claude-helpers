@@ -31,7 +31,7 @@ GOOD_PLAN = (
     "## Implementation Steps\n\n"
     "### Tests (written spec-blind in Round 2)\n\n"
     "- covers the behaviour\n\n"
-    "Targets: `tests/test_x.py`\n\n"
+    "Targets: `scripts/unit-sizing.py`\n\n"
     "## Other\n"
 )
 
@@ -71,21 +71,43 @@ def test_verifier_plan_check_prefix_and_pass():
         no_tests = Path(td) / "nt.md"
         no_tests.write_text("## Implementation Steps\n\n## Other\n")
         no_targets = Path(td) / "ntg.md"
-        no_targets.write_text(GOOD_PLAN.replace("Targets: `tests/test_x.py`\n", ""))
+        no_targets.write_text(GOOD_PLAN.replace("Targets: `scripts/unit-sizing.py`\n", ""))
         nontest = Path(td) / "nontest.md"
         nontest.write_text(
             "## Implementation Steps\n\n### Step 1: x\n- **Files**: `src/app.py`\n\n"
             + GOOD_PLAN.split("\n\n", 1)[1]
         )
         results = {
-            "good": fvr.check_zero_unit_plan(good),
-            "no_tests": fvr.check_zero_unit_plan(no_tests),
-            "no_targets": fvr.check_zero_unit_plan(no_targets),
-            "nontest": fvr.check_zero_unit_plan(nontest),
+            "good": fvr.check_zero_unit_plan(good, REPO_ROOT),
+            "no_tests": fvr.check_zero_unit_plan(no_tests, REPO_ROOT),
+            "no_targets": fvr.check_zero_unit_plan(no_targets, REPO_ROOT),
+            "nontest": fvr.check_zero_unit_plan(nontest, REPO_ROOT),
         }
     ok = (results["good"] is None
           and all((results[k] or "").startswith(EXPECTED_PREFIX) for k in ("no_tests", "no_targets", "nontest")))
     return ok, repr(results)
+
+
+def test_verifier_shares_targets_rules_with_plan_test_paths():
+    """The verifier and plan-test-paths.py reject the same bad Targets (one shared implementation)."""
+    bad_targets = ["/etc/passwd", "../outside.py", "scripts", "scripts/does-not-exist-526.py", "tests/test_x.py"]
+    seen = {}
+    with tempfile.TemporaryDirectory() as td:
+        for i, target in enumerate(bad_targets):
+            plan = Path(td) / f"p{i}.md"
+            plan.write_text(GOOD_PLAN.replace("`scripts/unit-sizing.py`", f"`{target}`"))
+            seen[target] = fvr.check_zero_unit_plan(plan, REPO_ROOT)
+        nobt = Path(td) / "nobt.md"
+        nobt.write_text(GOOD_PLAN.replace("`scripts/unit-sizing.py`", "scripts/unit-sizing.py"))
+        seen["no-backticks"] = fvr.check_zero_unit_plan(nobt, REPO_ROOT)
+    ok = all((v or "").startswith(EXPECTED_PREFIX) for v in seen.values())
+    return ok, repr(seen)
+
+
+def test_zero_units_constant_has_one_definition():
+    scripts = REPO_ROOT / "scripts"
+    defs = [f.name for f in scripts.glob("*.py") if re.search(r'^ZERO_UNITS_BASIS\s*=\s*"zero-units"', f.read_text(encoding="utf-8"), re.M)]
+    return defs == ["zero_units.py"], repr(defs)
 
 
 def test_receipt_check_runs_for_implement_only():
@@ -146,6 +168,8 @@ def test_inventory_row_45_names_this_test():
 TESTS = [
     ("ledger render/check: zero-units basis needed and honoured", test_ledger_render_and_check_with_zero_units),
     ("verifier plan cross-check returns typed prefix on every failure", test_verifier_plan_check_prefix_and_pass),
+    ("verifier and plan-test-paths share the Targets rules", test_verifier_shares_targets_rules_with_plan_test_paths),
+    ("ZERO_UNITS_BASIS has one definition", test_zero_units_constant_has_one_definition),
     ("receipt cross-check runs for implement, never fails fix or other bases", test_receipt_check_runs_for_implement_only),
     ("expert-flow passes --plan for implement", test_expert_flow_passes_plan_for_implement),
     ("expert-flow render sites bind the receipt SPLIT_BASIS", test_render_sites_bind_receipt_split_basis),

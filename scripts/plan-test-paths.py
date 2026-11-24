@@ -32,20 +32,15 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, List, Tuple
 
-# The Implementation Steps heading must be a whole line of its own. Anchoring it stops
-# a heading like "## Implementation Steps (draft)" or a "### " subheading from matching.
-_IMPL_HEADING_RE = re.compile(r"^## Implementation Steps[ \t]*$", re.M)
-# The section ends at the next level-2 heading ("## X", but not "### X").
-_NEXT_H2_RE = re.compile(r"^## (?!#)", re.M)
-# The Tests subsection heading, matched as a whole line. It ends at the next heading of
-# equal or higher level (level 1 to 3).
-_TESTS_HEADING_RE = re.compile(
-    r"^### Tests \(written spec-blind in Round 2\)[ \t]*$", re.M
-)
-_NEXT_H1_TO_H3_RE = re.compile(r"^#{1,3}[ \t]", re.M)
-# A Targets line: "Targets: `path`, `path`", optionally as a list item.
-_TARGETS_LINE_RE = re.compile(r"^[ \t]*(?:[-*][ \t]+)?Targets:[ \t]*(.*)$", re.M)
-_BACKTICK_RE = re.compile(r"`([^`\n]+)`")
+# The zero-unit plan grammar (headings, Targets line, path rules) is shared with the receipt verifier.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import zero_units  # noqa: E402
+
+_IMPL_HEADING_RE = zero_units.IMPL_HEADING_RE
+_NEXT_H2_RE = zero_units.NEXT_H2_RE
+parse_tests_section = zero_units.parse_tests_section
+parse_targets = zero_units.parse_targets
+_has_nonblank_tests_content = zero_units.has_nonblank_tests_content
 
 
 def _load_module(module_name: str, file_path: Path) -> ModuleType:
@@ -97,40 +92,6 @@ def _get_step_file_paths() -> Callable[..., Any]:
     return func
 
 
-def parse_tests_section(text: str) -> "str | None":
-    """Return the body of the '### Tests (written spec-blind in Round 2)' subsection.
-
-    Returns None when the plan has no such heading. The body runs from the line after the
-    heading to the next heading of level 1 to 3 (or the end of the text).
-    """
-    heading = _TESTS_HEADING_RE.search(text)
-    if heading is None:
-        return None
-    next_heading = _NEXT_H1_TO_H3_RE.search(text, heading.end())
-    end = next_heading.start() if next_heading else len(text)
-    return text[heading.end():end]
-
-
-def parse_targets(section: str) -> "List[str] | None":
-    """Return the backticked paths on the Targets line(s) of a Tests section body.
-
-    Returns None when no Targets line is present (distinct from an empty list).
-    """
-    lines = _TARGETS_LINE_RE.findall(section)
-    if not lines:
-        return None
-    paths: List[str] = []
-    for line in lines:
-        paths.extend(match.strip() for match in _BACKTICK_RE.findall(line))
-    return paths
-
-
-def _has_nonblank_tests_content(section: str) -> bool:
-    """True when the Tests section has non-blank content other than Targets lines."""
-    stripped = _TARGETS_LINE_RE.sub("", section)
-    return any(line.strip() for line in stripped.splitlines())
-
-
 def check_targets(
     plan_text: str,
     is_test_path_func: Callable[..., Any],
@@ -152,11 +113,18 @@ def check_targets(
             errors.append("plan-test-paths: test-only plan has no Targets line")
         return errors
 
+    if not targets:
+        errors.append("plan-test-paths: Targets line has no backticked paths")
+        return errors
+
+    root = zero_units.repo_root()
     for target in targets:
         if is_test_path_func(target):
             errors.append(f"plan-test-paths: Targets path is a test path: {target}")
-        elif not Path(target).exists():
-            errors.append(f"plan-test-paths: Targets path missing: {target}")
+            continue
+        problem = zero_units.target_problem(target, root)
+        if problem is not None:
+            errors.append(f"plan-test-paths: {problem}")
     return errors
 
 

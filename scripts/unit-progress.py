@@ -44,6 +44,7 @@ from typing import (
 # Add scripts directory to path for sibling imports
 sys.path.insert(0, str(Path(__file__).parent))
 from flow_log import validate_flow_dir as validate_flow_dir_lib  # type: ignore
+from zero_units import ZERO_UNITS_BASIS  # type: ignore
 
 # Type definitions for statuses and bases
 UnitStatus = Literal["pending", "committed", "failed", "skipped"]
@@ -553,14 +554,14 @@ def cmd_init(
             error(f"unit-progress: init: sizing.min_units must be >= 1, got {min_units}")
 
     # Validation: zero-units basis is the only basis allowed to have an empty units list
-    if split_basis == "zero-units":
+    if split_basis == ZERO_UNITS_BASIS:
         if len(units_input) != 0:
             error(f"unit-progress: init: zero-units basis requires 0 units, got {len(units_input)}")
     elif len(units_input) == 0:
         error("unit-progress: init: 0 units requires split_basis zero-units")
 
     # min_units is recorded as given for zero-units and not compared against the (empty) list
-    if min_units is not None and split_basis != "zero-units" and len(units_input) < min_units:
+    if min_units is not None and split_basis != ZERO_UNITS_BASIS and len(units_input) < min_units:
         error(f"unit-progress: init: {len(units_input)} units < min_units {min_units}")
 
     # Validation: unit structure (all units must be dicts with required fields)
@@ -888,7 +889,7 @@ def cmd_check(
         if field not in units_data:
             error(f"unit-progress: check: missing field {field} in units.json")
 
-    if units_data.get("split_basis") == "zero-units":
+    if units_data.get("split_basis") == ZERO_UNITS_BASIS:
         print("unit-progress: check: zero-units record (0 units, zero-unit run)", file=sys.stderr)
 
     # Validate SHA formats
@@ -982,7 +983,7 @@ def cmd_pending(record_dir: Path) -> None:
         error("unit-progress: pending: unit id mismatch between units.json and progress.json")
 
     # A zero-units record has nothing pending: label it on stderr, keep stdout empty
-    if units_data.get("split_basis") == "zero-units":
+    if units_data.get("split_basis") == ZERO_UNITS_BASIS:
         print("zero-units: 0 units (zero-unit record)", file=sys.stderr)
         return
 

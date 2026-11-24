@@ -78,6 +78,12 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).parent))
     import flow_log
 
+try:
+    from zero_units import ZERO_UNITS_BASIS
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from zero_units import ZERO_UNITS_BASIS
+
 STEP_IDS: Tuple[str, ...] = (
     "round1",
     "integration-gate",
@@ -119,7 +125,6 @@ SKIP_REASONS: FrozenSet[str] = frozenset(
     }
 )
 CLASSES: Tuple[str, ...] = ("mechanical", "test-only", "full")
-ZERO_UNITS_BASIS = "zero-units"
 NO_ROUND1_UNITS = "no-round1-units"
 
 PAUSE_ROWS: FrozenSet[str] = frozenset({"pause", "usage-check-round1-join"})

@@ -70,6 +70,12 @@ def check_targets_line(h):
          "plan-test-paths: Targets path missing: scripts/does-not-exist-526.py"),
         ("test-path Targets entry", "Targets: `tests/test_plan_test_paths.py`", 1,
          "plan-test-paths: Targets path is a test path: tests/test_plan_test_paths.py"),
+        ("absolute Targets path", "Targets: `/etc/passwd`", 1, "plan-test-paths: Targets path is absolute: /etc/passwd"),
+        ("Targets path with ..", "Targets: `scripts/../scripts/unit-sizing.py`", 1,
+         "plan-test-paths: Targets path contains '..'"),
+        ("directory Targets path", "Targets: `scripts`", 1, "plan-test-paths: Targets path is not a file: scripts"),
+        ("Targets line without backticks", "Targets: scripts/unit-sizing.py", 1,
+         "plan-test-paths: Targets line has no backticked paths"),
     ]
     with tempfile.TemporaryDirectory() as tmp:
         for i, (label, line, want_rc, want_msg) in enumerate(cases):
@@ -80,6 +86,15 @@ def check_targets_line(h):
             out = result.stdout + result.stderr
             ok = result.returncode == want_rc and (want_msg is None or want_msg in out)
             h.test_result(f"Targets: {label}", ok, f"rc={result.returncode} out={out[:300]!r}")
+
+        plan_file = Path(tmp) / "from_subdir.md"
+        plan_file.write_text(_targets_plan("Targets: `scripts/unit-sizing.py`"))
+        result = subprocess.run([sys.executable, str(SCRIPT), "plan", "--plan", str(plan_file)],
+                                capture_output=True, text=True, cwd=str(REPO_ROOT / "scripts"))
+        h.test_result("Targets: repo-relative path resolves from a subdirectory cwd",
+                      result.returncode == 0, f"rc={result.returncode} err={result.stderr[:200]!r}")
+        result = subprocess.run([sys.executable, str(SCRIPT), "plan", "--plan", str(plan_file)],
+                                capture_output=True, text=True, cwd=str(REPO_ROOT / "scripts"))
 
         plan_file = Path(tmp) / "nontest_files.md"
         plan_file.write_text("""# Plan

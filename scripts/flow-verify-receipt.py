@@ -58,6 +58,13 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).parent))
     import flow_log
 
+# Shared zero-unit run shape (basis token, plan grammar, Targets rules); same pattern as flow_log.
+try:
+    import zero_units
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent))
+    import zero_units
+
 # Constants for timeouts and mtime skew tolerance
 MTIME_SKEW_SECS = 5
 
@@ -125,8 +132,7 @@ QUOTE_MIN_LENGTH = 20
 
 # Step 3 receipt split-basis grammar and field names (unit sizing #319)
 SPLIT_BASIS_VALUES = ("parallel", "sequential", "none", "zero-units")  # "single" must be in form single(<reason>)
-ZERO_UNITS_BASIS = "zero-units"  # a plan whose only work is new tests; no Round 1 units, UNITS: 0
-ZERO_UNITS_TESTS_HEADING = "### Tests (written spec-blind in Round 2)"
+ZERO_UNITS_BASIS = zero_units.ZERO_UNITS_BASIS  # a plan whose only work is new tests; no Round 1 units, UNITS: 0
 MIN_UNITS_FIELD = "MIN_UNITS"
 SPLIT_BASIS_FIELD = "SPLIT_BASIS"
 PRIOR_SPLIT_BASIS_FIELD = "PRIOR_SPLIT_BASIS"
@@ -2769,11 +2775,13 @@ def _load_plan_test_paths() -> ModuleType:
     return module
 
 
-def check_zero_unit_plan(plan_path: Path) -> Optional[str]:
+def check_zero_unit_plan(plan_path: Path, root: Optional[Path] = None) -> Optional[str]:
     """Cross-check a plan for an OK zero-units receipt (#526).
 
     A zero-unit plan's Implementation Steps may list only test files (none in practice), and its
     "### Tests (written spec-blind in Round 2)" section must be non-empty and carry a Targets: line.
+    Targets resolve against root (the repo being verified; default: the git top level of the cwd).
+    The grammar and path rules are shared with plan-test-paths.py through zero_units.py.
     Returns an error reason, or None when the plan is consistent with a zero-unit run.
     """
     try:
@@ -2788,34 +2796,14 @@ def check_zero_unit_plan(plan_path: Path) -> Optional[str]:
     except Exception as e:
         return f"zero-unit plan cross-check unavailable: {e}"
 
-    # (a) Implementation Steps: every Files path must be a test path
-    impl = re.search(r"^## Implementation Steps[ \t]*$", text, re.M)
-    if impl is None:
-        return "zero-unit-plan-incomplete: no Implementation Steps heading"
-    next_h2 = re.compile(r"^## (?!#)", re.M).search(text, impl.end())
-    impl_section = text[impl.start(): next_h2.start() if next_h2 else len(text)]
-    for step_content in re.split(r"^###\s+Step\s+\d+\b", impl_section, flags=re.M)[1:]:
-        for file_path in step_file_paths(step_content):
-            if not is_test_path(file_path):
-                return f"zero-unit-plan-incomplete: plan lists non-test file in Implementation Steps: {file_path}"
-
-    # (b) Round 2 tests section must exist and be non-empty
-    tests_heading = re.search(rf"^{re.escape(ZERO_UNITS_TESTS_HEADING)}[ \t]*$", text, re.M)
-    if tests_heading is None:
-        return "zero-unit-plan-incomplete: no Round 2 tests"
-    next_heading = re.search(r"^#{1,3} ", text[tests_heading.end():], re.M)
-    tests_body = text[tests_heading.end(): tests_heading.end() + next_heading.start() if next_heading else len(text)]
-    if not tests_body.strip():
-        return "zero-unit-plan-incomplete: no Round 2 tests"
-
-    # (c) That section must carry a Targets: line
-    if re.search(r"^\s*Targets:", tests_body, re.M) is None:
-        return "zero-unit-plan-incomplete: no Targets"
-    return None
+    return zero_units.zero_unit_plan_problem(
+        text, is_test_path, step_file_paths, root if root is not None else zero_units.repo_root()
+    )
 
 
 def _check_zero_unit_receipt(
-    receipt: str, decision: Optional[str], plan_path: Optional[Path], step: str = "implement"
+    receipt: str, decision: Optional[str], plan_path: Optional[Path], step: str = "implement",
+    repo: Optional[str] = None,
 ) -> Optional[str]:
     """Run the zero-units plan cross-check for an OK zero-units implement receipt (#526).
 
@@ -2831,7 +2819,7 @@ def _check_zero_unit_receipt(
     if plan_path is None:
         print("zero-units plan cross-check: plan unresolved (no --plan given)", file=sys.stderr)
         return None
-    return check_zero_unit_plan(plan_path)
+    return check_zero_unit_plan(plan_path, Path(repo) if repo else None)
 
 
 def check_implement(
@@ -2862,7 +2850,7 @@ def check_implement(
     split_basis_error = validate_split_basis_fields(receipt, decision)
     if split_basis_error:
         return split_basis_error
-    zero_unit_error = _check_zero_unit_receipt(receipt, decision, plan_path)
+    zero_unit_error = _check_zero_unit_receipt(receipt, decision, plan_path, repo=repo)
     if zero_unit_error:
         return zero_unit_error
 
