@@ -11,10 +11,12 @@ Record files:
 - progress.json: schema_version, plus one entry per unit with unit_id, sha, and status.
 
 Subcommands:
-  init: Write both files from a unit list on stdin as JSON.
+  init: Write both files from a unit list on stdin as JSON. The zero-units basis
+    records a zero-unit run (a plan whose only work is new tests; empty units list).
   mark: Update a unit's status.
-  check: Consistency check for re-runs.
-  pending: List pending or failed unit ids.
+  check: Consistency check for re-runs (identifies a zero-unit record on stderr).
+  pending: List pending or failed unit ids (a zero-unit record reports 0 units on stderr;
+    stdout stays empty).
   tip: Print the chain tip SHA.
   layout-base: Print the layout_base_sha value from the MAIN record (exit 3 if the record,
     the field, or its value is absent or not a valid SHA).
@@ -46,7 +48,7 @@ from flow_log import validate_flow_dir as validate_flow_dir_lib  # type: ignore
 # Type definitions for statuses and bases
 UnitStatus = Literal["pending", "committed", "failed", "skipped"]
 PartialWorkMode = Literal["none", "keep", "reset"]
-SplitBasis = Literal["parallel", "sequential", "single"]
+SplitBasis = Literal["parallel", "sequential", "single", "zero-units"]
 
 UNIT_STATUSES: Tuple[UnitStatus, ...] = get_args(UnitStatus)
 PARTIAL_WORK_MODES: Tuple[PartialWorkMode, ...] = get_args(PartialWorkMode)
@@ -549,8 +551,17 @@ def cmd_init(
         min_units = min_units_raw
         if min_units < 1:
             error(f"unit-progress: init: sizing.min_units must be >= 1, got {min_units}")
-        if len(units_input) < min_units:
-            error(f"unit-progress: init: {len(units_input)} units < min_units {min_units}")
+
+    # Validation: zero-units basis is the only basis allowed to have an empty units list
+    if split_basis == "zero-units":
+        if len(units_input) != 0:
+            error(f"unit-progress: init: zero-units basis requires 0 units, got {len(units_input)}")
+    elif len(units_input) == 0:
+        error("unit-progress: init: 0 units requires split_basis zero-units")
+
+    # min_units is recorded as given for zero-units and not compared against the (empty) list
+    if min_units is not None and split_basis != "zero-units" and len(units_input) < min_units:
+        error(f"unit-progress: init: {len(units_input)} units < min_units {min_units}")
 
     # Validation: unit structure (all units must be dicts with required fields)
     for unit_item in units_input:
@@ -877,6 +888,9 @@ def cmd_check(
         if field not in units_data:
             error(f"unit-progress: check: missing field {field} in units.json")
 
+    if units_data.get("split_basis") == "zero-units":
+        print("unit-progress: check: zero-units record (0 units, zero-unit run)", file=sys.stderr)
+
     # Validate SHA formats
     if not is_valid_hex_sha(anchor_sha):
         error("unit-progress: check: invalid anchor_sha format")
@@ -966,6 +980,11 @@ def cmd_pending(record_dir: Path) -> None:
     unit_ids_from_progress = set(e.get("unit_id") for e in progress_list)
     if unit_ids_from_units != unit_ids_from_progress:
         error("unit-progress: pending: unit id mismatch between units.json and progress.json")
+
+    # A zero-units record has nothing pending: label it on stderr, keep stdout empty
+    if units_data.get("split_basis") == "zero-units":
+        print("zero-units: 0 units (zero-unit record)", file=sys.stderr)
+        return
 
     # Print pending or failed units in order
     for unit in units_list:
