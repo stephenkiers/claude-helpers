@@ -2129,9 +2129,9 @@ state from the moment it is observed, so Rounds 3 and 4 and any resume work from
    - `ladder`: the judge verdicts and their citations, `[]` until a judge runs;
    - `final_id`: `null` until Round 4's 4.5 merge fills it in.
 
-   **Statuses.** `open`, then one of `binding-fixed`, `impl-fixed`, `test-correct-blocking`,
+   **Statuses.** `open`, then one of `binding-fixed`, `impl-fixed`, `test-correct-blocking`, `test-correct-zero-unit` (zero-unit run only),
    `awaiting-human`, `human-spec-wrong`, `human-impl-wrong` or `human-takeover`. The terminal statuses are
-   `binding-fixed`, `impl-fixed`, `test-correct-blocking` and `human-spec-wrong`. `human-impl-wrong` is transient: it
+   `binding-fixed`, `impl-fixed`, `test-correct-blocking`, `test-correct-zero-unit` and `human-spec-wrong`. `human-impl-wrong` is transient: it
    enters the fix loop and ends `impl-fixed` or `test-correct-blocking`. `human-takeover` stops the step and is
    resolved on resume (Step 0).
 
@@ -2451,8 +2451,8 @@ re-running the tests yourself.**
 
 Round 4 runs in a fixed order. **4.0a** closes every spec-blind disagreement first. Cleanup (4.1–4.6)
 runs only once everything is green, except the red tests ruled `test-correct-blocking` (ruling 1a: a test a
-judge called correct that the fix loop could not turn green). A ruling-1a test stays committed red, is never
-deleted, and blocks the run at the Final check's spec-blind gate. Any other red test goes back to the Haiku
+judge called correct that the fix loop could not turn green) and, in a zero-unit run, `test-correct-zero-unit`. A ruling-1a test stays committed red, is never
+deleted, and blocks the run at the Final check's spec-blind gate; a `test-correct-zero-unit` test stays committed red, is never deleted, and goes to the human, never the Haiku fix loop (decision D2). Any other red test goes back to the Haiku
 fix loop, never to cleanup.
 
 ### 4.0 Applicability
@@ -2848,8 +2848,8 @@ RECEIPT_CONTRACT: 1
 `spec-blind-takeover` and `spec-blind-disagreement-open` Reasons are ordinary FAILED receipts: Retry, Take over and Abort, and in
 a fleet the ticket parks.
 
-A failing check whose only red tests are `test-correct-blocking` entries is not a fix-loop case. Skip the
-Final check fix loop for that case, and go straight to the gate above. The Haiku fix loop may never touch
+A failing check whose only red tests are `test-correct-blocking` entries (or, in a zero-unit run, `test-correct-zero-unit` entries) is not a fix-loop case. Skip the
+Final check fix loop for that case, and go straight to the gate above. In a zero-unit run a failing check whose only red tests are `test-correct-zero-unit` entries ends in a FAILED receipt with Reason `spec-blind-disagreement-open: <n> test(s)` listing them (the human decides: Retry, Take over or Abort). Honest limit: an OK receipt requires `CHECK_EXIT: 0`, and a committed red test fails the check, so `OUTSTANDING: ... (test-correct-zero-unit: ...)` on an OK receipt is reachable only when the resolved check does not collect that test (for example a check opt-out); otherwise the run stops with the FAILED receipt above and the human rules. The Haiku fix loop may never touch
 a blocking test.
 
 ---
@@ -3033,6 +3033,7 @@ ROUND SIZING: <mechanical | test-only | full>
 ACTION PLAN SOURCE: <path>  [only when PLAN_SOURCE=claude-action-plan]
   Doing it applied: <n>   Rulings applied: <n>   Skipped (still pending): <n>
 ROUND 1 — Implementer (parallel)
+  [zero-unit run: Round 1 SKIPPED (no-round1-units), Units: 0]
   Units: <N>   Applied clean: <c>   Conflicts resolved: <c>   Failed: <c>
 INTEGRATION GATE (trusted)
   Build/type-check: <pass | fail>   Convergence iterations: <i>/<K>
