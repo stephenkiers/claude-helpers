@@ -5,9 +5,14 @@ Usage:
     implement-ledger.py init --scratch S --start-sha X [--pause] [--resumed-from ID]
                              [--carried A..B] [--session-id SID] [--run-key K]
     implement-ledger.py locate [--repo R] [--run-key K | --since ISO | --flow-dir D --step {implement,fix}]
-    implement-ledger.py check [--run-key K]
-    implement-ledger.py render [--run-key K] [--repo R] [--flow-dir D --step {implement,fix}]
-    implement-ledger.py finish [--run-key K] [--log P --state-dir D]
+    implement-ledger.py check [--run-key K] [--split-basis B]
+    implement-ledger.py render [--run-key K] [--repo R] [--flow-dir D --step {implement,fix}] [--split-basis B]
+    implement-ledger.py finish [--run-key K] [--log P --state-dir D] [--split-basis B]
+
+--split-basis (default empty) names the run's split basis. Only the value zero-units marks a zero-unit run (a
+plan whose only work is new tests; no Round 1 units). For such a run, check requires round1 to be
+SKIPPED no-round1-units (a DONE round1 row is invalid) and round2-apply to be DONE. The reason no-round1-units
+is accepted only when the basis is zero-units; any other basis reports it as a problem.
 
 Each run has a ledger at <SCRATCH>/ledger.md with one line per mandatory step:
     <run-key> DONE <step-id> <evidence>     (evidence: absolute path to a non-empty file under SCRATCH,
@@ -29,8 +34,8 @@ The class (mechanical | test-only | full) is read from the round-sizing evidence
 (class=<value>); a missing or unreadable round-sizing row is treated as full.
 
 Skip reasons: mechanical, test-only, no-test-files-changed, dirty-file, no-comparison-operator,
-no-new-tests, pause-not-requested. See permitted_skip_reasons() for the
-authoritative skip matrix.
+no-new-tests, pause-not-requested, no-round1-units (full class, zero-unit runs only). See
+permitted_skip_reasons() for the authoritative skip matrix.
 
 Exit codes:
     init    0 ok; 2 invalid arguments or refused overwrite or I/O failure.
@@ -99,6 +104,7 @@ SkipReasonLiteral = Literal[
     "no-comparison-operator",
     "no-new-tests",
     "pause-not-requested",
+    "no-round1-units",
 ]
 SKIP_REASONS: FrozenSet[str] = frozenset(
     {
@@ -109,9 +115,12 @@ SKIP_REASONS: FrozenSet[str] = frozenset(
         "no-comparison-operator",
         "no-new-tests",
         "pause-not-requested",
+        "no-round1-units",
     }
 )
 CLASSES: Tuple[str, ...] = ("mechanical", "test-only", "full")
+ZERO_UNITS_BASIS = "zero-units"
+NO_ROUND1_UNITS = "no-round1-units"
 
 PAUSE_ROWS: FrozenSet[str] = frozenset({"pause", "usage-check-round1-join"})
 MECHANICAL_ROWS: FrozenSet[str] = frozenset(
@@ -208,6 +217,8 @@ def permitted_skip_reasons(cls: str, step: str, pause: bool) -> FrozenSet[str]:
             reasons.add("test-only")
         if step in PAUSE_ROWS and not pause:
             reasons.add("pause-not-requested")
+    if cls == "full" and step == "round1":
+        reasons.add(NO_ROUND1_UNITS)
     if cls in ("test-only", "full"):
         reasons |= FURTHER_SKIPS.get(step, frozenset())
     return frozenset(reasons)
@@ -315,10 +326,15 @@ def _first_line(evidence: str) -> str:
     return "(evidence empty)"
 
 
-def evaluate(data: Dict[str, Any], ledger: Path, run_key: str) -> Dict[str, Any]:
-    """Judge a ledger against the skip matrix. Pure read; never writes."""
+def evaluate(data: Dict[str, Any], ledger: Path, run_key: str, split_basis: str = "") -> Dict[str, Any]:
+    """Judge a ledger against the skip matrix. Pure read; never writes.
+
+    split_basis is the run's basis (--split-basis). Only ZERO_UNITS_BASIS makes the run a zero-unit run: the
+    no-round1-units skip is accepted only then, and such a run must also have round2-apply DONE.
+    """
     scratch = Path(data["scratch"])
     pause = bool(data.get("pause"))
+    zero_units = split_basis == ZERO_UNITS_BASIS
     entries, finished = parse_ledger(ledger, run_key, scratch)
 
     round_sizing = [
@@ -337,9 +353,14 @@ def evaluate(data: Dict[str, Any], ledger: Path, run_key: str) -> Dict[str, Any]
         skips = [e for e in ok if e["kind"] == "skip"]
         permitted = permitted_skip_reasons(cls, step, pause)
         for e in skips:
-            if e["value"] not in permitted:
+            if e["value"] == NO_ROUND1_UNITS and not zero_units:
+                problems.append(
+                    f"line {e['lineno']}: SKIPPED {step} {NO_ROUND1_UNITS} requires a zero-unit run "
+                    f"(--split-basis {ZERO_UNITS_BASIS}); this run's split basis is {split_basis or 'unset'}"
+                )
+            elif e["value"] not in permitted:
                 problems.append(f"line {e['lineno']}: SKIPPED {step} {e['value']} is not permitted for class {cls}")
-        allowed = [e for e in skips if e["value"] in permitted]
+        allowed = [e for e in skips if e["value"] in permitted and (e["value"] != NO_ROUND1_UNITS or zero_units)]
         if dones:
             rows[step] = ("done", _first_line(dones[-1]["value"]))
         elif allowed:
@@ -352,6 +373,14 @@ def evaluate(data: Dict[str, Any], ledger: Path, run_key: str) -> Dict[str, Any]
             rows[step] = ("absent", None)
         if step in required and rows[step][0] not in ("done", "skipped"):
             missing.append(step)
+
+    if zero_units:
+        if rows["round1"][0] == "done":
+            problems.append(f"round1 must be SKIPPED {NO_ROUND1_UNITS} for a zero-unit run, not DONE")
+        if rows[ROUND2_APPLY][0] != "done":
+            problems.append(
+                f"{ROUND2_APPLY} must be DONE for a zero-unit run (found {rows[ROUND2_APPLY][0]})"
+            )
 
     return {
         "run_key": run_key,
@@ -752,7 +781,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         print("CHECK: INCOMPLETE (no pointer found for this run)")
         return 1
     _path, _finished, data = found
-    ev = evaluate(data, Path(data["scratch"]) / LEDGER_NAME, data["run_key"])
+    ev = evaluate(data, Path(data["scratch"]) / LEDGER_NAME, data["run_key"], args.split_basis)
     for line in check_lines(ev):
         print(line)
     return 0 if ev["complete"] else 1
@@ -895,7 +924,7 @@ def cmd_render(args: argparse.Namespace) -> int:
                 )
                 return 3
 
-    ev = evaluate(data, Path(data["scratch"]) / LEDGER_NAME, run_key)
+    ev = evaluate(data, Path(data["scratch"]) / LEDGER_NAME, run_key, args.split_basis)
     for line in render_lines(ev):
         print(line)
     return 0
@@ -984,7 +1013,7 @@ def cmd_finish(args: argparse.Namespace) -> int:
     try:
         if not ledger.is_file():
             raise LedgerError(f"ledger missing: {ledger}")
-        ev = evaluate(data, ledger, run_key)
+        ev = evaluate(data, ledger, run_key, args.split_basis)
     except Exception as e:  # fail closed: any check failure is steps_skipped
         print(f"finish: check failed: {e}", file=sys.stderr)
         try:
@@ -1084,9 +1113,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_check = sub.add_parser("check", help="verify the ledger is complete")
     p_check.add_argument("--run-key", default=None, dest="run_key")
+    p_check.add_argument("--split-basis", default="", dest="split_basis", help="run split basis; zero-units marks a zero-unit run")
 
     p_render = sub.add_parser("render", help="print the summary block")
     p_render.add_argument("--run-key", default=None, dest="run_key")
+    p_render.add_argument("--split-basis", default="", dest="split_basis", help="run split basis; zero-units marks a zero-unit run")
     p_render.add_argument(
         "--repo",
         default=None,
@@ -1105,6 +1136,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_finish.add_argument("--run-key", default=None, dest="run_key")
     p_finish.add_argument("--log", default=None)
     p_finish.add_argument("--state-dir", default=None, dest="state_dir")
+    p_finish.add_argument("--split-basis", default="", dest="split_basis", help="run split basis; zero-units marks a zero-unit run")
     return parser
 
 
