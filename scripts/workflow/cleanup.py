@@ -28,6 +28,11 @@ from .validation import ValidationVerdict
 CLEANUP_HOOK_TIMEOUT_SECS = 300
 _CLEANUP_KEY_PROBE = re.compile(r"^\s*cleanup\s*:", re.MULTILINE)
 
+# Tri-state dirty check results
+CLEAN = "clean"
+DIRTY = "dirty"
+UNKNOWN = "unknown"
+
 DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS = 300
 CHECK_TIMEOUT_MESSAGE_PREFIX = "Check command timed out"
 
@@ -527,11 +532,110 @@ def _failure_tail(stdout: Optional[str], stderr: Optional[str]) -> str:
     return "\n".join(line[:200] for line in lines)
 
 
-def _worktree_status(target_worktree: Path) -> str:
+def worktree_dirty_state(target_worktree: Path) -> Tuple[str, str]:
+    """
+    Tri-state dirty check using --no-optional-locks.
+
+    Returns (state, detail) where state is one of CLEAN, DIRTY, or UNKNOWN.
+    - CLEAN: git status --porcelain returns empty (no changes)
+    - DIRTY: git status --porcelain returns non-empty text (changes present)
+    - UNKNOWN: any error (non-zero exit, timeout, exception) with error reason
+    """
     try:
-        return git.run_git_command(["status", "--porcelain"], cwd=target_worktree)
-    except Exception:
-        return ""
+        output = git.run_git_command(
+            ["--no-optional-locks", "status", "--porcelain", "--end-of-options"],
+            cwd=target_worktree,
+            check=True
+        )
+        if output:
+            return DIRTY, output
+        else:
+            return CLEAN, ""
+    except subprocess.CalledProcessError as e:
+        reason = str(e)
+        if e.stderr:
+            reason = e.stderr.strip()
+        return UNKNOWN, f"git status failed: {reason}"
+    except RuntimeError as e:
+        return UNKNOWN, f"git status timed out or failed: {e}"
+    except Exception as e:
+        return UNKNOWN, f"git status error: {e}"
+
+
+def _worktree_status(target_worktree: Path) -> str:
+    """
+    Compatibility wrapper; prefer worktree_dirty_state for new code.
+
+    Returns the porcelain text if dirty, empty string if clean, empty string if unknown.
+    For tri-state handling, use worktree_dirty_state instead.
+    """
+    state, detail = worktree_dirty_state(target_worktree)
+    if state == DIRTY:
+        return detail
+    return ""
+
+
+# Tri-state unpushed check results
+PUSHED = "pushed"
+UNPUSHED = "unpushed"
+
+
+def unpushed_state(
+    tip: str,
+    merged_head_oid: Optional[str] = None,
+    repo: Optional[Path] = None
+) -> Tuple[str, str]:
+    """
+    Tri-state unpushed check.
+
+    A worktree tip is "pushed" if:
+    (a) It is reachable from some remote-tracking ref (`git rev-list <tip> --not --remotes` is empty), OR
+    (b) It equals or is an ancestor of a MERGED PR's headRefOid
+
+    Returns (state, detail) where state is one of PUSHED, UNPUSHED, or UNKNOWN.
+    - PUSHED: tip is reachable from remotes OR merged_head_oid check passes
+    - UNPUSHED: tip is not reachable and merged check doesn't apply/fails
+    - UNKNOWN: any error (missing PR data, timeout, exception)
+
+    Args:
+        tip: Commit/ref to check
+        merged_head_oid: Optional headRefOid from a MERGED PR
+        repo: Working directory for git commands (defaults to cwd)
+    """
+    # Check (a): reachability from remotes
+    try:
+        output = git.run_git_command(
+            ["--no-optional-locks", "rev-list", "--not", "--remotes", "--end-of-options", tip],
+            cwd=repo,
+            check=True
+        )
+        if not output:
+            # Empty output: tip is reachable from remotes
+            return PUSHED, "reachable from remote-tracking refs"
+    except (subprocess.CalledProcessError, RuntimeError, Exception) as e:
+        # On error, fall through to check (b) if headRefOid is available
+        pass
+
+    # Check (b): ancestry from merged PR's headRefOid
+    if merged_head_oid:
+        try:
+            git.run_git_command(
+                ["--no-optional-locks", "merge-base", "--is-ancestor", "--end-of-options", tip, merged_head_oid],
+                cwd=repo,
+                check=True
+            )
+            return PUSHED, f"ancestor of merged PR (headRefOid: {merged_head_oid[:8]})"
+        except subprocess.CalledProcessError:
+            # Not an ancestor
+            pass
+        except (RuntimeError, Exception) as e:
+            return UNKNOWN, f"merge-base check failed: {e}"
+
+    # Neither reachability nor merged PR ancestry check passed
+    if merged_head_oid is not None:
+        return UNPUSHED, "not reachable from remotes and not ancestor of merged PR"
+    else:
+        return UNPUSHED, "not reachable from remotes (no merged PR data)"
 
 
 def _run_cleanup_hook(
@@ -574,7 +678,7 @@ def _run_cleanup_hook(
         return _fail(read_err, "Worktree kept; fix main's project.yaml and re-run /cleanup.")
     if cmd is None:
         return None
-    status_before = _worktree_status(target_worktree)
+    state_before, status_before = worktree_dirty_state(target_worktree)
     retry = "Worktree kept; fix the teardown and re-run /cleanup."
     try:
         proc = subprocess.Popen(
@@ -598,8 +702,11 @@ def _run_cleanup_hook(
         return _fail(f"commands.cleanup failed (exit {proc.returncode}): {cmd}"
                      + ("\n" + tail if tail else ""), retry)
     result.notes.append(f"commands.cleanup ran: {cmd}")
-    status_after = _worktree_status(target_worktree)
-    if status_after and status_after != status_before:
+    state_after, status_after = worktree_dirty_state(target_worktree)
+    if state_before == UNKNOWN or state_after == UNKNOWN:
+        result.notes.append(
+            "could not check whether commands.cleanup modified the worktree")
+    elif state_after == DIRTY and state_before != DIRTY:
         result.notes.append(
             "commands.cleanup modified the worktree; removal may need --force")
     return None
