@@ -1414,3 +1414,7 @@ Rewording it is the deferred W2/#538 follow-up, because agent files are frozen f
 
 **Canonical text:** `prompts/join-barrier-pattern.md` § Waiting for the barrier, rules 1–9.
 
+## Amendment (2026-11-23): zero-unit runs close the implement/fix hatch parity difference (#526)
+
+- **No remaining intentional difference.** The "No Round 1 work left" row in the implement/fix parity table (ADR-0019 2026-11-17 amendment) is closed. The implement step no longer stops on a test-only plan. It runs a zero-unit run instead (ADR-0019 2026-11-23 amendment), so both steps handle a run with no Round 1 work the same way.
+- **Fidelity audit accepts zero-unit runs.** A run with `SPLIT_BASIS: zero-units` that ran Round 2 is not a reduced run, so the fidelity audit does not treat it as one.
