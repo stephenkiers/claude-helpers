@@ -455,6 +455,7 @@ def test_rules_table_all_entries_classified():
         r"^existing-test-edit": "existing-test-edit: tests/test_x.py",
         r"^test-path-in-units": "test-path-in-units: unit 1",
         r"^plan-test-paths": "plan-test-paths: check could not run",
+        r"^zero-unit-plan-incomplete": "zero-unit-plan-incomplete: no Round 2 tests",
     }
     for pattern, stop_class, label in module.RULES:
         # Use pre-computed test samples for common patterns.

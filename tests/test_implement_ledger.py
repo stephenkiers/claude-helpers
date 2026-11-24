@@ -48,7 +48,7 @@ EXPECTED_STEP_IDS = {
 }
 EXPECTED_SKIP_REASONS = {
     "mechanical", "test-only", "no-test-files-changed", "dirty-file",
-    "no-comparison-operator", "no-new-tests", "pause-not-requested",
+    "no-comparison-operator", "no-new-tests", "pause-not-requested", "no-round1-units",
 }
 PAUSE_ROWS = {"pause", "usage-check-round1-join"}
 MECHANICAL_REQUIRED = ["round1", "integration-gate", "round-sizing", "usage-check-final", "full-check"]
