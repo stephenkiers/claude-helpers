@@ -1476,7 +1476,7 @@ def test_no_round1_units_rejected_without_zero_units_basis():
         sb.close()
 
 
-# --- implement-ledger.py append (#548, spec-blind Round 2) -------------------------------------
+# --- implement-ledger.py append (#548) -------------------------------------
 
 APPEND_RE = re.compile(r'implement-ledger\.py"?\s+append\b')
 COMMAND_DOC = REPO_ROOT / "commands" / "implement-with-haiku.md"
