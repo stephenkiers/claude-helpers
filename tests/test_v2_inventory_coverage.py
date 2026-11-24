@@ -17,6 +17,7 @@ Covered here:
 Run with: python3 tests/test_v2_inventory_coverage.py
 """
 
+import hashlib
 import re
 import sys
 import tempfile
@@ -381,6 +382,236 @@ def test_parity_readme_cites_adr_0026_amendment_and_terms():
     return True, ""
 
 
+
+# ---------------------------------------------------------------------------
+# ADR-0026 2026-11-23 drift checks (#538): row truth, closed disposition set, v1 content pin.
+# Pure functions over text and a directory; no git command is run.
+# ---------------------------------------------------------------------------
+
+PIN_FILE = INVENTORY_DIR / "v1-content-pins.md"
+WATCHED_V1_FILES = ("commands/expert-flow.md", "prompts/flow-step-contract.md", "prompts/flow-reference.md")
+DISPOSITION_PREFIXES = (
+    "port, pinned by test",
+    "port, test not named (backfill #",
+    "landed in #",
+    "landed as:",
+    "re-pointed to ",
+    "deferred to ",
+    "not ported:",
+    "dropped:",
+    "refused by design (",
+)
+CHECKED_SECTIONS = ("1", "4")
+PIN_TRIGGERS = ("pinned by test", "pinned by tests/", "pinned by `tests/")
+SECTION_RE = re.compile(r"^##\s+(\d+)\.")
+TEST_GROUP_RE = re.compile(r"`?(tests/[\w./-]+\.py)`?(?:::(\w+)|\s*\(([^)]*)\))?")
+IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
+ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+REF_RE = re.compile(r"^#\d+$")
+PIN_FAILURE_HELP = (
+    "A watched v1 file changed without inventory review. Re-read it, add or update the docs/v2-inventory/rules.md "
+    "rows it affects, then bump the pin in the same PR (ADR-0026 2026-11-23 amendment). A pin bump is a human-only "
+    "edit: an automated worker must stop with NEEDS_HUMAN or Decision: FAILED and never re-hash the file."
+)
+
+
+def _table_rows(rules_text, sections=CHECKED_SECTIONS):
+    """Yield (line_no, row_key, disposition) for each data row of a table under the given top-level sections."""
+    section = None
+    for line_no, line in enumerate(rules_text.splitlines(), 1):
+        match = SECTION_RE.match(line)
+        if match:
+            section = match.group(1)
+            continue
+        if section not in sections or not line.lstrip().startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 2 or set(cells[-1]) <= set("-: ") or cells[-1] == "Disposition":
+            continue
+        yield line_no, cells[0], cells[-1]
+
+
+def check_row_truth(rules_text, repo_root):
+    """Errors for table rows whose 'pinned by' citations name no tests/ path, a missing file, or an undefined test.
+
+    Each `tests/<file>.py (<names>)` group is resolved against its own file. "Named" means defined: `def <name>` at a
+    word boundary. Registration in the run list is not checked (Q2 = A).
+    """
+    errors = []
+    sources = {}
+    for line_no, key, disposition in _table_rows(rules_text, sections=("1", "2", "3", "4")):
+        if not any(trigger in disposition for trigger in PIN_TRIGGERS):
+            continue
+        groups = TEST_GROUP_RE.findall(disposition)
+        if not groups:
+            errors.append(f"rules.md:{line_no} row {key}: says 'pinned by' but names no tests/ path")
+            continue
+        for rel, colon_name, paren_names in groups:
+            path = Path(repo_root) / rel
+            if not path.is_file():
+                errors.append(f"rules.md:{line_no} row {key}: cited file {rel} does not exist")
+                continue
+            names = [colon_name] if colon_name else [n.strip() for n in paren_names.split(",")]
+            names = [n for n in names if IDENT_RE.match(n)]
+            if rel not in sources:
+                sources[rel] = path.read_text(encoding="utf-8")
+            for name in names:
+                if not re.search(r"^\s*def " + re.escape(name) + r"\b", sources[rel], re.MULTILINE):
+                    errors.append(f"rules.md:{line_no} row {key}: {name} is not defined in {rel}")
+    return errors
+
+
+def check_closed_set(rules_text):
+    """Errors for §1 and §4 table rows whose disposition does not begin with a closed-set prefix (§2 and §3 excluded)."""
+    return [
+        f"rules.md:{line_no} row {key}: disposition {disposition[:60]!r} does not begin with a closed-set value"
+        for line_no, key, disposition in _table_rows(rules_text)
+        if not disposition.startswith(DISPOSITION_PREFIXES)
+    ]
+
+
+def parse_pins(pin_text):
+    """The watched-files table of v1-content-pins.md as a list of (path, sha256, reviewed, ref)."""
+    rows = []
+    in_table = False
+    for line in pin_text.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")] if line.lstrip().startswith("|") else []
+        if cells[:4] == ["path", "sha256", "reviewed", "ref"]:
+            in_table = True
+            continue
+        if not in_table:
+            continue
+        if not cells:
+            if rows:
+                break
+            continue
+        if set("".join(cells)) <= set("-: "):
+            continue
+        if len(cells) == 4:
+            rows.append(tuple(cells))
+    return rows
+
+
+def check_content_pins(pin_text, repo_root, watched=WATCHED_V1_FILES):
+    """Errors when the pin table's paths differ from `watched`, an entry is malformed, or a raw-byte sha256 differs."""
+    rows = parse_pins(pin_text)
+    errors = []
+    paths = [row[0] for row in rows]
+    if sorted(paths) != sorted(watched):
+        errors.append(f"pin table lists {paths}, expected exactly {list(watched)}. {PIN_FAILURE_HELP}")
+    for rel, digest, reviewed, ref in rows:
+        if not ISO_DATE_RE.match(reviewed) or not REF_RE.match(ref):
+            errors.append(f"pin for {rel} needs an ISO reviewed date and a #N ref (got {reviewed!r}, {ref!r})")
+        path = Path(repo_root) / rel
+        if not path.is_file():
+            errors.append(f"pinned file {rel} does not exist. {PIN_FAILURE_HELP}")
+            continue
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != digest:
+            errors.append(f"pin mismatch for {rel}: recorded {digest}, actual {actual}. {PIN_FAILURE_HELP}")
+    return errors
+
+
+def _rules_text():
+    return (INVENTORY_DIR / "rules.md").read_text(encoding="utf-8")
+
+
+def test_drift_real_rules_pass_row_truth():
+    """Every 'pinned by' citation in the real rules.md resolves to a defined test in an existing file."""
+    errors = check_row_truth(_rules_text(), REPO_ROOT)
+    return (not errors), "; ".join(errors[:5])
+
+
+def test_drift_real_rules_pass_closed_set():
+    """Every §1/§4 disposition in the real rules.md begins with a closed-set value."""
+    errors = check_closed_set(_rules_text())
+    return (not errors), "; ".join(errors[:5])
+
+
+def test_drift_row_truth_skips_prose_line():
+    """rules.md line 7's prose 'pinned by test' wording is not a table row and produces no error."""
+    text = "# v1 rules inventory\n\nA row says port, pinned by test when it is pinned.\n\n## 1. Rule table\n"
+    errors = check_row_truth(text, REPO_ROOT)
+    return (not errors), f"prose produced errors: {errors}"
+
+
+def _synthetic_rules(disposition):
+    return f"## 1. Rule table\n\n| a | b | Disposition |\n|---|---|---|\n| 1 | x | {disposition} |\n"
+
+
+def test_drift_row_truth_synthetic_rows():
+    """Synthetic rows: missing file, undefined function, no path, wrong-group function fail; valid forms pass."""
+    real = "tests/test_flow_driver_gates.py"
+    other = "tests/test_flow_driver_preflight.py"
+    real_fn = "test_merge_gate_stops"
+    other_fn = "test_resolve_main_worktree_parent_mismatch_is_a_stop"
+    cases = [
+        ("port, pinned by test (tests/test_nope.py::test_missing)", "tests/test_nope.py"),
+        (f"port, pinned by test ({real}::test_no_such_function_here)", "test_no_such_function_here"),
+        ("port, pinned by test", "no tests/ path"),
+        (f"port, pinned by test {real} ({other_fn}) and {other} ({real_fn})", other_fn),
+    ]
+    for disposition, needle in cases:
+        errors = check_row_truth(_synthetic_rules(disposition), REPO_ROOT)
+        if not any(needle in err for err in errors):
+            return False, f"{disposition!r} did not fail naming {needle!r}: {errors}"
+    passing = [
+        f"port, pinned by test {real} ({real_fn}) and {other} ({other_fn})",
+        f"landed in #538 (code); pinned by `{real}` ({real_fn})",
+    ]
+    for disposition in passing:
+        errors = check_row_truth(_synthetic_rules(disposition), REPO_ROOT)
+        if errors:
+            return False, f"{disposition!r} should pass: {errors}"
+    return True, ""
+
+
+def test_drift_closed_set_synthetic_rows():
+    """Existing prefix forms pass; 'maybe later' fails; a §3 row is not checked."""
+    for ok in ("dropped: no longer needed", "landed in #1 (x); no test yet", "landed as: a flag",
+               "re-pointed to Layer 3 (moved)", "refused by design (unsafe)", "deferred to Layer 4 (#488)"):
+        if check_closed_set(_synthetic_rules(ok)):
+            return False, f"{ok!r} should pass the closed set"
+    if not check_closed_set(_synthetic_rules("maybe later")):
+        return False, "'maybe later' passed the closed set"
+    section3 = "## 3. Overlapping-issue dispositions\n\n| a | Disposition |\n|---|---|\n| x | maybe later |\n"
+    if check_closed_set(section3):
+        return False, "§3 free text was checked"
+    return True, ""
+
+
+def test_drift_real_content_pins_match():
+    """The real pin file lists exactly the three watched v1 files, each with a matching raw-byte sha256."""
+    errors = check_content_pins(PIN_FILE.read_text(encoding="utf-8"), REPO_ROOT)
+    return (not errors), "; ".join(errors)
+
+
+def test_drift_wrong_pin_fails_with_human_only_message():
+    """A synthetic wrong hash fails, and the message names the path, rules.md, the ADR, human-only and the stops."""
+    text = PIN_FILE.read_text(encoding="utf-8")
+    rows = parse_pins(text)
+    if not rows:
+        return False, "no pin rows parsed"
+    target = rows[0]
+    bad = text.replace(target[1], "0" * 64, 1)
+    errors = check_content_pins(bad, REPO_ROOT)
+    if not errors:
+        return False, "a wrong hash passed"
+    message = " ".join(errors)
+    for needle in (target[0], "rules.md", "ADR-0026 2026-11-23", "human-only", "NEEDS_HUMAN", "Decision: FAILED"):
+        if needle not in message:
+            return False, f"failure message lacks {needle!r}"
+    return True, ""
+
+
+def test_drift_check_runs_no_git():
+    """The drift check functions run no git command (a static scan of their source)."""
+    import inspect
+    for fn in (check_row_truth, check_closed_set, parse_pins, check_content_pins, _table_rows):
+        if "subprocess" in inspect.getsource(fn) or "git " in inspect.getsource(fn):
+            return False, f"{fn.__name__} references git or subprocess"
+    return True, ""
+
 def _check(h, label, fn):
     """Run one test function, recording a crash as a failure instead of aborting the suite."""
     try:
@@ -431,6 +662,17 @@ if __name__ == "__main__":
            test_parity_readme_drops_two_values_only_and_names_closed_sets)
     _check(h, "README cites ADR-0026 2026-11-23 with parity terms",
            test_parity_readme_cites_adr_0026_amendment_and_terms)
+    print()
+
+    print("[Section 5] ADR-0026 2026-11-23 drift checks (#538)")
+    _check(h, "real rules.md passes row truth", test_drift_real_rules_pass_row_truth)
+    _check(h, "real rules.md passes the closed set", test_drift_real_rules_pass_closed_set)
+    _check(h, "prose 'pinned by test' line is not a row", test_drift_row_truth_skips_prose_line)
+    _check(h, "row truth: synthetic failing and passing rows", test_drift_row_truth_synthetic_rows)
+    _check(h, "closed set: synthetic rows and §3 exclusion", test_drift_closed_set_synthetic_rows)
+    _check(h, "real content pins match the watched v1 files", test_drift_real_content_pins_match)
+    _check(h, "wrong pin fails with the human-only message", test_drift_wrong_pin_fails_with_human_only_message)
+    _check(h, "drift check runs no git", test_drift_check_runs_no_git)
     print()
 
     h.summarize_and_exit()

@@ -611,7 +611,7 @@ def test_p13_stub_doc_pipes_the_assess_reply_through_a_quoted_heredoc(base: Path
 def test_p14_step_agents_cover_every_step_and_match_the_literal_map(base: Path) -> None:
     expect(set(steps.STEP_AGENTS) == set(state.STEPS),
            f"STEP_AGENTS keys {sorted(steps.STEP_AGENTS)} != STEPS {sorted(state.STEPS)}")
-    expected = dict(PARITY_AGENTS, assess="flow-assessor")
+    expected = dict(PARITY_AGENTS, assess="flow-assessor", merge="flow-merge")
     expect(dict(steps.STEP_AGENTS) == expected, f"STEP_AGENTS is {dict(steps.STEP_AGENTS)}, expected {expected}")
 
 

@@ -24,7 +24,7 @@ change, so that a one-off rule that lives only in prose (an ADR-0023 amendment, 
   in v1 has a row; a row is never removed, only re-dispositioned.
 - **Key to amendments.** Rules are keyed to ADR-0023 section and amendment date, because the amendments
   are where v1's one-off rules came from.
-- **Feature parity.** v1 is not frozen. Every v1 behaviour change lands with v2 parity: either the v2
+- **Feature parity.** v1 is not frozen. Every v1 behaviour change lands with v2 feature parity: either the v2
   driver code reproduces it, or a `deferred to …` row says where it will land. A watched v1 doc edit bumps
   its content pin in the same PR (see `v1-content-pins.md`); a pin bump is a human-only edit. The rule is
   recorded in the ADR-0026 2026-11-23 amendment. A new ADR-0023 amendment must be absorbed into this
