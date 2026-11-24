@@ -18,27 +18,48 @@ agent escalates to the user).
 
 ## Waiting for the barrier (harness-agnostic)
 
-This section defines when a barrier closes and how orchestrators wait for it, independent of whether
-the harness returns agent results synchronously (older harness) or through notifications (current harness).
+This section defines when a barrier closes and how a subagent or skill waits for it. It binds every
+subagent and every skill, interactive or run by an `/expert-flow` step agent: there is one mechanism
+for both modes (ADR-0023 amendment 2026-11-23, #532). The headless probe that chose it is recorded in
+`~/.claude/prompts/headless-wait-probe.md` (Branch F: bounded sites collect by a foreground return;
+units, sweeps, check runs and merge applies collect by a file wait).
 
-1. **Launch** the whole batch in one message. Do not assume the batch has finished by your next turn.
+1. **Launch** the whole batch in one message. A site designated *foreground* launches every call with
+   `run_in_background: false`. A site designated a *file wait* runs `wait-files.py mark` immediately
+   before the launch (rule 6) and launches with `run_in_background: true`.
 
 2. **The launched set** is the list of ids you just dispatched, taken from existing on-disk artifacts: the Router's selection in the review dir, `selected-experts.md` in the plan session dir, the unit ids in implement-with-haiku, or the single background Bash check run in implement-with-haiku's Final check. It is re-derivable after context compaction. There is no new manifest file.
 
-3. **Per-id state** is `launched → returned → ok | bad`, with a branch to `launched (retry)` on first failure. An id becomes *returned* when its final report arrives: a synchronous result containing the report, an `<agent-message from="{id}">` hand-back, or a task notification whose `<result>` contains the report. A synchronous result that only says the agent was launched ("Async agent launched", "working in the background") is a launch acknowledgement: the id stays `launched`. A notification whose `<result>` only points at a hand-back marks the id *returned*, but the receipt is read from the hand-back message. The hand-back and the notification for one id may arrive in separate turns: that is two partial turns and one state change, never a retry. A second or late notification for an id that has already returned is a no-op, including one that arrives after that id's stand-in was written: it never overwrites the stand-in or triggers another retry. Never keep a running count of notifications.
+3. **Per-id state** is `launched → returned → ok | bad`, with a branch to `launched (retry)` on first failure. An id becomes *returned* when its final report arrives: a synchronous result containing the report, an `<agent-message from="{id}">` hand-back, or a task notification whose `<result>` contains the report. A synchronous result that only says the agent was launched ("Async agent launched", "working in the background") is a launch acknowledgement: the id stays `launched`. A notification whose `<result>` only points at a hand-back marks the id *returned*, but the receipt is read from the hand-back message. The hand-back and the notification for one id may arrive in separate turns: that is two partial turns and one state change, never a retry. A second or late notification for an id that has already returned, or that a file wait already closed, is a no-op, including one that arrives after that id's stand-in was written: it never overwrites the stand-in or triggers another retry. Never keep a running count of notifications.
 
-4. **On return**, check that id's checkpoint file and sentinel and mark it `ok` or `bad`. For agents that write no checkpoint file and return their result inline (Router, Q&A), the report carried by the hand-back (or synchronous result or notification, whichever contains it) is the whole receipt. **After context compaction, or whenever remembered state is uncertain,** an id whose checkpoint file exists with its sentinel is `ok` regardless of remembered receipt state; only ids without a valid file remain outstanding, and a missing file still never triggers a retry. A present-but-invalid file (exists, but lacks a sentinel or is unreadable) with no pending notification for that id is surfaced in the 1800s status report to the user. Late or "duplicate" notifications after compaction are no-ops, not a reason to poll.
+4. **On return**, check that id's checkpoint file and sentinel and mark it `ok` or `bad`. For agents that write no checkpoint file and return their result inline (Router, Q&A), the report carried by the hand-back (or synchronous result or notification, whichever contains it) is the whole receipt. **After context compaction, or whenever remembered state is uncertain,** an id whose checkpoint file exists with its sentinel is `ok` regardless of remembered receipt state; only ids without a valid file remain outstanding, and a missing file still never triggers a retry. A present-but-invalid file (exists, but lacks a sentinel or is unreadable) is `bad`.
 
-5. **Retry once** only when an id has *returned* and is `bad` — state becomes `launched (retry)`. Evaluate the next return once: if still `bad`, write the stand-in file per the existing pattern. A missing file for an id that has not returned means it is still running and is never a retry trigger. Wakeups for an id remain outstanding only within the phase that launched it; if the phase is closed, any pending wakeup for that id is a no-op.
+5. **Retry once** only at a foreground site, when an id has *returned* and is `bad` — state becomes `launched (retry)`. Evaluate the next return once: if still `bad`, write the stand-in file per the existing pattern. **File-wait sites have no "returned bad" state, no retry and no stand-in:** a child is `ok`, or the phase ends at its deadline with the hard stop of rule 8. (A per-id retry there needs per-id freshness and a defined `bad` marker; that belongs to the self-heal follow-up.)
 
-6. **If any id is still outstanding**, end your turn. A turn triggered by a partial arrival updates state and ends the turn again: no re-launch, no reading other agents' checkpoints early, no sleeping, no short-interval `ScheduleWakeup`.
+6. **Never end your turn while any launched id is outstanding.** Collect the children in the same turn:
+   - **Foreground sites** collect by the foreground return: the dispatch call blocks until every child returns and carries its report.
+   - **File-wait sites** collect with `~/.claude/scripts/wait-files.py`. Run `mark` immediately before the launch, then repeat `wait` in the foreground until it exits 0 (closed) or 4 (deadline). Exit 3 (`pending: <ids>`) means the slice ended: re-issue the same `wait` call at once. Each call blocks for up to `--timeout` seconds (default 540, never below 300) and polls the files every 5 s, so it costs no model tokens while it waits.
 
-7. **The barrier closes** when every id is `ok` or stood-in. If every final report arrived in the launching turn (a harness that returns reports inline), it closes right away with no turn end. A launch acknowledgement alone never closes it.
+     ```bash
+     python3 "$HOME/.claude/scripts/wait-files.py" mark --phase <STEP or command>:<phase> --state-dir <STATE_DIR>
+     # ... launch the batch ...
+     python3 "$HOME/.claude/scripts/wait-files.py" wait --phase <STEP or command>:<phase> --state-dir <STATE_DIR> \
+       --deadline <SECS> --sentinel '<sentinel>' <id>=<path> [<id>=<path> ...]   # or --exists for exit-status files
+     ```
+   - `<STATE_DIR>` is `FLOW_DIR` when set, otherwise the run's own directory (the plan session dir, the review dir, or the implement scratch dir). The phase name is `<STEP or command>:<phase>`, for example `implement:round1`.
+   - Per-phase deadlines (initial values, to be calibrated from the `closed` rows in `<STATE_DIR>/child-wait.jsonl`): panel, scout, Q&A and Pass 2 phases 1800 s; Round 2 and Round 3 sweeps 3600 s; implementer units 5400 s; the check run `timeout_secs` + 300; merge apply `MERGE_APPLY_TIMEOUT_SECS` (default 1800) + 300; queued merge 3600 s.
+   - `ScheduleWakeup`, where granted, is never used to wait for children. Never sleep or poll with a short interval of your own: `wait-files.py` is the only polling, and its floor is what keeps it from becoming #216-style polling.
 
-8. **Fallback.** When ending a turn with ids still outstanding, you may schedule **at most one** `ScheduleWakeup` of 1800s for the current phase (one dispatch batch), and only if none is already scheduled for that phase. When it fires:
-   - If the phase is already closed (all ids terminal), the wakeup is a no-op — take no action.
-   - Otherwise, write a **status report only**: which ids have returned, which files are missing or lack a sentinel. Tell the user, then end the turn.
-   - It never retries, never writes stand-ins, and never schedules another wakeup. A later notification still closes the barrier normally.
+7. **A launch acknowledgement at a foreground site is a hard failure.** If a dispatch at a site designated foreground comes back with only a launch acknowledgement, stop the phase with reason `foreground dispatch returned a launch acknowledgement: <id>`. Do not wait for that child in a later turn.
+
+8. **Deadline hard stop.** On `wait-files.py` exit 4, stop the phase:
+   - emit `run-metrics.py stage-end --outcome failure --failure-class timeout`;
+   - inside a flow, write the FAILED receipt with `Reason: child-wait deadline: phase <P>, outstanding <ids>, attempt <n>`, prefixed `repeated ` when the script printed its `loop:` line;
+   - never relaunch and never write a stand-in for an outstanding id. The flow's existing Retry / Take over / Abort stop handles it; a repeated deadline is visible in the receipt and in `child-wait-attempts.json`.
+
+9. **The barrier closes** when every id is `ok` (or stood-in, at a foreground site). A launch acknowledgement alone never closes it.
+
+**Carve-out: the top-level orchestrator.** `commands/expert-flow.md` is not a step agent. It waits on its one step subagent at a time (N=1) and may still end its turn to await that single step's completion, with at most one `ScheduleWakeup` of 1800 seconds per step as a heartbeat that writes a status report only. Rules 6 to 8 bind every subagent and skill it runs, and every other caller.
 
 ## Receipt Format
 
@@ -67,6 +88,7 @@ The subagent writes to a file path and sentinel pattern determined by its contex
 | Step 3 (pod contributions, effort 2) | `{PLAN_SESSION_DIR}/{pod-id}-pod.md` | `<!-- pod-end -->` | Effort 2 pod path — separate sentinel |
 | Step 4 (Carl) | `{PLAN_SESSION_DIR}/contrarian-carl-contribution.md` | `<!-- contribution-end -->` | After per-expert barrier |
 | Step 8 (alignment) | `{PLAN_SESSION_DIR}/{expert}-alignment.md` | `<!-- alignment-end -->` | Per-expert alignment pass |
+| Inline-return children at a file-wait site (Router, Q&A, effort-1 scouts) | the report file named in the dispatch prompt | `<!-- report-end -->` | Only when such a child is collected by `wait-files.py`; at a foreground site its report is the returned result |
 | Step 9 (reconciliation, single agent) | `{PLAN_SESSION_DIR}/plan-reconciled.md` | `<!-- reconciliation-end -->` | Single-agent step — N=1; on join-barrier failure after retry, this is a hard command failure (no stand-in — plan-reconciled.md IS the deliverable, unlike per-expert alignment notes where a FAILED stand-in is harmless input signal) |
 
 The file **must end with its designated sentinel on a new line**.
@@ -106,7 +128,7 @@ This is pod-atomic granularity, matching `~/.claude/prompts/reviewer-pod.md`'s e
 
 After the join barrier completes (either all experts succeeded or stand-ins filled failed slots):
 
-- If the barrier timed out (subagents still running after timeout): emit failure telemetry for the stage, then `command-end failure`, then stop.
+- If the barrier timed out (`wait-files.py` exited 4, children still outstanding at the phase deadline): emit failure telemetry for the stage, then `command-end failure`, then stop with the deadline hard stop of § Waiting for the barrier rule 8.
 - If multiple experts failed: emit failure telemetry, then stop.
 - If all experts succeeded (or are stand-in): continue to the next step.
 

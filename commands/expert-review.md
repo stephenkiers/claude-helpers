@@ -46,8 +46,8 @@ they are the difference between a ~180k review and a ~430k one:
    stays in your context for the whole run.
 2. **The file is the contract.** Every panel agent Writes its output to `{REVIEW_DIR}` and returns a
    one-line **receipt**, never its report. A returned report reaches you *twice* — as the tool result
-   and again in the completion notification's `<result>` block. The Amalgamator reads the files once; you never do.
-3. **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase. Launch a batch in one message and let it return.
+   and again in any task notification's `<result>` block. The Amalgamator reads the files once; you never do.
+3. **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children. Launch a batch in one message, every call with `run_in_background: false`, and let it return.
 4. **The diff is a file, not a string.** Write `full-diff.patch` once (Step 1);
    pass paths. Never `cat` the diff into your own context and never paste it into a prompt — a
    44k-token diff inlined into 20 prompts is 880k tokens of *your* context, re-read from cache on
@@ -674,7 +674,7 @@ perform. *Needs measurement* is for findings nobody can rule on yet because the 
 running something and reading a result back — not a judgment call, so it never goes through
 `AskUserQuestion` and is never relayed in a flow.
 
-**ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`). Its mandate and the
+**ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`, `run_in_background: false`). Its mandate and the
 `claude-action-plan.md` template live in **`~/.claude/prompts/triage.md`** — pass the path. Tell it
 to read:
 - `{REVIEW_DIR}/final-report.md` (its primary input)
@@ -818,7 +818,7 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage precedent >/dev/null 2>&1 || true
    ```
 
-7. **Dispatch Precedent Pat.** Call one `Task` (`subagent_type: "expert-reviewer"`, `model: sonnet`) with:
+7. **Dispatch Precedent Pat.** Call one `Task` (`subagent_type: "expert-reviewer"`, `model: sonnet`, `run_in_background: false`) with:
    - Role prompt: `~/.claude/prompts/precedent-pat.md`
    - Filtered digest path: `${REVIEW_DIR}/precedent-digest.jsonl`
    - Questions path: `${REVIEW_DIR}/precedent-questions.json`

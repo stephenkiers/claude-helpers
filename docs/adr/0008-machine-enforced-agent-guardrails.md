@@ -635,6 +635,8 @@ it runs `flow-plan`, a restricted agent detailed below.
 **Model and tools:** Sonnet alias (ADR-0004 amendment below), no `Edit`, `Skill` allowlist
 (`{expert-plan}` only), `Agent` allowlist (`{expert-reviewer, expert-scout}` only, no
 general-purpose fallback). `ScheduleWakeup` for status-only barriers while waiting on spawned agents.
+(2026-11-23, #532: the grant is retained but no longer used to wait for children; step agents block
+in the same turn. See ADR-0023 amendment 2026-11-23.)
 
 **Bash guard:** best-effort publish-deny profile (`flow-bash-guard.py --agent auto` mode). Denies git
 push, gh pr/issue create|edit|comment|close|merge, non-GET gh api, and interpreter verb-pair forms

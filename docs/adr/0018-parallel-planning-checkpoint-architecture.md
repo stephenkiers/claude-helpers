@@ -61,6 +61,8 @@ Per-id state progresses: `launched → returned → ok | bad`. The barrier close
 
 The canonical text lives in `prompts/join-barrier-pattern.md` § "Waiting for the barrier". All commands referencing join barriers now point at that section via a fixed pointer sentence, replacing earlier contradictory inline wording.
 
+**Superseded for subagents and skills (2026-11-23, #532):** step agents and the skills they run no longer end their turn to wait; they block on a foreground return or a `wait-files.py` file wait, and never use `ScheduleWakeup` for children. Only the top-level `/expert-flow` orchestrator keeps the end-turn wait. See ADR-0023 amendment 2026-11-23.
+
 Observed in sampled transcripts (2026-09), not a harness guarantee: calls return a launch ack regardless of `run_in_background` flag value, a notification follows for nearly all launched agents, and the flag made no observable waiting difference. The receipt/file/sentinel contract is unchanged.
 
 ## Amendment — Third sanctioned write prefix for /expert-spike (2026-10-09)

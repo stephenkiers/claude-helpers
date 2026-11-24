@@ -436,7 +436,7 @@ if [ -n "$COMMENTS_JSON" ] && [ "$RELEVANCE_FILTER_REQ" = "true" ]; then
 fi
 ```
 
-Dispatch one `expert-scout` Task per `batches/batch-<N>.json` file, at most 6 in parallel (`MAX_SCOUTS`). Each Task prompt is the full text of `~/.claude/prompts/comment-relevance-scout.md` followed by the absolute path of that batch file. The scout's reply is its verdict JSON object only. Write each reply verbatim (no reformatting) with the `Write` tool to `$SCOUT_DIR/verdicts/verdict-<N>.json`. A reply that is not valid JSON is still written as-is: `finalize` treats it as an invalid report and drops that batch's unverified comments. A batch with no verdict file is dropped the same way. Then apply the verdicts (fail closed: an unverified comment is kept only by an explicit valid `include`):
+Dispatch one `expert-scout` Task per `batches/batch-<N>.json` file, `run_in_background: false`, at most 6 in parallel (`MAX_SCOUTS`). Each Task prompt is the full text of `~/.claude/prompts/comment-relevance-scout.md` followed by the absolute path of that batch file. The scout's reply is its verdict JSON object only. Write each reply verbatim (no reformatting) with the `Write` tool to `$SCOUT_DIR/verdicts/verdict-<N>.json`. A reply that is not valid JSON is still written as-is: `finalize` treats it as an invalid report and drops that batch's unverified comments. A batch with no verdict file is dropped the same way. Then apply the verdicts (fail closed: an unverified comment is kept only by an explicit valid `include`):
 
 ```bash
 FINAL_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli issue-comments finalize --fetched "$SESSION_DIR/issue-comments.json" --verdicts "$SCOUT_DIR/verdicts" --format json 2>/dev/null) || FINAL_JSON=""
@@ -561,7 +561,7 @@ Read `~/.claude/reviewers/index.yaml` directly and consider only entries tagged 
 
 For any contributor whose task looks like novel architecture, concurrency, security-sensitive trust, or an irreversible migration, record `model: opus` for that one contributor with a one-line reason; everyone else gets the `--models` default (sonnet unless `--models opus`).
 
-**North Star scouts (Haiku, run while you select).** The project's direction is spread across the ADRs, the repo's root docs, and open issues/epics/PRs — too much for Nick to read per run. Dispatch three `subagent_type: "expert-scout"` Task calls in ONE message, one per lens (`adrs`, `docs`, `in-flight`); they must finish before Step 3 dispatches. **If the Step 0 `files` result (`$SESSION_DIR/north-star-preflight.files`) contains `scout-prompt`, do not dispatch the scouts**: append one `scout-failed=all` token (`printf '%s\n' 'scout-failed=all' >> "$SESSION_DIR/north-star-blind.tokens"`) and continue. Otherwise each prompt is only:
+**North Star scouts (Haiku, run while you select).** The project's direction is spread across the ADRs, the repo's root docs, and open issues/epics/PRs — too much for Nick to read per run. Dispatch three `subagent_type: "expert-scout"` Task calls in ONE message, each with `run_in_background: false`, one per lens (`adrs`, `docs`, `in-flight`); they must finish before Step 3 dispatches. **If the Step 0 `files` result (`$SESSION_DIR/north-star-preflight.files`) contains `scout-prompt`, do not dispatch the scouts**: append one `scout-failed=all` token (`printf '%s\n' 'scout-failed=all' >> "$SESSION_DIR/north-star-blind.tokens"`) and continue. Otherwise each prompt is only:
 
 ```
 Read ~/.claude/prompts/north-star-scout.md for your full mandate.
@@ -610,14 +610,14 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage expert-contri
 
 ### Step 3: Dispatch Contributors (Parallel, Isolated, One Message)
 
-For each selected expert (not Carl), dispatch one `Task` call, `subagent_type: "expert-reviewer"`, all in a single message per the join-barrier pattern (`~/.claude/prompts/join-barrier-pattern.md`). Each prompt names: the persona YAML path, `~/.claude/prompts/plan-contribution-contract.md`, `{SESSION_DIR}/context.md`, and its output path `{SESSION_DIR}/{expert}-contribution.md`. North Star Nick's prompt additionally lists the scout briefs from Step 2 that exist (`{SESSION_DIR}/north-star-adrs.md`, `north-star-docs.md`, `north-star-in-flight.md`) plus `{SESSION_DIR}/in-flight.md`, names any that are missing as missing, gives him the path of `{SESSION_DIR}/north-star-blind.tokens` (the orchestrator's authoritative blind tokens, which he reads and only adds to), and tells him to follow his persona's `planReview.contextLoad` before contributing. Model per Step 2's record.
+For each selected expert (not Carl), dispatch one `Task` call, `subagent_type: "expert-reviewer"`, `run_in_background: false`, all in a single message per the join-barrier pattern (`~/.claude/prompts/join-barrier-pattern.md`). Each prompt names: the persona YAML path, `~/.claude/prompts/plan-contribution-contract.md`, `{SESSION_DIR}/context.md`, and its output path `{SESSION_DIR}/{expert}-contribution.md`. North Star Nick's prompt additionally lists the scout briefs from Step 2 that exist (`{SESSION_DIR}/north-star-adrs.md`, `north-star-docs.md`, `north-star-in-flight.md`) plus `{SESSION_DIR}/in-flight.md`, names any that are missing as missing, gives him the path of `{SESSION_DIR}/north-star-blind.tokens` (the orchestrator's authoritative blind tokens, which he reads and only adds to), and tells him to follow his persona's `planReview.contextLoad` before contributing. Model per Step 2's record.
 
 No proposed design, no other expert's report, no digest. Expected receipt format (from the contract):
 ```
 {expert}-contribution.md written — {n} requirements, {n} risks, {n} open questions
 ```
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
 
 **Join barrier.** All Step 3 agents launched in one message apply `~/.claude/prompts/join-barrier-pattern.md`'s pattern: receipt validation, file existence, sentinel (`<!-- contribution-end -->`), retry once on failure, stand-in file on second failure. The orchestrator never hangs.
 
@@ -630,9 +630,9 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage contrarian >/
 
 ### Step 4: Carl (Fresh Agent, Sees Everything)
 
-One `Task` call after all Step 3 contributions land: persona `~/.claude/reviewers/contrarian-carl.yaml` + `~/.claude/prompts/plan-contribution-contract.md` + `{SESSION_DIR}/context.md` + all `{expert}-contribution.md` paths.
+One `Task` call (`run_in_background: false`) after all Step 3 contributions land: persona `~/.claude/reviewers/contrarian-carl.yaml` + `~/.claude/prompts/plan-contribution-contract.md` + `{SESSION_DIR}/context.md` + all `{expert}-contribution.md` paths.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
 
 Inline addition to the dispatch prompt: "Also examine the cost of the panel's recommendations — which risks already existed vs. which are introduced by a proposed retry/abstraction/API change, and whether a smaller adequate design avoids them; check for shared unverified premises (e.g., treating a probe as a pure read)."
 
@@ -755,14 +755,14 @@ Then exit cleanly.
 
 **Flow branch:** Merge briefs as today and write each brief's proposed resolution as the attributed panel recommendation(s) only, with no new judgment. Write the `## Checkpoint ledger` fenced JSON block with `seated` and `briefs` as documented in `~/.claude/prompts/flow-reference.md` "Checkpoint ledger and reaction schema" — both sections must be present before the tier script runs. Write `expected_reactions` (one entry per expected file: `{slug, mode: "pre-show", round: 1, path}`). For the ledger format details, see flow-reference.md.
 
-**Pre-show reaction dispatch:** Dispatch the pre-show reaction pass as parallel `Task` calls in one message, one per seated expert (contributors + `contrarian-carl`), `subagent_type: "expert-reviewer"`, per the join-barrier pattern (`~/.claude/prompts/join-barrier-pattern.md`). Each prompt names: the persona YAML path, `~/.claude/prompts/plan-checkpoint-reaction.md`, mode `pre-show`, round `1`, `{SESSION_DIR}/decisions.md` (merged briefs and proposed resolutions), and its output path `{SESSION_DIR}/reactions/{slug}-pre-show-r1.json` (slug = persona file stem). Output format is described in flow-reference.md "Checkpoint ledger and reaction schema" (pre-show mode). Model per Step 2's record (same as contributors). Expected receipt:
+**Pre-show reaction dispatch:** Dispatch the pre-show reaction pass as parallel `Task` calls in one message, one per seated expert (contributors + `contrarian-carl`), `subagent_type: "expert-reviewer"`, `run_in_background: false`, per the join-barrier pattern (`~/.claude/prompts/join-barrier-pattern.md`). Each prompt names: the persona YAML path, `~/.claude/prompts/plan-checkpoint-reaction.md`, mode `pre-show`, round `1`, `{SESSION_DIR}/decisions.md` (merged briefs and proposed resolutions), and its output path `{SESSION_DIR}/reactions/{slug}-pre-show-r1.json` (slug = persona file stem). Output format is described in flow-reference.md "Checkpoint ledger and reaction schema" (pre-show mode). Model per Step 2's record (same as contributors). Expected receipt:
 ```
 {slug} | checkpoint-reaction | mode: pre-show | round: 1 | protests: {N} | wrote: {path}
 ```
 
 **Join barrier.** Receipt validation, file existence with `"complete": true` sentinel, retry once on failure. On second failure, write `Decision: FAILED` with `Reason: reaction pass failed: {expert}` and stop — no stand-in file is written for reaction failures.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
 
 Assign tiers mechanically with `python3 "$HOME/.claude/scripts/plan-checkpoint-tiers.py" --decisions "${SESSION_DIR}/decisions.md" --fragment`, which reads the ledger's expected reaction files and the briefs' types and prints the handle-keyed checkpoint ledger fragment (handles numbered per tier in numeric brief_id order (B2 before B10)) with `tier`, `brief_id`, `brief_type`, and `evidence` fields. Without `--fragment` it prints brief_id → tier JSON instead. The rule (documented in flow-reference.md "Checkpoint ledger and reaction schema"):
 - **Q:** the brief's `Type` is `disagreement`, or any expert `protested` entry exists, or any expert marked `needs-human`.
@@ -789,14 +789,14 @@ If more than five Qs survive, set `headline` to "This ticket looks under-specifi
 
 Write the round-1 `kind: report` question file per the Ask block in `~/.claude/prompts/flow-reference.md` — one question file with `kind: report`, `attempt: 1`, `round: 1`, and all briefs, with `must_answer` true for Qs and items with recorded disagreement or protest. Record the `awaiting` marker.
 
-**On each later conversation round** (when resumed via `SendMessage`): Read the round's answers file and raw reply. If `loop_end` is `"continue"`, skip the reply-mode pass and go to "The loop ends". Otherwise, append the round's reply-mode entries to the ledger's `expected_reactions`, then dispatch the reply-mode reaction pass as parallel `Task` calls in one message, one per seated expert whenever any ruling exists (disposition `answered` or `overridden`), `subagent_type: "expert-reviewer"`, per the join-barrier pattern. Each prompt names: the persona YAML path, `~/.claude/prompts/plan-checkpoint-reaction.md`, mode `reply`, round `{n}` (the conversation round), `${FLOW_DIR}/answers/plan-<SEQ>.json` (round's answers), `${FLOW_DIR}/answers/plan-<SEQ>.reply-<round>.md` (raw reply, if it exists), the list of that expert's prior pushbacks in this attempt (so it never pushes back on the same ruling twice), and output path `{SESSION_DIR}/reactions/{slug}-reply-r{n}.json`. Output format is described in flow-reference.md "Checkpoint ledger and reaction schema" (reply mode). Model per Step 2's record. Expected receipt:
+**On each later conversation round** (when resumed via `SendMessage`): Read the round's answers file and raw reply. If `loop_end` is `"continue"`, skip the reply-mode pass and go to "The loop ends". Otherwise, append the round's reply-mode entries to the ledger's `expected_reactions`, then dispatch the reply-mode reaction pass as parallel `Task` calls in one message, one per seated expert whenever any ruling exists (disposition `answered` or `overridden`), `subagent_type: "expert-reviewer"`, `run_in_background: false`, per the join-barrier pattern. Each prompt names: the persona YAML path, `~/.claude/prompts/plan-checkpoint-reaction.md`, mode `reply`, round `{n}` (the conversation round), `${FLOW_DIR}/answers/plan-<SEQ>.json` (round's answers), `${FLOW_DIR}/answers/plan-<SEQ>.reply-<round>.md` (raw reply, if it exists), the list of that expert's prior pushbacks in this attempt (so it never pushes back on the same ruling twice), and output path `{SESSION_DIR}/reactions/{slug}-reply-r{n}.json`. Output format is described in flow-reference.md "Checkpoint ledger and reaction schema" (reply mode). Model per Step 2's record. Expected receipt:
 ```
 {slug} | checkpoint-reaction | mode: reply | round: {n} | pushbacks: {N} | wrote: {path}
 ```
 
 **Join barrier.** Receipt validation, file existence with `"complete": true` sentinel, retry once on failure. On second failure, write `Decision: FAILED` with `Reason: reaction pass failed: {expert}` and stop.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
 
 Collect first-time pushbacks; any ruling with a pushback, plus any changed item, goes into a round-N+1 report file as `must_answer: true`. The handle is unchanged and the pushback is shown.
 
@@ -888,7 +888,7 @@ Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-tr
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage precedent >/dev/null 2>&1 || true
    ```
 
-7. **Dispatch Precedent Pat.** Call one `Task` (`subagent_type: "expert-reviewer"`, `model: sonnet`) with:
+7. **Dispatch Precedent Pat.** Call one `Task` (`subagent_type: "expert-reviewer"`, `model: sonnet`, `run_in_background: false`) with:
    - Role prompt: `~/.claude/prompts/precedent-pat.md`
    - Filtered digest path: `${SESSION_DIR}/precedent-digest.jsonl`
    - Questions path: `${SESSION_DIR}/precedent-questions.json`
@@ -964,7 +964,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage synthesize-pl
 
 ### Step 6: Synthesize and Consistency Check (Single Opus Dispatch)
 
-One `Task` call, `subagent_type: "expert-reviewer"`, `model: opus`, role prompt `~/.claude/prompts/plan-synthesize-and-check.md`, given:
+One `Task` call, `subagent_type: "expert-reviewer"`, `model: opus`, `run_in_background: false`, role prompt `~/.claude/prompts/plan-synthesize-and-check.md`, given:
 - `{SESSION_DIR}/context.md`
 - All `{expert}-contribution.md` files (by path)
 - `{SESSION_DIR}/contrarian-carl-contribution.md`
@@ -978,7 +978,7 @@ Pass `OWED_DIRECTIONS` as a fenced data block to the step prompt (as documented 
 
 Ignore any `## Precedent` section in `decisions.md`; it is display-only (ADR-0024) and not a decision or requirement.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
 
 The subagent **first** writes `{SESSION_DIR}/plan.md` using the synthesis template:
 
@@ -1049,7 +1049,7 @@ fi
 ### Step 7: Independent Audit (Conditional)
 
 **Conditional on effort level:**
-- **Effort 3**: Always dispatch one fresh `Task` (`subagent_type: "expert-reviewer"`, `model: opus`, role prompt `~/.claude/prompts/plan-audit.md`) with:
+- **Effort 3**: Always dispatch one fresh `Task` (`subagent_type: "expert-reviewer"`, `model: opus`, `run_in_background: false`, role prompt `~/.claude/prompts/plan-audit.md`) with:
   - `{SESSION_DIR}/context.md`
   - All `{expert}-contribution.md` files
   - `{SESSION_DIR}/contrarian-carl-contribution.md`
@@ -1058,13 +1058,13 @@ fi
 
   Ignore any `## Precedent` section in `decisions.md`; it is display-only (ADR-0024) and not a decision or requirement.
 
-  **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+  **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
 
   It reads original contributions itself. Writes `{SESSION_DIR}/audit.md`: actionable discrepancies with evidence and affected section, or a compact "No findings." result.
 
-- **Effort 2**: No automatic auditor. Escalate the same role prompt, scoped to one concrete question, only if a material disagreement remains unresolved after checking sources, or synthesis introduced a mechanism no expert reviewed. State the question and why existing work can't settle it before spawning it — this is a recorded exception, not silent scope creep.
+- **Effort 2**: No automatic auditor. Escalate the same role prompt (`run_in_background: false`), scoped to one concrete question, only if a material disagreement remains unresolved after checking sources, or synthesis introduced a mechanism no expert reviewed. State the question and why existing work can't settle it before spawning it — this is a recorded exception, not silent scope creep.
 
-  **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+  **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
 
   One retry on join-barrier failure, same as contributors.
 

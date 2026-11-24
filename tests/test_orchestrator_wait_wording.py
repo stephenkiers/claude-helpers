@@ -20,8 +20,9 @@ from _test_harness import Harness, REPO_ROOT
 # The exact pointer sentence that must appear identically in all four named files
 POINTER_SENTENCE = (
     "**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier "
-    "— end your turn while any launched id is outstanding; never poll; at most one 1800s "
-    "status-only `ScheduleWakeup` per phase."
+    "— never end your turn while any launched id is outstanding; block on the children "
+    "(a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` "
+    "to wait for children."
 )
 
 # Forbidden wording patterns (these should NOT appear in the named files)
@@ -30,6 +31,7 @@ FORBIDDEN_PATTERNS = [
     r"return by the time you continue",
     r"have all returned before",
     r"## Never poll\.",  # Case-sensitive heading (period required for heading match)
+    r"— end your turn while",  # #532: the old pointer wording; step agents block instead
 ]
 
 # The four named files that must contain the pointer sentence
