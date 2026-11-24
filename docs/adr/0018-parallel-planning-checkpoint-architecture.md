@@ -65,6 +65,8 @@ The canonical text lives in `prompts/join-barrier-pattern.md` § "Waiting for th
 
 Observed in sampled transcripts (2026-09), not a harness guarantee: calls return a launch ack regardless of `run_in_background` flag value, a notification follows for nearly all launched agents, and the flag made no observable waiting difference. The receipt/file/sentinel contract is unchanged.
 
+> **Superseded (2026-11-23, #532):** the observation above is superseded by the #532 probe (`prompts/headless-wait-probe.md`), which found nested Tasks launched with `run_in_background: false` block and return synchronously. See ADR-0023 amendment 2026-11-23.
+
 ## Amendment — Third sanctioned write prefix for /expert-spike (2026-10-09)
 
 This section is the single full statement of the rule. It is the reciprocal of ADR-0022 §4 and §13, which introduced the prefix for `/expert-spike`.

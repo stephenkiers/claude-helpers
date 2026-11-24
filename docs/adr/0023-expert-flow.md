@@ -1396,7 +1396,21 @@ return their reports synchronously, and a 967 s child survives. That chose Branc
 
 **Accepted tradeoff.** At a file-wait site, a child that dies without writing its file holds the
 barrier until the phase deadline. Per-id retry there needs per-id freshness and a defined `bad`
-marker; it belongs to the self-heal follow-up.
+marker; it belongs to the self-heal follow-up. A dead child is therefore invisible until the full
+deadline. A self-heal follow-up issue is to be filed. A failure marker written on non-zero child exit
+is optional and stays within plan Q4 (hard stop, no relaunch).
+
+**Scope ruling.** Shared skills and commands (such as the join-barrier pattern and the commands it
+edits) are outside the v1 freeze (ADR-0026 §11), so this bug-fix change to them is permitted, per the
+human ruling on Q5 of the #532 ticket.
+
+**Concurrent work.** Open PR #547 takes the opposite remedy for #520 on the same files (it keeps
+end-turn waiting). This PR's waiting protocol lands first, and #547 must be rebased onto it or closed.
+Plan ruling D2 already narrowed #520 to this PR's waiting protocol. Issue #520 should be updated to
+match. That update is not made in this change.
+
+**Deferred follow-up.** `agents/flow-plan.md` (around line 43) still carries `ScheduleWakeup` wording.
+Rewording it is the deferred W2/#538 follow-up, because agent files are frozen for this change.
 
 **Canonical text:** `prompts/join-barrier-pattern.md` § Waiting for the barrier, rules 1–9.
 
