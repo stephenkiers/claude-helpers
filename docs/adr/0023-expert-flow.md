@@ -1409,7 +1409,7 @@ end-turn waiting). This PR's waiting protocol lands first, and #547 must be reba
 Plan ruling D2 already narrowed #520 to this PR's waiting protocol. Issue #520 should be updated to
 match. That update is not made in this change.
 
-**Deferred follow-up.** `agents/flow-plan.md` (around line 43) still carries `ScheduleWakeup` wording.
+**Deferred follow-up.** `agents/flow-plan.md` still carries `ScheduleWakeup` wording.
 Rewording it is the deferred W2/#538 follow-up, because agent files are frozen for this change.
 
 **Canonical text:** `prompts/join-barrier-pattern.md` § Waiting for the barrier, rules 1–9.

@@ -193,7 +193,7 @@ Exit 0: go to Phase 4, which reads the queue's result file whatever the exit sta
 # then writes the exit-status file atomically on every exit (the foreground wait-files.py wait reads it).
 QM_EXIT_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
 if [ -z "$QM_EXIT_DIR" ]; then
-  echo "ERROR: could not resolve the git common dir (git rev-parse --git-common-dir returned nothing); refusing to continue" >&2
+  echo "ERROR: could not resolve the git common dir (git rev-parse returned nothing); refusing to continue" >&2
   exit 1
 fi
 QM_EXIT_DIR="$QM_EXIT_DIR/queued-merge-state"
