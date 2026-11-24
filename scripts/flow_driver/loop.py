@@ -578,7 +578,7 @@ def split_step_command(step: FlowCommandStep, **fmt: str) -> Tuple[str, str]:
     The (skill, args) of a flow-command step's STEP_COMMANDS entry, formatted with fmt. The leading `/` is dropped; the
     first token is the skill and the rest is the args. A value holding a `'` or a control character (newline included)
     fails the render, never the agent. A receipt-derived path (plan_path, review_dir) must be one plain token: no
-    whitespace, no leading `-`, and not the `_NOT_RECORDED` stub. A step outside FlowCommandStep is a ValueError.
+    whitespace and no leading `-`; the `_NOT_RECORDED` stub is the one pinned exception (D6: never a STOP). A step outside FlowCommandStep is a ValueError.
 
     Raises:
         ValueError: the step is not a flow-command step, or an argument cannot be passed to the Skill call.
@@ -589,7 +589,7 @@ def split_step_command(step: FlowCommandStep, **fmt: str) -> Tuple[str, str]:
         value = str(raw)
         if "'" in value or _CONTROL_CHARS.search(value):
             raise ValueError(f"step {step} argument {key} holds a quote or a control character")
-        if key in _RECEIPT_ARG_KEYS and (value == _NOT_RECORDED or value.startswith("-") or _WHITESPACE.search(value)):
+        if key in _RECEIPT_ARG_KEYS and value != _NOT_RECORDED and (value.startswith("-") or _WHITESPACE.search(value)):
             raise ValueError(f"step {step} argument {key} is not a plain path token: {value!r}")
     text = STEP_COMMANDS[step].format(**fmt)
     if text.startswith("/"):
@@ -700,7 +700,9 @@ def _write_step_prompt(
     _write(step_prompt_path(flow, directive.step, directive.attempt, directive.nonce), prompt)
 
 
-def _prompt_check(flow: Path, state: V2State, directive: Union[SpawnDirective, MergeDirective]) -> Optional[pf.Stop]:
+def _prompt_check(
+    flow: Path, state: V2State, directive: Union[SpawnDirective, MergeDirective]
+) -> Optional[Tuple[StopCode, str]]:
     """
     Dry-run the step prompt render for a SPAWN or MERGE before anything is committed. The render takes the same inputs
     _write_step_prompt takes, so a failure here (an argument the Skill call cannot carry, a leftover placeholder, a
@@ -710,11 +712,11 @@ def _prompt_check(flow: Path, state: V2State, directive: Union[SpawnDirective, M
     if isinstance(directive, MergeDirective):
         resolved = _merge_run_dir(state)
         if isinstance(resolved, pf.Stop):
-            return resolved
+            return resolved.code, resolved.detail
         run_dir = resolved
     inputs = _step_inputs(flow, state, directive.step)
     if isinstance(inputs, str):
-        return pf.Stop("step-failed", inputs)
+        return "step-failed", inputs
     try:
         render_step_prompt(
             flow,
@@ -729,7 +731,7 @@ def _prompt_check(flow: Path, state: V2State, directive: Union[SpawnDirective, M
             run_dir=run_dir,
         )
     except (KeyError, RuntimeError, ValueError) as exc:
-        return pf.Stop("step-failed", f"step prompt for {directive.step} cannot be rendered: {exc}")
+        return "step-failed", f"step prompt for {directive.step} cannot be rendered: {exc}"
     return None
 
 
@@ -1037,7 +1039,7 @@ def _decide(
         return edged[0], edged[1], "", ""
     rendered = _prompt_check(flow, before, directive)
     if rendered is not None:
-        halted_state, halted_directive = _halt(before, flow, rendered.code, rendered.detail)
+        halted_state, halted_directive = _halt(before, flow, rendered[0], rendered[1])
         return halted_state, halted_directive, "", ""
     stamped, ledger_line, failure = _snapshot_for_spawn(flow, directive, before, new_state)
     if failure is not None:
