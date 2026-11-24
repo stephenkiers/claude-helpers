@@ -42,7 +42,7 @@ units, sweeps, check runs and merge applies collect by a file wait).
      - **Bash tool timeout.** Every Bash tool call that runs `wait-files.py wait` must pass an explicit `timeout: 600000` (milliseconds) parameter on the tool call. The default Bash tool timeout is shorter than the 540 s slice, so without it the call is killed mid-slice.
      - **Killed or exit 2.** If a `wait` Bash call is killed or returns exit 2, re-issue the same `wait` exactly once. If that re-issue is also killed or returns exit 2, write the FAILED receipt (rule 8 wording, `Reason: child-wait call failed: phase <P>`) and stop. Do not relaunch the children.
      - **Setup.** This requires `/setup-local` to have been run after pulling, so that `~/.claude/scripts/wait-files.py` exists.
-     - **Marks.** `mark` refuses to overwrite an open phase without `--force`. There is one phase per `STATE_DIR`. After context compaction, pass an explicit `--since <EPOCH>` to `wait` (the epoch recorded at the mark) rather than relying on the recorded mark.
+     - **Marks.** `mark` refuses to overwrite an open phase without `--force`. There is one phase per `STATE_DIR`. A wait that exits 4 (deadline) leaves the phase open, so re-running the same phase requires `mark --force`. After context compaction, pass an explicit `--since <EPOCH>` to `wait` (the epoch recorded at the mark) rather than relying on the recorded mark.
 
      ```bash
      python3 "$HOME/.claude/scripts/wait-files.py" mark --phase <STEP or command>:<phase> --state-dir <STATE_DIR>

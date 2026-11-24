@@ -311,10 +311,10 @@ echo "=== Phase 3: Merge Gate (backgrounded — may take several minutes) ==="
 PR_NUM=<PR number resolved in Phase 1>   # substitute the literal number; this is a new Bash call
 MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
 
-# The foreground wait-files.py wait blocks on this file: install the exit-status trap before any
-# command below can exit early, and write it atomically on every exit from here on. It never writes
-# through a symlink (a refused state directory stays untouched).
-trap 'rc=$?; [ -L "$MC_STATE_DIR" ] && exit "$rc"; printf "%s\n" "$rc" > "$MC_STATE_DIR/phase3_exit.tmp" && mv "$MC_STATE_DIR/phase3_exit.tmp" "$MC_STATE_DIR/phase3_exit"' EXIT
+# The foreground file wait blocks on this file: install the exit-status trap before any
+# command below can exit early, and write it atomically on every exit from here on. The trap never
+# writes through a symlink or into a directory the user does not own (a refused state directory stays untouched).
+trap 'rc=$?; { [ -L "$MC_STATE_DIR" ] || [ ! -O "$MC_STATE_DIR" ]; } && exit "$rc"; printf "%s\n" "$rc" > "$MC_STATE_DIR/phase3_exit.tmp" && mv "$MC_STATE_DIR/phase3_exit.tmp" "$MC_STATE_DIR/phase3_exit"' EXIT
 
 # Re-verify we own the state directory (same guard as Phase 1, in case ownership changed)
 if [ -L "$MC_STATE_DIR" ]; then
@@ -433,7 +433,7 @@ case "$APPLY_RESULT_CODE" in
   ''|*[!0-9]*) APPLY_RESULT_CODE="missing-or-malformed" ;;
 esac
 if [ "$APPLY_RESULT_CODE" != "0" ]; then
-  echo "ERROR: Phase 3 merge apply has not completed successfully yet — wait for its exit-status file first (Phase 3 wait-files.py wait)"
+  echo "ERROR: Phase 3 merge apply has not completed successfully yet — wait for its exit-status file first (the Phase 3 file wait)"
   exit 1
 fi
 

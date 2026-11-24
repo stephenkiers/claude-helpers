@@ -86,8 +86,64 @@ def main() -> None:
     h.test_result("join-barrier-pattern names the deadline hard stop",
                   "child-wait deadline: phase" in barrier)
 
+    round2_doc_checks(h)
+
     print()
     h.summarize_and_exit()
+
+
+# D1/D2: doc structure for the foreground wait protocol (read at test time from the shipped docs)
+WAIT_SNIPPET_DOCS = [
+    "prompts/join-barrier-pattern.md",
+    "commands/implement-with-haiku.md",
+    "commands/merge-and-cleanup.md",
+    "commands/queued-merge.md",
+]
+WAIT_SNIPPET = re.compile(r'wait-files\.py"?\s+wait\b')
+WAIT_OR_MARK = re.compile(r'wait-files\.py"?\s+(?:wait|mark)\b')
+BASH_TIMEOUT_600000 = re.compile(r"\btimeout\b[^\n]{0,40}\b600000\b")
+COREUTILS_TIMEOUT = re.compile(r"(?:^|[\s;&|(`])timeout\s+\d+\s")
+SNIPPET_WINDOW = 15
+BACKGROUND_LAUNCH = "run_in_background: true"
+BACKGROUND_WAIT_PROXIMITY = 40
+# "<doc>:<line>" -> reason. Empty: every background launch must sit near a wait or mark.
+BACKGROUND_ALLOWLIST: dict = {}
+
+
+def round2_doc_checks(h: Harness) -> None:
+    for rel in WAIT_SNIPPET_DOCS:
+        lines = (REPO_ROOT / rel).read_text().splitlines()
+        snippet_idx = [i for i, line in enumerate(lines) if WAIT_SNIPPET.search(line)]
+        h.test_result(rel + ": has wait-files.py wait snippets", bool(snippet_idx))
+        no_timeout = []
+        for i in snippet_idx:
+            window = lines[max(0, i - SNIPPET_WINDOW): i + SNIPPET_WINDOW + 1]
+            if not any(BASH_TIMEOUT_600000.search(w) for w in window):
+                no_timeout.append(i + 1)
+        h.test_result(rel + ": every wait snippet states Bash timeout 600000", not no_timeout,
+                      "lines %s" % no_timeout if no_timeout else "")
+        coreutils = [
+            n + 1 for n, line in enumerate(lines)
+            if COREUTILS_TIMEOUT.search(line) and "wait-files" in " ".join(lines[max(0, n - 2): n + 3])
+        ]
+        h.test_result(rel + ": no coreutils timeout wrapping wait-files.py", not coreutils,
+                      "lines %s" % coreutils if coreutils else "")
+
+    impl_path = "commands/implement-with-haiku.md"
+    impl = (REPO_ROOT / impl_path).read_text().splitlines()
+    launches = [i for i, line in enumerate(impl) if BACKGROUND_LAUNCH in line]
+    h.test_result(impl_path + ": has background launches to check", bool(launches))
+    wait_idx = [i for i, line in enumerate(impl) if WAIT_OR_MARK.search(line)]
+    unwaited = []
+    for i in launches:
+        if "%s:%d" % (impl_path, i + 1) in BACKGROUND_ALLOWLIST:
+            continue
+        if not any(abs(j - i) <= BACKGROUND_WAIT_PROXIMITY for j in wait_idx):
+            unwaited.append(i + 1)
+    h.test_result(impl_path + ": every run_in_background: true launch sits near a wait or mark",
+                  not unwaited, "lines %s" % unwaited if unwaited else "")
+    h.test_result("background allowlist entries each carry a reason",
+                  all(isinstance(v, str) and v.strip() for v in BACKGROUND_ALLOWLIST.values()))
 
 
 if __name__ == "__main__":

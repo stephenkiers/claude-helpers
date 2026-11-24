@@ -174,8 +174,83 @@ def main() -> None:
             code, _, err = run_cli(argv)
             h.test_result("cli usage error exits 2: " + name, code == 2 and "usage error" in err)
 
+    wait_round2_tests(h)
+
     print()
     h.summarize_and_exit()
+
+
+def wait_round2_tests(h: Harness) -> None:
+    from unittest import mock
+
+    since = 1_000_000
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+
+        # D5: attempt counter is consecutive per phase: independent across phases, reset by closed
+        sd = d / "state-rerun"
+        c = d / "rerun-c.md"
+
+        def deadline_once(phase: str, path: Path, start: float):
+            fc = FakeClock(start)
+            return wf.wait_once(phase, sd, [("c", path)], since, 1800, 540, sentinel=SENT,
+                                clock=fc.clock, sleep=fc.sleep)
+
+        r1 = deadline_once("p:P", c, since + 1790)
+        r2 = deadline_once("p:P", c, since + 5000)
+        rq = deadline_once("p:Q", c, since + 5000)
+        counts = json.loads((sd / wf.ATTEMPTS_FILE).read_text())
+        h.test_result("rerun: first deadline of a phase is attempt 1",
+                      r1.status == "deadline" and r1.attempt == 1)
+        h.test_result("rerun: second consecutive deadline of a phase is attempt 2", r2.attempt == 2)
+        h.test_result("rerun: another phase starts its own count at 1", rq.attempt == 1)
+        h.test_result("rerun: counts are kept per phase", counts == {"p:P": 2, "p:Q": 1})
+        write(c, "ok\n" + SENT + "\n", since + 1)
+        rc = wf.wait_once("p:P", sd, [("c", c)], since, 1800, 540, sentinel=SENT,
+                          clock=FakeClock(since + 6000).clock, sleep=lambda s: None)
+        counts = json.loads((sd / wf.ATTEMPTS_FILE).read_text())
+        h.test_result("rerun: closed resets only its own phase",
+                      rc.status == "closed" and counts == {"p:P": 0, "p:Q": 1})
+        r3 = deadline_once("p:P", d / "rerun-c2.md", since + 1790)
+        h.test_result("rerun: deadline after a closed run restarts at attempt 1", r3.attempt == 1)
+
+        # mark: refuses to overwrite an open phase unless --force; epoch is rounded up (ceil)
+        sd = d / "state-open"
+        code, out, _ = run_cli(["mark", "--phase", "q:open", "--state-dir", str(sd)])
+        first_epoch = out.strip()
+        code2, _, err2 = run_cli(["mark", "--phase", "q:open", "--state-dir", str(sd)])
+        recorded = json.loads((sd / wf.SINCE_FILE).read_text())
+        h.test_result("mark on an open phase refuses with exit 2",
+                      code == 0 and code2 == 2 and "already open" in err2)
+        h.test_result("refused mark leaves the recorded epoch unchanged",
+                      recorded == {"q:open": int(first_epoch)})
+        code3, out3, _ = run_cli(["mark", "--phase", "q:open", "--state-dir", str(sd), "--force"])
+        h.test_result("mark --force re-marks an open phase with exit 0", code3 == 0 and out3.strip().isdigit())
+
+        for clock_value, want in ((1000.25, "1001"), (1000.0, "1000"), (1000.75, "1001")):
+            with mock.patch("time.time", return_value=clock_value):
+                code, out, _ = run_cli(["mark", "--phase", "q:ceil-" + str(clock_value),
+                                        "--state-dir", str(d / "state-ceil")])
+            h.test_result("mark epoch is the clock rounded up: %s -> %s" % (clock_value, want),
+                          code == 0 and out.strip() == want, "got %r" % out.strip())
+
+        # bookkeeping I/O failure (counter and telemetry paths unwritable) keeps the decided exit code
+        sd = d / "state-broken-bookkeeping"
+        sd.mkdir()
+        (sd / wf.ATTEMPTS_FILE).mkdir()
+        (sd / wf.TELEMETRY_FILE).mkdir()
+        ok = d / "bk-ok.md"
+        write(ok, "z\n" + SENT + "\n", since + 1)
+        code, out, _ = run_cli(["wait", "--phase", "q:bk", "--state-dir", str(sd), "--deadline", "60",
+                                "--since", str(since), "--sentinel", SENT, "ok=" + str(ok)])
+        h.test_result("unwritable bookkeeping keeps exit 0 when every id is ok",
+                      code == 0 and out.strip() == "closed: 1 ids", "code=%r out=%r" % (code, out))
+        code, out, _ = run_cli(["wait", "--phase", "q:bk", "--state-dir", str(sd), "--deadline", "1",
+                                "--since", "1", "--exists", "gone=" + str(d / "gone-bk")])
+        h.test_result("unwritable bookkeeping keeps exit 4 at the deadline",
+                      code == 4 and out.startswith("deadline: outstanding gone"), "code=%r out=%r" % (code, out))
+
 
 
 if __name__ == "__main__":

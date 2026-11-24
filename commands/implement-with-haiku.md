@@ -1020,7 +1020,7 @@ git diff --name-only "$START_SHA" >> "<SCRATCH_PATH>/planned-paths.txt"
 sort -u "<SCRATCH_PATH>/planned-paths.txt" -o "<SCRATCH_PATH>/planned-paths.txt"
 ```
 
-**Single-unit fallback:** If the persisted basis is `single`, skip Steps 4a–4d entirely. Run `plan-implementer` directly in the ticket worktree (background, `run_in_background: true`) with `model: <IMPLEMENTER_MODEL>` and the same self-contained prompt described in Step 4b. It is a file-wait site: collect it exactly as Step 4b's **Collecting units** says, with the one unit id.
+**Single-unit fallback:** If the persisted basis is `single`, skip Steps 4a–4d entirely. Run `plan-implementer` directly in the ticket worktree (background, `run_in_background: true`) with `model: <IMPLEMENTER_MODEL>` and the same self-contained prompt described in Step 4b (run `wait-files.py mark --phase "<STEP>:round1" --state-dir "$WAIT_STATE"` right after the launch, as Step 4b does, then wait). It is a file-wait site: collect it exactly as Step 4b's **Collecting units** says, with the one unit id.
 
 Each prompt must include:
 - Block B: `Working directory: <TICKET_WT_PATH>` (the literal absolute path recorded in Step 2)
