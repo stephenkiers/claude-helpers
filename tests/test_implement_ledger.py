@@ -1631,7 +1631,7 @@ def test_append_unknown_skip_reason_rejected():
         run.init()
         before = _al_ledger_bytes(run)
         r = _al_append(run, ["--skip", "round4", "--reason", "because"])
-        ok = r.returncode == 1 and _al_ledger_bytes(run) == before
+        ok = r.returncode == 1 and "append: rejected:" in _out(r) and _al_ledger_bytes(run) == before
         return ok, _brief(r)
     finally:
         sb.close()
@@ -1660,7 +1660,7 @@ def test_append_evidence_rules_rejected():
         for label, ev in cases.items():
             before = _al_ledger_bytes(run)
             r = _al_append(run, ["--done", "round1", "--evidence", ev])
-            if r.returncode != 1 or _al_ledger_bytes(run) != before:
+            if r.returncode != 1 or "append: rejected:" not in _out(r) or _al_ledger_bytes(run) != before:
                 problems.append(f"{label}: {_brief(r)}")
         return not problems, "; ".join(problems) or "ok"
     finally:
@@ -1974,6 +1974,123 @@ def test_append_guard_passes_append():
     return not blocked, f"blocked={blocked} reason={str(reason)[:200]!r}"
 
 
+def _al_subprocess(sb, args, timeout):
+    """Run the real CLI as a subprocess with a hard timeout (for inputs that could block the reader)."""
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+    env["IMPLEMENT_LEDGER_STATE_DIR"] = str(sb.state)
+    env["HOME"] = str(sb.home)
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        cwd=str(sb.repo), env=env, capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def test_append_line_separators_rejected():
+    """U+0085, U+2028 and U+2029 in --evidence, --done or --reason exit 1 with 'line separator', ledger unchanged."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-sep")
+        run.init()
+        ev = run.evidence("a")
+        problems = []
+        for label, sep in (("U+0085", "\x85"), ("U+2028", " "), ("U+2029", " ")):
+            cases = [
+                ("evidence", ["--done", "round1", "--evidence", ev + sep]),
+                ("done", ["--done", "round1" + sep, "--evidence", ev]),
+                ("reason", ["--skip", "partc-mutation-b", "--reason", "no-comparison-operator" + sep]),
+            ]
+            for field, args in cases:
+                before = _al_ledger_bytes(run)
+                r = _al_append(run, args)
+                if r.returncode != 1 or "line separator" not in _out(r) or _al_ledger_bytes(run) != before:
+                    problems.append(f"{label} in {field}: {_brief(r)}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_append_special_ledger_exits_2_promptly():
+    """A ledger that is a FIFO, or a symlink to /dev/zero, exits 2 within 5s with 'not a regular file'."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-special")
+        run.init()
+        ev = run.evidence("a")
+        setups = {
+            "fifo": lambda: os.mkfifo(run.ledger),
+            "dev-zero symlink": lambda: os.symlink("/dev/zero", run.ledger),
+        }
+        problems = []
+        for label, setup in setups.items():
+            run.ledger.unlink()
+            setup()
+            try:
+                r = _al_subprocess(sb, ["append", "--run-key", run.rk, "--done", "round1", "--evidence", ev], 5)
+            except subprocess.TimeoutExpired:
+                problems.append(f"{label}: hung past 5s")
+                continue
+            if r.returncode != 2 or "not a regular file" not in r.stderr:
+                problems.append(f"{label}: rc={r.returncode} stderr={r.stderr.strip()[:120]!r}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_append_pointer_bad_keys_exit_2():
+    """A pointer missing or mis-typing run_key/scratch exits 2 with no traceback; ledger unchanged, pointer restored."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-badptr")
+        run.init()
+        pointers = sb.pointers(run.rk)
+        if len(pointers) != 1:
+            return False, f"expected one pointer, found {len(pointers)}"
+        ptr = pointers[0]
+        original = ptr.read_text()
+        data = json.loads(original)
+        before = _al_ledger_bytes(run)
+        variants = {
+            "missing scratch": {k: v for k, v in data.items() if k != "scratch"},
+            "missing run_key": {k: v for k, v in data.items() if k != "run_key"},
+            "scratch not a string": {**data, "scratch": 7},
+            "run_key null": {**data, "run_key": None},
+        }
+        problems = []
+        try:
+            for label, bad in variants.items():
+                ptr.write_text(json.dumps(bad))
+                r = _al_append(run, ["--done", "round1", "--evidence", run.evidence("a")])
+                if r.returncode != 2 or "Traceback" in r.stderr or _al_ledger_bytes(run) != before:
+                    problems.append(f"{label}: {_brief(r)}")
+        finally:
+            ptr.write_text(original)
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_append_pointer_without_repo_reports_unknown():
+    """A pointer with no repo field exits 4 and names the recorded repo as <unknown>, never 'None'."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-norepo")
+        run.init()
+        pointers = sb.pointers(run.rk)
+        if len(pointers) != 1:
+            return False, f"expected one pointer, found {len(pointers)}"
+        ptr = pointers[0]
+        data = json.loads(ptr.read_text())
+        data.pop("repo", None)
+        ptr.write_text(json.dumps(data))
+        other = sb.other_repo()
+        r = _al_append(run, ["--done", "round1", "--evidence", run.evidence("a")], cwd=other)
+        out = _out(r)
+        ok = r.returncode == 4 and "belongs to repo <unknown>" in out and "None" not in out
+        return ok, _brief(r)
+    finally:
+        sb.close()
+
+
 TESTS = [
     ("STEP_IDS and SKIP_REASONS match the plan vocabulary", test_vocabulary_pinned),
     ("init writes ledger and pointer", test_init_writes_ledger_and_pointer),
@@ -2058,6 +2175,10 @@ TESTS = [
     ("append doc: non-zero exit is a stop; printf, >> and Write named as forbidden", test_append_doc_contract_prose),
     ("append doc: allowed-tools grants scoped and no broad python3 grant", test_append_doc_grants_unchanged),
     ("append guard: flow-implement does not deny the append form", test_append_guard_passes_append),
+    ("append: U+0085, U+2028, U+2029 in any field rejected (exit 1)", test_append_line_separators_rejected),
+    ("append: FIFO or /dev/zero symlink ledger exits 2 promptly", test_append_special_ledger_exits_2_promptly),
+    ("append: pointer with missing or mistyped run_key/scratch exits 2", test_append_pointer_bad_keys_exit_2),
+    ("append: pointer without repo reports <unknown> (exit 4)", test_append_pointer_without_repo_reports_unknown),
 ]
 
 

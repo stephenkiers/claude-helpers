@@ -30,8 +30,9 @@ check and never satisfies a step.
 DONE and SKIPPED rows are written by `append`; FINISHED and `# finish-event` lines are written only by
 `finish`. `append` accepts several rows for one step: the last DONE wins, and a DONE beats any permitted
 SKIPPED for the row's status, but a SKIPPED whose reason is not permitted stays a problem that `check`
-reports whatever follows it (`check` judges the skip matrix). Every row `append` writes is one `check`
-parses without a syntax or evidence error.
+reports whatever follows it (`check` judges the skip matrix). Before writing, `append` checks each row with the
+same row parser `check` uses (syntax and evidence file) and rejects control characters and the Unicode line
+separators, so a row is one physical line. It does not re-check evidence files after they are written.
 
 The run's pointer is <STATE_ROOT>/<run-key>.pointer (JSON). STATE_ROOT is
 $IMPLEMENT_LEDGER_STATE_DIR when set, else ~/.claude/state/implement-with-haiku. Finished runs are
@@ -1087,6 +1088,9 @@ def _hygiene_error(flag: str, value: Optional[str]) -> Optional[str]:
         return None
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
         return f"control character in {flag}"
+    # str.splitlines() also breaks on these; they are not control characters, so reject them explicitly.
+    if any(ch in "\x85  " for ch in value):
+        return f"line separator in {flag}"
     if value != value.strip():
         return f"leading or trailing whitespace in {flag}"
     return None
@@ -1121,8 +1125,11 @@ def cmd_append(args: argparse.Namespace) -> int:
         toplevel = git_toplevel()
         raw = locate_record(state_root(), None, None, run_key)
         if raw is not None and raw[2].get("repo") != toplevel:
+            recorded_repo = raw[2].get("repo")
+            if not isinstance(recorded_repo, str) or not recorded_repo:
+                recorded_repo = "<unknown>"
             print(
-                f"append: run key {run_key} belongs to repo {raw[2].get('repo')}, but the current directory's "
+                f"append: run key {run_key} belongs to repo {recorded_repo}, but the current directory's "
                 f"toplevel is {toplevel}; run append from the worktree where init ran",
                 file=sys.stderr,
             )
@@ -1133,6 +1140,9 @@ def cmd_append(args: argparse.Namespace) -> int:
         print(f"append: no pointer or tombstone found for run key {run_key}", file=sys.stderr)
         return 3
     data = found[2]
+    for key in ("run_key", "scratch"):
+        if not isinstance(data.get(key), str):
+            raise LedgerError(f"pointer for run key {run_key} has no valid {key}")
     scratch = Path(data["scratch"])
     ledger = scratch / LEDGER_NAME
 
@@ -1147,6 +1157,19 @@ def cmd_append(args: argparse.Namespace) -> int:
     entry = _parse_row(line, 0, data["run_key"], scratch)
     if entry["error"]:
         return _append_reject(str(entry["error"]))
+
+    # Regular-file check before parse: parse_ledger reads the path, and a symlink, FIFO or device would block or
+    # be read unbounded. A missing ledger falls through to the open below, which exits 2 without creating it.
+    try:
+        ledger_mode = os.lstat(ledger).st_mode
+    except FileNotFoundError:
+        ledger_mode = None
+    except OSError as e:
+        print(f"append: cannot write ledger {ledger}: {e}", file=sys.stderr)
+        return 2
+    if ledger_mode is not None and not stat.S_ISREG(ledger_mode):
+        print(f"append: cannot write ledger {ledger}: not a regular file", file=sys.stderr)
+        return 2
 
     _entries, finished = parse_ledger(ledger, data["run_key"], scratch)
     if finished:

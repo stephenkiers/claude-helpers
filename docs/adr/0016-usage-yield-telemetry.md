@@ -206,7 +206,7 @@ it is not a cryptographic or independent check.
 The `append` subcommand (#548) does not change that story, because the same orchestrator still calls it and still
 writes its own evidence. What it adds is a writer that cannot write `FINISHED` or `#` lines, refuses rows after the
 run is finished, validates each row against the same grammar `check` uses, and writes only the run's own ledger. This
-is the single-writer pattern of ADR-0023 section 2.4 (`flow-ledger.py`) and ADR-0024 (`precedent-log.py append`),
+is the single-writer pattern of ADR-0023 (2026-10-14 per-flow human-input ledger amendment, #287; `flow-ledger.py`) and ADR-0024 (`precedent-log.py append`),
 applied to a third ledger.
 
 **Dated discontinuity (as of 2026-10-09).** Failure events for `/implement-with-haiku` appear for the first
