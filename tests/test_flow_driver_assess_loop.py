@@ -7,6 +7,7 @@ disposition. Drives the real driver CLI under a temp HOME with fake step agents 
 Run with: python3 tests/test_flow_driver_assess_loop.py
 """
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -161,6 +162,35 @@ def test_item_id_with_a_space_is_shell_quoted_in_the_answer_command(base: Path) 
     expect(command.endswith("--item 'implement:Step 3'"), f"the item id is not shell-quoted: {command}")
 
 
+def test_assess_spawn_directive_carries_no_reply_delimiter(base: Path) -> None:
+    _, _, _, verb, nxt = to_landed_verify(base, assess=True)
+    expect(verb == "SPAWN" and nxt["step"] == "assess", f"expected assess SPAWN, got {verb} {nxt}")
+    reply = nxt.get("reply")
+    expect(reply is not None and "command" in reply and "delimiter" not in reply,
+           f"assess SPAWN directive reply should have command but not delimiter: {reply}")
+    directive_text = json.dumps(nxt)
+    expect("REPLY-DELIMITER" not in directive_text and "assessment-end" not in directive_text,
+           f"SPAWN directive contains delimiter or sentinel: {directive_text}")
+
+
+def test_spawn_failed_on_assess_spawn_is_idempotent(base: Path) -> None:
+    home, flow, env, verb, nxt = to_landed_verify(base, assess=True)
+    expect(verb == "SPAWN" and nxt["step"] == "assess", f"expected assess SPAWN, got {verb} {nxt}")
+    code, _, err = run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=env)
+    expect(code == 0, f"spawn-launched exited {code}: {err}")
+    expect(state_of(flow)["pending_spawn"] is not None, "no pending spawn after spawn-launched")
+    code1, _, err1 = run_cli(home, "next", "--flow", str(flow), "--after", "spawn-failed", extra_env=env)
+    expect(code1 == 0, f"first spawn-failed exited {code1}: {err1}")
+    first = state_of(flow)
+    code2, _, err2 = run_cli(home, "next", "--flow", str(flow), "--after", "spawn-failed", extra_env=env)
+    expect(code2 == 0, f"second spawn-failed exited {code2}: {err2}")
+    second = state_of(flow)
+    first_status, second_status = first.get("status"), second.get("status")
+    first_step, second_step = first.get("step"), second.get("step")
+    expect(first_status == second_status, f"duplicate spawn-failed changed status: {first_status} -> {second_status}")
+    expect(first_step == second_step, f"duplicate spawn-failed changed step: {first_step} -> {second_step}")
+
+
 CHECKS = [
     ("2: nothing outstanding skips the assessor", test_nothing_outstanding_skips),
     ("3: spawn, wait, ask, answer, advance", test_spawn_wait_ask_answer_advance),
@@ -169,6 +199,8 @@ CHECKS = [
     ("6: assessor wait-timeout stops; clear-live re-spawns", test_assessor_wait_timeout_then_clear_live),
     ("7: plain answer refuses assess batch", test_plain_answer_refuses_assess_batch),
     ("8: item id with a space is shell-quoted in the answer command", test_item_id_with_a_space_is_shell_quoted_in_the_answer_command),
+    ("9: assess SPAWN directive carries no reply delimiter", test_assess_spawn_directive_carries_no_reply_delimiter),
+    ("10: spawn-failed on the assess SPAWN is idempotent", test_spawn_failed_on_assess_spawn_is_idempotent),
 ]
 
 

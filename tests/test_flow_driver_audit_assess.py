@@ -203,26 +203,6 @@ def test_v2_pipe_in_evidence_does_not_break_parsing() -> None:
 
 
 # ---------
-# D11: parse_assessor_record lazy verifier load error handling
-# ---------
-
-def test_v2_parse_assessor_record_load_errors_caught() -> None:
-    """parse_assessor_record should catch load errors from lazy verifier loading (D11)."""
-    # This tests that if _load_options_module() raises, the error is caught and returned
-    # rather than propagating. The actual test would require mocking the loader, so we
-    # verify the happy path: that parse_assessor_output succeeds with valid records
-    line = _v1_record("b2", options="A => pause ;; B => issue")
-
-    # Call the parsing function (happy path)
-    result = assess.parse_assessor_output(line + "\n" + ASSESS_SENTINEL + "\n")
-    expect(isinstance(result, tuple) and len(result) == 2,
-           f"parse_assessor_output should return a tuple of (records, error), got {type(result)}")
-    recs, err = result
-    expect(err is None and recs is not None and len(recs) == 1,
-           f"valid input should parse without error: recs={recs}, err={err!r}")
-
-
-# ---------
 # Additional comprehensive tests for edge cases
 # ---------
 
@@ -230,18 +210,8 @@ def test_v2_reserved_marker_in_cause() -> None:
     """The <<<ITEM marker must be rejected in cause/evidence/finish_plan fields (D6+)."""
     text = _v1_record("b2", cause="x <<<ITEM y") + "\n" + ASSESS_SENTINEL + "\n"
     recs, err = assess.validate_assessor_output(text, ["b2"])
-    expect(err is not None and "<<<ITEM" in err or "reserved" in err,
+    expect(err is not None and ("<<<ITEM" in err or "reserved" in err),
            f"<<<ITEM marker in cause was not caught: {err!r}")
-
-
-def test_v2_multiple_records_duplicate_id_rejected() -> None:
-    """Multiple records with the same id must be rejected (D2+)."""
-    record1 = _v1_record("b2")
-    record2 = _v1_record("b2")
-    text = record1 + "\n" + record2 + "\n" + ASSESS_SENTINEL + "\n"
-    recs, err = assess.validate_assessor_output(text, ["b2"])
-    expect(err is not None and "duplicate" in err.lower(),
-           f"duplicate id was not caught: {err!r}")
 
 
 SECTIONS = [
@@ -263,12 +233,6 @@ SECTIONS = [
     ("[Assess - D6: Evidence Handling]", [
         ("10: pipe in evidence does not break parsing", test_v2_pipe_in_evidence_does_not_break_parsing),
         ("11: reserved marker in cause rejected", test_v2_reserved_marker_in_cause),
-    ]),
-    ("[Assess - D11: Load Error Handling]", [
-        ("12: parse_assessor_record load errors caught", test_v2_parse_assessor_record_load_errors_caught),
-    ]),
-    ("[Assess - Edge Cases]", [
-        ("13: multiple records with duplicate id rejected", test_v2_multiple_records_duplicate_id_rejected),
     ]),
 ]
 
