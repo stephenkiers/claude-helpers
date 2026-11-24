@@ -184,9 +184,22 @@ python3 "$HOME/.claude/scripts/wait-files.py" mark --phase queued-merge:enqueue 
 python3 "$HOME/.claude/scripts/wait-files.py" wait --phase queued-merge:enqueue --state-dir <STATE_DIR> \
   --deadline 3600 --exists "enqueue=<git common dir>/queued-merge-state/phase3-exit-pr-<PR number>"
 ```
+Issue each `wait` call as a foreground Bash tool call with the Bash tool's `timeout` parameter set explicitly to `600000` (milliseconds). If that call is killed by the tool timeout or exits 2, re-issue the same `wait` once; if the re-issued call is also killed or exits 2, fail the step. See `~/.claude/prompts/join-barrier-pattern.md` rule 6.
+
 Exit 0: go to Phase 4, which reads the queue's result file whatever the exit status. Exit 4 is the deadline hard stop (in a flow, a FAILED receipt with `Reason: child-wait deadline: phase queued-merge:enqueue, outstanding enqueue, attempt <n>`); check `gh pr view <PR number> --json state` before anything else, and never re-enqueue the PR yourself.
 
 ```bash
+# Install the exit-status trap before any early exit below. It stays inert until PR_NUM is resolved,
+# then writes the exit-status file atomically on every exit (the foreground wait-files.py wait reads it).
+QM_EXIT_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+if [ -z "$QM_EXIT_DIR" ]; then
+  echo "ERROR: could not resolve the git common dir (git rev-parse --git-common-dir returned nothing); refusing to continue" >&2
+  exit 1
+fi
+QM_EXIT_DIR="$QM_EXIT_DIR/queued-merge-state"
+QM_EXIT_FILE=""
+trap 'rc=$?; [ -n "$QM_EXIT_FILE" ] || exit "$rc"; printf "%s\n" "$rc" > "$QM_EXIT_FILE.tmp" && mv "$QM_EXIT_FILE.tmp" "$QM_EXIT_FILE"' EXIT
+
 # Re-derive PR_NUM and PR_HEAD from fresh git state (variables don't persist across Bash blocks)
 # $ARGUMENTS takes precedence over branch derivation
 if [ -n "$ARGUMENTS" ] && [ "$ARGUMENTS" != "" ]; then
@@ -215,11 +228,9 @@ else
   PR_HEAD="$CURRENT_BRANCH"
 fi
 
-# The foreground wait-files.py wait blocks on this file: write it atomically on every exit from here on.
-QM_EXIT_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/queued-merge-state"
+# PR_NUM is now resolved: arm the exit-status file (the trap installed above writes it on every exit).
 mkdir -p "$QM_EXIT_DIR"
 QM_EXIT_FILE="$QM_EXIT_DIR/phase3-exit-pr-${PR_NUM}"
-trap 'rc=$?; printf "%s\n" "$rc" > "$QM_EXIT_FILE.tmp" && mv "$QM_EXIT_FILE.tmp" "$QM_EXIT_FILE"' EXIT
 
 echo "Enqueuing PR #$PR_NUM in the local merge queue..."
 

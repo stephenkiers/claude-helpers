@@ -291,6 +291,8 @@ python3 "$HOME/.claude/scripts/wait-files.py" mark --phase merge:apply --state-d
 python3 "$HOME/.claude/scripts/wait-files.py" wait --phase merge:apply --state-dir <STATE_DIR> \
   --deadline <MERGE_APPLY_TIMEOUT_SECS + 300> --exists "apply=/tmp/merge-and-cleanup.pr-<PR number>/phase3_exit"
 ```
+Issue each `wait` call as a foreground Bash tool call with the Bash tool's `timeout` parameter set explicitly to `600000` (milliseconds). If that call is killed by the tool timeout or exits 2, re-issue the same `wait` once; if the re-issued call is also killed or exits 2, fail the step. See `~/.claude/prompts/join-barrier-pattern.md` rule 6.
+
 Exit 0: read the number in `phase3_exit`; non-zero means Phase 3 failed — print its error output and stop without Phase 4. Exit 4 is the deadline hard stop (in a flow, a FAILED receipt with `Reason: child-wait deadline: phase merge:apply, outstanding apply, attempt <n>`); check `gh pr view <PR number> --json state` before anything else, since the merge may have landed after all, and never re-run the merge yourself.
 
 The `just merge` subprocess timeout defaults to 1800s and is configurable per-repo by exporting
@@ -309,6 +311,11 @@ echo "=== Phase 3: Merge Gate (backgrounded — may take several minutes) ==="
 PR_NUM=<PR number resolved in Phase 1>   # substitute the literal number; this is a new Bash call
 MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
 
+# The foreground wait-files.py wait blocks on this file: install the exit-status trap before any
+# command below can exit early, and write it atomically on every exit from here on. It never writes
+# through a symlink (a refused state directory stays untouched).
+trap 'rc=$?; [ -L "$MC_STATE_DIR" ] && exit "$rc"; printf "%s\n" "$rc" > "$MC_STATE_DIR/phase3_exit.tmp" && mv "$MC_STATE_DIR/phase3_exit.tmp" "$MC_STATE_DIR/phase3_exit"' EXIT
+
 # Re-verify we own the state directory (same guard as Phase 1, in case ownership changed)
 if [ -L "$MC_STATE_DIR" ]; then
   echo "ERROR: $MC_STATE_DIR is a symlink — refusing to use it as a state directory" >&2
@@ -318,9 +325,6 @@ if [ ! -O "$MC_STATE_DIR" ]; then
   echo "ERROR: $MC_STATE_DIR is not owned by the current user — refusing to use it" >&2
   exit 1
 fi
-
-# The foreground wait-files.py wait blocks on this file: write it atomically on every exit from here on.
-trap 'rc=$?; printf "%s\n" "$rc" > "$MC_STATE_DIR/phase3_exit.tmp" && mv "$MC_STATE_DIR/phase3_exit.tmp" "$MC_STATE_DIR/phase3_exit"' EXIT
 
 # Verify we're NOT on the queue route (Phase 3 is only for direct merges)
 ROUTE_FILE="$MC_STATE_DIR/route"
