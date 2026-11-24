@@ -93,9 +93,6 @@ def check_targets_line(h):
                                 capture_output=True, text=True, cwd=str(REPO_ROOT / "scripts"))
         h.test_result("Targets: repo-relative path resolves from a subdirectory cwd",
                       result.returncode == 0, f"rc={result.returncode} err={result.stderr[:200]!r}")
-        result = subprocess.run([sys.executable, str(SCRIPT), "plan", "--plan", str(plan_file)],
-                                capture_output=True, text=True, cwd=str(REPO_ROOT / "scripts"))
-
         plan_file = Path(tmp) / "nontest_files.md"
         plan_file.write_text("""# Plan
 
