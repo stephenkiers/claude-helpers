@@ -42,6 +42,11 @@
 #   Give a plain path (a leading ~ is expanded). Surrounding quotes and a trailing
 #   `# comment` are tolerated, but a bare, unquoted path is simplest.
 
+# cleanup.sessionIdleMinutes: 10080
+#   Idle session threshold for /cleanup --stale (minutes). Sessions not modified in this
+#   many minutes are pre-selected for SIGTERM when doing a full-ticket teardown.
+#   Default is 10080 (7 days). Set to 0 to disable idle-session pre-selection.
+
 # ─── Examples (uncomment and customize) ────────────────────────────────────
 
 # # Preference: no magic strings

@@ -146,3 +146,7 @@ The v2 merge step is spawned as a `general-purpose` agent, not the restricted `f
 guard profile (no Bash or Skill guard, no push allow-list). This is a known residual, not a decision to keep it:
 making the v2 merge step restricted needs `flow-merge` added to the `AgentType` registry and a Layer 2 shape change,
 and that restricted-agent follow-up is deferred to a tracked follow-up issue (to be filed). ADR-0023 records the same residual.
+
+## Amendment (2026-11-24) — Fleet ticket record `pid_started` for liveness signalling
+
+The fleet ticket record in `~/.claude/fleets/<repo>/<fleet-id>/tickets.json` gains a `pid_started` field: the supervisor's `ps` lstart (start time) of the ticket process, written and cleared together with `pid`. `/cleanup` and `/expert-flow --stale` read `pid_started` as a liveness signal, together with `pid`, to classify tickets as ACTIVE, STALLED, DEAD or UNKNOWN when the process has exited but the flow directory persists. The timestamp is never the wall-clock time; it is the system start time from `ps` to tolerate clock drift. When comparing against current uptime, a liveness check that finds the pid absent but `pid_started` within the system uptime treats the process as potentially alive (UNKNOWN) rather than dead.
