@@ -15,14 +15,16 @@ Classification rules (two-read stability):
   - Absent: no file
   - Landed: well-formed, attempt == pending.attempt
   - Stale: well-formed, attempt != pending.attempt
-  - InProgress: incomplete, fingerprint different from pending.receipt_seen (or none stored)
-  - Malformed: incomplete, fingerprint stable across two invocations (== pending.receipt_seen)
+  - InProgress: incomplete receipt on a parked or resumed record (basis "awaiting-answer"), or incomplete with
+    fingerprint different from pending.receipt_seen (basis "fingerprint-changed")
+  - Malformed: incomplete receipt on a spawned record with fingerprint stable across two invocations (== pending.receipt_seen)
 
 Transitions via apply_transition:
   - land: once-per-attempt, moves receipt to archive/<step>/a<k>.landed.md, pending -> receipt-landed
   - archive_stale: repeatable, moves to archive/<step>/a<k>.stale.<sha256[:12]>.md
   - rerun_malformed: once-per-attempt, moves to archive/<step>/a<k>.malformed.md, returns rerun decision
   - store_fingerprint: repeatable, stores receipt_seen in pending_spawn (run before archive_stale/land to detect InProgress vs Malformed)
+  - settle_in_progress: routes InProgress receipts to store_fingerprint only when basis is "fingerprint-changed"
 
 Python 3.8 floor: no match statements, no f-strings with = debug syntax.
 """
@@ -179,8 +181,9 @@ class Absent(NamedTuple):
 
 
 class InProgress(NamedTuple):
-    """Incomplete receipt whose fingerprint is new or changed."""
+    """Incomplete receipt: either awaiting-answer on a parked or resumed record, or fingerprint changed on any record."""
     fingerprint: ReceiptFingerprint
+    basis: Literal["fingerprint-changed", "awaiting-answer"]
     state: Literal["in-progress"] = "in-progress"
 
 
@@ -279,12 +282,17 @@ def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
     """
     Classify a receipt based on well-formedness and attempt match.
 
-    For InProgress vs Malformed, requires two-read stability: an incomplete receipt is InProgress
-    if its fingerprint differs from pending.receipt_seen, or Malformed if it's the same.
+    For InProgress vs Malformed on spawned records, requires two-read stability: an incomplete receipt is
+    InProgress if its fingerprint differs from pending.receipt_seen, or Malformed if it's the same.
 
-    Cadence assumption (Layer 2 must honour it): a receipt still being written can look identical across two
-    reads taken back to back. Layer 2 must leave a quiet interval between resumes, or gate on subagent_gone,
-    before acting on a `rerun` outcome.
+    For parked or resumed records, an incomplete receipt is always InProgress (basis "awaiting-answer"),
+    never Malformed: it is held and never re-run, even if its fingerprint appears stable. The fingerprint
+    is not stored for such receipts.
+
+    Cadence assumption (Layer 2 must honour it): Layer 2's quiet interval and the D4 subagent_gone gate
+    apply to spawned records with Malformed receipts. The D4 gate is wired for `next` in loop._malformed_gate
+    but does not apply to parked or resumed records. The `resume` command still reruns a spawned record's
+    stable incomplete receipt (rule-1-live-step, no D4 gate).
     """
     path = receipt_path(locked.path, pending.step)
 
@@ -306,10 +314,15 @@ def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
         else:
             return Stale(receipt=receipt, fingerprint=fingerprint)
 
-    # Incomplete: InProgress or Malformed
+    # Incomplete: check for awaiting-answer state first
+    if pending.state in ("parked-awaiting-answer", "resumed"):
+        # Incomplete receipt on a parked or resumed record: always InProgress, never Malformed
+        return InProgress(fingerprint=fingerprint, basis="awaiting-answer")
+
+    # Incomplete on spawned record: InProgress or Malformed via two-read stability
     if pending.receipt_seen is None or fingerprint != pending.receipt_seen:
         # Fingerprint changed or not yet stored: InProgress
-        return InProgress(fingerprint=fingerprint)
+        return InProgress(fingerprint=fingerprint, basis="fingerprint-changed")
     else:
         # Fingerprint stable: Malformed
         return Malformed(fingerprint=fingerprint)
@@ -469,6 +482,18 @@ def store_fingerprint(locked: LockedFlow, key: TransitionKey, fingerprint: Recei
         content=fingerprint.sha256,
         postcondition=lambda s: s.pending_spawn is not None and s.pending_spawn.receipt_seen == fingerprint,
     )
+
+
+def settle_in_progress(locked: LockedFlow, key: TransitionKey, pending: PendingSpawn, classified: InProgress) -> None:
+    """
+    Route an InProgress receipt: store the fingerprint only when basis is "fingerprint-changed" and the value differs.
+
+    For "awaiting-answer", do nothing: the receipt is held and no fingerprint is stored. This helper enforces that
+    the two consumers (loop._settle_receipt and resume._rule_1_action) cannot diverge on fingerprint storage.
+    """
+    if classified.basis == "fingerprint-changed":
+        if pending.receipt_seen != classified.fingerprint:
+            store_fingerprint(locked, key, classified.fingerprint)
 
 
 def rebuild_receipt(
