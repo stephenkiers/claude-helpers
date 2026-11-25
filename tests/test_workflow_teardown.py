@@ -778,6 +778,48 @@ def main():
     from workflow.procs import parse_ps_output
     h.test_result("Real-probe F3: parse_ps_output of empty text is an empty list", parse_ps_output("") == [])
 
+    # Liveness probes must not ask ps for the tty column: resolving it is ~50x slower and under CPU load
+    # pushed ps past the 10 s probe timeout, so an idle worktree read as "liveness unknown".
+    from workflow import procs as _procs
+    tty_row = "  501   1  501 ttys003  2048 Mon Nov 24 10:00:00 2026 /bin/zsh\n"
+    no_tty_row = "  501   1  501  2048 Mon Nov 24 10:00:00 2026 /bin/zsh\n"
+    with_tty = parse_ps_output(tty_row)
+    without_tty = parse_ps_output(no_tty_row, with_tty=False)
+    h.test_result("ps parse: tty format row parses with its tty",
+                  [(r.pid, r.ppid, r.uid, r.tty, r.rss, r.lstart, r.comm) for r in with_tty]
+                  == [(501, 1, 501, "ttys003", 2048, "Mon Nov 24 10:00:00 2026", "/bin/zsh")], repr(with_tty))
+    h.test_result("ps parse: no-tty format row parses with empty tty and the same other fields",
+                  [(r.pid, r.ppid, r.uid, r.tty, r.rss, r.lstart, r.comm) for r in without_tty]
+                  == [(501, 1, 501, "", 2048, "Mon Nov 24 10:00:00 2026", "/bin/zsh")], repr(without_tty))
+    h.test_result("ps format: PS_FIELDS_NO_TTY has no tty column", "tty" not in _procs.PS_FIELDS_NO_TTY)
+
+    me = os.getpid()
+    chain_fixture = (f"  {me}   1  501  2048 Mon Nov 24 10:00:00 2026 python3\n"
+                     "    1   0    0  1024 Mon Nov 24 09:00:00 2026 /sbin/launchd\n")
+    seen_argv = []
+
+    def _recording_runner(argv, timeout):
+        seen_argv.append(list(argv))
+        if argv[0] == "ps":
+            return chain_fixture
+        # lsof: pid 1 (not in the caller chain) has its cwd inside the probed root
+        return ("COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n"
+                "launchd 1 root cwd DIR 1,4 640 2 /nonexistent-liveness-root/sub\n")
+
+    chain = _procs.caller_chain(runner=_recording_runner)
+    desc = _procs.descendants(1, runner=_recording_runner)
+    live = _procs.live_in("/nonexistent-liveness-root", [me], runner=_recording_runner)
+    ps_argvs = [a for a in seen_argv if a and a[0] == "ps"]
+    h.test_result("liveness probes: caller_chain, descendants and live_in all ran ps", len(ps_argvs) == 3, repr(seen_argv))
+    h.test_result("liveness probes: none of them ask ps for tty",
+                  all(_procs.PS_FIELDS_NO_TTY in a and not any("tty" in x for x in a) for a in ps_argvs), repr(ps_argvs))
+    h.test_result("liveness probes: caller_chain parses no-tty output",
+                  isinstance(chain, list) and [p.pid for p in chain] == [me, 1], repr(chain))
+    h.test_result("liveness probes: descendants parses no-tty output",
+                  isinstance(desc, list) and sorted(p.pid for p in desc) == sorted([1, me]), repr(desc))
+    h.test_result("liveness probes: live_in parses no-tty output (LIVE: a non-caller pid's cwd is inside)",
+                  live == _procs.LIVE, live)
+
     h.summarize_and_exit()
 
 

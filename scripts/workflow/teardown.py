@@ -1016,12 +1016,12 @@ def apply_teardown(
         # Collect survivors
         try:
             ps_output = subprocess.run(
-                ["ps", "-axo", "pid=,ppid=,uid=,tty=,rss=,lstart=,comm="],
+                ["ps", "-axo", procs.PS_FIELDS_NO_TTY],
                 capture_output=True,
                 text=True,
                 timeout=10
             ).stdout
-            all_procs = procs.parse_ps_output(ps_output)
+            all_procs = procs.parse_ps_output(ps_output, with_tty=False)
 
             for item in plan.items:
                 if item.kind == "session" and item.pids:

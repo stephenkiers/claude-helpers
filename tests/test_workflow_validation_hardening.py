@@ -34,10 +34,15 @@ from workflow.checks import CheckResult
 from workflow.safety import Unknown
 from _test_harness import Harness
 
-# apply_cleanup's dirty/unpushed probes run real git; this suite mocks the worktree, so pin them.
+# apply_cleanup's dirty/unpushed probes run real git and its liveness probe reads the real process
+# table (ps/lsof); this suite mocks the worktree, so pin them. An unpinned liveness probe returned
+# UNKNOWN under CPU load and turned the expected verdicts INCONCLUSIVE.
 import workflow.cleanup as _cl_probe
+from workflow import procs as _procs_probe
 _cl_probe.worktree_dirty_state = lambda wt: (_cl_probe.CLEAN, "")
 _cl_probe.unpushed_state = lambda tip, merged=None, repo=None: (_cl_probe.PUSHED, "")
+_procs_probe.caller_chain = lambda runner=None: []
+_procs_probe.live_in = lambda path, caller_pids, allowed_roots=None, runner=None: _procs_probe.NOT_LIVE
 
 
 if __name__ == "__main__":

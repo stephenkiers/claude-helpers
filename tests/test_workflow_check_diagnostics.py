@@ -17,7 +17,7 @@ from contextlib import contextmanager
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow import check_diagnostics as diag, validation, git
+from workflow import check_diagnostics as diag, validation, git, procs
 from workflow.checks import CheckResult, execute_check
 from workflow.validation import ValidationVerdict
 from _test_harness import Harness
@@ -236,6 +236,8 @@ if __name__ == "__main__":
                     mock.patch("workflow.git.delete_branch", return_value=(True, None)), \
                     mock.patch("workflow.git.remove_worktree", return_value=(True, None)), \
                     mock.patch("workflow.checks.execute_check", return_value=check_result), \
+                    mock.patch("workflow.procs.caller_chain", return_value=[]), \
+                    mock.patch("workflow.procs.live_in", return_value=procs.NOT_LIVE), \
                     mock.patch.object(diag, "environment_snapshot", return_value="SNAP"):
                 return apply_cleanup(json.dumps(plan.to_dict()))[0]
 
