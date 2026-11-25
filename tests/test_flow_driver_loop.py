@@ -1392,6 +1392,23 @@ def test_68_audit_completion_is_tagged_with_its_source(base: Path) -> None:
            f"a late audit completion is not tagged with source=audit: {tagged!r}")
 
 
+# Test 69: never-issued nonce on a malformed receipt does not trigger a rerun (live rules don't apply)
+def test_69_never_issued_nonce_on_malformed_receipt_stops_without_rerun(base: Path) -> None:
+    home, flow, pending = malformed_at_implement(base)
+    code, out, err = run_cli(
+        home, "next", "--flow", str(flow), "--after", "notification", "--nonce", other_nonce(pending["nonce"])
+    )
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "STOP", f"a never-issued nonce on a malformed receipt printed {verb}, expected STOP")
+    state = state_of(flow)
+    reason = state.get("stop_reason", {}).get("implement", "")
+    expect(reason.startswith("notification-unattributed:"), f"stop reason was {reason!r}")
+    expect(state.get("status") == "failed", f"status is {state.get('status')!r}, expected failed")
+    expect(pending_of(flow)["attempt"] == 1, f"a never-issued nonce opened attempt {pending_of(flow)['attempt']}, expected 1")
+    expect(attempt_outcome(state, "implement", 1) != "receipt-malformed", "a receipt-malformed outcome was incorrectly written for never-issued nonce")
+
+
 SECTIONS = [
     ("[Happy path and merge pin]", [
         ("1: happy path worktree..ship, then a landed ship parks the merge-gate question", test_01_landed_ship_parks_the_merge_gate_question),
@@ -1467,6 +1484,7 @@ SECTIONS = [
         ("66: clear-live after gone archives the incomplete receipt", test_66_clear_live_after_gone_archives_incomplete_receipt),
         ("67: residue probe detail is capped and control-free", test_67_residue_probe_output_is_capped_and_control_free),
         ("68: late audit completion is tagged with source audit", test_68_audit_completion_is_tagged_with_its_source),
+        ("69: never-issued nonce on malformed receipt stops without rerun", test_69_never_issued_nonce_on_malformed_receipt_stops_without_rerun),
     ]),
 ]
 
