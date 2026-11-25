@@ -133,9 +133,10 @@ def test_02_repeated_next_returns_same_directive_and_nonce(base: Path) -> None:
     flow, _ = start_flow(home)
     before = pending_of(flow)
     expect(before is not None, "no live record after start")
+    foreign = other_nonce(before["nonce"])
     outs = []
     for _ in range(2):
-        code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification")
+        code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", foreign)
         expect(code == 0, f"next exited {code}: {err}")
         outs.append(out)
     expect(outs[0] == outs[1], f"repeated next printed different lines: {outs!r}")
@@ -151,10 +152,11 @@ def test_03_deleted_directive_is_recreated_with_same_nonce(base: Path) -> None:
     home = make_home(base)
     flow, _ = start_flow(home)
     nonce = pending_of(flow)["nonce"]
-    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "notification")
+    foreign = other_nonce(nonce)
+    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", foreign)
     verb, directive = next_line(out)
     directive.unlink()
-    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification")
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", foreign)
     expect(code == 0, f"next exited {code}: {err}")
     _, again = next_line(out)
     expect(again.exists(), "the deleted directive file was not recreated")
@@ -166,7 +168,8 @@ def test_04_dead_agent_waits_then_clear_live_respawns_with_new_attempt(base: Pat
     home = make_home(base)
     flow, _ = start_flow(home)
     first = pending_of(flow)
-    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "notification")
+    foreign = other_nonce(first["nonce"])
+    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", foreign)
     verb, _ = next_line(out)
     expect(verb == "WAIT", f"dead agent printed {verb}, expected WAIT")
 
