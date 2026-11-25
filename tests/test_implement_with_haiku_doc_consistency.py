@@ -1807,10 +1807,12 @@ t("(D5) site-1 grep uses the same '^ERROR probe-failed' prefix",
 print("[#441 r2] re-check blocks identical apart from --label; WT_PARENT not from worktree list")
 
 _r2_bodies = [body for _, _, body in spans]
-_r2_normalized = [re.sub(r'--label\s+("[^"]*"|\S+)', "--label <LABEL>", body) for body in _r2_bodies]
+# Human-ruled (Round 4.0a): site 3 deliberately has no fail tail (it records the result and continues),
+# so identity is asserted on the shared check body, up to the closing baseline check.
+_r2_normalized = [body.split('if [[ -n "$RECHECK_FAIL" ]]; then', 1)[0] for body in _r2_bodies]
 t("(R-F13) exactly four delimited re-check blocks in the doc",
   len(_r2_bodies) == 4, f"found {len(_r2_bodies)}")
-t("(R-F13) the four re-check block bodies are byte-identical apart from the --label text",
+t("(R-F13) the four re-check block bodies are byte-identical in the shared check body (before the fail tail)",
   len(_r2_bodies) == 4 and len(set(_r2_normalized)) == 1,
   f"distinct normalized bodies: {len(set(_r2_normalized))}")
 
