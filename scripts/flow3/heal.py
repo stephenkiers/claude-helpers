@@ -393,6 +393,15 @@ def _is_clean(wt: Path) -> bool:
     return not gitops.changed_files(wt)
 
 
+def _names_spec_test(ctx: Ctx, run: CheckRun) -> bool:
+    """True when the check output names one of the flow's protected spec test files."""
+    spec_files = [str(p) for p in ctx.flow.get("protected") or []]
+    if not spec_files:
+        return False
+    output = _read_output(run)
+    return any(f in output for f in spec_files)
+
+
 def _run_check(ctx: Ctx, mode: str, command: str) -> CheckRun:
     wt = ctx.worktree
     out = record.check_output_path(ctx.flow, mode, _tree(wt))
@@ -433,6 +442,11 @@ def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int]
         return _passed(ctx, run)
 
     failure = classify_check(run, None)
+    if failure.cls == "environment" and failure.detail.get("kind") == "missing-dependency" \
+            and _names_spec_test(ctx, run):
+        # A spec test that cannot import code a later unit has yet to write is red work, not a missing tool.
+        failure = Failure("check-work", "a spec test fails", evidence=run.output_path,
+                          detail={"tests": _failing_tests(_read_output(run))})
     if failure.cls == "environment":
         kind = failure.detail.get("kind")
         if kind == "timeout":
