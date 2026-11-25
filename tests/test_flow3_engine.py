@@ -14,7 +14,7 @@ from _test_harness import Harness  # noqa: E402
 
 from typing import Any, Dict, List  # noqa: E402
 
-from scripts.flow3 import cli, engine, record  # noqa: E402
+from scripts.flow3 import cli, engine, record, repoconfig  # noqa: E402
 from scripts.flow3.state import FlowDir  # noqa: E402
 from scripts.flow3.types import Event, FlowStop, StageResult  # noqa: E402
 
@@ -141,6 +141,8 @@ h.test_result("invalid event raises, state unchanged", raised and flow.flow_stat
 
 # 7. resume_command, cli
 h.test_result("resume_command", engine.resume_command(flow) == "python3 -m scripts.flow3 resume proj 6")
+ROOT.mkdir(parents=True, exist_ok=True)
+repoconfig.doctor_passed = lambda root: True  # type: ignore[assignment]  # the cli gate; doctor has its own tests
 rc = cli.main(["start", "9", "--repo-root", str(ROOT), "--title", "From cli"], stages=make_stages({}), build_ctx=ctx)
 h.test_result("cli start reaches gate, exit 0", rc == 0)
 rc = cli.main(["start", "9", "--repo-root", str(ROOT)], stages=make_stages({}), build_ctx=ctx)
@@ -149,8 +151,8 @@ rc = cli.main(["start", "10", "--repo-root", str(ROOT), "--title", "Stops"], sta
 h.test_result("cli stop exits 2", rc == 2)
 h.test_result("cli bad usage exits 1", cli.main(["bogus"]) == 1 and cli.main([]) == 1)
 h.test_result("cli resume unknown flow", cli.main(["resume", "proj", "999"]) == 1)
-h.test_result("cli status/stop-screen/why", cli.main(["status", "proj"]) == 0 and cli.main(["stop-screen", "proj", "10"]) == 0
-              and cli.main(["why", "proj", "10", "nothing"]) == 0)
+h.test_result("cli status/stop-screen/why", cli.main(["status", "--repo", "proj"]) == 0 and cli.main(["stop-screen", "10", "--repo", "proj"]) == 0
+              and cli.main(["why", "10", "nothing", "--repo", "proj"]) == 0)
 rc = cli.main(["resume", "proj", "10"], stages=make_stages({}), build_ctx=ctx)
 h.test_result("cli resume completes", rc == 0 and record.read_stop(FlowDir.find("proj", 10)) is None)  # type: ignore[arg-type]
 h.summarize_and_exit()
