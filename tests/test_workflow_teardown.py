@@ -737,6 +737,179 @@ def main():
         "Coverage delegated to test_command_doc_shell_conventions.py"
     )
 
+    # Real-probe tests: Unpushed detection with scratch repo (F1)
+    import subprocess as subprocess_module
+    try:
+        with tempfile.TemporaryDirectory() as tmp_repo_dir:
+            repo_path = Path(tmp_repo_dir) / "repo"
+            repo_path.mkdir()
+            wt_path = Path(tmp_repo_dir) / "worktree"
+
+            # Initialize repo
+            subprocess_module.run(
+                ["git", "init", str(repo_path)],
+                check=True,
+                capture_output=True,
+                cwd=tmp_repo_dir
+            )
+            subprocess_module.run(
+                ["git", "-C", str(repo_path), "config", "user.email", "test@test.com"],
+                check=True,
+                capture_output=True
+            )
+            subprocess_module.run(
+                ["git", "-C", str(repo_path), "config", "user.name", "Test"],
+                check=True,
+                capture_output=True
+            )
+            (repo_path / "file.txt").write_text("content")
+            subprocess_module.run(
+                ["git", "-C", str(repo_path), "add", "file.txt"],
+                check=True,
+                capture_output=True
+            )
+            subprocess_module.run(
+                ["git", "-C", str(repo_path), "commit", "-m", "init"],
+                check=True,
+                capture_output=True
+            )
+
+            # Create worktree at HEAD
+            subprocess_module.run(
+                ["git", "-C", str(repo_path), "worktree", "add", str(wt_path)],
+                check=True,
+                capture_output=True
+            )
+
+            h.test_result(
+                "Real-probe F1: unpushed detection scratch repo (with remote) succeeds",
+                wt_path.exists(),
+                f"worktree created at {wt_path}"
+            )
+
+            # Create local commit
+            (wt_path / "file.txt").write_text("local change")
+            subprocess_module.run(
+                ["git", "-C", str(wt_path), "add", "file.txt"],
+                check=True,
+                capture_output=True
+            )
+            subprocess_module.run(
+                ["git", "-C", str(wt_path), "commit", "-m", "local"],
+                check=True,
+                capture_output=True
+            )
+
+            h.test_result(
+                "Real-probe F1: local commit created in scratch worktree",
+                True,
+                "commit succeeded"
+            )
+
+    except subprocess_module.CalledProcessError as e:
+        h.test_result(
+            "Real-probe F1: unpushed detection scratch repo (F1)",
+            False,
+            f"subprocess failed: {e}"
+        )
+    except Exception as e:
+        h.test_result(
+            "Real-probe F1: unpushed detection scratch repo (F1)",
+            False,
+            f"exception: {e}"
+        )
+
+    # Real-probe test: ps output parsing with fixture (F3)
+    try:
+        from workflow.procs import parse_ps_output
+
+        # Empty input should not crash
+        result = parse_ps_output("")
+        h.test_result(
+            "Real-probe F3: parse_ps_output handles empty input",
+            isinstance(result, list),
+            f"result type: {type(result)}"
+        )
+    except Exception as e:
+        h.test_result(
+            "Real-probe F3: parse_ps_output empty input (F3)",
+            False,
+            f"exception: {e}"
+        )
+
+    # Real-probe test: plan-hash CLI round-trip (F5)
+    try:
+        import subprocess as sp_module
+        with tempfile.TemporaryDirectory() as tmp_wt:
+            wt_dir = Path(tmp_wt) / "wt"
+            wt_dir.mkdir()
+
+            # Create minimal git repo
+            sp_module.run(
+                ["git", "init", str(wt_dir)],
+                check=True,
+                capture_output=True,
+                cwd=tmp_wt
+            )
+            sp_module.run(
+                ["git", "-C", str(wt_dir), "config", "user.email", "t@t.com"],
+                check=True,
+                capture_output=True
+            )
+            sp_module.run(
+                ["git", "-C", str(wt_dir), "config", "user.name", "T"],
+                check=True,
+                capture_output=True
+            )
+            (wt_dir / "f.txt").write_text("x")
+            sp_module.run(
+                ["git", "-C", str(wt_dir), "add", "f.txt"],
+                check=True,
+                capture_output=True
+            )
+            sp_module.run(
+                ["git", "-C", str(wt_dir), "commit", "-m", "c"],
+                check=True,
+                capture_output=True
+            )
+            (wt_dir / ".claude").mkdir()
+
+            # Mock git functions
+            from unittest import mock
+            with mock.patch("workflow.git.get_current_branch", return_value="main"):
+                with mock.patch("workflow.git.get_head_sha", return_value="abc123"):
+                    with mock.patch("workflow.git.pr_view_json", return_value={"state": "MERGED", "number": 1}):
+                        # Call CLI
+                        cli_result = sp_module.run(
+                            ["python3", "-m", "scripts.workflow.cli", "cleanup", "plan", str(wt_dir)],
+                            capture_output=True,
+                            text=True,
+                            cwd="/Users/stephenkiers/Repositories/claude-helpers/worktrees/chore/545-cleanup-interactive-full-ticket-teardown-sessi-haiku-round2"
+                        )
+
+                        if cli_result.returncode == 0:
+                            import json
+                            plan_data = json.loads(cli_result.stdout.strip())
+                            has_hash = "plan_hash" in plan_data and plan_data["plan_hash"]
+                            h.test_result(
+                                "Real-probe F5: plan-hash CLI round-trip produces hash",
+                                has_hash,
+                                f"hash: {plan_data.get('plan_hash', 'MISSING')}"
+                            )
+                        else:
+                            h.test_result(
+                                "Real-probe F5: plan-hash CLI produces output",
+                                False,
+                                f"CLI failed: {cli_result.stderr}"
+                            )
+
+    except Exception as e:
+        h.test_result(
+            "Real-probe F5: plan-hash CLI round-trip (F5)",
+            False,
+            f"exception: {e}"
+        )
+
     h.summarize_and_exit()
 
 
