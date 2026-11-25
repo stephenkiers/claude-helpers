@@ -1892,11 +1892,12 @@ def test_append_write_short_exit_2():
         after = _al_ledger_bytes(run)
         # Exit code should be 2
         # No APPENDED line in output
-        # Ledger may have partial write but not the full row
+        # Error message should mention short write
         exit_ok = r.returncode == 2
         appended_ok = "APPENDED:" not in _out(r)
-        ok = exit_ok and appended_ok
-        return ok, f"rc={r.returncode} appended_in_output={'APPENDED:' in _out(r)} {_brief(r)}"
+        error_ok = "short write" in _out(r)
+        ok = exit_ok and appended_ok and error_ok
+        return ok, f"rc={r.returncode} appended_in_output={'APPENDED:' in _out(r)} error_msg_ok={error_ok} {_brief(r)}"
     finally:
         sb.close()
 
@@ -1918,16 +1919,18 @@ def test_append_write_oserror_exit_2():
 
         # Exit code should be 2
         # No APPENDED line in output
+        # Error message should mention the OSError
         exit_ok = r.returncode == 2
         appended_ok = "APPENDED:" not in _out(r)
-        ok = exit_ok and appended_ok
-        return ok, f"rc={r.returncode} appended_in_output={'APPENDED:' in _out(r)} {_brief(r)}"
+        error_ok = "Simulated write error" in _out(r)
+        ok = exit_ok and appended_ok and error_ok
+        return ok, f"rc={r.returncode} appended_in_output={'APPENDED:' in _out(r)} error_msg_ok={error_ok} {_brief(r)}"
     finally:
         sb.close()
 
 
 def test_append_readonly_ledger_exit_nonzero():
-    """A read-only ledger (mode 0444) causes append to exit non-zero with no APPENDED line."""
+    """A read-only ledger (mode 0444) causes append to exit 2 with no APPENDED line."""
     sb = Sandbox()
     try:
         # Skip if running as root (root ignores file modes)
@@ -1943,12 +1946,14 @@ def test_append_readonly_ledger_exit_nonzero():
 
         r = _al_append(run, ["--done", "round1", "--evidence", ev])
 
-        # Exit code should be non-zero (2 or similar)
+        # Exit code should be 2 (write failure)
         # No APPENDED line in output
-        exit_ok = r.returncode != 0
+        # Error message should mention permission denied or similar
+        exit_ok = r.returncode == 2
         appended_ok = "APPENDED:" not in _out(r)
-        ok = exit_ok and appended_ok
-        return ok, f"rc={r.returncode} appended_in_output={'APPENDED:' in _out(r)} {_brief(r)}"
+        error_ok = "append: cannot write ledger" in _out(r)
+        ok = exit_ok and appended_ok and error_ok
+        return ok, f"rc={r.returncode} appended_in_output={'APPENDED:' in _out(r)} error_msg_ok={error_ok} {_brief(r)}"
     finally:
         sb.close()
 
