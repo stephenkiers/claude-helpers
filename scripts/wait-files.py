@@ -15,7 +15,8 @@ mark   records the current epoch for phase P in D/child-wait-since.json (atomic 
        The epoch is math.ceil(time.time()), a whole second, so it never lands before the launch.
        mark refuses to overwrite an open phase: one that has a recorded mark with no closed row in
        D/child-wait.jsonl for that same mark. It exits 2 and names --force. Pass --force to re-mark
-       a phase deliberately. Use one phase per STATE_DIR. After context compaction, pass an
+       a phase deliberately. Phases are keyed by name in D/child-wait-since.json, so a STATE_DIR may
+       hold many: use a distinct phase name per wait. After context compaction, pass an
        explicit --since to wait instead of re-marking.
 
 wait   polls the files every 5 s (no model tokens) for one slice of --timeout seconds (default

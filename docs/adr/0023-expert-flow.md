@@ -1448,6 +1448,15 @@ and records the Agent schema in each.
 its file, never from the Agent return. That is the cost of one protocol that works headless,
 interactive and in the fleet.
 
+**Scope notes (2026-11-24 review).**
+- **Deprecated v2 is left on the old wording.** `commands/expert-plan-deprecated-v2.md` still says
+  `run_in_background: false` at its join-barrier line. This is deliberate: v2 is a deprecated reference
+  implementation, kept as it shipped. It is not brought onto Branch W.
+- **#531 is superseded.** The request it carried is covered by this amendment (Branch W at every site),
+  so no separate change is made for #531.
+- **Precedent Pat receipt file.** Pat's one-file contract is overridden: Pat writes its receipt file,
+  named in its dispatch prompt, in addition to `precedent.md`. See the ADR-0024 2026-11-24 amendment.
+
 ## Amendment (2026-11-23): zero-unit runs close the implement/fix hatch parity difference (#526)
 
 - **No remaining intentional difference.** The "No Round 1 work left" row in the implement/fix parity table (ADR-0019 2026-11-17 amendment) is closed. The implement step no longer stops on a test-only plan. It runs a zero-unit run instead (ADR-0019 2026-11-23 amendment), so both steps handle a run with no Round 1 work the same way.

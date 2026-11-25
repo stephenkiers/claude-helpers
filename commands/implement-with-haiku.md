@@ -1863,7 +1863,7 @@ that were built but never connected to anything).
 
 Max **K = 3** iterations. On each iteration:
 
-1. Launch a fix `plan-implementer` agent with `run_in_background: true`. **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (state dir and `<STEP>` as in "Collecting units" above): phase `gate-fix-<i>` (`<i>` is the iteration number), id `fix`, report file `<SCRATCH_PATH>/gate-fix-<i>-report.md` with sentinel `<!-- report-end -->`, deadline 5400 s. It runs in an isolated worktree branched from current HEAD (not START_SHA). Prompt it with:
+1. Launch a fix `plan-implementer` agent with `run_in_background: true`. **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (state dir and `<STEP>` as in "Collecting units" above): phase `gate-fix-<i>` (`<i>` is the iteration number), id `fix`, report file `<SCRATCH_PATH>/gate-fix-<i>-report.md` with sentinel `<!-- report-end -->`, deadline 5400 s. That report file is a receipt-path exception, listed with the round-1 unit report files in `~/.claude/prompts/join-barrier-pattern.md`. It runs in an isolated worktree branched from current HEAD (not START_SHA). Prompt it with:
    - A literal line **`Working directory: <FIX_WT_PATH>`** (this exact prefix —
      `plan-implementer`'s first step greps for it verbatim to `cd` there before doing anything else),
      where `<FIX_WT_PATH>` is the absolute path of this iteration's fix worktree
@@ -2462,7 +2462,7 @@ Also record the pre-Round-3 SHA for the fence, before the agent launches:
 git rev-parse HEAD > "<SCRATCH_PATH>/pre-round3-sha.txt"
 ```
 
-Launch a `plan-implementer` (`run_in_background: true`, main worktree). **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (state dir and `<STEP>` as in "Collecting units" above): phase `round3-followup`, id `followup`, report file `<SCRATCH_PATH>/round3-followup-report.md` with sentinel `<!-- report-end -->`, deadline 5400 s. Prompt it with:
+Launch a `plan-implementer` (`run_in_background: true`, main worktree). **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (state dir and `<STEP>` as in "Collecting units" above): phase `round3-followup`, id `followup`, report file `<SCRATCH_PATH>/round3-followup-report.md` with sentinel `<!-- report-end -->`, deadline 5400 s. That report file is a receipt-path exception, listed with the round-1 unit report files in `~/.claude/prompts/join-barrier-pattern.md`. Prompt it with:
 
 > `Working directory: <TICKET_WT_PATH>` (this exact prefix — `plan-implementer`'s first step greps for
 > it verbatim to `cd` there before doing anything else)
