@@ -204,6 +204,18 @@ auto, human = questions.resolve(ctx, "plan", [q("k1", "risk", risk="The only tes
 h.test_result("risk and purpose reach the human with no resolver call",
               auto == {} and [c["id"] for c in human] == ["k1", "p1"] and invocations("resolver") == [] and invocations() == [])
 
+# A question that names a protected path is a risk whatever kind the step gave it: it reaches the human.
+ctx = make_ctx()
+ctx.flow.set("protected", ["tests/test_spec_thing.py"])
+script([], default={"output": verdict("whatever", "decides", "P-x", "a")})
+auto, human = questions.resolve(ctx, "fix", [
+    q("pp1", "detail", question="The test has to live in tests/test_spec_thing.py, which is protected. How should it be covered?"),
+    q("pp2", "detail", context="The spec test tests/test_spec_thing.py expects a helper.")])
+h.test_result("a detail naming a protected path becomes a risk for the human, with no resolver call for it",
+              [c["id"] for c in human] == ["pp1"] and human[0]["kind"] == "risk" and "tests/test_spec_thing.py" in human[0]["risk"]
+              and questions.card_missing(human[0]) == [] and "pp1" not in auto, repr((auto, human)))
+h.test_result("a protected path named only in the context does not escalate", "pp2" in auto, repr(auto))
+
 # With no principles at all, no resolver call is made.
 ctx = make_ctx(with_principles=False)
 script([], default={"output": verdict("whatever", "decides", "P-x", "a")})

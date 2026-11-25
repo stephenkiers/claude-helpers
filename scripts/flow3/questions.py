@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
-from scripts.flow3 import principles, prompts, record, runner, schemas, voice
+from scripts.flow3 import gitops, principles, prompts, record, runner, schemas, voice
 from scripts.flow3.context import Ctx
 from scripts.flow3.principles import Principle
 from scripts.flow3.state import FlowDir
@@ -236,9 +236,36 @@ def _verdict(ctx: Ctx, q: Dict[str, Any], text: str) -> Dict[str, Any]:
     return entries[0] if len(entries) == 1 else {"outcome": "none"}
 
 
+_PATH_TOKEN = re.compile(r"[A-Za-z0-9_.*/-]+")
+
+
+def _protected_named(ctx: Ctx, q: Dict[str, Any]) -> List[str]:
+    """Protected paths named by the question or its options (the context is not read: it often cites a spec test)."""
+    protected = [str(p) for p in list(ctx.cfg.protected_paths) + list(ctx.flow.get("protected") or [])]
+    if not protected:
+        return []
+    parts = [str(q.get("question") or "")]
+    for opt in q.get("options") or []:
+        if isinstance(opt, dict):
+            parts += [str(opt.get("label") or ""), str(opt.get("consequence") or "")]
+    named: List[str] = []
+    for token in _PATH_TOKEN.findall(" ".join(parts)):
+        token = token.strip(".,;:")
+        if ("/" in token or "." in token) and token not in named and gitops.match_any(token, protected):
+            named.append(token)
+    return named
+
+
 def _decide(ctx: Ctx, q: Dict[str, Any], text: str, by_id: Dict[str, Principle]) -> _Outcome:
     out = _Outcome(question=q)
     kind = str(q.get("kind") or "")
+    named = [] if kind in NEVER_BY_PRINCIPLE else _protected_named(ctx, q)
+    if named:
+        # Whether a protected file may change is never a detail: it goes to the human as a risk.
+        kind = "risk"
+        q["kind"] = kind
+        if not str(q.get("risk") or "").strip():
+            q["risk"] = "This question is about a protected path (%s); only you can allow a change there." % ", ".join(named)
     if kind == "fact":
         out.answer = _fact(ctx, q)  # None only when the step gave no usable recommendation
         return out
