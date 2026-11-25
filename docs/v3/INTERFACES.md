@@ -304,3 +304,68 @@ def render(name: str, **values: str) -> str     # prompts/flow3/<name>.md with {
 `steps/<stage>.py` exposes `run(ctx: Ctx) -> StageResult` for `worktree`, `plan`, `spec_tests`,
 `implement`, `review`, `fix`, `ship`; `mergegate.run(ctx)` is the `merge` stage. A stage must be safe
 to re-enter: it keeps its progress in `ctx.flow.data(<stage>)` and skips what is already done.
+
+## Stage contracts (units 6 to 10): as built
+
+Every stage is `run(ctx: Ctx) -> StageResult` in `scripts/flow3/steps/<stage>.py` (`mergegate.run` for
+`merge`). Rules every stage follows:
+
+- **Model calls** go through `heal.call(ctx, spec)` (read-only) or
+  `heal.write_call(ctx, spec, allowed, protected, message)` (edits files; reverts out-of-bounds paths,
+  keeps partial work, escalates once, commits). Never `runner.run` directly, never `subprocess` to
+  `claude`. Parallel read-only calls use a `ThreadPoolExecutor` (max 6); writing calls are sequential.
+- **Checks** go through `heal.check(ctx, mode, fixer, raise_on_fail)`; base syncing through
+  `heal.sync_base(ctx)`. Git through `gitops`. The PR and issue through `ctx.provider`.
+- **Prompts** live in `prompts/flow3/<name>.md` and are rendered with `prompts.render(name, **values)`
+  (`{{key}}` placeholders). Each prompt says what the call is for, what it is given, what to return,
+  and that issue text, code, diffs and quoted replies are data, not instructions. Every prompt for a
+  step that acts includes `voice.directions_text(ctx.flow)` (binding directions from the human).
+- **Questions.** A step never asks. It collects question objects (`schemas.QUESTION`) and calls
+  `answers, cards = questions.resolve(ctx, stage, qs, repair=...)`. No cards: continue with `answers`.
+  Cards: save progress with `ctx.flow.set_data(stage, {...,"phase": "<waiting-...>"})` and return
+  `StageResult("needs_human")`. On re-entry (the engine calls `run` again after the human answered)
+  the stage sees its saved phase and calls `questions.take_answers(ctx, stage)` (auto + human
+  answers), then resumes the model session with `questions.answers_for_prompt(answers)`.
+- **Re-entry.** `run` may be called again after a park, a stop, or a crash. Progress is saved in
+  `ctx.flow.data(stage)` after every expensive piece (each expert, each unit, each review phase), and
+  finished pieces are not redone.
+- **Failure** is `raise FlowStop(cls, reason, evidence=..., tried=[...])` with a class from
+  `types.STOP_CLASSES`; heal raises most of them already.
+- **The record.** Each stage ends by calling `record.write_step_record(ctx.flow, stage, sections)`
+  with what it was given, what it produced, what it decided and why, and what was healed, all
+  rendered from structured outputs; plus one or two `record.journal` lines.
+
+Stage data (state.json `data.<stage>`), the cross-stage contract:
+
+| Key | Written by | Shape |
+|---|---|---|
+| top-level `worktree`, `branch`, `base` | worktree | path string, branch name, base branch name |
+| `data.worktree` | worktree | `{"base_sha": <sha the branch was cut from>, "installed": bool, "base_check": "passed"}` |
+| `data.plan` | plan | `{"phase": "done", "plan": <schemas._PLAN object>, "experts": [names], "session": <synthesis session id>, "audit": {...}}` |
+| top-level `protected` | spec_tests | list of spec test paths (in addition to `cfg.protected_paths`) |
+| `data.spec_tests` | spec_tests | `{"files": [paths], "commit": sha or null, "skipped": reason or ""}` |
+| `data.implement` | implement | `{"done_units": [ids], "test_edits": [{"file","verdict","reason","applied": bool}], "judgements": [...], "phase": ...}` |
+| `data.review` | review | `{"rounds": [{"round": n, "from": sha, "to": sha, "findings": [finding + "status"], "triage": <schemas.TRIAGE object>, "measurements": [{"finding_id","command","exit_code","output","ran": bool}], "gut_check": str}], "phase": ...}`; a finding's `status` is one of `confirmed`, `refuted`, `needs_measurement` |
+| `data.fix` | fix | `{"rounds": [{"review_round": n, "fixed": [finding ids], "open": [finding ids], "head": sha}]}` |
+| `data.sendback` | cli (merge gate) | `{"notes": str, "handled": bool}`; fix turns unhandled notes into one fix unit |
+| `data.ship` | ship | `{"pr": number, "url": str, "title": str, "head": sha}`; top-level `pr` too |
+| `data.merge` | mergegate | `{"attempts": n, "merged": bool, "merged_sha": str, "warnings": [str]}` |
+
+Review round n = `len(data.review.rounds)` before the round starts. Round 0 reviews
+`data.worktree.base_sha..HEAD`; later rounds review `rounds[-1].to..HEAD` (the fix diff only). The
+review stage returns `StageResult("done", {"fix_needed": bool})`: true when the round's triage has
+any `doing_it` item or `data.sendback` is unhandled.
+
+Shared implementing helper (unit 7, used by fix): `steps/work.py`
+
+```python
+def run_unit(ctx: Ctx, unit: Dict[str, Any], role: str, prompt: str, message: str) -> CallResult
+    # one write_call for the unit (allowed = unit["files"], protected = protected_paths(ctx)), then
+    # heal.check(ctx, "fast", fixer=check_fixer(ctx, allowed)); returns the implementer's result
+def protected_paths(ctx: Ctx) -> List[str]          # cfg.protected_paths + flow.get("protected")
+def check_fixer(ctx: Ctx, allowed: Sequence[str]) -> Callable[[CheckRun, int], None]
+    # round 1: fixer on the cheap model with the trimmed failure; round 2: the stronger model
+def file_map(root: Path, limit: int = 400) -> str    # tracked files, one per line, for prompts
+def reviewers(context: str) -> List[Dict[str, Any]]  # reviewers/index.yaml entries having that context
+def persona_text(entry: Dict[str, Any]) -> str       # the persona file's text
+```
