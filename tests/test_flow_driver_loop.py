@@ -27,6 +27,7 @@ Run with: python3 tests/test_flow_driver_loop.py
 
 import dataclasses
 import json
+import os
 import re
 import subprocess
 import sys
@@ -34,7 +35,7 @@ import tempfile
 import typing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -717,6 +718,504 @@ def test_549_13_docs_and_docstrings(base: Path) -> None:
     expect("malformed_rerun" in doc, "the recovery docstring no longer mentions malformed_rerun at all")
 
 
+# ---------------------------------------------------------------------------
+# #533 slice 1: subagent gone with no receipt (tests 42-60, written spec-blind from the plan)
+# ---------------------------------------------------------------------------
+
+GONE_PREFIX = "subagent-gone-no-receipt: step implement attempt 1 handed back with no landed receipt; worktree: "
+RAW_INCOMPLETE = "ATTEMPT: 1\nDecision: OK\nno step-end marker here\n"
+GIT_ENV = {
+    **os.environ,
+    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+}
+
+
+class _Attr(dict):  # type: ignore[type-arg]
+    """A dict whose keys are also readable as attributes, for a pending record of either shape."""
+
+    def __getattr__(self, key: str) -> Any:
+        try:
+            return self[key]
+        except KeyError as exc:
+            raise AttributeError(key) from exc
+
+
+def unattributed_reason(step: str) -> str:
+    return (
+        f"notification-unattributed: step {step} attempt 1 got a notification with no nonce and has no "
+        "landed receipt; the driver cannot tell whose agent ended; clear it with "
+    )
+
+
+def clear_command(flow: Path) -> str:
+    from scripts.flow_driver.driver import clear_live_command
+
+    return clear_live_command(flow)
+
+
+def records(flow: Path, event: str) -> List[Dict[str, Any]]:
+    found: List[Dict[str, Any]] = []
+    for line in log_lines(flow):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("event") == event:
+            found.append(rec)
+    return found
+
+
+def attempt_outcome(state: Dict[str, Any], step: str, attempt: int) -> Any:
+    return state.get("attempt_log", {}).get(step, {}).get(str(attempt))
+
+
+def write_state(flow: Path, state: Dict[str, Any]) -> None:
+    (flow / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+
+def advance_to(home: Path, flow: Path, target: str) -> Dict[str, Any]:
+    """Land each earlier step's receipt with an attributed notification until ``target`` is the live step."""
+    env = FakeGh(home, mode="nopr").env()  # the worktree landing runs the north-star gh-auth preflight
+    for _ in range(10):
+        pending = pending_of(flow)
+        expect(pending is not None, "no live record while advancing")
+        if pending["step"] == target:
+            return pending
+        step = pending["step"]
+        extra = f"WORKTREE: {home / 'wt'}\n" if step == "worktree" else ""
+        write_receipt(flow, step, pending["attempt"], extra=extra)
+        code, out, err = run_cli(
+            home, "next", "--flow", str(flow), "--after", "notification", "--nonce", pending["nonce"],
+            extra_env=env,
+        )
+        expect(code == 0, f"next exited {code} after {step}: {err}")
+        verb, _ = next_line(out)
+        expect(verb == "SPAWN", f"advancing past {step} printed {verb}, expected SPAWN")
+    raise AssertionError(f"the loop did not reach step {target}")
+
+
+def implement_flow(base: Path) -> Tuple[Path, Path, Dict[str, Any]]:
+    home = make_home(base)
+    flow, _ = start_flow(home)
+    pending = advance_to(home, flow, "implement")
+    expect(pending["attempt"] == 1, f"implement attempt was {pending['attempt']}, expected 1")
+    return home, flow, pending
+
+
+def gone_stop(home: Path, flow: Path, nonce: str) -> Path:
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", nonce)
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, directive = next_line(out)
+    expect(verb == "STOP", f"attributed notification with no receipt printed {verb}, expected STOP")
+    return directive
+
+
+def write_raw_receipt(flow: Path) -> None:
+    from scripts.flow_driver import receipts
+
+    path = receipts.receipt_path(flow, "implement")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(RAW_INCOMPLETE, encoding="utf-8")
+
+
+def git_commit_file(home: Path) -> None:
+    wt = home / "wt"
+    (wt / "tracked.txt").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(wt), "add", "tracked.txt"], check=True, capture_output=True, env=GIT_ENV)
+    subprocess.run(["git", "-C", str(wt), "commit", "-q", "-m", "add tracked"], check=True, capture_output=True, env=GIT_ENV)
+
+
+def other_nonce(nonce: str) -> str:
+    return "cd34ab12" if nonce == "ab12cd34" else "ab12cd34"
+
+
+# Test 42: event construction carries the nonce (plan item 1)
+def test_42_event_from_label_carries_nonce(base: Path) -> None:
+    from scripts.flow_driver.steps import Notification, Reentry, UnknownEvent, event_from_label
+
+    ev = event_from_label("notification", nonce="ab12cd34")
+    expect(isinstance(ev, Notification) and ev.nonce == "ab12cd34", f"notification with nonce built {ev!r}")
+    ev2 = event_from_label("notification")
+    expect(isinstance(ev2, Notification) and ev2.nonce is None, f"nonce-less notification built {ev2!r}")
+    expect(isinstance(event_from_label(None), Reentry), "event_from_label(None) is not Reentry")
+    expect(isinstance(event_from_label("no-such-label"), UnknownEvent), "unknown label is not UnknownEvent")
+
+
+# Test 43: the CLI accepts --nonce only with --after notification (plan item 2)
+def test_43_nonce_is_refused_without_notification_label(base: Path) -> None:
+    home = make_home(base)
+    flow, _ = start_flow(home)
+    nonce = pending_of(flow)["nonce"]
+    state_path = flow / "state.json"
+    before = state_path.read_bytes()
+    code, _, _ = run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", "--nonce", "ab12cd34")
+    expect(code != 0, "--nonce with --after spawn-launched was accepted")
+    expect(state_path.read_bytes() == before, "a refused --nonce changed state.json")
+    code, out, err = run_cli(
+        home, "next", "--flow", str(flow), "--after", "notification", "--nonce", other_nonce(nonce)
+    )
+    expect(code == 0, f"--nonce with --after notification exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "WAIT", f"a foreign nonce on a live record printed {verb}, expected WAIT")
+
+
+# Test 44: attributed gone with an absent receipt is a STOP (plan item 3)
+def test_44_attributed_gone_with_absent_receipt_is_stop(base: Path) -> None:
+    from scripts.flow_driver import receipts
+
+    home, flow, pending = implement_flow(base)
+    expect(not receipts.receipt_path(flow, "implement").exists(), "a receipt exists before the gone check")
+    gone_stop(home, flow, pending["nonce"])
+    state = state_of(flow)
+    reason = state.get("stop_reason", {}).get("implement", "")
+    expect(state.get("status") == "failed", f"status is {state.get('status')!r}, expected failed")
+    expect(reason.startswith(GONE_PREFIX), f"stop reason was {reason!r}")
+    expect(reason.endswith("clear it with " + clear_command(flow.resolve())), "stop reason does not end with the clear-live command")
+    expect("1" not in state.get("attempt_log", {}).get("implement", {}), "attempt 1 gained an attempt_log entry")
+    recs = records(flow, "subagent-gone")
+    expect(len(recs) == 1, f"expected one subagent-gone record, got {len(recs)}")
+    expect(recs[0].get("receipt") == "absent", f"receipt field was {recs[0].get('receipt')!r}")
+
+
+# Test 45: first-seen incomplete receipt is gone; classify returns a typed Gone (plan item 4)
+def test_45_first_seen_incomplete_receipt_is_gone_and_classify_is_typed(base: Path) -> None:
+    from scripts.flow_driver import receipts
+    from scripts.flow_driver.state import mutating
+
+    home, flow, pending = implement_flow(base)
+    write_raw_receipt(flow)
+    expect(pending_of(flow).get("receipt_seen") is None, "receipt_seen was set before any read")
+    with mutating(flow) as locked:
+        attributed = receipts.classify(locked, _Attr(pending_of(flow)), attributed=True)
+        plain = receipts.classify(locked, _Attr(pending_of(flow)))
+    expect(isinstance(attributed, receipts.Gone), f"attributed classify returned {attributed!r}, expected Gone")
+    expect(attributed.state == "gone", f"Gone.state was {attributed.state!r}")
+    expect(isinstance(plain, receipts.InProgress), f"unattributed classify returned {plain!r}, expected InProgress")
+    gone_stop(home, flow, pending["nonce"])
+    reason = state_of(flow).get("stop_reason", {}).get("implement", "")
+    expect(reason.startswith(GONE_PREFIX), f"stop reason was {reason!r}")
+    recs = records(flow, "subagent-gone")
+    expect(len(recs) == 1 and recs[0].get("receipt") == "incomplete", f"subagent-gone records were {recs!r}")
+
+
+# Test 46: an awaiting question is a normal park, never gone (plan item 5)
+def test_46_awaiting_question_is_a_park_not_gone(base: Path) -> None:
+    from scripts.flow_driver import relay
+    from scripts.flow_driver.state import ParkedQuestion
+
+    home, flow, pending = implement_flow(base)
+    path = relay.question_path(flow, ParkedQuestion(step="implement", attempt=1, nn=1, kind="step"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    question = {
+        "summary": "Pick one",
+        "questions": [{
+            "id": "q1", "question": "Which?", "header": "Pick", "multiSelect": False,
+            "options": [{"label": "Alpha", "description": "a"}, {"label": "Beta", "description": "b"}],
+        }],
+    }
+    path.write_text(json.dumps(question), encoding="utf-8")
+    code, out, err = run_cli(
+        home, "next", "--flow", str(flow), "--after", "notification", "--nonce", pending["nonce"]
+    )
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb in ("ASK", "PARK"), f"an awaiting question printed {verb}, expected ASK or PARK")
+    state = state_of(flow)
+    expect(state.get("stop_reason", {}).get("implement") is None, "an awaiting question was stopped as gone")
+    expect(records(flow, "subagent-gone") == [], "an awaiting question logged subagent-gone")
+
+
+# Test 47: a landed receipt wins over an attributed notification (plan item 6)
+def test_47_landed_receipt_wins_over_attributed_notification(base: Path) -> None:
+    home_a = make_home(base)
+    flow_a, _ = start_flow(home_a)
+    nonce_a = pending_of(flow_a)["nonce"]
+    write_receipt(flow_a, "worktree", 1, extra=f"WORKTREE: {home_a / 'wt'}\n")
+    code, out, err = run_cli(
+        home_a, "next", "--flow", str(flow_a), "--after", "notification", "--nonce", nonce_a,
+        extra_env=FakeGh(home_a, mode="nopr").env(),
+    )
+    expect(code == 0, f"next exited {code}: {err}")
+    verb_a, _ = next_line(out)
+
+    home_b = make_home(base)
+    flow_b, _ = start_flow(home_b)
+    write_receipt(flow_b, "worktree", 1, extra=f"WORKTREE: {home_b / 'wt'}\n")
+    code, out, err = run_cli(
+        home_b, "next", "--flow", str(flow_b), "--after", "wait-settled",
+        extra_env=FakeGh(home_b, mode="nopr").env(),
+    )
+    expect(code == 0, f"wait-settled exited {code}: {err}")
+    verb_b, _ = next_line(out)
+
+    expect(verb_a == "SPAWN" and verb_b == verb_a, f"attributed printed {verb_a}, wait-settled printed {verb_b}")
+    expect(pending_of(flow_a)["step"] == pending_of(flow_b)["step"] == "plan", "the landed step did not advance to plan")
+    expect(state_of(flow_a).get("status") == "running", "a landed receipt left the flow not running")
+    expect(records(flow_a, "subagent-gone") == [], "a landed receipt logged subagent-gone")
+
+
+# Test 48: a foreign nonce is logged and ignored (plan item 7)
+def test_48_foreign_nonce_is_logged_and_ignored(base: Path) -> None:
+    home = make_home(base)
+    flow, _ = start_flow(home)
+    nonce = pending_of(flow)["nonce"]
+    foreign = other_nonce(nonce)
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", foreign)
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "WAIT", f"a foreign nonce printed {verb}, expected WAIT")
+    expect(state_of(flow).get("status") == "running", "a foreign nonce changed the flow status")
+    recs = records(flow, "notification-foreign")
+    expect(len(recs) == 1, f"expected one notification-foreign record, got {len(recs)}")
+    expect(recs[0].get("nonce") == nonce, "notification-foreign nonce is not the pending nonce")
+    expect(recs[0].get("notification_nonce") == foreign, "notification-foreign notification_nonce is wrong")
+
+
+# Test 49: a nonce-less notification with no landed receipt fails closed (plan item 8)
+def test_49_missing_nonce_fails_closed_to_unattributed_stop(base: Path) -> None:
+    home = make_home(base)
+    flow, _ = start_flow(home)
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification")
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "STOP", f"a nonce-less notification printed {verb}, expected STOP")
+    reason = state_of(flow).get("stop_reason", {}).get("worktree", "")
+    expect(reason.startswith(unattributed_reason("worktree")), f"stop reason was {reason!r}")
+    expect(reason.endswith("clear it with " + clear_command(flow.resolve())), "unattributed stop does not end with the clear-live command")
+
+
+# Test 50: nonce-less versus attributed notification on a stable malformed receipt (plan item 9)
+def malformed_at_implement(base: Path) -> Tuple[Path, Path, Dict[str, Any]]:
+    home, flow, pending = implement_flow(base)
+    write_raw_receipt(flow)
+    code, _, err = run_cli(home, "next", "--flow", str(flow), "--after", "wait-settled")
+    expect(code == 0, f"wait-settled exited {code}: {err}")
+    expect(pending_of(flow).get("receipt_seen") is not None, "precondition: wait-settled did not record the receipt fingerprint")
+    return home, flow, pending
+
+
+def test_50a_missing_nonce_on_malformed_receipt_stops_without_rerun(base: Path) -> None:
+    home, flow, _ = malformed_at_implement(base)
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification")
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "STOP", f"a nonce-less notification on a malformed receipt printed {verb}, expected STOP")
+    reason = state_of(flow).get("stop_reason", {}).get("implement", "")
+    expect(reason.startswith(unattributed_reason("implement")), f"stop reason was {reason!r}")
+    expect(attempt_outcome(state_of(flow), "implement", 1) != "receipt-malformed", "a receipt-malformed outcome was written")
+
+
+def test_50b_attributed_notification_on_malformed_receipt_reruns(base: Path) -> None:
+    home, flow, pending = malformed_at_implement(base)
+    code, out, err = run_cli(
+        home, "next", "--flow", str(flow), "--after", "notification", "--nonce", pending["nonce"]
+    )
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "SPAWN", f"an attributed notification on a malformed receipt printed {verb}, expected SPAWN")
+    state = state_of(flow)
+    expect(attempt_outcome(state, "implement", 1) == "receipt-malformed", "attempt 1 was not recorded receipt-malformed")
+    expect(pending_of(flow)["attempt"] == 2, "the malformed rerun did not open attempt 2")
+
+
+# Test 51: gone and unattributed STOPs are clearable and do not open Retry (plan item 10)
+def test_51a_gone_stop_is_clearable_and_refuses_retry(base: Path) -> None:
+    home, flow, pending = implement_flow(base)
+    nonce = pending["nonce"]
+    gone_stop(home, flow, nonce)
+    code, _, _ = run_cli(home, "recover", "--flow", str(flow), "--choice", "retry")
+    expect(code != 0, "recover --choice retry was accepted after a gone STOP")
+    code, _, err = run_cli(home, "clear-live", "--flow", str(flow), "--reason", "x")
+    expect(code == 0, f"clear-live exited {code}: {err}")
+    state = state_of(flow)
+    expect(attempt_outcome(state, "implement", 1) == "cleared", "attempt 1 was not recorded cleared")
+    expect(state.get("status") == "running", f"status after clear-live is {state.get('status')!r}")
+    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "start")
+    verb, _ = next_line(out)
+    expect(verb == "SPAWN", f"after clear-live printed {verb}, expected SPAWN")
+    second = pending_of(flow)
+    expect(second["attempt"] == 2, "the re-spawn did not open attempt 2")
+    expect(second["nonce"] != nonce, "the re-spawn reused the nonce")
+
+
+def test_51b_unattributed_stop_is_clearable(base: Path) -> None:
+    home, flow, pending = implement_flow(base)
+    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "notification")
+    verb, _ = next_line(out)
+    expect(verb == "STOP", f"nonce-less notification printed {verb}, expected STOP")
+    code, _, err = run_cli(home, "clear-live", "--flow", str(flow), "--reason", "x")
+    expect(code == 0, f"clear-live exited {code}: {err}")
+    state = state_of(flow)
+    expect(attempt_outcome(state, "implement", 1) == "cleared", "attempt 1 was not recorded cleared")
+    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "start")
+    verb, _ = next_line(out)
+    expect(verb == "SPAWN", f"after clear-live printed {verb}, expected SPAWN")
+    expect(pending_of(flow)["attempt"] == 2, "the re-spawn did not open attempt 2")
+
+
+# Test 52: residue summary counts changed paths in a real repo (plan item 11, first case)
+def test_52_residue_summary_counts_changed_paths(base: Path) -> None:
+    home = make_home(base)
+    git_commit_file(home)
+    flow, _ = start_flow(home)
+    pending = advance_to(home, flow, "implement")
+    (home / "wt" / "tracked.txt").write_text("one\ntwo\n", encoding="utf-8")
+    (home / "wt" / "untracked.txt").write_text("x\n", encoding="utf-8")
+    gone_stop(home, flow, pending["nonce"])
+    reason = state_of(flow).get("stop_reason", {}).get("implement", "")
+    expect(
+        re.search(r"worktree: HEAD [0-9a-f]{12}, 2 changed path\(s\)", reason) is not None,
+        f"residue text missing from stop reason: {reason!r}",
+    )
+    recs = records(flow, "subagent-gone")
+    expect(len(recs) == 1 and recs[0].get("residue_paths") == 2, f"subagent-gone records were {recs!r}")
+
+
+# Test 53: no worktree recorded (plan item 11, second case)
+def test_53_residue_reports_no_worktree_recorded(base: Path) -> None:
+    home, flow, pending = implement_flow(base)
+    state = state_of(flow)
+    state["worktree"] = None
+    write_state(flow, state)
+    gone_stop(home, flow, pending["nonce"])
+    reason = state_of(flow).get("stop_reason", {}).get("implement", "")
+    expect("worktree: no worktree recorded" in reason, f"stop reason was {reason!r}")
+    recs = records(flow, "subagent-gone")
+    expect(len(recs) == 1 and recs[0].get("residue_paths") is None, f"subagent-gone records were {recs!r}")
+
+
+# Test 54: a non-repo worktree is residue unknown and still STOPs (plan item 11, third case)
+def test_54_non_repo_worktree_is_residue_unknown_and_still_stops(base: Path) -> None:
+    home, flow, pending = implement_flow(base)
+    plain = Path(tempfile.mkdtemp(dir=str(base)))
+    state = state_of(flow)
+    state["worktree"] = str(plain)
+    write_state(flow, state)
+    gone_stop(home, flow, pending["nonce"])
+    reason = state_of(flow).get("stop_reason", {}).get("implement", "")
+    expect("worktree: residue unknown (" in reason, f"stop reason was {reason!r}")
+    recs = records(flow, "subagent-gone")
+    expect(len(recs) == 1 and recs[0].get("residue_paths") is None, f"subagent-gone records were {recs!r}")
+
+
+# Test 55: the probe is a pure read (plan item 11, fourth case)
+def test_55_residue_probe_leaves_index_untouched(base: Path) -> None:
+    home = make_home(base)
+    git_commit_file(home)
+    flow, _ = start_flow(home)
+    pending = advance_to(home, flow, "implement")
+    index = home / "wt" / ".git" / "index"
+    before = index.stat().st_mtime_ns
+    gone_stop(home, flow, pending["nonce"])
+    expect(not (home / "wt" / ".git" / "index.lock").exists(), "the probe left .git/index.lock behind")
+    expect(index.stat().st_mtime_ns == before, "the residue probe changed the index mtime")
+
+
+# Test 56: Facts carries gone_residue exactly when receipt is gone (plan item 12)
+def test_56_facts_gone_residue_iff_gone(base: Path) -> None:
+    import inspect
+
+    from scripts.flow_driver.steps import Facts
+
+    def build(**given: Any) -> Any:
+        kwargs: Dict[str, Any] = {}
+        for name, param in inspect.signature(Facts).parameters.items():
+            if name in given:
+                kwargs[name] = given[name]
+            elif param.default is inspect.Parameter.empty:
+                kwargs[name] = None
+        return Facts(**kwargs)
+
+    try:
+        build(receipt="none", gone_residue=None)
+    except Exception as exc:
+        raise AssertionError(f"control Facts(receipt='none') failed to construct: {exc}")
+    for label, given in (
+        ("receipt gone without residue", {"receipt": "gone", "gone_residue": None}),
+        ("residue without gone", {"receipt": "none", "gone_residue": "x"}),
+    ):
+        try:
+            build(**given)
+        except Exception:
+            continue
+        raise AssertionError(f"Facts accepted {label}")
+    try:
+        build(receipt="gone", gone_residue="x")
+    except Exception as exc:
+        raise AssertionError(f"Facts(receipt='gone', gone_residue='x') did not construct: {exc}")
+
+
+# Test 57: stop codes are listed and parse (plan item 13)
+def test_57_new_stop_codes_are_listed_and_parse(base: Path) -> None:
+    from scripts.flow_driver.steps import STOP_CODES, parse_stop_reason
+
+    for code in ("subagent-gone-no-receipt", "notification-unattributed"):
+        expect(code in STOP_CODES, f"{code} missing from STOP_CODES")
+    got = parse_stop_reason("subagent-gone-no-receipt: d")
+    expect(got == ("subagent-gone-no-receipt", "d"), f"parse returned {got!r}")
+
+
+# Test 58: derived count from the driver log (plan item 14)
+def test_58_derived_count_reads_the_driver_log(base: Path) -> None:
+    from scripts.flow_driver.state import count_driver_events
+
+    flow = Path(tempfile.mkdtemp(dir=str(base)))
+    rows = [
+        {"event": "subagent-gone", "step": "implement", "attempt": 1},
+        {"event": "subagent-gone", "step": "plan", "attempt": 1},
+        {"event": "notification-foreign", "step": "implement", "attempt": 1},
+    ]
+    (flow / "driver-log.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    expect(count_driver_events(flow, "subagent-gone") == 2, "total subagent-gone count was not 2")
+    expect(count_driver_events(flow, "subagent-gone", step="plan") == 1, "plan-filtered count was not 1")
+    expect(count_driver_events(Path(tempfile.mkdtemp(dir=str(base))), "subagent-gone") == 0, "missing log did not count 0")
+
+    torn = Path(tempfile.mkdtemp(dir=str(base)))
+    lines = [json.dumps(rows[0]), "{not json", json.dumps(rows[1])]
+    (torn / "driver-log.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    expect(count_driver_events(torn, "subagent-gone") == 2, "an unparseable line was not skipped")
+
+
+# Test 59: replay is idempotent after a gone STOP (plan item 15)
+def test_59_replay_after_gone_stop_is_idempotent(base: Path) -> None:
+    home, flow, pending = implement_flow(base)
+    nonce = pending["nonce"]
+    gone_stop(home, flow, nonce)
+    first_reason = state_of(flow).get("stop_reason", {}).get("implement", "")
+
+    code, out, err = run_cli(home, "next", "--flow", str(flow))
+    expect(code == 0, f"next with no --after exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "STOP", f"replayed next printed {verb}, expected STOP")
+    expect(state_of(flow).get("stop_reason", {}).get("implement", "") == first_reason, "replayed next changed the stop reason")
+
+    gone_stop(home, flow, nonce)
+    expect(state_of(flow).get("stop_reason", {}).get("implement", "") == first_reason, "a duplicate notification changed the stop reason")
+    expect(len(records(flow, "subagent-gone")) == 1, "a replayed or duplicate notification logged a second subagent-gone")
+    expect(pending_of(flow)["attempt"] == 1 and pending_of(flow)["nonce"] == nonce, "replay opened an attempt or changed the nonce")
+
+
+# Test 60: orchestrator prose passes the nonce and names the new stops (plan item 16)
+def test_60_command_doc_passes_nonce_and_names_new_stops(base: Path) -> None:
+    text = DOC.read_text(encoding="utf-8")
+    expect("next --after notification --nonce" in text, "doc lacks next --after notification --nonce")
+    recovery = text.find("Recovery")
+    expect(recovery != -1, "doc has no Recovery section")
+    tail = text[recovery:]
+    for code in ("subagent-gone-no-receipt", "notification-unattributed"):
+        expect(code in tail, f"Recovery STOP list does not name {code}")
+    rows = [line for line in text.splitlines() if line.lstrip().startswith("|") and "clear-live" in line]
+    expect(
+        any("subagent-gone-no-receipt" in row and "notification-unattributed" in row for row in rows),
+        "no clear-live table row names both new codes",
+    )
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "tests" / "test_command_doc_shell_conventions.py")],
+        capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=300,
+    )
+    expect(result.returncode == 0, f"shell conventions test exited {result.returncode}: {result.stdout[-400:]}")
+
+
 SECTIONS = [
     ("[Happy path and merge pin]", [
         ("1: happy path worktree..ship, then a landed ship parks the merge-gate question", test_01_landed_ship_parks_the_merge_gate_question),
@@ -761,6 +1260,29 @@ SECTIONS = [
         ("549-12: foreground wait-timeout bounds a resumed record; a landed receipt wins", test_549_12_foreground_bound_for_resumed_record),
         ("549-14: wait-timeout on a parked record re-asks, no rerun, no fingerprint", test_549_14_wait_timeout_on_parked_record_reasks),
         ("549-13: stub doc Known gaps, --require-change, no bare positional token; recovery docstring", test_549_13_docs_and_docstrings),
+    ]),
+    ("[#533 slice 1: subagent gone with no receipt]", [
+        ("42: event_from_label carries the notification nonce", test_42_event_from_label_carries_nonce),
+        ("43: --nonce is refused without --after notification", test_43_nonce_is_refused_without_notification_label),
+        ("44: attributed gone with absent receipt is STOP, no attempt logged", test_44_attributed_gone_with_absent_receipt_is_stop),
+        ("45: first-seen incomplete receipt is gone; classify returns typed Gone", test_45_first_seen_incomplete_receipt_is_gone_and_classify_is_typed),
+        ("46: awaiting question is a park, never gone", test_46_awaiting_question_is_a_park_not_gone),
+        ("47: landed receipt wins over an attributed notification", test_47_landed_receipt_wins_over_attributed_notification),
+        ("48: foreign nonce is logged and ignored", test_48_foreign_nonce_is_logged_and_ignored),
+        ("49: nonce-less notification fails closed to unattributed STOP", test_49_missing_nonce_fails_closed_to_unattributed_stop),
+        ("50a: nonce-less notification on malformed receipt stops without rerun", test_50a_missing_nonce_on_malformed_receipt_stops_without_rerun),
+        ("50b: attributed notification on malformed receipt reruns", test_50b_attributed_notification_on_malformed_receipt_reruns),
+        ("51a: gone STOP is clearable and refuses retry", test_51a_gone_stop_is_clearable_and_refuses_retry),
+        ("51b: unattributed STOP is clearable", test_51b_unattributed_stop_is_clearable),
+        ("52: residue summary counts changed paths", test_52_residue_summary_counts_changed_paths),
+        ("53: residue reports no worktree recorded", test_53_residue_reports_no_worktree_recorded),
+        ("54: non-repo worktree is residue unknown and still STOPs", test_54_non_repo_worktree_is_residue_unknown_and_still_stops),
+        ("55: residue probe leaves the index untouched", test_55_residue_probe_leaves_index_untouched),
+        ("56: Facts gone_residue is set iff receipt is gone", test_56_facts_gone_residue_iff_gone),
+        ("57: new stop codes are listed and parse", test_57_new_stop_codes_are_listed_and_parse),
+        ("58: derived count reads the driver log", test_58_derived_count_reads_the_driver_log),
+        ("59: replay after gone STOP is idempotent", test_59_replay_after_gone_stop_is_idempotent),
+        ("60: command doc passes the nonce and names the new stops", test_60_command_doc_passes_nonce_and_names_new_stops),
     ]),
 ]
 
