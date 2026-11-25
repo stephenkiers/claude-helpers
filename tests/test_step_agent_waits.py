@@ -80,7 +80,11 @@ def main() -> None:
         h.test_result(rel + ": no site launches with run_in_background: false",
                       "run_in_background: false" not in text)
         h.test_result(rel + ": launches in the background", "run_in_background: true" in text)
-        h.test_result(rel + ": names receipt files", "receipts/" in text)
+        launches = text.count("run_in_background: true")
+        receipt_lines = sum(1 for line in text.splitlines() if re.search(r"(?i)receipt", line))
+        h.test_result(rel + ": names at least one receipt line per background launch",
+                      receipt_lines >= launches,
+                      "%d receipt lines for %d launches" % (receipt_lines, launches))
 
     contract = (REPO_ROOT / "prompts" / "flow-step-contract.md").read_text()
     h.test_result("flow-step-contract carries the never-end-turn rule",
@@ -105,16 +109,22 @@ WAIT_SNIPPET_DOCS = [
     "commands/queued-merge.md",
 ]
 WAIT_SNIPPET = re.compile(r'wait-files\.py"?\s+wait\b')
-WAIT_OR_MARK = re.compile(r'wait-files\.py"?\s+(?:wait|mark)\b|\*\*Collect:\*\*|Collecting units|collected per `~/\.claude/prompts/join-barrier-pattern\.md`')
+# Real wait or mark: a wait-files.py wait/mark invocation, or a Collect pointer that names the barrier
+# pattern on the same line. Doc-level checks use only this stricter form.
+WAIT_OR_MARK = re.compile(r'wait-files\.py"?\s+(?:wait|mark)\b|\*\*Collect:\*\*[^\n]*join-barrier-pattern\.md')
+# implement-with-haiku.md alone also accepts its prose pointers to the Collecting units block.
+WAIT_OR_MARK_IMPLEMENT = re.compile(WAIT_OR_MARK.pattern + r'|Collecting units|collected per `~/\.claude/prompts/join-barrier-pattern\.md`')
 PROXIMITY_DOCS = ["commands/implement-with-haiku.md"] + COLLECT_DOCS
 BASH_TIMEOUT_600000 = re.compile(r"\btimeout\b[^\n]{0,40}\b600000\b")
 COREUTILS_TIMEOUT = re.compile(r"(?:^|[\s;&|(`])timeout\s+\d+\s")
 SNIPPET_WINDOW = 15
 BACKGROUND_LAUNCH = "run_in_background: true"
 BACKGROUND_WAIT_PROXIMITY = 40
-# "<doc>:<line>" -> reason. Every other background launch must sit near a wait, mark or Collect.
+# (doc, content marker on the launch line) -> reason. Every other background launch must sit near a
+# wait, mark or Collect. Keyed by content, not line number, so an edit above the line cannot orphan it.
 BACKGROUND_ALLOWLIST: dict = {
-    "commands/expert-review.md:50": "the orchestrator rule that states the launch convention, not a launch site",
+    ("commands/expert-review.md", "every call with `run_in_background: true`, with a `Receipt file:` line"):
+        "the orchestrator rule that states the launch convention, not a launch site",
 }
 
 
@@ -141,15 +151,21 @@ def round2_doc_checks(h: Harness) -> None:
         impl = (REPO_ROOT / impl_path).read_text().splitlines()
         launches = [i for i, line in enumerate(impl) if BACKGROUND_LAUNCH in line]
         h.test_result(impl_path + ": has background launches to check", bool(launches))
-        wait_idx = [i for i, line in enumerate(impl) if WAIT_OR_MARK.search(line)]
+        wait_re = WAIT_OR_MARK_IMPLEMENT if impl_path == "commands/implement-with-haiku.md" else WAIT_OR_MARK
+        wait_idx = [i for i, line in enumerate(impl) if wait_re.search(line)]
         unwaited = []
         for i in launches:
-            if "%s:%d" % (impl_path, i + 1) in BACKGROUND_ALLOWLIST:
+            if any(doc == impl_path and marker in impl[i] for doc, marker in BACKGROUND_ALLOWLIST):
                 continue
             if not any(abs(j - i) <= BACKGROUND_WAIT_PROXIMITY for j in wait_idx):
                 unwaited.append(i + 1)
         h.test_result(impl_path + ": every run_in_background: true launch sits near a wait, mark or Collect",
                       not unwaited, "lines %s" % unwaited if unwaited else "")
+    stale = [(doc, marker) for doc, marker in BACKGROUND_ALLOWLIST
+             if not any(BACKGROUND_LAUNCH in line and marker in line
+                        for line in (REPO_ROOT / doc).read_text().splitlines())]
+    h.test_result("every background allowlist marker still sits on a launch line", not stale,
+                  "stale: %s" % stale if stale else "")
     h.test_result("background allowlist entries each carry a reason",
                   all(isinstance(v, str) and v.strip() for v in BACKGROUND_ALLOWLIST.values()))
 
