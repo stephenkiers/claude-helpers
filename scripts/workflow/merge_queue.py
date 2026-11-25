@@ -2044,6 +2044,39 @@ def _with_gate_fields(result: MergeResult, gate_fields: Dict[str, Any]) -> Merge
     return replace(result, **gate_fields)
 
 
+# Dependency directories a gate step may install into. When one of these is a symlink in
+# the PR worktree (shared with another checkout to save an install), an installer such as
+# `npm ci` empties the link's *target* before replacing the link, silently breaking the
+# checkout it points at. The gate unlinks such a symlink first; the target is never touched.
+SHARED_DEPENDENCY_DIRS: Tuple[str, ...] = ("node_modules", ".venv")
+
+
+def _is_tracked(cwd: Path, rel: str) -> bool:
+    try:
+        Runner.run_git(["ls-files", "--error-unmatch", "--", rel], cwd=cwd)
+        return True
+    except Exception:
+        return False
+
+
+def unlink_shared_dependency_dirs(cwd: Path) -> List[str]:
+    """
+    Remove untracked top-level dependency-dir symlinks in `cwd` before gate steps run.
+
+    Returns the names unlinked. Only the link itself is removed (os.unlink never follows
+    it); a dangling link is removed too. A tracked symlink is left alone, since removing it
+    would dirty the tree. A real directory is never touched.
+    """
+    removed: List[str] = []
+    for name in SHARED_DEPENDENCY_DIRS:
+        path = cwd / name
+        if not path.is_symlink() or _is_tracked(cwd, name):
+            continue
+        os.unlink(path)
+        removed.append(name)
+    return removed
+
+
 def _phase_run_gate_and_assertions(
     pr: int,
     branch: str,
@@ -2129,6 +2162,20 @@ def _phase_run_gate_and_assertions(
     # Run gate steps (none when the gate was reused)
     state_dir = ensure_state_dir()
     steps_to_run = config.steps if isinstance(outcome, Miss) else []
+    if steps_to_run:
+        try:
+            unlinked = unlink_shared_dependency_dirs(cwd)
+        except OSError as e:
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                f"Could not unlink a symlinked dependency dir before the gate: {e}",
+                tested_sha=tested_sha,
+            ), tested_sha, gate_fields
+        for name in unlinked:
+            print(
+                f"merge-queue: PR #{pr}: {name} was a symlink; unlinked it (target untouched) so the gate installs its own",
+                file=sys.stderr,
+            )
     for i, step in enumerate(steps_to_run):
         step_name = f"step-{i}"
         log_path = state_dir / "logs" / f"{pr}-{step_name}.log"

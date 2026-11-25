@@ -430,3 +430,16 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 
 **Consequences:** This is the CLI's only shell-string execution, and it is limited to this one key from this one file. A new one needs its own amendment.
 
+
+### Amendment 15: `commands.cleanup_check` teardown preflight, and dependencies before cleanup validation (2026-11-25)
+
+**Problem:** A teardown hook that refuses only shows up after the merge, when `cleanup apply` runs it, so the merged worktree and branch are stranded until someone repairs the teardown by hand. Separately, cleanup validation runs main's checks right after an ff-only pull without installing dependencies. A pull that changes the lockfile, or a main install emptied by an installer that followed a symlinked `node_modules` from another worktree, then makes every check fail on missing tooling, and Node's ESM form of that error (`Error [ERR_MODULE_NOT_FOUND]: Cannot find package …`) matched no infrastructure rule, so it was reported as a regression on main.
+
+**Decision:**
+
+- **`commands.cleanup_check`** is an optional key in the main worktree's `.claude/project.yaml`, read exactly like `commands.cleanup` (Amendment 12: main's copy only, same parse-failure probe, same execution and 300s timeout). It must not change anything; the intended use is the teardown command's own dry-run or `--check` mode. `cleanup check-hook <worktree>` runs it in the target worktree and prints `CLEANUP_CHECK: pass|fail|none: …`, exiting 1 only on `fail`. `/merge-and-cleanup` runs it in Phase 1, after the push gate and before anything is merged, and stops on `fail`. A project that declares `commands.cleanup` but no `commands.cleanup_check` gets `none` with a note saying the teardown is not preflighted; the teardown itself is never run as a probe.
+- **Dependencies before validation:** when there are check commands, `cleanup apply` runs `deps.ensure_deps` on the main worktree after the pull and before validation (the Amendment 10 install path: frozen install, stamp, install lock). Its outcome is only a note; a failed or skipped ensure never blocks validation.
+- **Classifier:** `Error [ERR_MODULE_NOT_FOUND]: Cannot find package` is INCONCLUSIVE ("missing package (dependencies not installed?)"). The same error for a relative module path still falls through to FAIL, since that is usually a real bug.
+- **Merge-queue gate:** before gate steps run in a PR worktree, a top-level `node_modules` or `.venv` that is an untracked symlink is unlinked (never followed), so an installer step cannot empty the checkout it points at. A tracked symlink is left alone, since removing it would dirty the tree.
+
+**Consequences:** This is the CLI's second shell-string execution, limited to `commands.cleanup_check` from main's `project.yaml`, with the same trust boundary as Amendment 12. A worktree that shared `node_modules` by symlink gets its own install the next time it goes through the queue.

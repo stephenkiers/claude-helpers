@@ -259,6 +259,37 @@ if __name__ == "__main__":
     )
 
     print()
+    print("[Section 14b] ESM missing package gives INCONCLUSIVE; a missing relative module still FAILs")
+
+    result = CheckResult(
+        success=False,
+        returncode=1,
+        error=None,
+        stdout="",
+        stderr="node:internal/modules/esm/resolve:873\n  Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'tsx' imported from /repo/\n"
+    )
+    outcome, reason = classify(result)
+    test_result(
+        "ESM 'Cannot find package' gives INCONCLUSIVE naming dependencies",
+        outcome == AttemptOutcome.INCONCLUSIVE and "dependencies not installed" in reason,
+        f"outcome={outcome} reason={reason}"
+    )
+
+    result = CheckResult(
+        success=False,
+        returncode=1,
+        error=None,
+        stdout="",
+        stderr="Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/src/missing.ts' imported from /repo/src/a.ts"
+    )
+    outcome, reason = classify(result)
+    test_result(
+        "ESM 'Cannot find module' for a relative file still gives FAIL",
+        outcome == AttemptOutcome.FAIL,
+        f"outcome={outcome} reason={reason}"
+    )
+
+    print()
     print("[Section 15] Empty output with nonzero exit gives FAIL")
 
     result = CheckResult(

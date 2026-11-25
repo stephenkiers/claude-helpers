@@ -166,6 +166,13 @@ def main() -> None:
         help="Queue start timestamp for skip proof (optional)"
     )
 
+    cleanup_check_hook_parser = cleanup_subparsers.add_parser(
+        "check-hook",
+        help="Pre-merge preflight: run main's commands.cleanup_check in the worktree "
+             "(prints CLEANUP_CHECK: pass|fail|none; exit 1 only on fail)"
+    )
+    cleanup_check_hook_parser.add_argument("target", help="Target worktree path")
+
     cleanup_render_parser = cleanup_subparsers.add_parser("render-validation", help="Render validation result")
     cleanup_render_parser.add_argument(
         "input",
@@ -506,6 +513,13 @@ def main() -> None:
                 return cleanup.apply_cleanup(pj, queue_started_at=args.queue_started_at)
 
             _run_apply(apply_cleanup_wrapper, plan_json)
+        elif args.cleanup_action == "check-hook":
+            status, message = cleanup.check_cleanup_hook(Path(args.target))
+            lines = message.split("\n")
+            print(f"CLEANUP_CHECK: {status}: {lines[0]}")
+            for line in lines[1:]:
+                print(f"  {line}")
+            sys.exit(1 if status == "fail" else 0)
         elif args.cleanup_action == "render-validation":
             input_json = args.input
             if input_json == "-":

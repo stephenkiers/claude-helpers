@@ -51,6 +51,27 @@ It is not a check: it never runs as part of validation. Only the main worktree's
   `cleanup:` line; otherwise cleanup proceeds as if there were no hook.
 - Absent: no change in behavior.
 
+**Preflight (`commands.cleanup_check`, optional):** declare a command that checks whether the
+teardown would succeed without changing anything (for example the teardown's `--check` mode):
+
+```yaml
+commands:
+  cleanup: npm run sandbox:down
+  cleanup_check: npm run sandbox:down-check --if-present
+```
+
+The check runs the *branch's* scripts, so point it at something a branch without check support
+skips (a dedicated script with `--if-present`), never at the teardown plus a new flag: an older
+teardown that ignores unknown flags would really tear down before the merge.
+
+`/merge-and-cleanup` runs it in the PR worktree before merging (`cleanup check-hook <worktree>`) and
+stops on a failure, so a teardown that would refuse is fixed while the PR is still open instead of
+stranding the merged worktree.
+
+Before running the validation checks, `cleanup apply` brings main's dependencies current with
+`deps ensure`, so a lockfile change pulled with main, or a missing install, does not read as a
+regression.
+
 The hook runs through the shell (`&&` chains work), with stdin closed, in its own process group
 (killed whole on timeout), inheriting the parent environment. Scripts it invokes live in the branch
 being cleaned up. The hook must be idempotent: a failed run is retried by re-running `/cleanup`. A

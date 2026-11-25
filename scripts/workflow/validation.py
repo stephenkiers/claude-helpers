@@ -102,6 +102,13 @@ _INFRA_RULES: Tuple[InfraRule, ...] = (
         reason="missing module"
     ),
     InfraRule(
+        # Node's ESM loader names a missing bare package this way. A missing *package* means the
+        # dependencies are not installed; a missing relative module still falls through to FAIL.
+        pattern=re.compile(r"^\s*Error \[ERR_MODULE_NOT_FOUND\]: Cannot find package ", re.MULTILINE),
+        exit_codes=frozenset(),
+        reason="missing package (dependencies not installed?)"
+    ),
+    InfraRule(
         pattern=re.compile(r"^CHECK-GUARD-ABORT:", re.MULTILINE),
         exit_codes=frozenset(),
         reason="check guard aborted"

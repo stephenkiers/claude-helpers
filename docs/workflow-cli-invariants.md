@@ -203,6 +203,8 @@ The CLI never executes a command derived from prose. `deps ensure` runs only a f
 
 **Implementation:** `scripts/workflow/cleanup.py` `_run_cleanup_hook`: `shell=True` by design (documented usage such as `npm run sandbox:down` and `&&` chains; unlike `commands.install`, which is `shlex`-split, `shell=False` and approval-gated), `cwd` the target worktree, stdin closed, its own session with the process group killed on the 300s timeout, parent environment inherited. A non-zero exit, timeout, launch failure or unreadable declaration blocks removal and is recorded in `CleanupResult.hook_failures`, separate from `validation_failures`.
 
+**Preflight (Amendment 15):** `cleanup check-hook` runs the optional `commands.cleanup_check`, read and executed the same way, without removing anything; `/merge-and-cleanup` runs it before merging and stops on `fail`. It is the only other shell-string execution.
+
 ## Issue Comments Subcommand
 
 **Invariant:** The `issue-comments` subcommand has no side effects in the `fetch` phase, fixed behavior governed by code constants, and mandatory `--cwd` for provider repo pinning.

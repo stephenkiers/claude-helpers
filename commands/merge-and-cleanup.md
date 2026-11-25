@@ -109,6 +109,19 @@ echo "PR #$PR_NUM: $HEAD_REF"
 echo "Resolved worktree: $WT"
 echo "✓ Push gate passed: branch is clean and fully pushed"
 
+# Teardown preflight: run main's optional commands.cleanup_check in the worktree now, so a
+# commands.cleanup teardown that would refuse after the merge (and strand the worktree) is found
+# while the PR is still open. Only `fail` blocks; `none` (nothing declared) is printed and passes.
+if [ -n "$WT" ] && [ "$WT" != "null" ] && [ -d "$WT" ]; then
+  CLEANUP_CHECK_OUT=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup check-hook "$WT")
+  CLEANUP_CHECK_RC=$?
+  printf '%s\n' "$CLEANUP_CHECK_OUT"
+  if [ "$CLEANUP_CHECK_RC" -ne 0 ]; then
+    echo "ERROR: the post-merge teardown would fail in $WT; fix it before merging (nothing was merged)."
+    exit 1
+  fi
+fi
+
 # Persist state to disk — Phase 3 runs backgrounded (see below) and Phase 4 runs as a
 # separate Bash call, so neither can rely on these shell variables surviving in-memory.
 # Use a PR-scoped state directory with no pointer indirection to prevent concurrent invocations

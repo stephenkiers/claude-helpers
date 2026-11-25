@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
 from . import checks
+from . import deps
 from . import git
 from . import check_diagnostics as diagnostics
 from . import validation
@@ -424,6 +425,21 @@ def apply_cleanup(
 
                 result.notes.extend(env_derivation.notes)
 
+                # The pull may have changed the lockfile, and main's install can be missing or emptied,
+                # so bring main's dependencies current first. Otherwise a check that cannot load its
+                # tooling reads as a regression on main. An install that cannot run is only a note:
+                # validation still runs, and a missing package then classifies as inconclusive.
+                if plan.check_commands:
+                    try:
+                        deps_result = deps.ensure_deps(main_worktree_path, main_worktree_path)
+                        if deps_result.status == "installed":
+                            result.notes.append("installed main's dependencies before validation")
+                        elif deps_result.status not in ("current", "skipped"):
+                            detail = f": {deps_result.detail}" if deps_result.detail else ""
+                            result.notes.append(f"deps ensure on main: {deps_result.status}{detail}")
+                    except Exception as e:
+                        result.notes.append(f"deps ensure on main failed: {e}")
+
                 # Run validation
                 val_run = validation.run_validation(
                     plan.check_commands,
@@ -486,10 +502,11 @@ def _main_worktree_of(target_worktree: Path) -> Optional[Path]:
     return common.resolve().parent
 
 
-def _main_cleanup_command(main_worktree: Path) -> Tuple[Optional[str], Optional[str]]:
+def _main_cleanup_command(main_worktree: Path, key: str = "cleanup") -> Tuple[Optional[str], Optional[str]]:
     """
-    commands.cleanup from the MAIN worktree's project.yaml only (a branch's own copy can be
-    written by the work being cleaned up, so it is never trusted).
+    commands.<key> (default commands.cleanup; also commands.cleanup_check) from the MAIN
+    worktree's project.yaml only (a branch's own copy can be written by the work being cleaned
+    up, so it is never trusted).
 
     Returns (command, error). This is the one place that decides whether a problem reading the
     file blocks cleanup. An absent file or key gives (None, None). A file that cannot be read or
@@ -506,18 +523,19 @@ def _main_cleanup_command(main_worktree: Path) -> Tuple[Optional[str], Optional[
             text = path.read_text()
         except (OSError, ValueError):
             text = ""
-        if _CLEANUP_KEY_PROBE.search(text):
+        probe = _CLEANUP_KEY_PROBE if key == "cleanup" else re.compile(rf"^\s*{re.escape(key)}\s*:", re.MULTILINE)
+        if probe.search(text):
             return None, (
-                "commands.cleanup unreadable: main project.yaml may declare commands.cleanup "
+                f"commands.{key} unreadable: main project.yaml may declare commands.{key} "
                 f"but cannot be parsed: {note}"
             )
         return None, None
     commands = data.get("commands")
-    if not isinstance(commands, dict) or commands.get("cleanup") is None:
+    if not isinstance(commands, dict) or commands.get(key) is None:
         return None, None
-    cmd = checks._command_from_mapping(data, "cleanup")
+    cmd = checks._command_from_mapping(data, key)
     if cmd is None:
-        return None, "commands.cleanup unreadable: value must be a non-empty string"
+        return None, f"commands.{key} unreadable: value must be a non-empty string"
     return cmd, None
 
 
@@ -532,6 +550,70 @@ def _worktree_status(target_worktree: Path) -> str:
         return git.run_git_command(["status", "--porcelain"], cwd=target_worktree)
     except Exception:
         return ""
+
+
+def _exec_hook(key: str, cmd: str, target_worktree: Path) -> Optional[str]:
+    """
+    Run a main-declared hook command in the target worktree. Returns None on exit 0, else a
+    failure message (could not run, timed out, or nonzero exit with the output tail).
+
+    shell=True, stdin closed, own session so a timeout kills the whole process group, and the
+    parent environment is inherited.
+    """
+    try:
+        proc = subprocess.Popen(
+            cmd, shell=True, cwd=str(target_worktree), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
+        )
+    except OSError as e:
+        return f"commands.{key} could not run: {cmd}\n{str(e)[:200]}"
+    try:
+        stdout, stderr = proc.communicate(timeout=CLEANUP_HOOK_TIMEOUT_SECS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        proc.communicate()
+        return f"commands.{key} timed out after {CLEANUP_HOOK_TIMEOUT_SECS}s: {cmd}"
+    if proc.returncode != 0:
+        tail = _failure_tail(stdout, stderr)
+        return f"commands.{key} failed (exit {proc.returncode}): {cmd}" + ("\n" + tail if tail else "")
+    return None
+
+
+def check_cleanup_hook(target_worktree: Path) -> Tuple[str, str]:
+    """
+    Pre-merge preflight for the teardown hook: run commands.cleanup_check from main's
+    project.yaml in the target worktree, so a teardown that would refuse after the merge is
+    found while the PR is still open.
+
+    commands.cleanup_check is optional and must not change anything (for example a teardown
+    command's dry-run or --check mode). Returns (status, message) where status is:
+      "none" - no check declared, or no separate main worktree to read it from
+      "pass" - the check exited 0
+      "fail" - the check could not be read, could not run, timed out, or exited nonzero
+    A declared commands.cleanup with no commands.cleanup_check is "none" with a note, since
+    the teardown itself cannot be run as a probe.
+    """
+    main_worktree = _main_worktree_of(target_worktree)
+    if main_worktree is None:
+        return "none", "cannot resolve the main worktree"
+    if main_worktree == target_worktree.resolve():
+        return "none", "target is the main worktree"
+    cmd, read_err = _main_cleanup_command(main_worktree, "cleanup_check")
+    if read_err:
+        return "fail", read_err
+    if cmd is None:
+        teardown, _ = _main_cleanup_command(main_worktree)
+        if teardown:
+            return "none", f"commands.cleanup is declared ({teardown}) but commands.cleanup_check is not; teardown not preflighted"
+        return "none", "no commands.cleanup_check declared"
+    failure = _exec_hook("cleanup_check", cmd, target_worktree)
+    if failure is not None:
+        return "fail", failure
+    return "pass", f"commands.cleanup_check passed: {cmd}"
 
 
 def _run_cleanup_hook(
@@ -576,27 +658,9 @@ def _run_cleanup_hook(
         return None
     status_before = _worktree_status(target_worktree)
     retry = "Worktree kept; fix the teardown and re-run /cleanup."
-    try:
-        proc = subprocess.Popen(
-            cmd, shell=True, cwd=str(target_worktree), stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            start_new_session=True,
-        )
-    except OSError as e:
-        return _fail(f"commands.cleanup could not run: {cmd}\n{str(e)[:200]}", retry)
-    try:
-        stdout, stderr = proc.communicate(timeout=CLEANUP_HOOK_TIMEOUT_SECS)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
-        proc.communicate()
-        return _fail(f"commands.cleanup timed out after {CLEANUP_HOOK_TIMEOUT_SECS}s: {cmd}", retry)
-    if proc.returncode != 0:
-        tail = _failure_tail(stdout, stderr)
-        return _fail(f"commands.cleanup failed (exit {proc.returncode}): {cmd}"
-                     + ("\n" + tail if tail else ""), retry)
+    failure = _exec_hook("cleanup", cmd, target_worktree)
+    if failure is not None:
+        return _fail(failure, retry)
     result.notes.append(f"commands.cleanup ran: {cmd}")
     status_after = _worktree_status(target_worktree)
     if status_after and status_after != status_before:
