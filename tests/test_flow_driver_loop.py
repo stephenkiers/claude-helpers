@@ -866,6 +866,54 @@ def test_p29_state_load_rejects_a_bad_base_and_defaults_assess_off(base: Path) -
     expect(state.load_v2_state(no_assess).assess is False, "D17: an absent assess key did not load as False")
 
 
+def test_p30_each_base_guard_holds_on_its_own(base: Path) -> None:
+    """
+    _with_base has two guards: attempt != 1 never backfills, and a base already set is never overwritten. p27 only
+    fails when both are removed; this drives each guard alone, with the other unable to fire.
+    """
+    import dataclasses
+
+    from test_flow_driver_gates import make_state
+
+    repo = fresh(base)
+    _git("init", "-q", str(repo))
+    _git("-C", str(repo), "commit", "-q", "--allow-empty", "-m", "one")
+    old_head = _git("-C", str(repo), "rev-parse", "HEAD")
+    _git("-C", str(repo), "commit", "-q", "--allow-empty", "-m", "two")
+    head = _git("-C", str(repo), "rev-parse", "HEAD")
+
+    class _Locked:
+        def __init__(self) -> None:
+            self.events: List[str] = []
+
+        def log(self, event: str, **_: object) -> None:
+            self.events.append(event)
+
+    def spawn(step: str, attempt: int) -> steps.SpawnDirective:
+        return steps.SpawnDirective(next_command="n", agent_type="flow-implement", prompt_file="p", step=step,  # type: ignore[arg-type]
+                                    attempt=attempt, nonce="n0")
+
+    def run(step: str, attempt: int, bases: state.Bases) -> state.Bases:
+        before = make_state(step=step, worktree=str(repo), bases=bases)
+        locked = _Locked()
+        after = loop._with_base(locked, dataclasses.replace(before), spawn(step, attempt), before)  # type: ignore[arg-type]
+        expect(locked.events == [], f"{step} a{attempt}: unexpected log events {locked.events}")
+        return after.bases
+
+    empty = state.Bases()
+    for step in ("implement", "fix"):
+        # Baseline: attempt 1 with no base records HEAD (so the guards below are what stops it, not a broken read).
+        got = getattr(run(step, 1, empty), step)
+        expect(got == head, f"{step}: attempt 1 recorded {got!r}, expected {head}")
+        # Guard 1 alone: attempt 2 with no base must not backfill (the already-set guard cannot fire: base is None).
+        got = getattr(run(step, 2, empty), step)
+        expect(got is None, f"{step}: attempt 2 backfilled the base with {got!r}")
+        # Guard 2 alone: attempt 1 with a base already set must keep it (the attempt guard cannot fire: attempt is 1).
+        preset = state.Bases(**{step: state.Sha(old_head)})  # type: ignore[arg-type]
+        got = getattr(run(step, 1, preset), step)
+        expect(got == old_head, f"{step}: an attempt-1 replay overwrote the base {old_head} with {got!r}")
+
+
 SECTIONS = [
     ("[Happy path and merge pin]", [
         ("1: happy path worktree..ship, then a landed ship parks the merge-gate question", test_01_landed_ship_parks_the_merge_gate_question),
@@ -929,6 +977,7 @@ SECTIONS = [
         ("p27: bases recorded at the first spawn and kept on retry", test_p27_bases_recorded_at_first_spawn_and_kept_on_retry),
         ("p28: an unreadable worktree HEAD logs base-unavailable", test_p28_unreadable_worktree_head_logs_base_unavailable),
         ("p29: state load rejects a bad base or unknown bases key; D17 absent assess loads False", test_p29_state_load_rejects_a_bad_base_and_defaults_assess_off),
+        ("p30: each base guard holds on its own", test_p30_each_base_guard_holds_on_its_own),
     ]),
 ]
 
