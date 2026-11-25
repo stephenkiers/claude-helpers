@@ -62,7 +62,8 @@ Exit codes:
             3 no pointer or tombstone found (steps_skipped recorded); 2 bad arguments.
     append  0 row written; 1 row rejected (control character or surrounding whitespace in a field, unknown
             step or reason, bad or carried evidence; nothing written); 2 bad arguments, invalid run key, or
-            ledger I/O failure (missing, symlinked, not a regular file, write error); 3 no pointer or tombstone
+            ledger I/O failure (missing, symlinked, not a regular file, write error); a failed or short write
+            (exit 2) may leave a partial final line in the ledger file; 3 no pointer or tombstone
             for the run key; 4 the record belongs to another repo (repo guard); 5 the run was superseded by a
             newer init; 6 the run is already finished (tombstone or FINISHED row).
 
@@ -1104,6 +1105,9 @@ def _append_reject(message: str) -> int:
 def cmd_append(args: argparse.Namespace) -> int:
     # Order: field hygiene (1), run-key format (2), resolve (3/4/5/6), compose and validate (1),
     # finished check (6), write (2). Nothing is written on any failure.
+    # The finished check is best-effort, not a lock: there is a check-then-write window between it and the
+    # os.write below, so a concurrent finish could land in between. This assumes a single writer, the one
+    # orchestrator that owns the run. Do not rely on it under concurrent writers; no locking is added here.
     step = args.done if args.done is not None else args.skip
     for flag, value in (("--run-key", args.run_key), ("--done" if args.done is not None else "--skip", step),
                         ("--evidence", args.evidence), ("--reason", args.reason)):
