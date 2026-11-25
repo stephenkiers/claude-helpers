@@ -1,0 +1,11 @@
+$ flow3 doctor   (sandbox whose full check is red)
+ok   config: .claude/flow.yaml parsed
+ok   base: origin/main at bf0e281cb0
+ok   worktree: throwaway checkout of origin/main
+FAIL full check: `python3 check.py` exited 1 on the untouched base. AssertionError
+Doctor FAILED.
+exit code: 1
+
+$ flow3 run 1
+doctor has not passed for this repo's current flow.yaml: run `python3 -m scripts.flow3 doctor` first
+exit code: 1

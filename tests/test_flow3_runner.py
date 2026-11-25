@@ -127,6 +127,9 @@ def main() -> None:
                   and os.path.realpath(line["cwd"]) == os.path.realpath(str(work)), str(line))
     h.test_result("default model and turns from config", runner.build_argv(spec(work), "haiku")[
         runner.build_argv(spec(work), "haiku").index("--max-turns") + 1] == "20")
+    argv = runner.build_argv(spec(work), "haiku")
+    h.test_result("the prompt follows `--` so a variadic option cannot swallow it",
+                  argv[-2] == "--" and argv[-1] == spec(work).prompt)
     r = runner.run(spec(work, role="implementer"), overrides={"*": "haiku"})
     h.test_result("overrides pick model", r.model == "haiku" and last_log()["model"] == "haiku")
 

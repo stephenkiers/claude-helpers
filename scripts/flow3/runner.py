@@ -169,7 +169,8 @@ def build_argv(spec: CallSpec, model: str) -> List[str]:
         argv += ["--allowedTools", entry]
     if spec.resume_session:
         argv += ["--resume", spec.resume_session]
-    argv.append(spec.prompt)
+    # "--" ends the options: without it a variadic option such as --tools swallows the prompt.
+    argv += ["--", spec.prompt]
     return argv
 
 
