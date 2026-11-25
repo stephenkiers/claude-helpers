@@ -177,7 +177,7 @@ def _explain(doc: Dict[str, Any]) -> str:
     options = card.get("options") or []
     chosen = str(answer.get("option_id") or "")
     lines = [f"Decision {doc.get('question_id', '')} (stage {doc.get('stage', '')}, {doc.get('ts', '')})", ""]
-    lines.append(f"Question: {card.get('question', '')}")
+    lines.append(f"Question: {card.get('decision') or card.get('question') or ''}")
     lines.append("Options:")
     for opt in options:
         if isinstance(opt, dict):

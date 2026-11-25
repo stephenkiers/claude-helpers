@@ -310,6 +310,8 @@ for qid in ("r1", "p1", "d1", "f1"):
     why[qid] = out
 h.test_result("B: why explains a human decision", "Decided by: human" in why["r1"] and "take B" in why["r1"], why["r1"])
 h.test_result("B: why explains a principle decision", "Decided by: principle (P-x)" in why["p1"], why["p1"])
+h.test_result("B: why prints the question that was decided",
+              all(len(w.split("Question:", 1)[-1].split("\n", 1)[0].strip()) > 3 for w in why.values()), why["p1"])
 h.test_result("B: why explains an assumed decision", "Decided by: assumed" in why["d1"], why["d1"])
 h.test_result("B: why explains a fact decision", "Decided by: fact" in why["f1"], why["f1"])
 rc, out, err = call(["merge", "2", "--repo", REPO, "--merge", "--wait"])

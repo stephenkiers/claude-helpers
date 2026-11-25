@@ -87,6 +87,20 @@ If this session restarts: read this file first, then continue from the first uni
     edited without the edit judge. Implement drops protected paths from unit file lists and from
     `existing_test_edits`. Found by the first real run: the plan put new tests in the existing test
     file and the implementer was told both to edit it and never to edit it.
+24. **A finding in a protected file is left open, not sent to a fixer.** The fix stage strips protected
+    paths from each finding's files; a finding with nothing left is recorded as blocked and shown open
+    at the merge gate. Found by a real fleet run: the fix unit listed a spec test as both allowed and
+    protected and the ticket parked on a risk card nobody could act on.
+25. **A spec test that imports a library that is not installed is a missing dependency.** Decision 22
+    now applies only when the missing module is the project's own (a file in the worktree or a planned
+    file). The test author prompt tells the author to follow the existing tests and add no dependency.
+    Found by a real run: the author wrote a `pytest` test in a sandbox without pytest, and two fixer
+    rounds and a judge were spent on a file none of them may edit.
+26. **The merge gate lists every unfixed finding.** It read only the last fix round, so findings from
+    the last allowed review round (whose fixes never run) showed as "Open: none", including two the
+    human had answered `fix`. They are now listed, the human-answered ones marked, with a pointer to
+    send back. Running a fix for a human `fix` answer in the capped round would change the review loop
+    the plan fixes; that question is in REPORT.
 
 ## Spend (notional USD, real model calls)
 
