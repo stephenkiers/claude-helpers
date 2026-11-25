@@ -1974,7 +1974,9 @@ def test_append_help_and_docstring():
             sub = doc[exit_idx:]
             a_idx = sub.find("append")
             if a_idx >= 0:
-                block = sub[a_idx:a_idx + 600]
+                # The append entry ends at the first blank line, so digits from a neighbouring entry or
+                # paragraph cannot satisfy the check.
+                block = sub[a_idx:].split("\n\n", 1)[0]
                 missing = [d for d in "0123456" if not re.search(rf"\b{d}\b", block)]
                 exit_ok = not missing
         ok = help_ok and usage_ok and exit_ok
@@ -1999,12 +2001,17 @@ def test_append_doc_no_printf_redirect():
     return not problems, "; ".join(problems) or "ok"
 
 
+# A floor, not an exact count. #548 converted every ledger row write in the command doc and left 26 append lines
+# inside bash fences. Adding call sites is fine, but fewer means one was deleted or turned back into a redirect.
+MIN_APPEND_CALL_SITES = 26
+
+
 def test_append_doc_call_site_counts():
-    """Command doc has >=26 append lines inside bash fences, each with --run-key \"<RUN_KEY>\"; prompt doc has none."""
+    """Command doc has >=MIN_APPEND_CALL_SITES append lines inside bash fences, each with --run-key \"<RUN_KEY>\"; prompt doc has none."""
     cmd_lines = [ln for block in _al_bash_blocks(COMMAND_DOC.read_text()) for ln in block if APPEND_RE.search(ln)]
     prompt_lines = [ln for block in _al_bash_blocks(PROMPT_DOC.read_text()) for ln in block if APPEND_RE.search(ln)]
     missing_key = [ln for ln in cmd_lines if '--run-key "<RUN_KEY>"' not in ln]
-    ok = len(cmd_lines) >= 26 and not prompt_lines and not missing_key
+    ok = len(cmd_lines) >= MIN_APPEND_CALL_SITES and not prompt_lines and not missing_key
     return ok, f"command append lines={len(cmd_lines)} prompt={len(prompt_lines)} without --run-key={len(missing_key)}"
 
 
@@ -2021,15 +2028,25 @@ def test_append_doc_separation():
                 for bad in ("&&", ";", "||", "2>/dev/null"):
                     if bad in ln:
                         problems.append(f"{path.name}: append line has {bad!r}: {ln.strip()[:120]}")
+                # A single pipe chains the append into another command. Double-quoted text is blanked first, so a
+                # pipe inside a quoted argument (usage text such as STEP|STEP) is not mistaken for a chain.
+                unquoted = re.sub(r'"[^"]*"', "", ln)
+                if "|" in unquoted:
+                    problems.append(f"{path.name}: append line has a pipe: {ln.strip()[:120]}")
     return not problems, "; ".join(problems[:5]) or "ok"
 
 
 def test_append_doc_contract_prose():
     """Command doc states 'A non-zero `append` exit is a stop' and names printf, >> and Write as forbidden fallbacks."""
     text = COMMAND_DOC.read_text()
-    has_stop = "A non-zero `append` exit is a stop" in text
-    names = all(tok in text for tok in ("printf", ">>", "Write"))
-    forbidden = re.search(r"(forbidden|fallback)", text, re.IGNORECASE) is not None
+    stop_sentence = "A non-zero `append` exit is a stop"
+    stop_idx = text.find(stop_sentence)
+    has_stop = stop_idx >= 0
+    # Anchor the other two checks to the stop sentence's own paragraph, so a stray printf or Write elsewhere
+    # in the doc cannot satisfy them.
+    paragraph = text[stop_idx:].split("\n\n", 1)[0] if has_stop else ""
+    names = all(tok in paragraph for tok in ("printf", ">>", "Write"))
+    forbidden = re.search(r"(forbidden|fall\s+back)", paragraph, re.IGNORECASE) is not None
     ok = has_stop and names and forbidden
     return ok, f"stop_sentence={has_stop} names={names} forbidden_word={forbidden}"
 

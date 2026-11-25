@@ -795,6 +795,9 @@ for line in logical_lines(IMPLEMENT_WITH_HAIKU):
             step_tok = flag_match.group(1).strip("\"'")
             if not is_placeholder(step_tok):
                 cited_steps.append(step_tok)
+    # --reason is read from the same logical line as --done and --skip. logical_lines() already joins backslash
+    # continuations, so a wrapped append call is still one line and that assumption is safe. Unlike a step id,
+    # a reason may be a quoted phrase with spaces, so this pattern accepts a quoted string and not only one token.
     reason_match = re.search(r"--reason\s+(\"[^\"]*\"|'[^']*'|\S+)", line)
     if reason_match:
         reason_tok = reason_match.group(1).strip("\"'")
