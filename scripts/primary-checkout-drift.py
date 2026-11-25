@@ -110,6 +110,7 @@ would pass, and pushes are guarded separately).
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -761,6 +762,9 @@ class PrimarySelection(NamedTuple):
     detail: str
 
 
+_KNOWN_ATTR_RE = re.compile(r"^(HEAD |branch |locked|prunable|bare$|detached$)")
+
+
 def parse_worktree_porcelain(text: str) -> List[WorktreeRecord]:
     """Split `git worktree list --porcelain` output into one record per blank-line block.
 
@@ -789,11 +793,16 @@ def parse_worktree_porcelain(text: str) -> List[WorktreeRecord]:
         if any(line.startswith("worktree ") for line in block[1:]):
             raise ValueError("worktree block repeats the 'worktree ' line")
         path = block[0][len("worktree "):]
+        rest = block[1:]
+        if sep == "\n":
+            # newline form: lines before the first attribute are the rest of a path that holds a newline
+            while rest and not _KNOWN_ATTR_RE.match(rest[0]):
+                path += "\n" + rest.pop(0)
         branch: Optional[str] = None
         bare = False
         detached = False
         prunable = False
-        for line in block[1:]:
+        for line in rest:
             if line.startswith("branch "):
                 branch = line[len("branch "):]
             elif line == "bare":

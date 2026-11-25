@@ -777,7 +777,8 @@ exit 2 (`head-probe-failed`). The skip when the primary checkout's realpath equa
 **Item 5 (fail closed).** The guarantee is unchanged, and there is no skip outcome. A bare layout with no
 default-branch worktree is a hard stop with reason `no-usable-primary`; it is never a silent pass. Every
 barrier failure is a FAILED receipt with `FAILURE_CLASS: cwd-drift` (unchanged for every cause) and a
-Reason of `primary-checkout-drift: <cause>`, where `<cause>` is one of:
+Reason of `primary-checkout-drift: <cause>`, where `<cause>` is one of the following (`head-probe-failed` is
+reachable only through `--reason`; the script's `--cause` choices are the other four):
 - `probe-failed`: the site 1 snapshot output has an `ERROR probe-failed` line.
 - `baseline-unavailable`: the default. Covers other snapshot failures and every compare barrier's exit 2
   other than a HEAD probe failure.
@@ -818,8 +819,9 @@ ADR-0010. The resolver governs the primary checkout only; it is used to locate t
 units elsewhere.
 
 **Known edge.** For a first-entry path containing a space, the old `cut -d' ' -f2` pipeline truncated the
-path at the first space, while the resolver keeps it whole. Unit placement is unchanged, so that truncation
-is not fixed by this amendment.
+path at the first space, while the resolver keeps it whole. Unit placement now derives from the full
+recorded `PRIMARY_CHECKOUT` literal (`dirname`, no `cut`), so a space in the path no longer truncates it.
+The other first-entry sites listed under Follow-ups still carry the old pipeline.
 
 **Follow-ups.**
 - #472: the first-entry sites in `commands/cleanup.md`, `commands/verify-queue.md`,

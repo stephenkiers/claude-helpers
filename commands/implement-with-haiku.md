@@ -2001,8 +2001,7 @@ R2_WT_PATH="${WT_PARENT}/${R2_BRANCH}"
 git worktree add "$R2_WT_PATH" -b "$R2_BRANCH" "$ROUND2_START_SHA"
 ```
 
-`R2_WT_PATH` is fully determined by strings you already hold as literals (`WT_PARENT` from Step 2.5,
-`BRANCH` from Step 2.5) — compute its literal absolute value yourself and use that literal string
+`R2_WT_PATH` is fully determined by strings you already hold as literals (`WT_PARENT` and `BRANCH` from the unit-worktree creation block above) — compute its literal absolute value yourself and use that literal string
 below, never the shell variable name (same rule as decision 14: a prompt containing the literal text
 `$R2_WT_PATH` hands the agent a path that does not exist, since shell variables don't persist across
 separate Bash calls).
