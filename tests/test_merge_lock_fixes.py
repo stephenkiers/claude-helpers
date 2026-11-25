@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 from workflow.merge import apply_merge, merge_lock_path, MergePlan
 from workflow.cleanup import apply_cleanup, CleanupPlan
 from workflow.safety import Unknown
+import workflow.cleanup as _cleanup
 from workflow.merge import QueueDetection, QueueGuardDecision
 from _test_harness import Harness
 
@@ -39,6 +40,9 @@ if __name__ == "__main__":
         "workflow.merge.queue_guard",
         return_value=QueueGuardDecision(decision="proceed", detection=QueueDetection(state="absent")),
     ).start()
+    # apply_cleanup's dirty/unpushed probes run real git; these suites use non-git fake worktrees.
+    mock.patch.object(_cleanup, "worktree_dirty_state", lambda wt: (_cleanup.CLEAN, "")).start()
+    mock.patch.object(_cleanup, "unpushed_state", lambda tip, merged=None, repo=None: (_cleanup.PUSHED, "")).start()
 
     try:
         h = Harness("MERGE LOCK FIXES TEST SUITE")

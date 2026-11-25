@@ -291,6 +291,7 @@ Headings marked `###` are amendment-tagged subsection headings. The subsection `
 | 43 | Amendment (2026-11-20): human-approved existing-test edits and removals in the implement step, with redraft Retry (#511) | The implement step sets aside existing-test-edit and removal items, asks per item in a batched `Test changes` question, and applies approved edits and removals in one approval commit before Round 1; the redraft Retry path resets on approved-test-still-red and redrafts; the verifier cross-checks blob ids and parent invariant; the fix step gains removal items | Layer 3 | port, pinned by test |
 | 44 | Amendment (2026-11-23): step agents never end their turn to wait for children (#532) | Step agents and the skills they run collect children in the same turn (foreground return or `wait-files.py` file wait); a child-wait deadline is a FAILED receipt; the top-level orchestrator keeps its end-turn wait | Layer 3 | port, pinned by test (the rule lives in the step commands and `flow-step-contract.md`, which v2 steps run unchanged; `tests/test_step_agent_waits.py`) |
 | 45 | Amendment (2026-11-23): zero-unit runs close the implement/fix hatch parity difference (#526) | The implement step no longer stops on a test-only plan; a zero-unit run (`SPLIT_BASIS: zero-units`, `UNITS: 0`) goes straight to Round 2, the fidelity audit does not treat it as a reduced run, and the implement/fix parity table has no remaining intentional difference | Layer 3 | port, pinned by tests/test_zero_unit_wiring.py (ledger render with zero-units, verifier plan cross-check, status and exemption tokens, audit carve-out); the driver does not build the verifier arguments, so its wiring has no test |
+| 46 | Amendment (2026-11-24): `/expert-flow --stale` read-only flow classifier | `--stale` classifies flow directories as ACTIVE, STALLED, DEAD or UNKNOWN through `cleanup classify-flows`; read-only, no teardown | Layer 3 | port, pinned by test |
 
 Reference for the one `###` section-level amendment tag outside the amendment list:
 
@@ -298,6 +299,6 @@ Reference for the one `###` section-level amendment tag outside the amendment li
 |---|---|---|---|
 | ### 2.2 Receipts are verified against artifacts, not trusted (amendment 2026-10-14, #276) | Receipts are verified against artifacts | Layer 1 | port, pinned by test |
 
-Totals: 42 `##` amendment headings (rows 1 to 26 and 28 to 43), one `###` amendment heading (row 27), and
+Totals: 43 `##` amendment headings (rows 1 to 26 and 28 to 44), one `###` amendment heading (row 27), and
 the section-level `###` amendment tag under ADR section 2.2 (listed above). The ADR's `### Amending §1`
 subsection is not an amendment heading and is covered by row 14.
