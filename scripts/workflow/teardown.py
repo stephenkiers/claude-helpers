@@ -1058,6 +1058,7 @@ def apply_teardown(
 
         # Track which worktrees were successfully removed (DECISION 3: gate branch deletion on worktree removal)
         successfully_removed_worktrees = set()
+        attempted_worktrees: set = set()
 
         # Remove worktrees and branches
         for item in plan.items:
@@ -1098,6 +1099,7 @@ def apply_teardown(
                         trash_root=trash_root
                     )
 
+                    attempted_worktrees.add(item.path)
                     result = cleanup.remove_worktree(
                         item.path,
                         ctx,
@@ -1148,6 +1150,16 @@ def apply_teardown(
             elif item.kind == "branch":
                 # F10, DECISION 3: Branch deletion uses -d (not -D) unless MERGED, gate on worktree removal
                 if item.path and item.selectable:
+                    # DECISION 3: gate on worktree outcome. A worktree that was attempted but not
+                    # removed (refused, failed, skipped) may still hold this branch, so leave every
+                    # branch alone rather than delete underneath a live worktree.
+                    unremoved = attempted_worktrees - successfully_removed_worktrees
+                    if unremoved:
+                        skipped.append(
+                            f"Kept branch {item.path}: worktree removal did not complete "
+                            f"({', '.join(sorted(unremoved))})"
+                        )
+                        continue
                     try:
                         # DECISION 3: Use -d unless PR was MERGED
                         force = (plan.pr_signal_state == MERGED)

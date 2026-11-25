@@ -172,7 +172,11 @@ If `$ARGUMENTS` contains `--stale`, run a machine-wide sweep instead of single-t
 # Check if --stale is passed
 if printf '%s' "$ARGUMENTS" | grep -q -e '--stale' || [ "${1}" = "--stale" ]; then
   source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
-  PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup classify-flows "$HOME/.claude/flows" 2>/dev/null | jq -r '.flows[] | "[\(.class)] \(.issue): \(.signals_summary)\n  \(.suggestion // .dir)"' || true
+  # Flows live at ~/.claude/flows/<repo>/<flow>/, and classify-flows reads one repo root at a time.
+  for FLOWS_ROOT in "$HOME"/.claude/flows/*/; do
+    [ -d "$FLOWS_ROOT" ] || continue
+    PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup classify-flows "${FLOWS_ROOT%/}" | jq -r '.flows[] | "[\(.class)] \(.issue): \(.signals_summary)\n  \(.suggestion // .dir)"' || echo "classify-flows failed for ${FLOWS_ROOT%/}" >&2
+  done
   exit 0
 fi
 ```
