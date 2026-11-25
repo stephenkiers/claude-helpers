@@ -39,35 +39,45 @@ class ProcRow:
     uid: int
     comm: str
     lstart: str
-    tty: str
+    tty: str  # "" when parsed from PS_FIELDS_NO_TTY output
     rss: int
 
 
-def parse_ps_output(text: str) -> List[ProcRow]:
+# ps column sets read by parse_ps_output. `tty` is only needed for session idle time (teardown's
+# session discovery). Resolving it makes macOS ps look up a device name for every process, which is
+# ~50x slower than the other columns and grows with CPU load: with ~1,200 processes on a loaded
+# machine it took 9-15 s against the 10 s probe timeout, so liveness probes reported UNKNOWN for an
+# idle worktree. Probes that never read tty (caller_chain, descendants, live_in) use PS_FIELDS_NO_TTY.
+PS_FIELDS = "pid=,ppid=,uid=,tty=,rss=,lstart=,comm="
+PS_FIELDS_NO_TTY = "pid=,ppid=,uid=,rss=,lstart=,comm="
+
+
+def parse_ps_output(text: str, with_tty: bool = True) -> List[ProcRow]:
     """
-    Parse ps output: `ps -axo pid=,ppid=,uid=,tty=,rss=,lstart=,comm=`.
+    Parse ps output: `ps -axo PS_FIELDS` (with_tty=True) or `ps -axo PS_FIELDS_NO_TTY`
+    (with_tty=False). Without the tty column, every row's tty is the empty string.
 
     Returns a list of ProcRow, or raises if parsing fails.
     lstart is a fixed 5-token field: Mon Nov 24 10:00:00 2026
     comm is the remainder after lstart (may contain spaces in theory, but ps output is well-defined).
     """
     rows: List[ProcRow] = []
+    head_count = 5 if with_tty else 4  # pid ppid uid [tty] rss
     for line in text.strip().splitlines():
         if not line.strip():
             continue
-        # Fixed field split: pid(1) ppid(1) uid(1) tty(1) rss(1) lstart(5) comm(1+)
-        # rsplit from the right: split at most into 7 parts from the left
-        parts = line.split(None, 5)  # Split on whitespace: pid, ppid, uid, tty, rss, rest
-        if len(parts) < 6:
+        # Fixed field split: pid(1) ppid(1) uid(1) [tty(1)] rss(1) lstart(5) comm(1+)
+        parts = line.split(None, head_count)  # pid, ppid, uid, [tty,] rss, rest
+        if len(parts) < head_count + 1:
             continue
         try:
             pid = int(parts[0])
             ppid = int(parts[1])
             uid = int(parts[2])
-            tty = parts[3]
-            rss = int(parts[4])
+            tty = parts[3] if with_tty else ""
+            rss = int(parts[head_count - 1])
             # Remaining is "lstart (5 tokens) comm"
-            remaining = parts[5].split(None, 5)  # Split: lstart_1, lstart_2, lstart_3, lstart_4, lstart_5, comm
+            remaining = parts[head_count].split(None, 5)  # Split: lstart_1, lstart_2, lstart_3, lstart_4, lstart_5, comm
             if len(remaining) < 6:  # Need 5 lstart tokens + at least comm
                 continue
             lstart = " ".join(remaining[:5])
@@ -137,7 +147,7 @@ def list_claude_processes(
 
     try:
         output = runner(
-            ["ps", "-axo", "pid=,ppid=,uid=,tty=,rss=,lstart=,comm="],
+            ["ps", "-axo", PS_FIELDS],
             timeout=10
         )
         rows = parse_ps_output(output)
@@ -210,10 +220,10 @@ def caller_chain(
 
     try:
         output = runner(
-            ["ps", "-axo", "pid=,ppid=,uid=,tty=,rss=,lstart=,comm="],
+            ["ps", "-axo", PS_FIELDS_NO_TTY],
             timeout=10
         )
-        rows = parse_ps_output(output)
+        rows = parse_ps_output(output, with_tty=False)
         pid_map = {r.pid: r for r in rows}
 
         chain: List[ProcRow] = []
@@ -274,10 +284,10 @@ def descendants(
     try:
         if all_procs is None:
             output = runner(
-                ["ps", "-axo", "pid=,ppid=,uid=,tty=,rss=,lstart=,comm="],
+                ["ps", "-axo", PS_FIELDS_NO_TTY],
                 timeout=10
             )
-            all_procs = parse_ps_output(output)
+            all_procs = parse_ps_output(output, with_tty=False)
 
         # Build ppid -> [children] map
         children_map: Dict[int, List[ProcRow]] = {}
@@ -585,10 +595,10 @@ def live_in(
     try:
         # Get all processes and their cwds
         ps_output = runner(
-            ["ps", "-axo", "pid=,ppid=,uid=,tty=,rss=,lstart=,comm="],
+            ["ps", "-axo", PS_FIELDS_NO_TTY],
             timeout=10
         )
-        all_procs = parse_ps_output(ps_output)
+        all_procs = parse_ps_output(ps_output, with_tty=False)
 
         pid_list = [p.pid for p in all_procs]
         lsof_output = runner(
