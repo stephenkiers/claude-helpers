@@ -18,12 +18,12 @@ finished unit or a finished verify.
 """
 
 import json
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from scripts.flow3 import gitops, heal, prompts, questions, record, schemas, voice
 from scripts.flow3.context import Ctx
 from scripts.flow3.steps import work
-from scripts.flow3.types import CallSpec, FlowStop, StageResult
+from scripts.flow3.types import CallResult, CallSpec, FlowStop, StageResult
 
 STAGE = "fix"
 PROGRESS = "fix_progress"
@@ -165,6 +165,37 @@ class _Stage:
         ctx, p = self.ctx, self.p
         uid = str(unit["id"])
         u = p["units"].setdefault(uid, {"asked": 0})
+        try:
+            result = self._work_unit(unit, u)
+        except heal.UnitUnfinished as stop:
+            # A fixer that could not finish is not a stop: its work so far is committed, the
+            # verifier rules on each finding, and what it left stays open for the merge gate.
+            left = "; ".join(stop.remaining) or "(not stated)"
+            self.log("Fix %s was left unfinished after a retry on a stronger model. Left: %s" % (uid, left))
+            ctx.flow.event("heal", cls="unit-shortfall", action="fix left open for the merge gate", unit=uid)
+            p["pending"] = {}
+            work.check_unit(ctx, unit["files"])
+            u["unfinished"] = True
+            summary = "unfinished: " + left
+        else:
+            if result is None:
+                return True
+            summary = str((result.output or {}).get("summary") or "")
+        head = gitops.head_sha(self.wt)
+        u["done"] = True
+        u["commit"] = head if head != u.get("base") else None
+        u["summary"] = summary
+        p["phase"] = "units"
+        if uid == SENDBACK_UNIT:
+            ctx.flow.set_data("sendback", {"notes": p["sendback"], "handled": True})
+            p["sendback_done"] = True
+        self.save()
+        return False
+
+    def _work_unit(self, unit: Doc, u: Doc) -> Optional[CallResult]:
+        """The fixer call, its question rounds and the check. None when the stage parked for the human."""
+        ctx, p = self.ctx, self.p
+        uid = str(unit["id"])
         prompt = self.prompt(unit)
         message = "flow3 #%d fix %s: %s" % (ctx.issue, uid, ", ".join(unit["ids"]) or "notes from the merge gate")
         pend = p["pending"]
@@ -178,25 +209,7 @@ class _Stage:
         else:
             u["base"] = gitops.head_sha(self.wt)
             self.save()
-            try:
-                result, run = work.run_unit_checked(ctx, unit, "fixer", prompt, message)
-            except heal.UnitUnfinished as stop:
-                # A fixer that could not finish is not a stop: its work so far is committed, the
-                # verifier rules on each finding, and what it left stays open for the merge gate.
-                self.log("Fix %s was left unfinished after a retry on a stronger model. Left: %s" % (
-                    uid, "; ".join(stop.remaining) or "(not stated)"))
-                ctx.flow.event("heal", cls="unit-shortfall", action="fix left open for the merge gate", unit=uid)
-                work.check_unit(ctx, unit["files"])
-                u["done"] = True
-                u["unfinished"] = True
-                head = gitops.head_sha(self.wt)
-                u["commit"] = head if head != u.get("base") else None
-                u["summary"] = "unfinished: " + ("; ".join(stop.remaining) or "(not stated)")
-                if uid == SENDBACK_UNIT:
-                    ctx.flow.set_data("sendback", {"notes": p["sendback"], "handled": True})
-                    p["sendback_done"] = True
-                self.save()
-                return False
+            result, run = work.run_unit_checked(ctx, unit, "fixer", prompt, message)
             run_check = run is None
         while work.needs_answers(result):
             u["asked"] += 1
@@ -209,23 +222,14 @@ class _Stage:
                 p["pending"] = {"unit": uid, "session": result.session_id}
                 p["phase"] = "waiting_unit"
                 self.save()
-                return True
+                return None
             result = work.resume_worker(ctx, "fixer", result.session_id, prompt,
                                         questions.answers_for_prompt(auto), unit["files"], message,
                                         "unit-%s-answers" % uid)
             run_check = True
         if run_check:
             work.check_unit(ctx, unit["files"])
-        head = gitops.head_sha(self.wt)
-        u["done"] = True
-        u["commit"] = head if head != u.get("base") else None
-        u["summary"] = str((result.output or {}).get("summary") or "")
-        p["phase"] = "units"
-        if uid == SENDBACK_UNIT:
-            ctx.flow.set_data("sendback", {"notes": p["sendback"], "handled": True})
-            p["sendback_done"] = True
-        self.save()
-        return False
+        return result
 
     # -- verify -----------------------------------------------------------------------------
 
