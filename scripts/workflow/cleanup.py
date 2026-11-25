@@ -708,8 +708,9 @@ def unpushed_state(
     # F1: Put tip FIRST so --not doesn't negate the tip
     rev_list_error: Optional[str] = None
     try:
+        sha = git.resolve_commit_sha(tip, cwd=repo)
         output = git.run_git_command(
-            ["--no-optional-locks", "rev-list", "--end-of-options", tip, "--not", "--remotes"],
+            ["--no-optional-locks", "rev-list", sha, "--not", "--remotes"],
             cwd=repo,
             check=True
         )

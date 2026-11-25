@@ -309,6 +309,20 @@ def is_ancestor(ancestor: str, descendant: str, cwd: Optional[Path] = None) -> b
         return False
 
 
+def resolve_commit_sha(rev: str, cwd: Optional[Path] = None) -> str:
+    """Resolve rev to a full commit SHA (raises CalledProcessError if it is not a commit).
+
+    The result always starts with a hex digit, so it is safe to place before `--not`, where
+    `--end-of-options` cannot be used (git rejects `--not` after it).
+    """
+    out = run_git_command(
+        ["--no-optional-locks", "rev-parse", "--verify", "--end-of-options", f"{rev}^{{commit}}"],
+        cwd=cwd,
+        check=True,
+    )
+    return out.strip()
+
+
 def rev_list_not_remotes(tip: str, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
     """
     Check if a tip is reachable from any remote-tracking ref.
@@ -321,8 +335,9 @@ def rev_list_not_remotes(tip: str, cwd: Optional[Path] = None) -> Tuple[bool, Op
     F1: tip is placed FIRST so --not does not negate the tip.
     """
     try:
+        sha = resolve_commit_sha(tip, cwd=cwd)
         output = run_git_command(
-            ["--no-optional-locks", "rev-list", "--end-of-options", tip, "--not", "--remotes"],
+            ["--no-optional-locks", "rev-list", sha, "--not", "--remotes"],
             cwd=cwd,
             check=True
         )

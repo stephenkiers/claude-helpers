@@ -24,6 +24,7 @@ from workflow.cleanup import (
     _get_cleanup_check_timeout,
 )
 from workflow.safety import Unknown
+from workflow.cleanup import worktree_dirty_state as real_dirty_state, unpushed_state as real_unpushed_state
 from workflow import validation, git
 from _test_harness import Harness
 
@@ -230,19 +231,12 @@ if __name__ == "__main__":
 
                         result, err = apply_cleanup(plan_json)
 
-                        if mock_delete.call_args is not None:
-                            called_args, called_kwargs = mock_delete.call_args
-                            force_flag = called_kwargs.get("force", False)
-                            test_result(
-                                "apply_cleanup uses -D (force=True) when PR_STATE == MERGED",
-                                force_flag is True
-                            )
-                        else:
-                            test_result(
-                                "apply_cleanup uses -D (force=True) when PR_STATE == MERGED",
-                                True,
-                                "deletion deferred (spec-blind coverage)"
-                            )
+                        called_args, called_kwargs = mock_delete.call_args
+                        force_flag = called_kwargs.get("force", False)
+                        test_result(
+                            "apply_cleanup uses -D (force=True) when PR_STATE == MERGED",
+                            force_flag is True
+                        )
 
         plan.pr_state = "OPEN"
         plan_json = json.dumps(plan.to_dict())
@@ -258,19 +252,12 @@ if __name__ == "__main__":
 
                         result, err = apply_cleanup(plan_json)
 
-                        if mock_delete.call_args is not None:
-                            called_args, called_kwargs = mock_delete.call_args
-                            force_flag = called_kwargs.get("force", False)
-                            test_result(
-                                "apply_cleanup uses -d (force=False) when PR_STATE != MERGED",
-                                force_flag is False
-                            )
-                        else:
-                            test_result(
-                                "apply_cleanup uses -d (force=False) when PR_STATE != MERGED",
-                                True,
-                                "deletion deferred (spec-blind coverage)"
-                            )
+                        called_args, called_kwargs = mock_delete.call_args
+                        force_flag = called_kwargs.get("force", False)
+                        test_result(
+                            "apply_cleanup uses -d (force=False) when PR_STATE != MERGED",
+                            force_flag is False
+                        )
 
     print()
     print("[Section 6] Validation failure does not prevent worktree removal")
@@ -905,93 +892,46 @@ if __name__ == "__main__":
     print()
     print("[Real-probe tests]")
 
-    # Real-probe F5: Plan-hash CLI round-trip
-    try:
-        with tempfile.TemporaryDirectory() as tmp_wt_dir:
-            wt_path = Path(tmp_wt_dir) / "wt"
-            wt_path.mkdir()
+    # Real probes against a scratch git repo: no mocks on git, ps or the filesystem.
+    def _git(repo, *args):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
-            # Create minimal git repo
-            subprocess.run(
-                ["git", "init", str(wt_path)],
-                check=True,
-                capture_output=True,
-                cwd=tmp_wt_dir
-            )
-            subprocess.run(
-                ["git", "-C", str(wt_path), "config", "user.email", "t@t.com"],
-                check=True,
-                capture_output=True
-            )
-            subprocess.run(
-                ["git", "-C", str(wt_path), "config", "user.name", "T"],
-                check=True,
-                capture_output=True
-            )
-            (wt_path / "f.txt").write_text("x")
-            subprocess.run(
-                ["git", "-C", str(wt_path), "add", "f.txt"],
-                check=True,
-                capture_output=True
-            )
-            subprocess.run(
-                ["git", "-C", str(wt_path), "commit", "-m", "c"],
-                check=True,
-                capture_output=True
-            )
-            (wt_path / ".claude").mkdir()
+    with tempfile.TemporaryDirectory() as tmp_real:
+        repo = Path(tmp_real) / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        _git(repo, "config", "user.email", "t@t.com")
+        _git(repo, "config", "user.name", "T")
+        (repo / "f.txt").write_text("x")
+        _git(repo, "add", "f.txt")
+        _git(repo, "commit", "-qm", "c")
+        tip = git.get_head_sha(cwd=repo)
 
-            # Mock git functions
-            with mock.patch("workflow.git.get_current_branch", return_value="main"):
-                with mock.patch("workflow.git.get_head_sha", return_value="abc123"):
-                    with mock.patch("workflow.git.pr_view_json", return_value={"state": "MERGED", "number": 1}):
-                        # Call CLI cleanup plan
-                        cli_result = subprocess.run(
-                            ["python3", "-m", "scripts.workflow.cli", "cleanup", "plan", str(wt_path)],
-                            capture_output=True,
-                            text=True,
-                            cwd="/Users/stephenkiers/Repositories/claude-helpers/worktrees/chore/545-cleanup-interactive-full-ticket-teardown-sessi-haiku-round2"
-                        )
+        state, _ = real_dirty_state(repo)
+        test_result("Real-probe: clean scratch repo is CLEAN", state == "clean")
 
-                        if cli_result.returncode == 0:
-                            plan_dict = json.loads(cli_result.stdout.strip())
-                            has_hash = "plan_hash" in plan_dict and plan_dict["plan_hash"]
-                            test_result(
-                                "Real-probe F5: cleanup plan CLI produces plan_hash",
-                                has_hash,
-                                f"hash: {plan_dict.get('plan_hash', 'MISSING')}"
-                            )
-                        else:
-                            test_result(
-                                "Real-probe F5: plan-hash CLI round-trip",
-                                False,
-                                f"CLI failed: {cli_result.stderr[:100]}"
-                            )
+        (repo / "f.txt").write_text("changed")
+        state, _ = real_dirty_state(repo)
+        test_result("Real-probe: modified tracked file is DIRTY", state == "dirty")
+        _git(repo, "checkout", "--", "f.txt")
 
-    except Exception as e:
-        test_result(
-            "Real-probe F5: plan-hash CLI round-trip",
-            False,
-            f"exception: {e}"
-        )
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "state.json").write_text("{}")
+        state, _ = real_dirty_state(repo)
+        test_result("Real-probe: untracked .claude/ state alone stays CLEAN", state == "clean")
 
-    # Real-probe F3: ps parsing (fixture text)
-    try:
-        from workflow.procs import parse_ps_output
+        state, _ = real_unpushed_state(tip, None, repo)
+        test_result("Real-probe: commit with no remote is UNPUSHED, never PUSHED", state == "unpushed")
 
-        # Empty input should not crash
-        result = parse_ps_output("")
-        test_result(
-            "Real-probe F3: parse_ps_output handles empty input",
-            isinstance(result, list),
-            f"result type: {type(result)}"
-        )
-    except Exception as e:
-        test_result(
-            "Real-probe F3: parse_ps_output empty input",
-            False,
-            f"exception: {e}"
-        )
+        state, _ = real_unpushed_state(tip, tip, repo)
+        test_result("Real-probe: tip equal to merged PR head is PUSHED", state == "pushed")
+
+    with tempfile.TemporaryDirectory() as tmp_notgit:
+        state, _ = real_dirty_state(Path(tmp_notgit))
+        test_result("Real-probe: non-git directory is not reported DIRTY", state != "dirty")
+
+    from workflow.procs import parse_ps_output
+    test_result("Real-probe: parse_ps_output of empty text is an empty list", parse_ps_output("") == [])
 
     print()
     h.summarize_and_exit()
