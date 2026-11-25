@@ -551,6 +551,7 @@ def apply_cleanup(
         # F31: Move lock to stable shared root under ~/.claude instead of cwd
         removal_lock_path = Path.home() / ".claude" / "cleanup-removal.lock"
         try:
+            removal_lock_path.parent.mkdir(parents=True, exist_ok=True)
             with fsutil.nonblocking_flock(removal_lock_path):
                 # Now proceed with worktree removal and branch deletion
                 _remove_worktree_and_branch(plan, result, cwd=cwd)
