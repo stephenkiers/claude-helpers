@@ -40,6 +40,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Callable, Dict, List, Literal, NamedTuple, Optional, Protocol, cast, Sequence, Tuple, Union
 
+from .model import assert_never
 from .state import STEPS, LockedFlow, PendingSpawn, ReceiptFingerprint, Step, TransitionKey, V2State, apply_transition
 
 
@@ -180,10 +181,18 @@ class Absent(NamedTuple):
     state: Literal["absent"] = "absent"
 
 
+InProgressBasis = Literal["fingerprint-changed", "awaiting-answer"]
+
+
 class InProgress(NamedTuple):
-    """Incomplete receipt: either awaiting-answer on a parked or resumed record, or fingerprint changed on a spawned record."""
+    """
+    Incomplete receipt: either awaiting-answer on a parked or resumed record, or fingerprint changed on a spawned record.
+
+    Precondition: an InProgress value is settled only via settle_in_progress, which stores the fingerprint only for
+    basis "fingerprint-changed", never for "awaiting-answer".
+    """
     fingerprint: ReceiptFingerprint
-    basis: Literal["fingerprint-changed", "awaiting-answer"]
+    basis: InProgressBasis
     state: Literal["in-progress"] = "in-progress"
 
 
@@ -287,7 +296,11 @@ def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
 
     For parked or resumed records, an incomplete receipt is always InProgress (basis "awaiting-answer"),
     never Malformed: it is held and never re-run, even if its fingerprint appears stable. The fingerprint
-    is not stored for such receipts.
+    is not stored for such receipts. A held awaiting-answer receipt is exited only by a WAIT timeout (foreground
+    mode) or the human's `clear-live` (end-turn mode has no time bound).
+
+    Precondition: an InProgress value is settled only via settle_in_progress, which stores the fingerprint only for
+    basis "fingerprint-changed", never for "awaiting-answer".
 
     Cadence assumption (Layer 2 must honour it): Layer 2's quiet interval and the D4 subagent_gone gate
     apply to spawned records with Malformed receipts. The D4 gate is wired for `next` in loop._malformed_gate
@@ -494,6 +507,10 @@ def settle_in_progress(locked: LockedFlow, key: TransitionKey, pending: PendingS
     if classified.basis == "fingerprint-changed":
         if pending.receipt_seen != classified.fingerprint:
             store_fingerprint(locked, key, classified.fingerprint)
+    elif classified.basis == "awaiting-answer":
+        pass  # held: no fingerprint is stored
+    else:
+        assert_never(classified.basis)
 
 
 def rebuild_receipt(

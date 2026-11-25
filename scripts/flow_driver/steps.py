@@ -202,6 +202,8 @@ class WaitDirective:
     receipt_file: str
     clear_live_command: str
     nonce: str  # the live record's nonce, so a re-rendered WAIT file names the same attempt (Q1 = A)
+    # true when the step was resumed after an answer, so the executor must wait for a receipt that differs from
+    # the one on disk (the held placeholder), not settle on the bytes already there
     require_change: bool = False
 
 
