@@ -1801,6 +1801,24 @@ t("(D5) cmd_snapshot code contains 'ERROR probe-failed'",
 t("(D5) site-1 grep uses the same '^ERROR probe-failed' prefix",
   "grep -q '^ERROR probe-failed'" in DOC_441, "prefix missing from site-1 grep")
 
+# ============================================================================
+# ROUND 2 (R-F13, R-N1): re-check block identity and WT_PARENT derivation
+# ============================================================================
+print("[#441 r2] re-check blocks identical apart from --label; WT_PARENT not from worktree list")
+
+_r2_bodies = [body for _, _, body in spans]
+_r2_normalized = [re.sub(r'--label\s+("[^"]*"|\S+)', "--label <LABEL>", body) for body in _r2_bodies]
+t("(R-F13) exactly four delimited re-check blocks in the doc",
+  len(_r2_bodies) == 4, f"found {len(_r2_bodies)}")
+t("(R-F13) the four re-check block bodies are byte-identical apart from the --label text",
+  len(_r2_bodies) == 4 and len(set(_r2_normalized)) == 1,
+  f"distinct normalized bodies: {len(set(_r2_normalized))}")
+
+_wt_parent_lines = [ln for ln in DOC_441.splitlines() if "WT_PARENT=" in ln]
+t("(R-N1) every WT_PARENT= assignment avoids 'worktree list' and 'head -1'",
+  bool(_wt_parent_lines) and all("worktree list" not in ln and "head -1" not in ln for ln in _wt_parent_lines),
+  f"WT_PARENT= lines found: {len(_wt_parent_lines)}")
+
 print()
 
 h.summarize_and_exit()

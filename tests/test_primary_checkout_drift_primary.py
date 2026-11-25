@@ -208,6 +208,55 @@ def recheck_outcome(rc: int, out: str) -> Tuple[bool, Optional[str]]:
 # main
 # ----------------------------------------------------------------------------
 
+REAL_GIT = shutil.which("git") or "git"
+
+
+def make_fake_git(root: Path, name: str) -> Path:
+    """A `git` shim dir. `worktree list` prints $FAKE_PORCELAIN_FILE (or sleeps $FAKE_SLEEP seconds
+    when set); every other git call runs the real git."""
+    d = root / name
+    d.mkdir(parents=True)
+    shim = d / "git"
+    shim.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "  *\"worktree list\"*)\n"
+        "    if [ -n \"${FAKE_SLEEP:-}\" ]; then exec sleep \"$FAKE_SLEEP\"; fi\n"
+        "    if [ -n \"${FAKE_PORCELAIN_FILE:-}\" ]; then cat \"$FAKE_PORCELAIN_FILE\"; exit 0; fi\n"
+        "    ;;\n"
+        "esac\n"
+        f"exec '{REAL_GIT}' \"$@\"\n"
+    )
+    shim.chmod(0o755)
+    return d
+
+
+def fake_env(shim_dir: Path, porcelain_file: Optional[Path] = None, sleep: Optional[int] = None) -> dict:
+    env = git_env()
+    env["PATH"] = f"{shim_dir}{os.pathsep}{env.get('PATH', '')}"
+    if porcelain_file is not None:
+        env["FAKE_PORCELAIN_FILE"] = str(porcelain_file)
+    if sleep is not None:
+        env["FAKE_SLEEP"] = str(sleep)
+    return env
+
+
+def run_recheck_env(block: str, literal: str, cwd: Path, stub: Path, work: Path, env: dict,
+                    scratch: Optional[Path] = None) -> Tuple[int, str, str]:
+    """As run_recheck, with an explicit environment and an optional <SCRATCH_PATH> substitution
+    (SCRATCH_PATH is also exported). The drift script is replaced by the stub."""
+    body = block.replace("<PRIMARY_CHECKOUT>", literal)
+    if scratch is not None:
+        body = body.replace("<SCRATCH_PATH>", str(scratch))
+    body = re.sub(r'"[^"\n]*primary-checkout-drift\.py"', lambda m: f'"{stub}"', body)
+    body = re.sub(r"<[A-Za-z][A-Za-z0-9_-]*>", "PLACEHOLDER", body)
+    body += 'printf "RECHECK_FAIL=%s\\n" "${RECHECK_FAIL:-}"\n'
+    script = work / f"recheck-env-{len(list(work.glob('recheck-env-*.sh')))}.sh"
+    script.write_text(body)
+    r = subprocess.run(["bash", str(script)], cwd=str(cwd), env=env, capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+
+
 def main() -> None:
     h = Harness("primary-checkout-drift primary (#441)")
     drift = load_drift_module()
@@ -460,6 +509,173 @@ def main() -> None:
         h.test_result("forced exception: stdout empty", out_buf.getvalue() == "", repr(out_buf.getvalue()))
         h.test_result("forced exception: stderr starts with ERROR resolver-failed",
                       err_buf.getvalue().startswith("ERROR resolver-failed"), repr(err_buf.getvalue()[:200]))
+
+    # ---- round 2 (spec r2): re-check failure branches, baseline, empty list, space path,
+    #      resolver edge cases, fail --cause/--reason conflict ------------------------------
+    with tempfile.TemporaryDirectory() as tmp_n:
+        root_n = Path(tmp_n)
+        r2_block = extract_recheck_block(DOC.read_text()) or ""
+        r2_stub = root_n / "stub.py"
+        r2_stub.write_text(
+            "import sys\n"
+            "print('STUB-FAIL ' + ' '.join(sys.argv[1:]))\n"
+            "sys.exit(1)\n"
+        )
+        r2_work = root_n / "work"
+        r2_work.mkdir()
+        shim = make_fake_git(root_n, "shim")
+
+        print("[R-F4] re-check: literal that rev-parses but is the .bare directory (symlink / trailing slash) fails")
+        bare_n = make_bare_layout(root_n / "bare")
+        alias = root_n / "alias-bare"
+        os.symlink(str(bare_n / ".bare"), str(alias))
+        for name, literal in (
+            ("R-F4 symlink to .bare literal fails with no-usable-primary", str(alias)),
+            ("R-F4 .bare literal with trailing slash fails with no-usable-primary", str(bare_n / ".bare") + "/"),
+        ):
+            rc, out, err = run_recheck_env(r2_block, literal, bare_n, r2_stub, r2_work, git_env())
+            stub_called, detail = recheck_outcome(rc, out)
+            h.test_result(name, stub_called and "--cause no-usable-primary" in out and detail is None,
+                          f"rc={rc} stdout={out!r} stderr={err[-300:]!r}")
+
+        classic_n = init_repo(root_n / "classic" / "repo")
+        linked_n = root_n / "classic" / "repo-feature"
+        git(classic_n, "worktree", "add", "-q", "-b", "feature", str(linked_n))
+
+        print("[R-F7] re-check: empty `git worktree list --porcelain` fails, never passes")
+        empty_list = root_n / "empty-porcelain.txt"
+        empty_list.write_text("")
+        rc, out, err = run_recheck_env(r2_block, str(classic_n), classic_n, r2_stub, r2_work,
+                                       fake_env(shim, porcelain_file=empty_list))
+        stub_called, detail = recheck_outcome(rc, out)
+        h.test_result("R-F7 empty worktree list: re-check fails and mentions an empty worktree list",
+                      stub_called and bool(re.search(r"empty", out + (detail or ""), re.I)),
+                      f"rc={rc} stdout={out!r} stderr={err[-300:]!r}")
+
+        print("[R-F2] re-check: baseline checkouts keys decide the literal, absent/unreadable baseline is skipped")
+        scratch = root_n / "scratch"
+        scratch.mkdir()
+        baseline_file = scratch / "primary-baseline.json"
+        scratch_env = git_env()
+        scratch_env["SCRATCH_PATH"] = str(scratch)
+
+        baseline_file.write_text('{"checkouts": {"%s": {}}}' % real(classic_n))
+        rc, out, err = run_recheck_env(r2_block, str(classic_n), classic_n, r2_stub, r2_work,
+                                       scratch_env, scratch=scratch)
+        stub_called, detail = recheck_outcome(rc, out)
+        h.test_result("R-F2 literal realpath in baseline checkouts: passes",
+                      rc == 0 and not stub_called and detail == "", f"rc={rc} out={out!r} err={err[-300:]!r}")
+
+        baseline_file.write_text('{"checkouts": {"/elsewhere/not-the-literal": {}}}')
+        rc, out, err = run_recheck_env(r2_block, str(classic_n), classic_n, r2_stub, r2_work,
+                                       scratch_env, scratch=scratch)
+        stub_called, detail = recheck_outcome(rc, out)
+        h.test_result("R-F2 literal missing from baseline checkouts: fails with 'literal not in baseline'",
+                      stub_called and "not in baseline" in out.lower(),
+                      f"rc={rc} out={out!r} err={err[-300:]!r}")
+
+        baseline_file.unlink()
+        rc, out, err = run_recheck_env(r2_block, str(classic_n), classic_n, r2_stub, r2_work,
+                                       scratch_env, scratch=scratch)
+        stub_called, detail = recheck_outcome(rc, out)
+        h.test_result("R-F2 baseline absent: sub-check skipped, passing case still passes",
+                      rc == 0 and not stub_called and detail == "", f"rc={rc} out={out!r} err={err[-300:]!r}")
+
+        baseline_file.write_text('{"checkouts": {}}')
+        os.chmod(baseline_file, 0)
+        readable = os.access(baseline_file, os.R_OK)
+        rc, out, err = run_recheck_env(r2_block, str(classic_n), classic_n, r2_stub, r2_work,
+                                       scratch_env, scratch=scratch)
+        stub_called, detail = recheck_outcome(rc, out)
+        h.test_result("R-F2 baseline unreadable: sub-check skipped (skipped vacuously if running as root)",
+                      readable or (rc == 0 and not stub_called and detail == ""),
+                      f"rc={rc} out={out!r} err={err[-300:]!r}")
+        os.chmod(baseline_file, 0o644)
+        baseline_file.unlink()
+
+        print("[R-F21] re-check and primary with a literal path containing a space")
+        sp_root = root_n / "sp ace"
+        sp_repo, sp_linked, sp_sub = make_classic(sp_root)
+        rc, out, err = run_recheck_env(r2_block, str(sp_repo), sp_repo, r2_stub, r2_work, git_env())
+        stub_called, detail = recheck_outcome(rc, out)
+        h.test_result("R-F21 spaced main checkout literal passes the re-check",
+                      rc == 0 and not stub_called and detail == "", f"rc={rc} out={out!r} err={err[-300:]!r}")
+        rc, out, err = run_recheck_env(r2_block, str(sp_sub), sp_sub, r2_stub, r2_work, git_env())
+        stub_called, detail = recheck_outcome(rc, out)
+        h.test_result("R-F21 spaced non-worktree subdir literal fails with no-usable-primary",
+                      stub_called and "--cause no-usable-primary" in out and detail is None,
+                      f"rc={rc} out={out!r} err={err[-300:]!r}")
+        rc, out, err = run_primary(sp_linked)
+        h.test_result("R-F21 primary from a linked worktree under a spaced path prints the whole main path",
+                      rc == 0 and real(out.rstrip("\n")) == real(sp_repo), f"rc={rc} out={out!r} err={err!r}")
+
+        print("[R-F20] resolver: malformed porcelain, duplicate entries, git timeout, git missing from PATH")
+        malformed = root_n / "malformed-porcelain.txt"
+        malformed.write_text("worktree\nHEAD\ngarbage\n\nbranch refs/heads/x\n")
+        rc, out, err = run_primary(classic_n, env=fake_env(shim, porcelain_file=malformed))
+        h.test_result("R-F20 malformed porcelain: fails closed (exit 2 or 3, empty stdout)",
+                      rc in (2, 3) and out == "", f"rc={rc} out={out!r} err={err!r}")
+
+        dup = root_n / "dup-porcelain.txt"
+        dup.write_text(
+            f"worktree {real(classic_n)}\nHEAD 1\nbranch refs/heads/main\n\n"
+            f"worktree {real(classic_n)}\nHEAD 1\nbranch refs/heads/main\n\n"
+        )
+        rc, out, err = run_primary(classic_n, env=fake_env(shim, porcelain_file=dup))
+        h.test_result("R-F20 duplicate worktree entries: exit 0 with exactly one path line",
+                      rc == 0 and out.count("\n") == 1 and real(out.rstrip("\n")) == real(classic_n),
+                      f"rc={rc} out={out!r} err={err!r}")
+
+        slow_out = root_n / "slow-out.txt"
+        slow_err = root_n / "slow-err.txt"
+        with open(slow_out, "w") as fo, open(slow_err, "w") as fe:
+            try:
+                slow = subprocess.run([sys.executable, str(DRIFT_SCRIPT), "primary"], cwd=str(classic_n),
+                                      env=fake_env(shim, sleep=300), stdout=fo, stderr=fe, timeout=200)
+                slow_rc: Optional[int] = slow.returncode
+            except subprocess.TimeoutExpired:
+                slow_rc = None
+        h.test_result("R-F20 git timeout: exits 2 or 3 with empty stdout (no hang)",
+                      slow_rc in (2, 3) and slow_out.read_text() == "",
+                      f"rc={slow_rc} out={slow_out.read_text()!r} err={slow_err.read_text()!r}")
+
+        nogit_bin = root_n / "no-git-bin"
+        nogit_bin.mkdir()
+        nogit_env = git_env()
+        nogit_env["PATH"] = str(nogit_bin)
+        rc, out, err = run_primary(classic_n, env=nogit_env)
+        h.test_result("R-F20 git missing from PATH: exit 2, ERROR resolver-failed, empty stdout",
+                      rc == 2 and out == "" and err.startswith("ERROR resolver-failed"),
+                      f"rc={rc} out={out!r} err={err!r}")
+
+        print("[R-F8] primary: newline in a porcelain path, and first non-bare entry with a missing directory")
+        drift_n = load_drift_module()
+        nl_text = "worktree /r/x\ny/repo\nHEAD 1\nbranch refs/heads/main\n\n"
+        nl_path, _ = drift_n.select_primary(drift_n.parse_worktree_porcelain(nl_text), ["main", "master"])
+        h.test_result("R-F8 newline in path: resolves exactly or fails closed, never truncated",
+                      nl_path is None or nl_path == "/r/x\ny/repo", repr(nl_path))
+
+        missing_first = root_n / "missing-first-porcelain.txt"
+        missing_first.write_text(
+            f"worktree {root_n}/no-such-feature-dir\nHEAD 1\nbranch refs/heads/feature\n\n"
+            f"worktree {real(classic_n)}\nHEAD 2\nbranch refs/heads/main\n\n"
+        )
+        rc, out, err = run_primary(classic_n, env=fake_env(shim, porcelain_file=missing_first))
+        h.test_result("R-F8 first non-bare entry with a missing directory falls through to the main worktree",
+                      rc == 0 and real(out.rstrip("\n")) == real(classic_n), f"rc={rc} out={out!r} err={err!r}")
+
+        print("[R-F6] fail: --cause together with --reason is rejected")
+        r6_receipt = root_n / "r6-receipt.md"
+        r6 = subprocess.run(
+            [sys.executable, str(DRIFT_SCRIPT), "fail", "--compare-exit", "2", "--cause", "no-usable-primary",
+             "--reason", "primary-checkout-drift: no-usable-primary", "--receipt", str(r6_receipt)],
+            capture_output=True, text=True, env=git_env(),
+        )
+        h.test_result("R-F6 --cause with --reason: nonzero exit", r6.returncode != 0, f"rc={r6.returncode}")
+        h.test_result("R-F6 --cause with --reason: stderr names both flags",
+                      "--cause" in r6.stderr and "--reason" in r6.stderr, repr(r6.stderr[-300:]))
+        h.test_result("R-F6 --cause with --reason: nothing written",
+                      not r6_receipt.exists() and r6.stdout == "", f"stdout={r6.stdout!r}")
 
     h.summarize_and_exit()
 
