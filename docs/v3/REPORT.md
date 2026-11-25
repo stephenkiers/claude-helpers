@@ -2,7 +2,7 @@
 
 ## Summary
 
-Flow v3 is built on `feature/v3-flow` (30 local commits, nothing pushed) and `just check` is green.
+Flow v3 is built on `feature/v3-flow` (about 30 local commits, nothing pushed) and `just check` is green.
 It ran real tickets end to end in sandbox repositories with the `local` provider: one single ticket,
 a fleet of three merged one at a time, and a repo that merges through its own command. It has never
 run against GitHub or a real repository, and every sandbox run used `haiku`.
