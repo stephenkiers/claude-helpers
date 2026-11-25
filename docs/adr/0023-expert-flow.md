@@ -1414,6 +1414,40 @@ Rewording it is the deferred W2/#538 follow-up, because agent files are frozen f
 
 **Canonical text:** `prompts/join-barrier-pattern.md` § Waiting for the barrier, rules 1–9.
 
+> **Partly superseded (2026-11-24, #553):** the foreground-site rule above is replaced by Branch W at every site; see the 2026-11-24 amendment.
+
+## Amendment (2026-11-24): every child wait is a background launch plus `wait-files.py` (#553)
+
+**Problem.** The 2026-11-23 #532 amendment split sites into foreground (`run_in_background: false`) and
+file-wait. The probe behind it ran only under `claude -p`. In an interactive session the Agent tool's
+schema has no `run_in_background` parameter, so `false` is dropped and every launch is asynchronous.
+A foreground site therefore got a launch acknowledgement, which its rule correctly treated as a hard
+failure: an interactive #545 review step stopped at the Summarizer.
+
+**Decision (Branch W everywhere).**
+- No site launches with `run_in_background: false`. Every child is launched with
+  `run_in_background: true` and collected in the same turn with `wait-files.py` (`mark` before the
+  launch, foreground `wait` slices until closed or the phase deadline).
+- Every dispatch prompt names a **receipt file** under the run dir (review dir, plan session dir or
+  implement scratch dir, never `FLOW_DIR`), `receipts/<phase>-<id>.md`. The child writes it last:
+  its receipt line, or for an inline-return role (Router, judges, swarm scouts, comment scouts) its
+  whole report, ending in `<!-- report-end -->`. Existing implement report files serve as receipt
+  files. Output formats and their own sentinels are unchanged.
+- Per-id retry and stand-ins keep working: a child seen to have returned at a slice boundary, or at
+  close, without an `ok` output is `bad` and gets the site's existing retry and stand-in. A child
+  that never returns meets the phase deadline hard stop, which now covers every site.
+- Deadlines: 1800 s for bounded children and panel phases, 3600 s for sweeps, 5400 s for units, and
+  300 s for Precedent Pat, whose deadline is soft (it proceeds without Pat, as before).
+- The #532 rules otherwise stand: no step ends its turn to wait, `ScheduleWakeup` never waits for
+  children, and the top-level orchestrator keeps its carve-out.
+
+**Probe.** `prompts/headless-wait-probe.md` now requires both modes before Branch F can be chosen,
+and records the Agent schema in each.
+
+**Accepted tradeoff.** Each wait is one more Bash call per slice, and a child's report is read from
+its file, never from the Agent return. That is the cost of one protocol that works headless,
+interactive and in the fleet.
+
 ## Amendment (2026-11-23): zero-unit runs close the implement/fix hatch parity difference (#526)
 
 - **No remaining intentional difference.** The "No Round 1 work left" row in the implement/fix parity table (ADR-0019 2026-11-17 amendment) is closed. The implement step no longer stops on a test-only plan. It runs a zero-unit run instead (ADR-0019 2026-11-23 amendment), so both steps handle a run with no Round 1 work the same way.

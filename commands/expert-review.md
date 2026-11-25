@@ -47,7 +47,7 @@ they are the difference between a ~180k review and a ~430k one:
 2. **The file is the contract.** Every panel agent Writes its output to `{REVIEW_DIR}` and returns a
    one-line **receipt**, never its report. A returned report reaches you *twice* — as the tool result
    and again in any task notification's `<result>` block. The Amalgamator reads the files once; you never do.
-3. **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children. Launch a batch in one message, every call with `run_in_background: false`, and let it return.
+3. **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children. Launch a batch in one message, every call with `run_in_background: true`, with a `Receipt file:` line in each prompt; each child writes its receipt line there last.
 4. **The diff is a file, not a string.** Write `full-diff.patch` once (Step 1);
    pass paths. Never `cat` the diff into your own context and never paste it into a prompt — a
    44k-token diff inlined into 20 prompts is 880k tokens of *your* context, re-read from cache on
@@ -674,7 +674,7 @@ perform. *Needs measurement* is for findings nobody can rule on yet because the 
 running something and reading a result back — not a judgment call, so it never goes through
 `AskUserQuestion` and is never relayed in a flow.
 
-**ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`, `run_in_background: false`). Its mandate and the
+**ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`, `run_in_background: true`; **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (`<STEP or command>` is `review` in a flow, else `expert-review`): phase `triage`, id `triage-chief`, receipt `{REVIEW_DIR}/receipts/triage-triage-chief.md`, output `claude-action-plan.md` (must exist), deadline 1800 s, no stand-in). Its mandate and the
 `claude-action-plan.md` template live in **`~/.claude/prompts/triage.md`** — pass the path. Tell it
 to read:
 - `{REVIEW_DIR}/final-report.md` (its primary input)
@@ -818,14 +818,14 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage precedent >/dev/null 2>&1 || true
    ```
 
-7. **Dispatch Precedent Pat.** Call one `Task` (`subagent_type: "expert-reviewer"`, `model: sonnet`, `run_in_background: false`) with:
+7. **Dispatch Precedent Pat.** Call one `Task` (`subagent_type: "expert-reviewer"`, `model: sonnet`, `run_in_background: true`) with:
    - Role prompt: `~/.claude/prompts/precedent-pat.md`
    - Filtered digest path: `${REVIEW_DIR}/precedent-digest.jsonl`
    - Questions path: `${REVIEW_DIR}/precedent-questions.json`
    - Output path: `${REVIEW_DIR}/precedent.md` (always under `~/.claude/reviews/`, **never under `FLOW_DIR`**)
-   - Timeout: 120 seconds (bounded wait; on timeout go to step 9 without retry)
+   - Receipt file: `${REVIEW_DIR}/receipts/precedent-pat.md`
    
-   Join on file-exists (`-f "${REVIEW_DIR}/precedent.md"`) and a receipt line starting with `precedent-pat |` (the exact format defined in `prompts/precedent-pat.md`'s Receipt section). If the join fails or times out, do not retry. On failure, write `pat-failed` to `${REVIEW_DIR}/precedent-trace.txt` and go to step 9.
+   **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (`<STEP or command>` is `review` in a flow, else `expert-review`): phase `precedent`, id `pat`, one slice with `--timeout 300 --deadline 300` (rule 8's soft exception: on exit 4 go to step 9 without retry). Join on file-exists (`-f "${REVIEW_DIR}/precedent.md"`) and a receipt line starting with `precedent-pat |` in the receipt file (the exact format defined in `prompts/precedent-pat.md`'s Receipt section). If the join fails or times out, do not retry. On failure, write `pat-failed` to `${REVIEW_DIR}/precedent-trace.txt` and go to step 9.
 
 8. **Validate.** Check the file's completeness with `precedent-render.py`:
    ```bash
