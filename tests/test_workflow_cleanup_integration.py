@@ -20,11 +20,12 @@ from workflow.cleanup import apply_cleanup, CleanupPlan
 from workflow import validation, git
 from _test_harness import Harness
 
+from _git_fixture import GitFixture
+
 # apply_cleanup's dirty/unpushed probes run real git; this suite mocks the worktree, so pin them.
-import workflow.cleanup as _cl_probe
+import workflow.cleanup as _cl_probe  # noqa: E402
 _cl_probe.worktree_dirty_state = lambda wt: (_cl_probe.CLEAN, "")
 _cl_probe.unpushed_state = lambda tip, merged=None, repo=None: (_cl_probe.PUSHED, "")
-from _git_fixture import GitFixture
 
 
 def _setup_test_isolation():

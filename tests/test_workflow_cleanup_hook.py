@@ -22,10 +22,11 @@ from workflow import cleanup as cleanup_mod
 from workflow.checks import build_check_order
 from _test_harness import Harness
 
-# apply_cleanup's dirty/unpushed probes run real git; this suite mocks the worktree, so pin them.
-import workflow.cleanup as _cl_probe
-_cl_probe.unpushed_state = lambda tip, merged=None, repo=None: (_cl_probe.PUSHED, "")
 from _git_fixture import GitFixture
+
+# apply_cleanup's dirty/unpushed probes run real git; this suite mocks the worktree, so pin them.
+import workflow.cleanup as _cl_probe  # noqa: E402
+_cl_probe.unpushed_state = lambda tip, merged=None, repo=None: (_cl_probe.PUSHED, "")
 
 git.pull_ff_only = lambda remote, branch, cwd=None: (True, None)
 
