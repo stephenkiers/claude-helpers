@@ -86,6 +86,12 @@ if cur == "fail":
 if cur == "dep":
     print("ModuleNotFoundError: No module named 'foo'")
     sys.exit(1)
+if cur == "specdep":
+    print("ERROR tests/test_new.py\\nModuleNotFoundError: No module named 'pytest'")
+    sys.exit(1)
+if cur == "speclocal":
+    print("ERROR tests/test_new.py\\nModuleNotFoundError: No module named 'src.newmod'")
+    sys.exit(1)
 if cur == "slow":
     time.sleep(30)
 if cur == "127":
@@ -431,6 +437,20 @@ e6 = Box("env6", install=True)
 e6.results("127", "pass")
 run = heal.check(e6.ctx, "fast")
 h.test_result("environment: exit 127 is treated as a missing tool", run.ok and e6.installs() == 1)
+
+e7 = Box("env7", files={"src/__init__.py": ""})
+e7.flow.set("protected", ["tests/test_new.py"])
+e7.results("specdep", "pass")
+stop = expect_stop(lambda: heal.check(e7.ctx, "fast"), "environment", tried=False)
+h.test_result("environment: a spec test importing a library that is not installed stops, naming it",
+              stop is not None and "pytest" in stop.reason and e7.runs() == 1, str(stop))
+
+e8 = Box("env8", files={"src/__init__.py": ""})
+e8.flow.set("protected", ["tests/test_new.py"])
+e8.results("speclocal", "speclocal")
+run = heal.check(e8.ctx, "fast", fixer=None, raise_on_fail=False)
+h.test_result("check-work: a spec test that cannot import the project's own unwritten module is work",
+              not run.ok and not e8.heals("environment") and e8.installs() == 0, str(e8.flow.events()[-3:]))
 
 # classify_check, pure
 fr = CheckRun(ok=False, command="c", mode="fast", exit_code=1, timed_out=False, duration_secs=0.1, tree="t",

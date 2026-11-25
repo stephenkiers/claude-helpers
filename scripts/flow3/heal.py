@@ -402,6 +402,30 @@ def _names_spec_test(ctx: Ctx, run: CheckRun) -> bool:
     return any(f in output for f in spec_files)
 
 
+_NO_MODULE = re.compile(r"No module named ['\"]?([A-Za-z_][\w.]*)")
+
+
+def _external_missing(ctx: Ctx, run: CheckRun) -> List[str]:
+    """
+    Python modules the check could not import that are not this project's own: no top-level file or
+    directory in the worktree carries the name and no planned file does. A spec test that imports
+    one of these needs a tool the environment lacks; no unit of work will ever make it importable.
+    """
+    planned: List[str] = []
+    for unit in (ctx.flow.data("plan").get("plan") or {}).get("units") or []:
+        if isinstance(unit, dict):
+            for f in unit.get("files") or []:
+                parts = str(f).split("/")
+                planned.extend(parts[:-1] + [parts[-1].rsplit(".", 1)[0]])
+    out: List[str] = []
+    for name in _NO_MODULE.findall(_read_output(run)):
+        top = name.split(".")[0]
+        local = (ctx.worktree / top).exists() or (ctx.worktree / (top + ".py")).exists() or top in planned
+        if not local and top not in out:
+            out.append(top)
+    return out
+
+
 def _run_check(ctx: Ctx, mode: str, command: str) -> CheckRun:
     wt = ctx.worktree
     out = record.check_output_path(ctx.flow, mode, _tree(wt))
@@ -443,7 +467,7 @@ def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int]
 
     failure = classify_check(run, None)
     if failure.cls == "environment" and failure.detail.get("kind") == "missing-dependency" \
-            and _names_spec_test(ctx, run):
+            and _names_spec_test(ctx, run) and not _external_missing(ctx, run):
         # A spec test that cannot import code a later unit has yet to write is red work, not a missing tool.
         failure = Failure("check-work", "a spec test fails", evidence=run.output_path,
                           detail={"tests": _failing_tests(_read_output(run))})
@@ -457,8 +481,10 @@ def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int]
                 return _passed(ctx, run)
             raise _stop_check(ctx, "environment", run, "the check timed out again", tried)
         if not ctx.cfg.install:
+            missing = _external_missing(ctx, run)
             raise _stop_check(ctx, "environment", run,
-                              "the check needs a dependency and no install command is configured", tried)
+                              "the check needs a dependency%s and no install command is configured"
+                              % (" (%s is not installed)" % ", ".join(missing) if missing else ""), tried)
         install = ctx.cfg.install
         ipath = record.check_output_path(ctx.flow, "install", _tree(wt))
         _heal(ctx, "environment", "running the install command once", install=install)

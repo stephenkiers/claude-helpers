@@ -26,6 +26,10 @@ You may create or change only these files:
 
 {{files}}
 
+Read one or two of the project's existing tests first and follow them: the same framework, the same
+layout, the same way of importing the code. Use only test libraries the existing tests already use. Do
+not introduce a new dependency: a test that imports a tool the project does not have can never pass.
+
 Write each behaviour into the file named for it. Do not touch any other file. Do not run the tests;
 the driver runs them. Write tests that check behaviour, not implementation details, and keep them
 small and readable.
