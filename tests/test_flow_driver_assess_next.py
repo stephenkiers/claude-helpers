@@ -6,7 +6,10 @@ range/anchor validation, ref checks, and item id quoting in directives.
 Run with: python3 tests/test_flow_driver_assess_next.py
 """
 
+import dataclasses
+import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -19,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from _test_harness import Harness  # noqa: E402
 
 from scripts.flow_driver import assess, receipts  # noqa: E402
-from scripts.flow_driver.state import InitSpec, init_state, mutating  # noqa: E402
+from scripts.flow_driver.state import AuditRecord, InitSpec, init_state, mutating  # noqa: E402
 
 # v1 flow-assessor reply grammar (#538); a records file ends with the assessment-end sentinel.
 ASSESS_SENTINEL = "<!-- assessment-end -->"
@@ -230,6 +233,202 @@ def test_resolve_anchor_toplevel(flow: Path) -> None:
     expect(result is None, f"toplevel anchor '.' returned {result!r}, expected None")
 
 
+# --- assess-reply: the one writer of the records file (#538) ---
+
+REPLY = (RECORD.format(id="implement:Step 3", status="unfinished") + "\n" + ASSESS_SENTINEL + "\n").encode("utf-8")
+
+
+def live_assess_gate(flow: Path, nonce: str = "n1", gate_state: str = "spawned") -> None:
+    """A flow whose assess_gate is the assessor spawn with this nonce, in gate_state."""
+    spec = InitSpec(repo="o/n", issue=1, worktree=str(flow))
+    with mutating(flow, create=spec) as locked:
+        init_state(locked, spec)
+    with mutating(flow) as locked:
+        state = locked.require_state()
+        locked.commit(dataclasses.replace(state, assess_gate=AuditRecord("assess", 1, nonce, gate_state)))  # type: ignore[arg-type]
+
+
+def reply(flow: Path, data: bytes, nonce: str = "n1") -> object:
+    with mutating(flow) as locked:
+        return assess.assess_reply(locked, flow, nonce, io.BytesIO(data))
+
+
+def test_assess_reply_live_nonce_writes_records(flow: Path) -> None:
+    live_assess_gate(flow)
+    out = reply(flow, REPLY)
+    expect(isinstance(out, assess.Accepted), f"the live nonce is accepted: {out}")
+    expect(assess.assess_records_path(flow).read_bytes() == REPLY, "the records file holds the reply byte for byte")
+
+
+def test_assess_reply_wrong_or_spent_nonce_is_refused(flow: Path) -> None:
+    live_assess_gate(flow)
+    out = reply(flow, REPLY, nonce="other")
+    expect(isinstance(out, assess.Refused) and "not the live assessor spawn" in out.reason, f"a wrong nonce: {out}")
+    expect(not assess.assess_records_path(flow).exists(), "a refused reply writes nothing")
+    with mutating(flow) as locked:
+        state = locked.require_state()
+        locked.commit(dataclasses.replace(state, assess_gate=AuditRecord("assess", 1, "n1", "passed")))  # type: ignore[arg-type]
+    out = reply(flow, REPLY)
+    expect(isinstance(out, assess.Refused), f"the nonce of a gate no longer spawned is refused: {out}")
+    expect(not assess.assess_records_path(flow).exists(), "a refused reply writes nothing")
+
+
+def test_assess_reply_cap_boundary(flow: Path) -> None:
+    live_assess_gate(flow)
+    body = RECORD.format(id="implement:Step 3", status="unfinished") + "\n"
+    tail = "\n" + ASSESS_SENTINEL + "\n"
+    at_cap = (body + " " * (assess.REPLY_CAP - len(body) - len(tail)) + tail).encode("utf-8")
+    over_cap = (body + " " * (assess.REPLY_CAP + 1 - len(body) - len(tail)) + tail).encode("utf-8")
+    expect(len(at_cap) == assess.REPLY_CAP and len(over_cap) == assess.REPLY_CAP + 1, "fixture sizes")
+    out = reply(flow, over_cap)
+    expect(isinstance(out, assess.AssessStop) and "256 KiB cap" in out.reason, f"one byte over the cap: {out}")
+    expect(not assess.assess_records_path(flow).exists(), "an over-cap reply writes nothing")
+    out = reply(flow, at_cap)
+    expect(isinstance(out, assess.Accepted), f"a reply of exactly the cap is accepted: {out}")
+
+
+def test_assess_reply_bad_bytes_fail_closed(flow: Path) -> None:
+    live_assess_gate(flow)
+    cases = {
+        "NUL byte": (REPLY.replace(b"cause=c", b"cause=\x00"), "NUL"),
+        "invalid UTF-8": (REPLY.replace(b"cause=c", b"cause=\xff\xfe"), "not UTF-8"),
+        "second sentinel": ((ASSESS_SENTINEL + "\n").encode("utf-8") + REPLY, "more than one"),
+        "no sentinel": (RECORD.format(id="implement:Step 3", status="unfinished").encode("utf-8") + b"\n", "no trailing"),
+    }
+    wrong = []
+    for name, (data, needle) in cases.items():
+        out = reply(flow, data)
+        if not (isinstance(out, assess.AssessStop) and needle in out.reason):
+            wrong.append(f"{name}: {out}")
+        if assess.assess_records_path(flow).exists():
+            wrong.append(f"{name}: the records file was written")
+    expect(not wrong, "; ".join(wrong))
+
+
+def test_assess_reply_never_overwrites_or_follows_a_link(flow: Path) -> None:
+    live_assess_gate(flow)
+    path = assess.assess_records_path(flow)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"earlier")
+    out = reply(flow, REPLY)
+    expect(isinstance(out, assess.Refused) and "already written" in out.reason, f"a pre-existing file: {out}")
+    expect(path.read_bytes() == b"earlier", "a pre-existing file is kept")
+    path.unlink()
+    dangling = flow / "steps" / "elsewhere.txt"
+    os.symlink(dangling, path)
+    out = reply(flow, REPLY)
+    expect(not isinstance(out, assess.Accepted), f"a symlink inside the flow is not written through: {out}")
+    expect(not dangling.exists(), "the symlink target is not created")
+    path.unlink()
+    outside = flow.parent / "outside.txt"
+    outside.write_bytes(b"outside")
+    os.symlink(outside, path)
+    out = reply(flow, REPLY)
+    expect(not isinstance(out, assess.Accepted), f"a symlink out of the flow is not written through: {out}")
+    expect(outside.read_bytes() == b"outside", "the outside target is unchanged")
+
+
+def test_assess_reply_duplicate_is_refused(flow: Path) -> None:
+    """D4: a second delivery for the same spawn is refused and the first records are kept."""
+    live_assess_gate(flow)
+    expect(isinstance(reply(flow, REPLY), assess.Accepted), "the first reply is accepted")
+    second = REPLY.replace(b"cause=c", b"cause=second")
+    out = reply(flow, second)
+    expect(isinstance(out, assess.Refused) and "already written" in out.reason, f"a duplicate reply: {out}")
+    expect(assess.assess_records_path(flow).read_bytes() == REPLY, "the first reply's records are kept")
+
+
+# --- option routes (#538) ---
+
+ROUTED = RECORD.replace("options=Finish it => pause", "options=Finish it => pause ;; Split it => issue")
+
+
+def routed_batch(flow: Path) -> None:
+    receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (a) [self-report]\nOUTSTANDING: Step 4 (b) [self-report]\n")
+    assess.assess_records_path(flow).write_text(
+        ROUTED.format(id="implement:Step 3", status="unfinished") + "\n"
+        + ROUTED.format(id="implement:Step 4", status="unfinished") + "\n" + ASSESS_SENTINEL + "\n", encoding="utf-8")
+    expect(isinstance(run_next(flow), assess.AssessAsk), "the batch is asked")
+
+
+def test_option_routes_are_recorded(flow: Path) -> None:
+    routed_batch(flow)
+    questions = json.loads((flow / "questions" / "assess-1.json").read_text(encoding="utf-8"))["questions"]
+    expect(all(q["option_routes"] == {"Finish it": "pause", "Split it": "issue"} for q in questions),
+           f"each question stores its assessor routes: {questions}")
+    expect(assess.save_item_answer(flow, 1, "implement:Step 3", "Finish it", None, {"implement:Step 4"}) is None, "answer 1")
+    expect(assess.save_item_answer(flow, 1, "implement:Step 4", "Split it", None, set()) is None, "answer 2")
+    per_item = json.loads((flow / "answers" / "assess-1.d" / "implement:Step 3.json").read_text(encoding="utf-8"))
+    expect(per_item.get("route") == "pause", f"the per-item answer records the route: {per_item}")
+    expect(isinstance(run_next(flow), assess.AssessAdvance), "all answered advances")
+    notes = json.loads((flow / "answers" / "assess-1.json").read_text(encoding="utf-8"))["annotations"]
+    expect(notes["implement:Step 3"] == {"route": "pause", "disposition": assess.DISPOSITION_PAUSE}, f"pause: {notes}")
+    expect(notes["implement:Step 4"] == {"route": "issue", "disposition": assess.DISPOSITION_ISSUE}, f"issue: {notes}")
+    expect(assess.invoke_outstanding_gate(flow, 1) is None, "the untampered gate passes")
+
+
+def test_gate_checks_the_recorded_route(flow: Path) -> None:
+    routed_batch(flow)
+    assess.save_item_answer(flow, 1, "implement:Step 3", "Finish it", None, {"implement:Step 4"})
+    assess.save_item_answer(flow, 1, "implement:Step 4", "Split it", None, set())
+    expect(isinstance(run_next(flow), assess.AssessAdvance), "all answered advances")
+    answers_path = flow / "answers" / "assess-1.json"
+    questions_path = flow / "questions" / "assess-1.json"
+    good_answers = answers_path.read_text(encoding="utf-8")
+    good_questions = questions_path.read_text(encoding="utf-8")
+
+    def tamper_note(field: str, value: str) -> None:
+        data = json.loads(good_answers)
+        data["annotations"]["implement:Step 3"][field] = value
+        answers_path.write_text(json.dumps(data), encoding="utf-8")
+
+    tamper_note("route", "issue")
+    err = assess.invoke_outstanding_gate(flow, 1)
+    expect(err is not None and "no matching route record" in err, f"pause answered, issue recorded: {err}")
+    tamper_note("disposition", assess.DISPOSITION_ISSUE)
+    err = assess.invoke_outstanding_gate(flow, 1)
+    expect(err is not None and "no matching disposition" in err, f"pause route with an issue disposition: {err}")
+    answers_path.write_text(good_answers, encoding="utf-8")
+    data = json.loads(good_questions)
+    data["questions"][0]["option_routes"]["Finish it"] = "keep"
+    questions_path.write_text(json.dumps(data), encoding="utf-8")
+    err = assess.invoke_outstanding_gate(flow, 1)
+    expect(err is not None and "has route" in err, f"a stored route outside pause/issue: {err}")
+    questions_path.write_text(good_questions, encoding="utf-8")
+    expect(assess.invoke_outstanding_gate(flow, 1) is None, "restored files pass")
+
+
+# --- sanitising what the human sees (#538) ---
+
+def test_cause_is_cleaned_and_cut(flow: Path) -> None:
+    receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (a) [self-report]\n")
+    cause = "\x1b[31mred\x1b[0m\x07bell " + "x" * 2500
+    assess.assess_records_path(flow).write_text(
+        RECORD.replace("cause=c", f"cause={cause}").format(id="implement:Step 3", status="unfinished") + "\n"
+        + ASSESS_SENTINEL + "\n", encoding="utf-8")
+    expect(isinstance(run_next(flow), assess.AssessAsk), "the batch is asked")
+    summary = json.loads((flow / "questions" / "assess-1.json").read_text(encoding="utf-8"))["questions"][0]["summary"]
+    shown = summary.split(": ", 1)[1]
+    expect("\x1b" not in summary and "\x07" not in summary, f"escapes and controls stripped: {summary[:60]!r}")
+    expect(shown.startswith("redbell x"), f"the cleaned text is kept: {shown[:40]!r}")
+    expect(shown.endswith(assess.REASON_TRUNCATED) and len(shown) == assess.REASON_MAX + len(assess.REASON_TRUNCATED),
+           f"cut at {assess.REASON_MAX} with the marker: len {len(shown)}")
+    report = (flow / "steps" / "07-assess.md").read_text(encoding="utf-8")
+    cause_line = next(line for line in report.splitlines() if line.startswith("Cause: "))
+    expect("\x1b" not in cause_line and cause_line.endswith(assess.REASON_TRUNCATED), "the report's Cause line is cleaned and cut")
+
+
+def test_cause_at_the_limit_is_not_cut(flow: Path) -> None:
+    receipt(flow, "implement", "OK", "OUTSTANDING: Step 3 (a) [self-report]\n")
+    cause = "y" * assess.REASON_MAX
+    assess.assess_records_path(flow).write_text(
+        RECORD.replace("cause=c", f"cause={cause}").format(id="implement:Step 3", status="unfinished") + "\n"
+        + ASSESS_SENTINEL + "\n", encoding="utf-8")
+    run_next(flow)
+    summary = json.loads((flow / "questions" / "assess-1.json").read_text(encoding="utf-8"))["questions"][0]["summary"]
+    expect(summary.endswith(": " + cause), f"a cause of exactly {assess.REASON_MAX} characters is shown whole")
+
+
 TESTS = [
     ("1: the set reads OK receipts only", test_set_reads_ok_receipts),
     ("2: empty set and malformed line", test_set_empty_and_malformed),
@@ -247,6 +446,16 @@ TESTS = [
     ("14: _resolve_anchor accepts valid path", test_resolve_anchor_valid),
     ("15: _resolve_anchor rejects escaping", test_resolve_anchor_escaping),
     ("16: _resolve_anchor accepts toplevel", test_resolve_anchor_toplevel),
+    ("17: assess-reply with the live nonce writes the records", test_assess_reply_live_nonce_writes_records),
+    ("18: assess-reply refuses a wrong or spent nonce", test_assess_reply_wrong_or_spent_nonce_is_refused),
+    ("19: assess-reply 256 KiB cap boundary", test_assess_reply_cap_boundary),
+    ("20: assess-reply NUL, invalid UTF-8 and sentinel errors fail closed", test_assess_reply_bad_bytes_fail_closed),
+    ("21: assess-reply never overwrites a file or writes through a symlink", test_assess_reply_never_overwrites_or_follows_a_link),
+    ("22: D4 a duplicate assess-reply is refused", test_assess_reply_duplicate_is_refused),
+    ("23: pause and issue routes are recorded with their dispositions", test_option_routes_are_recorded),
+    ("24: the gate checks the recorded route", test_gate_checks_the_recorded_route),
+    ("25: a cause is cleaned of ANSI and controls and cut at REASON_MAX", test_cause_is_cleaned_and_cut),
+    ("26: a cause of exactly REASON_MAX is not cut", test_cause_at_the_limit_is_not_cut),
 ]
 
 

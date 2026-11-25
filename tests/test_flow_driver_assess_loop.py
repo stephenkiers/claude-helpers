@@ -8,6 +8,7 @@ Run with: python3 tests/test_flow_driver_assess_loop.py
 """
 
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -16,7 +17,7 @@ from typing import Any, Callable, Dict, Tuple
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from _flow_driver_loop_helpers import FakeGh, load_json, make_home, next_line, run_cli, state_of, write_receipt  # noqa: E402
+from _flow_driver_loop_helpers import MAIN, FakeGh, base_env, load_json, make_home, next_line, run_cli, state_of, write_receipt  # noqa: E402
 from _test_harness import Harness  # noqa: E402
 
 # v1 flow-assessor reply grammar (#538); a records file ends with the assessment-end sentinel.
@@ -191,6 +192,74 @@ def test_spawn_failed_on_assess_spawn_is_idempotent(base: Path) -> None:
     expect(first_step == second_step, f"duplicate spawn-failed changed step: {first_step} -> {second_step}")
 
 
+def test_assess_off_advances_verify_to_ship(base: Path) -> None:
+    """D26: with assess off, a landed verify with an outstanding item goes straight to ship."""
+    _, flow, _, verb, nxt = to_landed_verify(base, assess=False)
+    expect(verb == "SPAWN" and nxt["step"] == "ship", f"assess off must advance verify to ship: {verb} {nxt}")
+    state = state_of(flow)
+    expect(state["assess"] is False and state["assess_gate"] is None, f"assess off ran the stage: {state['assess_gate']}")
+
+
+def assess_reply_cli(home: Path, flow: Path, nonce: str, data: bytes, env: Dict[str, str]) -> Tuple[int, str]:
+    proc = subprocess.run(
+        [sys.executable, str(MAIN), "assess-reply", "--flow", str(flow), "--nonce", nonce],
+        input=data, capture_output=True, env=base_env(home, env), cwd=str(home), timeout=120,
+    )
+    return proc.returncode, proc.stderr.decode("utf-8", "replace")
+
+
+def test_assess_reply_cli(base: Path) -> None:
+    home, flow, env, verb, nxt = to_landed_verify(base, assess=True)
+    expect(verb == "SPAWN" and nxt["step"] == "assess", f"expected the assessor SPAWN, got {verb} {nxt}")
+    run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=env)
+    records = flow / "steps" / "07-assess-records.txt"
+    data = (RECORD + "\n" + ASSESS_SENTINEL + "\n").encode("utf-8")
+    code, err = assess_reply_cli(home, flow, "not-the-nonce", data, env)
+    expect(code == 1 and "not the live assessor spawn" in err, f"a wrong nonce exited {code}: {err}")
+    expect(not records.exists(), "a wrong nonce wrote the records file")
+    code, err = assess_reply_cli(home, flow, str(nxt["nonce"]), data, env)
+    expect(code == 0 and records.read_bytes() == data, f"the live nonce exited {code}: {err}")
+    code, err = assess_reply_cli(home, flow, str(nxt["nonce"]), data.replace(b"cause=c", b"cause=again"), env)
+    expect(code == 1 and "already written" in err, f"a duplicate reply exited {code}: {err}")
+    expect(records.read_bytes() == data, "a duplicate reply overwrote the records")
+    _, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=env)
+    verb, _ = next_line(out)
+    expect(verb == "ASK", f"the written records did not lead to the batch ASK: {verb} {err}")
+
+
+def test_assessor_spawn_failed_then_resume(base: Path) -> None:
+    home, flow, env, _, nxt = to_landed_verify(base, assess=True)
+    run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=env)
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "spawn-failed", extra_env=env)
+    verb, _ = next_line(out)
+    expect(code == 0 and verb == "STOP", f"an assessor spawn-failed printed {verb}: {err}")
+    code, _, err = run_cli(home, "clear-live", "--flow", str(flow), "--reason", "x", extra_env=env)
+    expect(code != 0 and "no live record" in err, f"clear-live on a spawn-failed pause exited {code}: {err}")
+    code, _, err = run_cli(home, "recover", "--flow", str(flow), "--choice", "resume", extra_env=env)
+    expect(code == 0, f"recover resume exited {code}: {err}")
+    expect(state_of(flow)["status"] == "running", f"resume did not reopen the flow: {state_of(flow)['status']}")
+    code, out, err = run_cli(home, "next", "--flow", str(flow), extra_env=env)
+    verb, path = next_line(out)
+    spawn = load_json(path)
+    expect(verb == "SPAWN" and spawn["step"] == "assess" and spawn["agent_type"] == "flow-assessor"
+           and spawn["nonce"] != nxt["nonce"], f"resume did not re-spawn the assessor fresh: {verb} {spawn} {err}")
+
+
+def test_duplicate_spawn_failed_keeps_the_paused_stop(base: Path) -> None:
+    """D5: a second spawn-failed after an assessor spawn-failed leaves the flow paused on the same spawn-failed stop."""
+    home, flow, env, _, _ = to_landed_verify(base, assess=True)
+    run_cli(home, "next", "--flow", str(flow), "--after", "spawn-launched", extra_env=env)
+    run_cli(home, "next", "--flow", str(flow), "--after", "spawn-failed", extra_env=env)
+    first = state_of(flow)
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "spawn-failed", extra_env=env)
+    verb, _ = next_line(out)
+    second = state_of(flow)
+    expect(code == 0 and verb == "STOP", f"a duplicate spawn-failed printed {verb}: {err}")
+    expect(second["status"] == "paused", f"a duplicate spawn-failed left status {second['status']!r}, expected paused")
+    expect(str(second["stop_reason"].get("verify", "")).startswith("spawn-failed:"), f"stop reason: {second['stop_reason']}")
+    expect(second["stop_reason"] == first["stop_reason"], "a duplicate spawn-failed rewrote the stop reason")
+
+
 CHECKS = [
     ("2: nothing outstanding skips the assessor", test_nothing_outstanding_skips),
     ("3: spawn, wait, ask, answer, advance", test_spawn_wait_ask_answer_advance),
@@ -201,6 +270,10 @@ CHECKS = [
     ("8: item id with a space is shell-quoted in the answer command", test_item_id_with_a_space_is_shell_quoted_in_the_answer_command),
     ("9: assess SPAWN directive carries no reply delimiter", test_assess_spawn_directive_carries_no_reply_delimiter),
     ("10: spawn-failed on the assess SPAWN is idempotent", test_spawn_failed_on_assess_spawn_is_idempotent),
+    ("11: D26 assess off advances verify to ship", test_assess_off_advances_verify_to_ship),
+    ("12: assess-reply CLI: live nonce, wrong nonce, duplicate", test_assess_reply_cli),
+    ("13: assessor spawn-failed refuses clear-live and resumes", test_assessor_spawn_failed_then_resume),
+    ("14: D5 a duplicate spawn-failed stays paused on spawn-failed", test_duplicate_spawn_failed_keeps_the_paused_stop),
 ]
 
 

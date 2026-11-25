@@ -95,8 +95,9 @@ content pin in `v1-content-pins.md`. The amendment extends the sentence above; i
 
 ## Closed sets
 
-Two value sets in the driver are closed: the StopCodes and the Decision values. Their source of truth is
-`scripts/flow_driver/steps.py`, and the code comments there say the sets are closed. A new value must come
+Two value sets in the driver are closed: the StopCodes and the Decision values. The StopCodes' source of
+truth is `scripts/flow_driver/steps.py`; the Decision values' is `scripts/flow_driver/receipts.py:44`. The
+code comments there say the sets are closed. A new value must come
 with a `rules.md` row that says where the behaviour is recorded, or the drift check does not see it.
 
 ## Pre-parity flows

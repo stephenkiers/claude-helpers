@@ -25,8 +25,11 @@ recovery commands, a v1 fixture or a real worktree and are listed as gaps in the
 Run with: python3 tests/test_flow_driver_loop.py
 """
 
+import importlib.util
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -675,6 +678,191 @@ def test_p20_flow_assessor_tools_are_read_only(base: Path) -> None:
                f"flow-assessor Bash entry {entry!r} is outside the read-only set")
 
 
+
+# ---------------------------------------------------------------------------
+# Parity catch-up #538: step commands, merge run dir, spawn-failed, bases, state load
+# ---------------------------------------------------------------------------
+
+GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+
+def _git(*args: str) -> str:
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True, env=GIT_ENV).stdout.strip()
+
+
+def _raises(fn: Callable[[], Any], exc: type) -> bool:
+    try:
+        fn()
+    except exc:
+        return True
+    return False
+
+
+def test_p21_split_step_command_refuses_unsafe_values(base: Path) -> None:
+    expect(loop.split_step_command("implement", plan_path="/plans/p.md") == ("implement-with-haiku", "/plans/p.md"),
+           "a plain plan path did not split into the skill and its args")
+    for step in ("verify", "assess"):
+        expect(_raises(lambda: loop.split_step_command(step), ValueError), f"{step} is not a flow-command step but split")  # type: ignore[arg-type]
+    bad = {
+        "an apostrophe (D3)": "/plans/it's.md",
+        "a newline": "/plans/a\nb.md",
+        "a BEL control character": "/plans/a\x07b.md",
+        "a leading dash": "-p.md",
+        "whitespace": "/plans/a b.md",
+    }
+    for name, value in bad.items():
+        expect(_raises(lambda: loop.split_step_command("implement", plan_path=value), ValueError),
+               f"a plan path with {name} was not refused: {value!r}")
+
+
+def test_p22_every_flow_command_skill_is_in_its_agents_skill_allowlist(base: Path) -> None:
+    spec = importlib.util.spec_from_file_location("flow_skill_guard_p22", REPO_ROOT / "scripts" / "flow-skill-guard.py")
+    expect(spec is not None and spec.loader is not None, "cannot load flow-skill-guard.py")
+    assert spec is not None and spec.loader is not None
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    for step in loop.FLOW_COMMAND_STEPS:
+        skill = loop.STEP_COMMANDS[step].split()[0].lstrip("/")
+        agent = steps.STEP_AGENTS[step]
+        expect(skill in guard.ALLOWED_SKILLS.get(agent, set()),
+               f"{step} invokes {skill!r} but {agent}'s skill allowlist is {guard.ALLOWED_SKILLS.get(agent)!r}")
+
+
+def test_p23_merge_prompt_needs_and_runs_in_the_run_dir(base: Path) -> None:
+    flow = fresh(base)
+    kwargs: Dict[str, Any] = dict(issue=486, issue_url="https://github.com/o/n/issues/486", worktree="/wt/ticket",
+                                  ledger_line="", inputs={})
+    expect(_raises(lambda: loop.render_step_prompt(flow, "merge", 1, "n1", **kwargs), RuntimeError),
+           "a merge prompt without a run dir was rendered")
+    expect(_raises(lambda: loop.render_step_prompt(flow, "merge", 1, "n1", run_dir="", **kwargs), RuntimeError),
+           "a merge prompt with an empty run dir was rendered")
+    text = loop.render_step_prompt(flow, "merge", 1, "n1", run_dir="/wt/main", **kwargs)
+    expect("Skill(skill='merge-and-cleanup'" in text, "the merge prompt does not invoke merge-and-cleanup")
+    expect("in cwd /wt/main" in text and "in cwd /wt/ticket" not in text, "the merge prompt does not run in the run dir")
+
+
+def _to_merge_gate(base: Path, linked: bool) -> Tuple[Path, Path, Dict[str, str]]:
+    """Drive to the merge-gate ASK. linked: wt is a linked worktree beside a main checkout, so the run dir resolves."""
+    home = make_home(base)
+    if linked:
+        shutil.rmtree(home / "wt")
+        _git("init", "-q", "-b", "main", str(home / "main"))
+        _git("-C", str(home / "main"), "commit", "-q", "--allow-empty", "-m", "init")
+        _git("-C", str(home / "main"), "worktree", "add", "-q", "-b", "ticket", str(home / "wt"))
+    gh = FakeGh(base, mode="nopr")
+    env = gh.env()
+    flow, first = start_flow(home, extra_env=env)
+
+    def open_pr() -> None:
+        env.update(gh_open_env(gh, worktree_head(home)))
+
+    verb, _, _ = drive_happy_path(home, flow, first, env, before_next={"ship": open_pr})
+    expect(verb == "ASK", f"after ship the next directive was {verb}, expected the merge-gate ASK")
+    code, _, err = run_cli(home, "answer", "--flow", str(flow), "--text", "Merge", extra_env=env)
+    expect(code == 0, f"answer Merge exited {code}: {err}")
+    return home, flow, env
+
+
+def test_p24_merge_without_a_sibling_main_stops_run_dir_unresolved(base: Path) -> None:
+    home, flow, env = _to_merge_gate(fresh(base), linked=False)
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=env)
+    verb, directive = next_line(out)
+    reason = str(load_json(directive).get("reason", ""))
+    expect(verb == "STOP" and reason.startswith("run-dir-unresolved:"), f"merge with no main sibling printed {verb}: {reason} {err}")
+
+
+def test_p25_merge_spawn_runs_in_main_and_spawn_failed_keeps_the_merge_gate(base: Path) -> None:
+    home, flow, env = _to_merge_gate(fresh(base), linked=True)
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=env)
+    verb, directive = next_line(out)
+    merge = load_json(directive)
+    expect(verb == "MERGE" and merge.get("agent_type") == "flow-merge", f"answered Merge printed {verb}: {merge} {err}")
+    prompt = Path(str(merge["prompt_file"])).read_text(encoding="utf-8")
+    main_dir = os.path.realpath(home / "main")
+    cwd = re.search(r"in cwd (\S+?),? ", prompt)
+    expect(cwd is not None and os.path.realpath(cwd.group(1)) == main_dir, f"the merge prompt does not run in {main_dir}")
+    gate = state_of(flow)["merge_gate"]
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "spawn-failed", extra_env=env)
+    verb, _ = next_line(out)
+    after = state_of(flow)
+    expect(verb == "STOP" and after["status"] == "paused", f"a MERGE spawn-failed printed {verb}, status {after['status']}")
+    expect(str(after["stop_reason"].get("merge", "")).startswith("spawn-failed:"), f"stop reason {after['stop_reason']}")
+    expect(after["merge_gate"] == gate and gate is not None, f"a MERGE spawn-failed dropped the merge gate: {after['merge_gate']}")
+
+
+def test_p26_clear_live_is_refused_on_a_spawn_failed_pause(base: Path) -> None:
+    home, flow, env, first = _parity_flow(fresh(base))
+    _walk(home, flow, first, env, stop_at="implement")
+    run_cli(home, "next", "--flow", str(flow), "--after", "spawn-failed", extra_env=env)
+    code, _, err = run_cli(home, "clear-live", "--flow", str(flow), "--reason", "probe", extra_env=env)
+    expect(code != 0 and "no live record" in err, f"clear-live on a spawn-failed pause exited {code}: {err}")
+    expect(state_of(flow)["status"] == "paused", "a refused clear-live changed the status")
+
+
+def _next_after_receipt(home: Path, flow: Path, env: Dict[str, str], current: Dict[str, Any],
+                        decision: str = "OK") -> Tuple[str, Dict[str, Any]]:
+    extra = f"WORKTREE: {home / 'wt'}\n" if current["step"] == "worktree" else ""
+    write_receipt(flow, current["step"], current["attempt"], decision=decision, extra=extra)
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=env)
+    expect(code == 0, f"next exited {code} after {current['step']}: {err}")
+    verb, directive = next_line(out)
+    return verb, load_json(directive)
+
+
+def test_p27_bases_recorded_at_first_spawn_and_kept_on_retry(base: Path) -> None:
+    home, flow, env, current = _parity_flow(fresh(base))
+    while current["step"] != "track":
+        _, current = _next_after_receipt(home, flow, env, current)
+    expect(state_of(flow)["bases"] == {"implement": None, "fix": None}, "bases set before implement spawned")
+    _, current = _next_after_receipt(home, flow, env, current)
+    first_head = worktree_head(home)
+    expect(current["step"] == "implement" and state_of(flow)["bases"]["implement"] == first_head,
+           f"implement base is {state_of(flow)['bases']}, expected {first_head}")
+    _git("-C", str(home / "wt"), "commit", "-q", "--allow-empty", "-m", "work")
+    verb, _ = _next_after_receipt(home, flow, env, current, decision="FAILED")
+    expect(verb == "STOP", f"a FAILED implement printed {verb}")
+    code, _, err = run_cli(home, "recover", "--flow", str(flow), "--choice", "retry", extra_env=env)
+    expect(code == 0, f"recover retry exited {code}: {err}")
+    code, out, err = run_cli(home, "next", "--flow", str(flow), extra_env=env)
+    verb, directive = next_line(out)
+    current = load_json(directive)
+    expect(verb == "SPAWN" and current["step"] == "implement" and current["attempt"] == 2, f"retry printed {verb} {current}")
+    expect(state_of(flow)["bases"]["implement"] == first_head, "a retry overwrote the implement base")
+    while current["step"] != "fix":
+        _, current = _next_after_receipt(home, flow, env, current)
+    bases = state_of(flow)["bases"]
+    expect(bases == {"implement": first_head, "fix": worktree_head(home)} and bases["fix"] != first_head,
+           f"fix base not recorded at its own first spawn: {bases}")
+
+
+def test_p28_unreadable_worktree_head_logs_base_unavailable(base: Path) -> None:
+    home, flow, env, current = _parity_flow(fresh(base))
+    while current["step"] != "track":
+        _, current = _next_after_receipt(home, flow, env, current)
+    os.rename(home / "wt" / ".git", home / "wt" / ".git-aside")
+    verb, current = _next_after_receipt(home, flow, env, current)
+    expect(verb == "SPAWN" and current["step"] == "implement", f"an unreadable HEAD blocked the spawn: {verb} {current}")
+    expect(state_of(flow)["bases"]["implement"] is None, "a base was recorded from an unreadable HEAD")
+    events = [json.loads(line) for line in log_lines(flow) if '"base-unavailable"' in line]
+    expect(len(events) == 1 and events[0]["step"] == "implement", f"base-unavailable log lines: {events}")
+
+
+def test_p29_state_load_rejects_a_bad_base_and_defaults_assess_off(base: Path) -> None:
+    home, flow, env, _ = _parity_flow(fresh(base))
+    raw = state_of(flow)
+    for bad in ("not-a-sha", "A" * 40, "a" * 39):
+        broken = json.loads(json.dumps(raw))
+        broken["bases"]["implement"] = bad
+        expect(_raises(lambda: state.load_v2_state(broken), state.StateSchemaError), f"a base of {bad!r} loaded")
+    good = json.loads(json.dumps(raw))
+    good["bases"]["implement"] = "a" * 64
+    expect(state.load_v2_state(good).bases.implement == "a" * 64, "a 64-hex base did not load")
+    expect(raw["assess"] is True, "fixture: assess is on by default")
+    no_assess = json.loads(json.dumps(raw))
+    del no_assess["assess"]
+    expect(state.load_v2_state(no_assess).assess is False, "D17: an absent assess key did not load as False")
+
+
 SECTIONS = [
     ("[Happy path and merge pin]", [
         ("1: happy path worktree..ship, then a landed ship parks the merge-gate question", test_01_landed_ship_parks_the_merge_gate_question),
@@ -727,6 +915,17 @@ SECTIONS = [
         ("p18: DECISION_VALUES and the Decision line pattern", test_p18_decision_vocabulary_and_line_pattern),
         ("p19: spawn-failed is an after event", test_p19_spawn_failed_is_an_after_event),
         ("p20: flow-assessor tools are read-only", test_p20_flow_assessor_tools_are_read_only),
+    ]),
+    ("[Parity catch-up #538: step commands, merge run dir, spawn-failed, bases, state load]", [
+        ("p21: split_step_command refuses non-command steps and unsafe values", test_p21_split_step_command_refuses_unsafe_values),
+        ("p22: every flow-command skill is in its agent's skill allowlist", test_p22_every_flow_command_skill_is_in_its_agents_skill_allowlist),
+        ("p23: merge prompt needs a run dir and runs in it", test_p23_merge_prompt_needs_and_runs_in_the_run_dir),
+        ("p24: merge with no main sibling stops run-dir-unresolved", test_p24_merge_without_a_sibling_main_stops_run_dir_unresolved),
+        ("p25: MERGE runs in main; its spawn-failed keeps the merge gate", test_p25_merge_spawn_runs_in_main_and_spawn_failed_keeps_the_merge_gate),
+        ("p26: clear-live is refused on a spawn-failed pause", test_p26_clear_live_is_refused_on_a_spawn_failed_pause),
+        ("p27: bases recorded at the first spawn and kept on retry", test_p27_bases_recorded_at_first_spawn_and_kept_on_retry),
+        ("p28: an unreadable worktree HEAD logs base-unavailable", test_p28_unreadable_worktree_head_logs_base_unavailable),
+        ("p29: state load rejects a bad base; D17 absent assess loads False", test_p29_state_load_rejects_a_bad_base_and_defaults_assess_off),
     ]),
 ]
 

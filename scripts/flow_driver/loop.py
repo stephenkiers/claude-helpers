@@ -107,8 +107,8 @@ _TS = "%Y-%m-%dT%H:%M:%SZ"
 # Clear-live is the human's way out of a wait-timeout STOP; this code reopens the step. A resume-failed STOP is never
 # reopened by clear-live: the W1 re-spawn allowlist is empty (session D3), so every failed RESUME stays a STOP.
 _CLEARABLE_STOPS = ("wait-timeout",)
-# Steps that spawn a guarded restricted agent (its agent type is a RestrictedAgent in STEP_AGENTS). The preflight
-# (added in a later unit) checks the settings registration the guards rely on.
+# Steps that spawn a guarded restricted agent (its agent type is a RestrictedAgent in STEP_AGENTS). _preflight runs
+# the hook preflight for these steps; _agent_preflight checks the settings registration the guards rely on.
 RESTRICTED_STEPS = frozenset(step for step, agent in STEP_AGENTS.items() if agent in get_args(RestrictedAgent))
 # The fidelity audit spawns a general-purpose agent (not a guarded one); named so it is not a bare literal.
 AUDIT_AGENT: AgentType = "general-purpose"

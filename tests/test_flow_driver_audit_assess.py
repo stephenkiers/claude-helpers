@@ -184,6 +184,22 @@ def test_v2_label_collision_with_fixed_choice_case_insensitive() -> None:
     expect(err_caps is not None, f"case-insensitive collision (all caps) was not caught: {err_caps!r}")
 
 
+def test_v2_label_collides_with_fixed_choice_only_after_cleaning() -> None:
+    """D2: a label equal to a fixed choice only once ANSI and control characters are stripped is refused."""
+    raw_labels = ["Open an\x1b[31m issue", "Leave\x07 as-is", "Pause to finish\x1b[0m by hand"]
+    wrong = []
+    for raw in raw_labels:
+        options = f"{raw} => pause ;; B => issue"
+        parsed, parse_err = assess._parse_options(options)
+        if parse_err is not None or parsed is None or parsed[0][0] == assess._clean(raw):
+            wrong.append(f"{raw!r}: the raw label must parse and differ from its cleaned form ({parse_err!r})")
+        text = _v1_record("b2", options=options) + "\n" + ASSESS_SENTINEL + "\n"
+        recs, err = assess.validate_assessor_output(text, ["b2"])
+        if recs is not None or err is None or "equals a fixed choice label" not in err:
+            wrong.append(f"{raw!r}: recs={recs!r} err={err!r}")
+    expect(not wrong, "post-clean collisions were not refused: " + "; ".join(wrong))
+
+
 # ---------
 # D6: Pipe character in assessor evidence
 # ---------
@@ -226,9 +242,11 @@ SECTIONS = [
         ("6: parse_assessor_output fails closed on malformed output", test_parse_assessor_output_malformed),
         ("7: hostile or malformed replies fail closed", test_v2_hostile_or_malformed_replies_fail_closed),
         ("8: label length boundary and labels are kept", test_v2_label_length_boundary_and_labels_are_kept),
+        ("12: D1 v1-grammar reply parses into two records", test_v2_v1_grammar_reply_parses_into_two_records),
     ]),
     ("[Assess - D2: Label Collision]", [
         ("9: label collision with fixed choice case-insensitive", test_v2_label_collision_with_fixed_choice_case_insensitive),
+        ("13: label collision with a fixed choice only after cleaning", test_v2_label_collides_with_fixed_choice_only_after_cleaning),
     ]),
     ("[Assess - D6: Evidence Handling]", [
         ("10: pipe in evidence does not break parsing", test_v2_pipe_in_evidence_does_not_break_parsing),
