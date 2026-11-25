@@ -551,7 +551,7 @@ def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Dir
         )
         detail = (
             f"step {unattributed_step} attempt {unattributed_attempt} got a notification with no nonce and has no landed "
-            f"receipt; the driver cannot tell whose agent ended; clear it with {driver.clear_live_command(facts.flow)}"
+            f"receipt; the driver cannot tell whose agent ended, so confirm the agent is not still running first; clear it with {driver.clear_live_command(facts.flow)}"
         )
         return _stop(state, facts, "notification-unattributed", detail)
     if facts.receipt == "rerun":

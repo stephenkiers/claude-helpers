@@ -133,10 +133,9 @@ def test_02_repeated_next_returns_same_directive_and_nonce(base: Path) -> None:
     flow, _ = start_flow(home)
     before = pending_of(flow)
     expect(before is not None, "no live record after start")
-    foreign = other_nonce(before["nonce"])
     outs = []
     for _ in range(2):
-        code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", foreign)
+        code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "start")
         expect(code == 0, f"next exited {code}: {err}")
         outs.append(out)
     expect(outs[0] == outs[1], f"repeated next printed different lines: {outs!r}")
@@ -152,11 +151,10 @@ def test_03_deleted_directive_is_recreated_with_same_nonce(base: Path) -> None:
     home = make_home(base)
     flow, _ = start_flow(home)
     nonce = pending_of(flow)["nonce"]
-    foreign = other_nonce(nonce)
-    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", foreign)
+    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "start")
     verb, directive = next_line(out)
     directive.unlink()
-    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", foreign)
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "start")
     expect(code == 0, f"next exited {code}: {err}")
     _, again = next_line(out)
     expect(again.exists(), "the deleted directive file was not recreated")
@@ -168,8 +166,7 @@ def test_04_dead_agent_waits_then_clear_live_respawns_with_new_attempt(base: Pat
     home = make_home(base)
     flow, _ = start_flow(home)
     first = pending_of(flow)
-    foreign = other_nonce(first["nonce"])
-    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", foreign)
+    code, out, _ = run_cli(home, "next", "--flow", str(flow), "--after", "start")
     verb, _ = next_line(out)
     expect(verb == "WAIT", f"dead agent printed {verb}, expected WAIT")
 
@@ -809,7 +806,7 @@ class _Attr(dict):  # type: ignore[type-arg]
 def unattributed_reason(step: str) -> str:
     return (
         f"notification-unattributed: step {step} attempt 1 got a notification with no nonce and has no "
-        "landed receipt; the driver cannot tell whose agent ended; clear it with "
+        "landed receipt; the driver cannot tell whose agent ended, so confirm the agent is not still running first; clear it with "
     )
 
 
@@ -922,7 +919,7 @@ def test_43_nonce_is_refused_without_notification_label(base: Path) -> None:
     )
     expect(code == 0, f"--nonce with --after notification exited {code}: {err}")
     verb, _ = next_line(out)
-    expect(verb == "WAIT", f"a foreign nonce on a live record printed {verb}, expected WAIT")
+    expect(verb == "STOP", f"a never-issued nonce on a live record printed {verb}, expected STOP")
 
 
 # Test 44: attributed gone with an absent receipt is a STOP (plan item 3)
@@ -1020,21 +1017,26 @@ def test_47_landed_receipt_wins_over_attributed_notification(base: Path) -> None
     expect(records(flow_a, "subagent-gone") == [], "a landed receipt logged subagent-gone")
 
 
-# Test 48: a foreign nonce is logged and ignored (plan item 7)
+# Test 48: a nonce issued earlier by this flow (stale duplicate) is logged and ignored; a never-issued one is not
 def test_48_foreign_nonce_is_logged_and_ignored(base: Path) -> None:
     home = make_home(base)
     flow, _ = start_flow(home)
+    old_nonce = pending_of(flow)["nonce"]
+    code, _, err = run_cli(home, "clear-live", "--flow", str(flow), "--reason", "dead agent")
+    expect(code == 0, f"clear-live exited {code}: {err}")
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "start")
+    expect(next_line(out)[0] == "SPAWN", "the re-spawn after clear-live did not SPAWN")
     nonce = pending_of(flow)["nonce"]
-    foreign = other_nonce(nonce)
-    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", foreign)
+    expect(nonce != old_nonce, "the re-spawn reused the nonce")
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", old_nonce)
     expect(code == 0, f"next exited {code}: {err}")
     verb, _ = next_line(out)
-    expect(verb == "WAIT", f"a foreign nonce printed {verb}, expected WAIT")
-    expect(state_of(flow).get("status") == "running", "a foreign nonce changed the flow status")
+    expect(verb == "WAIT", f"a stale duplicate nonce printed {verb}, expected WAIT")
+    expect(state_of(flow).get("status") == "running", "a stale duplicate nonce changed the flow status")
     recs = records(flow, "notification-foreign")
     expect(len(recs) == 1, f"expected one notification-foreign record, got {len(recs)}")
     expect(recs[0].get("nonce") == nonce, "notification-foreign nonce is not the pending nonce")
-    expect(recs[0].get("notification_nonce") == foreign, "notification-foreign notification_nonce is wrong")
+    expect(recs[0].get("notification_nonce") == old_nonce, "notification-foreign notification_nonce is wrong")
 
 
 # Test 49: a nonce-less notification with no landed receipt fails closed (plan item 8)
