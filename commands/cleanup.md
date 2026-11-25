@@ -828,15 +828,14 @@ if [ -n "$GROUPS_WITH_SELECTABLE" ]; then
 
 (Other: exclude specific item numbers, space-separated)"
 
-  # INSERT HERE: Ask block from ~/.claude/prompts/flow-reference.md (Cleanup section, Step 2.5)
-  # Reference: see ~/..claude/prompts/flow-reference.md Ask block
-  # The block processes the teardown confirmation (multiSelect group numbers + exclusions)
-  # and returns SELECTED_GROUPS and EXCLUDED_NUMBERS variables for the teardown phase.
-  
-  # When FLOW_DIR is set, the Ask block relays through the flow's question mechanism.
-  # When FLOW_DIR is empty, the Ask block from flow-reference.md uses AskUserQuestion to ask the user directly.
-  # Result: SELECTED_GROUPS (space-separated group numbers) and EXCLUDED_NUMBERS (space-separated item numbers)
-  
+  # ASK RELAY (Step 2.5): the Ask block (AskUserQuestion) cannot run from shell. Print ASK_MSG, then END this
+  # bash block. The orchestrator applies the Ask block from ~/.claude/prompts/flow-reference.md
+  # (header "Cleanup teardown", multiSelect over the group numbers above, Other = item numbers to
+  # exclude) per the Ask block, and re-enters the next block with the human's answers written
+  # as literal assignments: SELECTED_GROUPS="<space-separated group numbers>" and
+  # EXCLUDED_NUMBERS="<space-separated item numbers>". Never default these from the plan; an
+  # empty SELECTED_GROUPS means the human selected nothing.
+  printf '%s\n' "$ASK_MSG"
   SELECTED_GROUPS=""
   EXCLUDED_NUMBERS=""
 else
@@ -869,6 +868,9 @@ if [ -n "$ITEMS_NEEDING_YES" ]; then
   # AskUserQuestion via Ask block: per-item yes for each of these items (W6)
   # Format: "Confirm removal of item N?" × number of items
   # Result: space-separated item numbers the user confirmed
+  # ASK RELAY (per-item yes): same pattern. Apply the Ask block (header "Cleanup per-item",
+  # one question "Confirm removal of item N?" per number above) and re-enter with
+  # PER_ITEM_YES="<space-separated item numbers the human confirmed>". Unconfirmed items stay out.
   PER_ITEM_YES=""
 else
   PER_ITEM_YES=""
