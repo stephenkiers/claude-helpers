@@ -182,6 +182,8 @@ and in fleet mode the recording fleet run identity (`FLEET_RUN_ID`). Its states 
 - `receipt-landed`: a receipt whose `ATTEMPT` value matches has landed. `pending_spawn` is kept with state
   `receipt-landed` (not live), so the landing stays visible until the next `record_spawn` replaces it.
 
+Rule for the `parked-awaiting-answer` and `resumed` states above: an incomplete receipt is never malformed. It is held as in progress, and its fingerprint is not stored (#549).
+
 > **2026-11-16 note (#485, review rulings).** Text above originally said `receipt-landed` clears `pending_spawn`.
 > Layer 1 keeps the record in state `receipt-landed`; it never counts as live. Layer 2 clears it by recording the
 > next spawn. A stale receipt (its `ATTEMPT` does not match the pending attempt) is archived by `resume` and the
@@ -190,6 +192,8 @@ and in fleet mode the recording fleet run identity (`FLEET_RUN_ID`). Its states 
 > The `resume` cadence assumption: receipt classification confirms a landed or malformed receipt only after two
 > reads with an identical fingerprint. That stability is only meaningful when resumes are separated by real time or
 > proven liveness. Layer 2 must add a quiet interval or a `subagent_gone` gate before it acts on `rerun`.
+> This gate is wired for `next` in `loop._malformed_gate` (D4/D5), does not apply to parked or resumed records, and
+> `resume` still reruns a `spawned` record's stable incomplete receipt ungated, with no D5 cap.
 
 An outstanding `spawned` or `resumed` record with no receipt counts as live. Recovery then takes one of two
 forms:

@@ -196,7 +196,7 @@ def _rule_1_action(locked: LockedFlow, pending: PendingSpawn) -> Literal["wait",
 
     Outcomes:
     - Absent -> wait (pending_spawn with no receipt is recoverable)
-    - InProgress -> store fingerprint, then wait
+    - InProgress -> store fingerprint (only for "fingerprint-changed" basis), then wait
     - Landed -> land, then receipt-landed
     - Stale -> archive_stale, then wait
     - Malformed -> rerun_malformed, then rerun
@@ -214,8 +214,8 @@ def _rule_1_action(locked: LockedFlow, pending: PendingSpawn) -> Literal["wait",
     if isinstance(classification, receipts.Absent):
         return "wait"
     if isinstance(classification, receipts.InProgress):
-        # Store the fingerprint for two-read stability detection
-        receipts.store_fingerprint(locked, key, classification.fingerprint)
+        # Route through the helper: stores fingerprint only for "fingerprint-changed" basis
+        receipts.settle_in_progress(locked, key, pending, classification)
         return "wait"
     try:
         if isinstance(classification, receipts.Landed):

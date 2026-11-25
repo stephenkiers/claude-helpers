@@ -254,8 +254,7 @@ def _settle_receipt(locked: LockedFlow, notified: bool, now: datetime) -> Receip
             return "failed" if landed is not None and _archived_landed_failed(locked, landed) else "none"
         return "none"
     if isinstance(classified, receipts.InProgress):
-        if pending.receipt_seen != classified.fingerprint:
-            receipts.store_fingerprint(locked, key, classified.fingerprint)
+        receipts.settle_in_progress(locked, key, pending, classified)
         return "none"
     if isinstance(classified, receipts.Landed):
         receipts.land(locked, key)

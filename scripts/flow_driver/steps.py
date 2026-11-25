@@ -202,6 +202,9 @@ class WaitDirective:
     receipt_file: str
     clear_live_command: str
     nonce: str  # the live record's nonce, so a re-rendered WAIT file names the same attempt (Q1 = A)
+    # true when the step was resumed after an answer, so the executor must wait for a receipt that differs from
+    # the one on disk (the held placeholder), not settle on the bytes already there
+    require_change: bool = False
 
 
 @dataclass(frozen=True)
@@ -374,6 +377,7 @@ def _wait(state: V2State, facts: Facts, pending: PendingSpawn) -> Tuple[V2State,
         receipt_file=str(receipts.receipt_path(facts.flow, pending.step)),
         clear_live_command=driver.clear_live_command(facts.flow),
         nonce=pending.nonce,
+        require_change=(pending.state == "resumed"),
     )
     return state, wait
 
@@ -532,7 +536,7 @@ def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Dir
         return _advance(state, facts, pending.step)
     if pending.state == "parked-awaiting-answer":
         if facts.question == "answered":
-            resumed = dataclasses.replace(pending, state="resumed")
+            resumed = dataclasses.replace(pending, state="resumed", receipt_seen=None, receipt_first_seen=None)
             _allowed(pending, resumed)
             # For Layer 2 step questions, construct a temporary ParkedQuestion for path resolution
             parked_q = ParkedQuestion(step=pending.step, attempt=pending.attempt, nn=pending.attempt, kind="step")
