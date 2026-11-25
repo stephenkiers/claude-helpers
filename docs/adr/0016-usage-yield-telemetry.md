@@ -203,6 +203,12 @@ runs the command, so a deliberate false entry is not technically prevented. Non-
 (the files each step must produce) makes casual fabrication a deliberate act rather than an easy default, but
 it is not a cryptographic or independent check.
 
+The `append` subcommand (#548) does not change that story, because the same orchestrator still calls it and still
+writes its own evidence. What it adds is a writer that cannot write `FINISHED` or `#` lines, refuses rows after the
+run is finished, validates each row against the same grammar `check` uses, and writes only the run's own ledger. This
+is the single-writer pattern of ADR-0023 (2026-10-14 per-flow human-input ledger amendment, #287; `flow-ledger.py`) and ADR-0024 (`precedent-log.py append`),
+applied to a third ledger.
+
 **Dated discontinuity (as of 2026-10-09).** Failure events for `/implement-with-haiku` appear for the first
 time with this change, because the previously emitted classes were dropped. The `/implement-with-haiku` success
 rate steps down, because successes now require the ledger gate. Pre-change successes are an unknown mix of real
@@ -217,6 +223,13 @@ means "the helper did not record a terminal state", not "the run was known to be
 `Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*)`, which is narrow to that one script. It has not yet
 been verified in a non-bypass permission mode. If it has to widen to `Bash(python3:*)` to run, this amendment
 will be updated to say so.
+
+2026-11-23 (#548): in a headless auto-mode fleet fix step, the orchestrator's `printf ... >> "<LEDGER_PATH>"` redirect
+was denied ("Undermining Oversight"). A human allow rule for the script did not help, because the denied command
+was a shell redirect, not a call to the script. Ledger rows now go through `implement-ledger.py append` under the
+same narrow grant, and the redirect form is retired. The grant is still unverified for the new form in a non-bypass
+mode until the post-merge checklist runs (the "Open Items" section of the #548 implementation plan, posted as a comment on issue #548). It is not widened to `Bash(python3:*)`.
+Accepted residual: nothing at runtime blocks a `printf` redirect (`>>`) into the ledger file; the append command is the sanctioned writer, and this is enforced by the doc tests and review, not by a runtime guard.
 
 ## Amendment — Agent data guard in `diagnose` (#143 PR 2)
 

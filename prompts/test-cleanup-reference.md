@@ -201,8 +201,9 @@ and the working files:
 printf '%s\n' "round4: <D> deleted, <R> relocated" > "<SCRATCH_PATH>/round4.md"
 printf '%s\n' "blocking: <B> (final ids: <comma-separated final_id list, or none>)" >> "<SCRATCH_PATH>/round4.md"
 printf '%s\n' "deletions: <SCRATCH_PATH>/round4-deletions.md  merged: <SCRATCH_PATH>/round4-merged.txt  register: <SCRATCH_PATH>/disagreements.json" >> "<SCRATCH_PATH>/round4.md"
-printf '%s DONE round4 %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round4.md" >> "<LEDGER_PATH>"
 ```
+
+The caller records the `round4` ledger row after the evidence is written; `/implement-with-haiku` does so in its `### 4.6a Record Round 4 evidence`.
 With blocking entries present the row is still `DONE`. The Final check is where the run fails loudly (see
 "Spec-blind gate" in the Final check).
 

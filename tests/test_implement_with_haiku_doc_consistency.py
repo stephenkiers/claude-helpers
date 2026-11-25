@@ -787,19 +787,22 @@ t("(d) post-compaction implement-ledger.py locate rule appears before ## Step 0"
 cited_steps = []
 cited_reasons = []
 for line in logical_lines(IMPLEMENT_WITH_HAIKU):
-    if "printf" not in line or ">>" not in line or "LEDGER" not in line:
+    if not re.search(r'implement-ledger\.py"?\s+append\b', line):
         continue
-    fmt_and_args = line.split(">>")[0]
-    done = re.search(r"\bDONE\s+(\S+)\s+%s", fmt_and_args)
-    skipped = re.search(r"\bSKIPPED\s+(\S+)\s+%s", fmt_and_args)
-    if done and not is_placeholder(done.group(1)):
-        cited_steps.append(done.group(1))
-    if skipped:
-        if not is_placeholder(skipped.group(1)):
-            cited_steps.append(skipped.group(1))
-        quoted = re.findall(r'"([^"]*)"', fmt_and_args)
-        if quoted and not is_placeholder(quoted[-1]):
-            cited_reasons.append(quoted[-1])
+    for flag in ("--done", "--skip"):
+        flag_match = re.search(flag + r"\s+(\S+)", line)
+        if flag_match:
+            step_tok = flag_match.group(1).strip("\"'")
+            if not is_placeholder(step_tok):
+                cited_steps.append(step_tok)
+    # --reason is read from the same logical line as --done and --skip. logical_lines() already joins backslash
+    # continuations, so a wrapped append call is still one line and that assumption is safe. Unlike a step id,
+    # a reason may be a quoted phrase with spaces, so this pattern accepts a quoted string and not only one token.
+    reason_match = re.search(r"--reason\s+(\"[^\"]*\"|'[^']*'|\S+)", line)
+    if reason_match:
+        reason_tok = reason_match.group(1).strip("\"'")
+        if not is_placeholder(reason_tok):
+            cited_reasons.append(reason_tok)
 bad_steps = sorted({s for s in cited_steps if s not in _ledger.STEP_IDS})
 bad_reasons = sorted({r for r in cited_reasons if r not in _ledger.SKIP_REASONS})
 t("(e) every step id cited in a ledger append is in implement-ledger.py STEP_IDS",
