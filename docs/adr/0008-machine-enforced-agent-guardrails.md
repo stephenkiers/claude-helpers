@@ -163,7 +163,7 @@ amendment corrects that statement and records the actual prevention contract.
 
 **Definitions:**
 - **Primary checkout** — the first entry from `git worktree list` in the repo root; the human's
-  regular checkout where they commit code. One per repo.
+  regular checkout where they commit code. One per repo. *See the #441 amendment below for the primary-checkout resolver and re-check; the definition here predates it.*
 - **Ticket worktree** — the worktree path passed to an agent as `Working directory: <path>` in the
   orchestrator's prompt. One per agent invocation.
 
@@ -220,7 +220,7 @@ incident class in the lifecycle).
   incomplete — the baseline and barrier detects (new in #336) are also required.
 - The phrase near line ~107 saying the detection "checks the main worktree state" was imprecise.
   It checks the **primary checkout** state (first `git worktree list` entry), not "main worktree",
-  which was overloaded. See primary-checkout-drift.py in #336's implementation.
+  which was overloaded. See primary-checkout-drift.py in #336's implementation. *See the #441 amendment below for the primary-checkout resolver and re-check; the definition here predates it.*
 
 **Related tickets:**
 - #358 (expert-flow: flow-review + flow-implement step agents) — adds a **PreToolUse guard on
@@ -741,3 +741,96 @@ version stays 1; existing code that ignores the new field continues to work.
 which previously could burn one of the two restart attempts as a `cwd-drift` halt on a run that did nothing
 wrong. The motivating reports are #475 and #495. The frequency of these false positives has not been
 measured, so no rate is claimed here.
+
+## Amendment 2026-11-05 (#441): primary checkout in bare layouts
+
+*Note: this amendment is dated 2026-11-05 but is placed after the 2026-11-16 amendment; it is out of chronological order.*
+
+The 2026-10-26 amendment defined the primary checkout as the first entry of `git worktree list`. That
+holds for a normal repo, but not for a bare layout (a `<repo>/.bare` git-dir with `<repo>/worktrees/*`
+checkouts), where the first entry is the bare repository and not a checkout. The 2026-10-26 text is not
+edited. This amendment restates the definition and items 1, 4 and 5 for bare layouts.
+
+**Definition (restated).** The primary checkout is:
+- the first entry of `git worktree list` when that entry is not bare;
+- otherwise, the worktree checked out on `refs/heads/<default>`, trying candidates in order: the
+  `origin/HEAD` short name, then `main`, then `master`;
+- otherwise there is no primary, and the run stops. A candidate worktree that is prunable fails closed
+  (there is no usable checkout to return).
+
+`primary-checkout-drift.py primary` implements this rule for the drift barrier. The snapshot and compare
+paths take their checkout from it and do not derive one themselves. Other first-entry sites in the repo
+are not yet on this rule; see the follow-ups below.
+
+**Item 1 (snapshot).** The baseline snapshot covers only the single resolved primary checkout. In a bare
+layout that is the default-branch worktree (for example `<repo>/worktrees/main`), not the bare entry and
+not every sibling worktree.
+
+**Item 4 (fail condition).** Unchanged for dirt. The run fails on dirt only on the planned file set (all
+units' owned files plus the ticket branch's changes since START_SHA) and warns on other new dirt. HEAD
+movement is judged by the 2026-11-16 amendment: a fleet fast-forward (baseline HEAD an ancestor of the
+current HEAD, current HEAD reachable from the upstream) is `INFO <primary> head-advanced` and exit 0; any
+other HEAD movement is `FAIL <primary> head-moved` and exit 1; a HEAD probe that cannot be completed is
+exit 2 (`head-probe-failed`). The skip when the primary checkout's realpath equals the orchestrator cwd
+(`primary-is-orchestrator-cwd`) stays.
+
+**Item 5 (fail closed).** The guarantee is unchanged, and there is no skip outcome. A bare layout with no
+default-branch worktree is a hard stop with reason `no-usable-primary`; it is never a silent pass. Every
+barrier failure is a FAILED receipt with `FAILURE_CLASS: cwd-drift` (unchanged for every cause) and a
+Reason of `primary-checkout-drift: <cause>`, where `<cause>` is one of the following (`head-probe-failed` is
+reachable only through `--reason`; the script's `--cause` choices are the other four):
+- `probe-failed`: the site 1 snapshot output has an `ERROR probe-failed` line.
+- `baseline-unavailable`: the default. Covers other snapshot failures and every compare barrier's exit 2
+  other than a HEAD probe failure.
+- `head-probe-failed`: a HEAD probe in the compare cannot be completed (exit 2; see the 2026-11-16 amendment).
+- `no-usable-primary`: site 1 when `primary` exits 3, and a failed `<PRIMARY_CHECKOUT>` re-check at a later
+  consuming site.
+- `resolver-failed`: site 1 when `primary` exits anything other than 0 or 3.
+
+Only the `--compare-exit 2` barrier failures carry `<cause>` (through `--cause`). A drift failure
+(`--compare-exit 1`) keeps its drift reason: `primary-checkout-drift: overlap <unit-id>`,
+`primary-checkout-drift: unit <unit-id>`, or the compare's FAIL-path reason. A re-check failure in the
+drift procedure goes into the label only.
+
+**Literal recorded at site 1.** The orchestrator records the resolved primary path once, at site 1. Later
+consuming sites use that literal and do not resolve again. Each use is guarded by a re-check:
+`git -C <literal> rev-parse --show-toplevel` must succeed and match the literal by realpath. A literal that
+ends in `.bare`, or that resolves (by realpath) to a bare first porcelain entry, is rejected. Outside the cwd-drift failure
+procedure, a failed re-check is `no-usable-primary`. Inside that procedure, a re-check failure keeps the
+drift reason and its evidence, and is reported in the label only.
+
+**What the barrier watches in a bare layout.** The default-branch worktree. This protects that worktree
+from edits by a sibling flow or the human when an agent is given, or guesses, that path. It does not cover
+the #293 `--git-dir` vector: `git rev-parse --git-dir` in a bare layout resolves to
+`<repo>/.bare/worktrees/<name>`, which is outside the watched worktree. That vector is NOT covered here;
+its follow-up is #474 (.bare write question). A sibling worktree other than the default branch is also
+outside the watch; the re-check guards the literal's identity, not the contents of other worktrees.
+
+**`/expert-fleet` interaction.** Now that the barrier really runs in bare layouts, a sibling flow under
+`/expert-fleet` that fast-forwards `worktrees/main` while a run is mid-implement is a fleet fast-forward and
+reports `INFO head-advanced` with exit 0, as defined by the 2026-11-16 amendment. Any other HEAD movement
+remains `FAIL head-moved`. Handling of fleet fast-forwards is tracked in #475.
+
+**Layout and placement.** The hand-built `.bare` layout (`<repo>/.bare` plus `<repo>/worktrees/*`) is a
+supported repo state per `docs/workflow-cli-invariants.md` (Phase 1 test coverage lists bare worktree setup).
+Unit and Round-2 worktree placement is unchanged by this work: unit parents are the directory that holds the
+default-branch worktree (`dirname` of the resolved primary checkout), and this does not diverge from
+ADR-0010. The resolver governs the primary checkout only; it is used to locate that parent, not to place
+units elsewhere.
+
+**Known edge.** For a first-entry path containing a space, the old `cut -d' ' -f2` pipeline truncated the
+path at the first space, while the resolver keeps it whole. Unit placement now derives from the full
+recorded `PRIMARY_CHECKOUT` literal (`dirname`, no `cut`), so a space in the path no longer truncates it.
+The other first-entry sites listed under Follow-ups still carry the old pipeline.
+
+**Follow-ups.**
+- #472: the first-entry sites in `commands/cleanup.md`, `commands/verify-queue.md`,
+  `prompts/worktree-reference.md`, `commands/track-and-start.md`, `scripts/setup-pr-worktree.sh`,
+  `scripts/find-stray-haiku-worktree.sh` and `scripts/in-flight-snapshot.py`.
+- #473: `scripts/workflow/worktrees.py:63` (`detect_main_worktree`) and the ADR-0010 detect-parent logic,
+  which use the same first-entry rule.
+- #356 (relocation tracked in #473): relocate the resolver into `scripts/workflow/worktrees.py` before a second consumer is wired.
+- #474 (.bare write question): whether agents may write under `<repo>/.bare`, the 2026-10-19 incident
+  (ticket 293) vector above.
+- #475: fleet fast-forward handling in the primary-checkout-drift compare (`head-advanced`); see the
+  2026-11-16 amendment.

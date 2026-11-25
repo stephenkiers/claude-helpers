@@ -11,6 +11,7 @@ This plan fixes three main areas:
 Run with: python3 tests/test_implement_with_haiku_doc_consistency.py
 """
 
+import ast
 import importlib.util
 import json
 import re
@@ -220,7 +221,9 @@ print("[Directives 6 & 7] Full report trailer reference consistency")
 # that happens to contain the phrase — that bug previously made this check match spurious
 # unrelated sections (verified via mutation: it silently matched "### Parse claude-action-plan.md
 # into directives" and "### Apply Round 2's diff" instead of the two real read-only headings).
-heading_matches = list(re.finditer(r"^(#{2,3}) .*$", IMPLEMENT_WITH_HAIKU, re.MULTILINE))
+fence_spans = [m.span() for m in re.finditer(r"^```.*?^```", IMPLEMENT_WITH_HAIKU, re.MULTILINE | re.DOTALL)]
+heading_matches = [m for m in re.finditer(r"^(#{2,3}) .*$", IMPLEMENT_WITH_HAIKU, re.MULTILINE)
+                   if not any(start <= m.start() < end for start, end in fence_spans)]
 read_only_headings = []
 for idx, heading_match in enumerate(heading_matches):
     title_line = heading_match.group(0)
@@ -1643,6 +1646,180 @@ _nrr_para = _contract_doc[_nrr:].split("\n\n")[0] if _nrr >= 0 else ""
 _nrr_section = _contract_doc[_nrr:_nrr + 3000] if _nrr >= 0 else ""
 t("#526 flow-step-contract 'No reduced runs' text names zero-units",
   _nrr >= 0 and "zero-units" in _nrr_section.split("\n#", 1)[0], f"para={_nrr_para[:200]!r}")
+
+print()
+
+# ============================================================================
+# PRIMARY CHECKOUT RESOLVER (#441): single assignment, site 1, re-check, guards, D5 pins
+# ============================================================================
+print("[#441] primary-checkout resolver: assignment, pipeline, site-1 arms, re-check, guards, D5 pins")
+
+DRIFT_SCRIPT = REPO_ROOT / "scripts" / "primary-checkout-drift.py"
+DRIFT_SRC = read(DRIFT_SCRIPT)
+DOC_441 = IMPLEMENT_WITH_HAIKU
+ANCHOR = "Record the printed `PRIMARY_CHECKOUT:` value"
+PIPELINE_RE = r"git worktree list --porcelain \| grep '\^worktree ' \| head -1"
+
+
+def section_text(doc, title_fragment):
+    """Body of the first heading containing title_fragment, up to the next heading of equal or higher level."""
+    lines = doc.split("\n")
+    for i, ln in enumerate(lines):
+        m = re.match(r"^(#{1,6}) ", ln)
+        if m and title_fragment in ln:
+            level = len(m.group(1))
+            body = []
+            in_fence = False
+            for nxt in lines[i + 1:]:
+                if re.match(r"^\s*```", nxt):
+                    in_fence = not in_fence
+                nm = None if in_fence else re.match(r"^(#{1,6}) ", nxt)
+                if nm and len(nm.group(1)) <= level:
+                    break
+                body.append(nxt)
+            return "\n".join(body)
+    return None
+
+
+# Single assignment: one PRIMARY_CHECKOUT= that calls the primary subcommand
+assignments = re.findall(r"(?<![A-Za-z_])PRIMARY_CHECKOUT=", DOC_441)
+t("(#441) exactly one PRIMARY_CHECKOUT= assignment in the doc",
+  len(assignments) == 1, f"found {len(assignments)}")
+t("(#441) the PRIMARY_CHECKOUT= assignment calls primary-checkout-drift.py primary",
+  re.search(r'(?<![A-Za-z_])PRIMARY_CHECKOUT=\$\([^\n]*primary-checkout-drift\.py" primary\)', DOC_441) is not None,
+  "no PRIMARY_CHECKOUT=$(... primary-checkout-drift.py\" primary) assignment")
+
+# A1 (N1): WT_PARENT derives from the PRIMARY_CHECKOUT literal, not the first porcelain entry
+pipeline_hits = len(re.findall(PIPELINE_RE, DOC_441))
+t("(#441) git worktree list --porcelain | grep '^worktree ' | head -1 no longer occurs",
+  pipeline_hits == 0, f"found {pipeline_hits}")
+t("(#441) FIRST_WORKTREE_ENTRY is gone from the doc",
+  "FIRST_WORKTREE_ENTRY" not in DOC_441, "FIRST_WORKTREE_ENTRY still present")
+t("(#441) WT_PARENT is dirname of the PRIMARY_CHECKOUT literal (A1)",
+  'WT_PARENT="<dirname-of-PRIMARY_CHECKOUT-literal>"' in DOC_441,
+  'WT_PARENT="<dirname-of-PRIMARY_CHECKOUT-literal>" not found')
+
+# Site 1: case arms on the primary exit code
+case_m = re.search(r'case\s+"\$PRIMARY_EXIT"\s+in(.*?)\besac\b', DOC_441, re.S)
+case_body = case_m.group(1) if case_m else ""
+arm3 = re.search(r"\b3\)(.*?)(?=\*\))", case_body, re.S)
+arm_star = re.search(r"\*\)(.*)", case_body, re.S)
+t("(#441) site-1 case \"$PRIMARY_EXIT\" ... esac block exists", case_m is not None,
+  'no case "$PRIMARY_EXIT" in ... esac block')
+t("(#441) site-1 3) arm passes --cause no-usable-primary",
+  arm3 is not None and "--cause no-usable-primary" in arm3.group(1),
+  "3) arm does not pass --cause no-usable-primary")
+t("(#441) site-1 *) arm passes --cause resolver-failed",
+  arm_star is not None and "--cause resolver-failed" in arm_star.group(1),
+  "*) arm does not pass --cause resolver-failed")
+
+# Site 1 snapshot handler: scrape ERROR probe-failed (D5) and pass --cause probe-failed
+grep_at = DOC_441.find("grep -q '^ERROR probe-failed'")
+t("(#441) site-1 snapshot handler greps ^ERROR probe-failed",
+  grep_at != -1, "grep -q '^ERROR probe-failed' not found")
+t("(#441) site-1 snapshot handler passes --cause probe-failed next to the grep",
+  grep_at != -1 and "--cause probe-failed" in DOC_441[grep_at:grep_at + 600],
+  "no --cause probe-failed within 600 chars after the grep")
+
+# Re-check blocks: delimited spans, each with the git, realpath and .bare checks
+RECHECK_SPAN_RE = re.compile(r"# primary-recheck: begin[^\n]*\n(.*?)# primary-recheck: end[^\n]*", re.S)
+spans = [(m.start(), m.end(), m.group(1)) for m in RECHECK_SPAN_RE.finditer(DOC_441)]
+t("(#441) at least one delimited re-check block (# primary-recheck: begin / end)",
+  len(spans) >= 1, "no begin/end markers found")
+for needle, label in (("rev-parse --show-toplevel", "rev-parse --show-toplevel check"),
+                      ("pwd -P", "pwd -P realpath comparison"),
+                      (".bare", ".bare suffix test")):
+    t(f"(#441) every re-check block contains the {label}",
+      bool(spans) and all(needle in body for _, _, body in spans),
+      f"{needle!r} missing from a re-check block")
+
+# Consuming sites after site 1 use the recorded literal and are preceded by a re-check block
+anchor_pos = DOC_441.find(ANCHOR)
+t("(#441) site-1 recording prose anchor present",
+  anchor_pos != -1, "anchor sentence missing")
+stale_uses = re.findall(r"\$\{?PRIMARY_CHECKOUT\}?", DOC_441[anchor_pos:]) if anchor_pos != -1 else ["<no anchor>"]
+t("(#441) no $PRIMARY_CHECKOUT or ${PRIMARY_CHECKOUT} used after site 1",
+  not stale_uses, f"found {stale_uses[:3]}")
+
+heading_pos = [m.start() for m in re.finditer(r"^#{1,6} ", DOC_441, re.M)]
+consumers = []
+for m in re.finditer(re.escape('"<PRIMARY_CHECKOUT>"'), DOC_441):
+    pos = m.start()
+    if anchor_pos == -1 or pos < anchor_pos:
+        continue
+    if any(s <= pos < e for s, e, _ in spans):
+        continue  # the re-check block's own uses
+    consumers.append(pos)
+unguarded = []
+for pos in consumers:
+    prior = [sp for sp in spans if sp[1] <= pos]
+    if not prior or any(prior[-1][1] < hp < pos for hp in heading_pos):
+        unguarded.append(pos)
+t("(#441) consuming sites exist after site 1 (quoted \"<PRIMARY_CHECKOUT>\")",
+  len(consumers) >= 4, f"found {len(consumers)}")
+t("(#441) every quoted \"<PRIMARY_CHECKOUT>\" consuming site is preceded by a re-check block in its section",
+  bool(consumers) and not unguarded,
+  f"unguarded at offsets {unguarded[:5]} of {len(consumers)} consumers")
+
+# Superseded-branch guard (Q1=C, Q2=B+): no skip outcome, no marker, no --from-baseline
+for dead in ("primary-barrier-skipped", "--from-baseline", "drift barrier inactive"):
+    t(f"(#441) superseded {dead!r} absent from the doc", dead not in DOC_441,
+      f"superseded string {dead!r} present in the doc")
+    t(f"(#441) superseded {dead!r} absent from the script", dead not in DRIFT_SRC,
+      f"superseded string {dead!r} present in the script")
+
+# Drift-procedure guard (audit Finding 1): a re-check failure never replaces the drift evidence or reason
+proc = section_text(DOC_441, "Failure procedure for cwd drift")
+t("(#441) 'Failure procedure for cwd drift' section exists", proc is not None, "heading not found")
+proc_joined = "\n".join(logical_lines(proc or ""))
+t("(#441) drift procedure: no fail call passes --cause no-usable-primary",
+  re.search(r"fail --compare-exit\s+\d[^\n]*--cause\s+no-usable-primary", proc_joined) is None,
+  "a fail call in the drift procedure passes --cause no-usable-primary")
+t("(#441) drift procedure: overlap closing fail keeps --reason \"primary-checkout-drift: overlap <unit-id>\"",
+  '--reason "primary-checkout-drift: overlap <unit-id>"' in proc_joined, "overlap Reason missing")
+t("(#441) drift procedure: unit closing fail keeps --reason \"primary-checkout-drift: unit <unit-id>\"",
+  '--reason "primary-checkout-drift: unit <unit-id>"' in proc_joined, "unit Reason missing")
+t("(#441) drift procedure: closing fail keeps --patch-path", "--patch-path" in proc_joined,
+  "--patch-path missing")
+t("(#441) drift procedure: the re-check result (RECHECK_FAIL) is added via --label, not as the cause",
+  "RECHECK_FAIL" in proc_joined and "--label" in proc_joined,
+  "RECHECK_FAIL and --label not both present in the drift procedure")
+
+# D5: the ERROR probe-failed scrape string is pinned on both sides (docstring, cmd_snapshot) and the site-1 grep
+try:
+    _drift_tree = ast.parse(DRIFT_SRC)
+    drift_docstring = ast.get_docstring(_drift_tree) or ""
+    _snap_fn = next((n for n in _drift_tree.body
+                     if isinstance(n, ast.FunctionDef) and n.name == "cmd_snapshot"), None)
+    snap_src = (ast.get_source_segment(DRIFT_SRC, _snap_fn) or "") if _snap_fn is not None else ""
+except SyntaxError:
+    drift_docstring, snap_src = "", ""
+t("(D5) module docstring of primary-checkout-drift.py contains 'ERROR probe-failed'",
+  "ERROR probe-failed" in drift_docstring, "missing from module docstring")
+t("(D5) cmd_snapshot code contains 'ERROR probe-failed'",
+  "ERROR probe-failed" in snap_src, "missing from cmd_snapshot")
+t("(D5) site-1 grep uses the same '^ERROR probe-failed' prefix",
+  "grep -q '^ERROR probe-failed'" in DOC_441, "prefix missing from site-1 grep")
+
+# ============================================================================
+# ROUND 2 (R-F13, R-N1): re-check block identity and WT_PARENT derivation
+# ============================================================================
+print("[#441 r2] re-check blocks identical apart from --label; WT_PARENT not from worktree list")
+
+_r2_bodies = [body for _, _, body in spans]
+# Human-ruled (Round 4.0a): site 3 deliberately has no fail tail (it records the result and continues),
+# so identity is asserted on the shared check body, up to the closing baseline check.
+_r2_normalized = [body.split('if [[ -n "$RECHECK_FAIL" ]]; then', 1)[0] for body in _r2_bodies]
+t("(R-F13) exactly four delimited re-check blocks in the doc",
+  len(_r2_bodies) == 4, f"found {len(_r2_bodies)}")
+t("(R-F13) the four re-check block bodies are byte-identical in the shared check body (before the fail tail)",
+  len(_r2_bodies) == 4 and len(set(_r2_normalized)) == 1,
+  f"distinct normalized bodies: {len(set(_r2_normalized))}")
+
+_wt_parent_lines = [ln for ln in DOC_441.splitlines() if "WT_PARENT=" in ln]
+t("(R-N1) every WT_PARENT= assignment avoids 'worktree list' and 'head -1'",
+  bool(_wt_parent_lines) and all("worktree list" not in ln and "head -1" not in ln for ln in _wt_parent_lines),
+  f"WT_PARENT= lines found: {len(_wt_parent_lines)}")
 
 print()
 

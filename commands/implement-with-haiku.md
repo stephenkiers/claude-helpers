@@ -637,21 +637,57 @@ same command, where `<RESUMED_FROM_ID>` is the `--resumed-from` value parsed in 
 `ROUND1_HEAD`). Do not add any other ledger logic to the resume branch.
 
 **Take baseline snapshot of the primary checkout.** Now that SCRATCH_PATH and the ledger exist, capture
-the baseline state of the primary checkout (the first `git worktree list` entry) so drift can be detected later:
+the baseline state of the primary checkout so drift can be detected later. The primary checkout is
+resolved by `primary-checkout-drift.py primary`, not by taking the raw first `git worktree list` entry:
+in a bare-clone layout (`<repo>/.bare` plus `<repo>/worktrees/*`) that first entry is the bare directory,
+which is not a usable checkout. The resolver applies two rules: the first porcelain entry, if it is not
+bare; otherwise the worktree checked out on the default branch (the short name of `origin/HEAD`, then
+`main`, then `master`). If neither rule yields a worktree, the run stops with the cause `no-usable-primary`.
 
 ```bash
-PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep -B2 -E '^branch refs/heads/(main|master)$' | sed -n 's/^worktree //p' | head -1)  # default-branch worktree (bare-clone layouts list .bare first); no awk: skill arg substitution mangles its record variable
-python3 "$HOME/.claude/scripts/primary-checkout-drift.py" snapshot --checkout "$PRIMARY_CHECKOUT" --orchestrator-cwd "$(pwd)" --out "<SCRATCH_PATH>/primary-baseline.json"
+PRIMARY_CHECKOUT=$(python3 "$HOME/.claude/scripts/primary-checkout-drift.py" primary)
+PRIMARY_EXIT=$?
+# A resolved path with a quote, backtick, dollar sign, backslash or control character is not usable: treat as no usable primary
+if [[ "$PRIMARY_EXIT" -eq 0 && "$PRIMARY_CHECKOUT" == *[\"\`\$\\]* || "$PRIMARY_EXIT" -eq 0 && "$PRIMARY_CHECKOUT" == *[[:cntrl:]]* ]]; then PRIMARY_EXIT=3; fi
+case "$PRIMARY_EXIT" in
+  0) ;;
+  3)
+    # No usable primary checkout (the resolver printed a NOTE on stderr)
+    python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 --cause no-usable-primary \
+      ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+      --units "<n>" --max-turns "<n>"
+    exit $?
+    ;;
+  *)
+    # Resolver error (the resolver printed ERROR resolver-failed on stderr)
+    python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 --cause resolver-failed \
+      ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+      --units "<n>" --max-turns "<n>"
+    exit $?
+    ;;
+esac
+printf 'PRIMARY_CHECKOUT: %s\n' "$PRIMARY_CHECKOUT"
+
+SNAPSHOT_OUT=$(python3 "$HOME/.claude/scripts/primary-checkout-drift.py" snapshot --checkout "$PRIMARY_CHECKOUT" --orchestrator-cwd "$(pwd)" --out "<SCRATCH_PATH>/primary-baseline.json")
 SNAPSHOT_EXIT=$?
+printf '%s\n' "$SNAPSHOT_OUT"
 if [[ $SNAPSHOT_EXIT -ne 0 ]]; then
   printf '%s\n' "Error: primary-checkout-drift.py snapshot failed (exit code $SNAPSHOT_EXIT)" >&2
-  # See Drift barrier failure block: a failed snapshot is reported as baseline-unavailable (compare-exit 2)
-  python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 \
+  # See Drift barrier failure block: a failed snapshot is reported as baseline-unavailable (compare-exit 2),
+  # unless the snapshot printed ERROR probe-failed, which is reported as probe-failed
+  CAUSE_ARGS=()
+  if printf '%s\n' "$SNAPSHOT_OUT" | grep -q '^ERROR probe-failed'; then CAUSE_ARGS=(--cause probe-failed); fi
+  python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 "${CAUSE_ARGS[@]}" \
     ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
     --units "<n>" --max-turns "<n>"
   exit $?
 fi
 ```
+
+Record the printed `PRIMARY_CHECKOUT:` value as the literal string `PRIMARY_CHECKOUT` (the same way
+`SCRATCH_PATH` is recorded above), and paste that literal wherever `<PRIMARY_CHECKOUT>` appears in this
+command. Never use the shell variable name in a prompt or a later command. The value is recorded once,
+here; every later site uses the recorded literal and never re-resolves it from `git worktree list`.
 
 Also read `.claude/implement-with-haiku.md` using the `Read` tool if it exists (skip silently if
 not) — project-specific gates and overrides for this command; where it conflicts with this
@@ -710,7 +746,6 @@ if [[ -z "$BRANCH" ]]; then
   printf '%s\n' "Error: Repository is in detached HEAD state. Check out a branch before proceeding." >&2
   exit 1
 fi
-PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep -B2 -E '^branch refs/heads/(main|master)$' | sed -n 's/^worktree //p' | head -1)  # default-branch worktree (bare-clone layouts list .bare first); no awk: skill arg substitution mangles its record variable
 
 # Prune stale entries first
 git worktree prune
@@ -1095,7 +1130,7 @@ fi
 ```
 
 **Placement must be flat, never nested under the primary checkout's directory tree.** A worktree nested
-inside the primary checkout's own directory tree (e.g. `${PRIMARY_CHECKOUT}/.claude/worktrees/...`) sits
+inside the primary checkout's own directory tree (e.g. `<PRIMARY_CHECKOUT>/.claude/worktrees/...`) sits
 inside whatever build-tool root lives there — for a Cargo workspace, that's `Cargo.toml`. A build tool
 run inside that nested path can walk up, find the parent's manifest, and silently resolve against
 the wrong workspace instead of erroring — this cost a prior run a lost commit and a commit to the
@@ -1104,10 +1139,15 @@ any build tool, in any project.
 
 **For `parallel` basis:** create all unit worktrees at once from `START_SHA`:
 
+`WT_PARENT` is the directory that holds the primary checkout: `dirname` of the recorded `PRIMARY_CHECKOUT`
+literal from Step 2 (the default-branch worktree that `primary-checkout-drift.py primary` resolved). In the
+bare-clone layout that puts each unit at `<repo>/worktrees/<branch>`, beside the primary checkout. Unit
+placement is unchanged from before the primary-checkout drift barrier.
+
 ```bash
 BRANCH=$(git branch --show-current)
-PRIMARY_CHECKOUT=$(git worktree list --porcelain | grep -B2 -E '^branch refs/heads/(main|master)$' | sed -n 's/^worktree //p' | head -1)  # default-branch worktree (bare-clone layouts list .bare first); no awk: skill arg substitution mangles its record variable
-WT_PARENT="$(dirname "$PRIMARY_CHECKOUT")"
+# Fill in the literal: dirname of the PRIMARY_CHECKOUT value recorded in Step 2 (never re-resolved here)
+WT_PARENT="<dirname-of-PRIMARY_CHECKOUT-literal>"
 mkdir -p "$WT_PARENT"
 
 # For each unit (replace UNIT_ID with the actual id):
@@ -1229,13 +1269,44 @@ before deciding:
 git -C "$WT_PATH" add -A
 ```
 
-**Drift check — before deciding the worktree is empty, verify the ticket worktree is clean on this
-unit's owned files.** A drifted agent's edits may have landed in the ticket worktree (the primary
-checkout) instead. The `primary-checkout-drift.py compare` command below detects HEAD movement: a fast-forward
+**Drift check — before deciding the worktree is empty, verify the primary checkout is clean on this
+unit's owned files.** A drifted agent's edits may have landed in the primary checkout instead. The
+`primary-checkout-drift.py compare` command below detects HEAD movement in the primary: a fast-forward
 reachable from the primary's upstream is reported as `INFO ... head-advanced` and does not fail; any other HEAD move
-or branch change is `FAIL ... head-moved` (exit 1); a probe that cannot decide is exit 2 (hard stop). Check for uncommitted changes here:
+or branch change is `FAIL ... head-moved` (exit 1, see SHARED CONTRACTS); a probe that cannot decide, or any missing
+evidence or script failure, is exit 2 (hard stop). Check for uncommitted changes here. The primary checkout is the recorded `<PRIMARY_CHECKOUT>`
+literal from Step 2, never re-resolved here. The re-check block first confirms that literal still names the
+primary checkout; a failed re-check stops the run with the cause `no-usable-primary`:
 ```bash
-git -C "$PRIMARY_CHECKOUT" status --porcelain -- <owned-files>
+# primary-recheck: begin
+RECHECK_FAIL=""
+PRIMARY_TOP=$(git -C "<PRIMARY_CHECKOUT>" rev-parse --show-toplevel 2>/dev/null) || RECHECK_FAIL="rev-parse failed"
+if [[ -z "$RECHECK_FAIL" ]]; then
+  LIT_REAL=$(cd "<PRIMARY_CHECKOUT>" 2>/dev/null && pwd -P)
+  TOP_REAL=$(cd "$PRIMARY_TOP" 2>/dev/null && pwd -P)
+  [[ -n "$LIT_REAL" && "$LIT_REAL" == "$TOP_REAL" ]] || RECHECK_FAIL="show-toplevel mismatch"
+fi
+[[ -z "$RECHECK_FAIL" && "<PRIMARY_CHECKOUT>" == *.bare ]] && RECHECK_FAIL="literal ends in .bare"
+if [[ -z "$RECHECK_FAIL" ]]; then
+  FIRST_BLOCK=$(git worktree list --porcelain | sed '/^$/,$d')
+  if [[ -z "$FIRST_BLOCK" ]]; then RECHECK_FAIL="empty worktree list"; fi
+fi
+if [[ -z "$RECHECK_FAIL" ]]; then
+  FIRST_LINE=${FIRST_BLOCK%%$'\n'*}; FIRST_REAL=$(cd "${FIRST_LINE#worktree }" 2>/dev/null && pwd -P)
+  if printf '%s\n' "$FIRST_BLOCK" | grep -qx 'bare' && [[ -n "$FIRST_REAL" && "$FIRST_REAL" == "$LIT_REAL" ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
+fi
+if [[ -z "$RECHECK_FAIL" && -r "<SCRATCH_PATH>/primary-baseline.json" ]]; then
+  python3 -c 'import json, os, sys; sys.exit(0 if os.path.realpath(sys.argv[1]) in json.load(open(sys.argv[2])).get("checkouts", {}) else 1)' "$LIT_REAL" "<SCRATCH_PATH>/primary-baseline.json" 2>/dev/null || RECHECK_FAIL="literal not in baseline"
+fi
+if [[ -n "$RECHECK_FAIL" ]]; then
+  python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 --cause no-usable-primary \
+    --label "(primary re-check, unit drift check: ${RECHECK_FAIL})" \
+    ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+    --units "<n>" --max-turns "<n>"
+  exit $?
+fi
+# primary-recheck: end
+git -C "<PRIMARY_CHECKOUT>" status --porcelain -- <owned-files>
 ```
 
 If the primary checkout has uncommitted changes **on this unit's owned files** and the unit
@@ -1258,8 +1329,41 @@ missing unit reports). Leave its worktree in place for inspection. Surface the r
 **The inverse is a lost-work anomaly, not a success:** if the worktree is genuinely empty (both
 `git -C "$WT_PATH" status --porcelain` and `git -C "$WT_PATH" diff HEAD` are empty — worktree-wide check, not file-scoped) **but** the
 report claims `STAGED: yes` or otherwise claims work was done, do not shrug this off as "no
-changes needed" — **first check the primary checkout for the unit's work** (`git -C "$PRIMARY_CHECKOUT" status --porcelain
--- <owned-files>`). If the work is sitting there, this is cwd drift, not lost work —
+changes needed" — **first check the primary checkout for the unit's work**. The check uses the recorded
+`<PRIMARY_CHECKOUT>` literal from Step 2, after the same re-check as above (a failed re-check stops the run
+with the cause `no-usable-primary`):
+```bash
+# primary-recheck: begin
+RECHECK_FAIL=""
+PRIMARY_TOP=$(git -C "<PRIMARY_CHECKOUT>" rev-parse --show-toplevel 2>/dev/null) || RECHECK_FAIL="rev-parse failed"
+if [[ -z "$RECHECK_FAIL" ]]; then
+  LIT_REAL=$(cd "<PRIMARY_CHECKOUT>" 2>/dev/null && pwd -P)
+  TOP_REAL=$(cd "$PRIMARY_TOP" 2>/dev/null && pwd -P)
+  [[ -n "$LIT_REAL" && "$LIT_REAL" == "$TOP_REAL" ]] || RECHECK_FAIL="show-toplevel mismatch"
+fi
+[[ -z "$RECHECK_FAIL" && "<PRIMARY_CHECKOUT>" == *.bare ]] && RECHECK_FAIL="literal ends in .bare"
+if [[ -z "$RECHECK_FAIL" ]]; then
+  FIRST_BLOCK=$(git worktree list --porcelain | sed '/^$/,$d')
+  if [[ -z "$FIRST_BLOCK" ]]; then RECHECK_FAIL="empty worktree list"; fi
+fi
+if [[ -z "$RECHECK_FAIL" ]]; then
+  FIRST_LINE=${FIRST_BLOCK%%$'\n'*}; FIRST_REAL=$(cd "${FIRST_LINE#worktree }" 2>/dev/null && pwd -P)
+  if printf '%s\n' "$FIRST_BLOCK" | grep -qx 'bare' && [[ -n "$FIRST_REAL" && "$FIRST_REAL" == "$LIT_REAL" ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
+fi
+if [[ -z "$RECHECK_FAIL" && -r "<SCRATCH_PATH>/primary-baseline.json" ]]; then
+  python3 -c 'import json, os, sys; sys.exit(0 if os.path.realpath(sys.argv[1]) in json.load(open(sys.argv[2])).get("checkouts", {}) else 1)' "$LIT_REAL" "<SCRATCH_PATH>/primary-baseline.json" 2>/dev/null || RECHECK_FAIL="literal not in baseline"
+fi
+if [[ -n "$RECHECK_FAIL" ]]; then
+  python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 --cause no-usable-primary \
+    --label "(primary re-check, lost-work check: ${RECHECK_FAIL})" \
+    ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+    --units "<n>" --max-turns "<n>"
+  exit $?
+fi
+# primary-recheck: end
+git -C "<PRIMARY_CHECKOUT>" status --porcelain -- <owned-files>
+```
+If the work is sitting there, this is cwd drift, not lost work —
 proceed to the failure procedure below. If primary checkout is clean on the unit's files, treat it as an
 interrupted handoff and use the Incomplete-report menu (Re-run / Inspect / Skip / Abort) below.
 
@@ -1281,13 +1385,46 @@ printf '%s DONE round1 %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round1-<unit-id>-report
 
 When a drifted agent's work is in the primary checkout (not the unit's own worktree):
 
-1. **Confirm no stray commits:** `STRAY=$(git -C "$PRIMARY_CHECKOUT" log --oneline <expected-HEAD>..HEAD --not @{upstream}) && [ -z "$STRAY" ]` must succeed:
+Re-check the recorded `<PRIMARY_CHECKOUT>` literal from Step 2 before step 1. Unlike the other sites, a
+failed re-check here does **not** stop the procedure and makes no `fail` call with a cause. The re-check
+result is recorded as the literal `<RECHECK_FAIL>` (empty when the re-check passed, otherwise the reason
+text), and steps 1–4 still run best effort against the literal, so the patch, drifted-file list and untracked
+list are captured. A command that fails is noted, not fatal. The closing `fail` call keeps the real drift
+reason and adds the re-check result to its label.
+
+```bash
+# primary-recheck: begin
+RECHECK_FAIL=""
+PRIMARY_TOP=$(git -C "<PRIMARY_CHECKOUT>" rev-parse --show-toplevel 2>/dev/null) || RECHECK_FAIL="rev-parse failed"
+if [[ -z "$RECHECK_FAIL" ]]; then
+  LIT_REAL=$(cd "<PRIMARY_CHECKOUT>" 2>/dev/null && pwd -P)
+  TOP_REAL=$(cd "$PRIMARY_TOP" 2>/dev/null && pwd -P)
+  [[ -n "$LIT_REAL" && "$LIT_REAL" == "$TOP_REAL" ]] || RECHECK_FAIL="show-toplevel mismatch"
+fi
+[[ -z "$RECHECK_FAIL" && "<PRIMARY_CHECKOUT>" == *.bare ]] && RECHECK_FAIL="literal ends in .bare"
+if [[ -z "$RECHECK_FAIL" ]]; then
+  FIRST_BLOCK=$(git worktree list --porcelain | sed '/^$/,$d')
+  if [[ -z "$FIRST_BLOCK" ]]; then RECHECK_FAIL="empty worktree list"; fi
+fi
+if [[ -z "$RECHECK_FAIL" ]]; then
+  FIRST_LINE=${FIRST_BLOCK%%$'\n'*}; FIRST_REAL=$(cd "${FIRST_LINE#worktree }" 2>/dev/null && pwd -P)
+  if printf '%s\n' "$FIRST_BLOCK" | grep -qx 'bare' && [[ -n "$FIRST_REAL" && "$FIRST_REAL" == "$LIT_REAL" ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
+fi
+if [[ -z "$RECHECK_FAIL" && -r "<SCRATCH_PATH>/primary-baseline.json" ]]; then
+  python3 -c 'import json, os, sys; sys.exit(0 if os.path.realpath(sys.argv[1]) in json.load(open(sys.argv[2])).get("checkouts", {}) else 1)' "$LIT_REAL" "<SCRATCH_PATH>/primary-baseline.json" 2>/dev/null || RECHECK_FAIL="literal not in baseline"
+fi
+# primary-recheck: end
+```
+
+1. **Confirm no stray commits:** `STRAY=$(git -C "<PRIMARY_CHECKOUT>" log --oneline <expected-HEAD>..HEAD --not @{upstream}) && [ -z "$STRAY" ]` must succeed:
    exit 0 and empty output. A non-zero exit (for example, no upstream configured) is a stop, not a pass.
    (cwd drift creates uncommitted changes only, never new commits; this excludes commits merged from the upstream).
-2. **Scope the dirt:** `git -C "$PRIMARY_CHECKOUT" status --porcelain` must touch **only this unit's owned files**.
+2. **Scope the dirt:** `git -C "<PRIMARY_CHECKOUT>" status --porcelain` must touch **only this unit's owned files**.
    Any overlap with other units' owned files → **stop** and make the shared `fail` call (see Drift barrier failure
    block), which emits the `cwd_drift` telemetry and writes the FAILED receipt with Reason
-   `primary-checkout-drift: overlap <unit-id>` and the overlapping files:
+   `primary-checkout-drift: overlap <unit-id>` and the overlapping files. Use the label
+   `(overlap, unit <unit-id>)` when the re-check passed, or `(overlap, unit <unit-id>; primary re-check failed: <RECHECK_FAIL>)`
+   when it failed. Pass no `--cause`:
    ```bash
    python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 1 \
      --label "(overlap, unit <unit-id>)" --reason "primary-checkout-drift: overlap <unit-id>" \
@@ -1302,16 +1439,18 @@ When a drifted agent's work is in the primary checkout (not the unit's own workt
    complete.
 4. **Record the drifted files to the scratch dir** (patch survives any later mistake):
    ```bash
-   git -C "$PRIMARY_CHECKOUT" diff --binary HEAD -- <owned-files> > "<SCRATCH_PATH>/unit-${UNIT_ID}-drifted.patch"
-   UNTRACKED_OWNED=$(git -C "$PRIMARY_CHECKOUT" ls-files --others --exclude-standard -- <owned-files>)
+   git -C "<PRIMARY_CHECKOUT>" diff --binary HEAD -- <owned-files> > "<SCRATCH_PATH>/unit-${UNIT_ID}-drifted.patch"
+   UNTRACKED_OWNED=$(git -C "<PRIMARY_CHECKOUT>" ls-files --others --exclude-standard -- <owned-files>)
    ```
 5. **Do NOT commit.** The drifted work stays in the primary checkout, uncommitted.
 
 **If sibling units are still running,** record the drift and wait for them to finish (bound the wait to 5 minutes per sibling; escalate if a sibling exceeds that). Once all
 siblings are terminal, make the shared `fail` call (see Drift barrier failure block) with `Reason: primary-checkout-drift: unit <unit-id>`;
 it emits the `cwd_drift` telemetry and writes `FAILURE_CLASS: cwd-drift`, the patch path, the drifted files (from
-`git -C "$PRIMARY_CHECKOUT" status --porcelain -- <owned-files>`), the untracked files list, and the explicit line
+`git -C "<PRIMARY_CHECKOUT>" status --porcelain -- <owned-files>`), the untracked files list, and the explicit line
 `nothing in the primary checkout was changed by this run's orchestrator; recover by hand`. Then stop (`exit $?`).
+Use the label `(unit <unit-id>)` when the re-check passed, or `(unit <unit-id>; primary re-check failed: <RECHECK_FAIL>)`
+when it failed. Pass no `--cause`.
 ```bash
 python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 1 \
   --label "(unit <unit-id>)" --reason "primary-checkout-drift: unit <unit-id>" \
@@ -1431,9 +1570,19 @@ When a primary-checkout-drift compare returns exit 1 (FAIL) or exit 2 (ERROR), o
 3. writes the FAILED receipt, ending with `<!-- step-end -->`, **only when `--receipt` is given** (the barriers pass it via `${FLOW_DIR:+--receipt "<RECEIPT_PATH>"}`, so nothing is written outside a flow);
 4. returns exit code 1, which the barrier passes on with `exit $?`.
 
-Flags: `--compare-exit <1|2>` (1 = drift, 2 = baseline unavailable or head probe failed; a failed snapshot passes 2), `--label`, `--receipt`, `--attempt` (the step prompt's `ATTEMPT=<k>`, `1` if none), `--implementer-model`, `--units`, `--max-turns`, `--fail-paths <a,b>` (the paths on the compare's `ERROR primary-checkout-drift <paths>` line). `--detail` (drift only) adds the richer sections from `--warn-paths`, repeatable `--ticket-match <path>:<status>` and repeatable `--owned-overlap <unit-id>:<paths>`, plus the standard `NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand`. The multi-unit sites in Failure procedure for cwd drift add `--overlap-files <a,b>` (writes `OVERLAP_FILES`) or `--patch-path`, `--drifted-files`, `--untracked-files` (write `PATCH_PATH`, `DRIFTED_FILES`, `UNTRACKED_FILES` and the standard `NOTE`). `--reason` applies to both exit codes and must start with `primary-checkout-drift:` (e.g. `primary-checkout-drift: unit <unit-id>` or `primary-checkout-drift: head-probe-failed`).
+Flags: `--compare-exit <1|2>` (1 = drift, 2 = baseline unavailable, head probe failed or primary unusable; a failed snapshot passes 2), `--cause <probe-failed|baseline-unavailable|no-usable-primary|resolver-failed>` (valid only with `--compare-exit 2`; default `baseline-unavailable`), `--label`, `--receipt`, `--attempt` (the step prompt's `ATTEMPT=<k>`, `1` if none), `--implementer-model`, `--units`, `--max-turns`, `--fail-paths <a,b>` (the paths on the compare's `ERROR primary-checkout-drift <paths>` line). `--detail` (drift only) adds the richer sections from `--warn-paths`, repeatable `--ticket-match <path>:<status>` and repeatable `--owned-overlap <unit-id>:<paths>`, plus the standard `NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand`. The multi-unit sites in Failure procedure for cwd drift add `--overlap-files <a,b>` (writes `OVERLAP_FILES`) or `--patch-path`, `--drifted-files`, `--untracked-files` (write `PATCH_PATH`, `DRIFTED_FILES`, `UNTRACKED_FILES` and the standard `NOTE`). `--reason` overrides the Reason (and wins over `--cause`) and must start with `primary-checkout-drift:` (e.g. `primary-checkout-drift: unit <unit-id>` or `primary-checkout-drift: head-probe-failed`).
 
-The script fixes the Reason values and class: drift writes `Reason: primary-checkout-drift: <comma-separated FAIL paths>`, a missing baseline writes `Reason: primary-checkout-drift: baseline-unavailable`, a head probe failure writes `Reason: primary-checkout-drift: head-probe-failed`, and all write `FAILURE_CLASS: cwd-drift`. Receipt shape: `ATTEMPT`, `Decision: FAILED`, `Reason`, `FAILURE_CLASS`, (with `--detail`: `FAIL_PATHS`, `WARN_PATHS`, `TICKET_MATCH_STATUS`, `OWNED_FILE_OVERLAP`, `NOTE`), `IMPLEMENTER_MODEL`, `UNITS`, `TURNS_USED: unknown`, `MAX_TURNS`, `TURNS_EXHAUSTED: unknown`, `<!-- step-end -->`. Do not inline the telemetry call or a receipt heredoc at a barrier; call `fail`.
+The script fixes the Reason values and class: drift writes `Reason: primary-checkout-drift: <comma-separated FAIL paths>`, a missing baseline writes `Reason: primary-checkout-drift: baseline-unavailable`, a head probe failure writes `Reason: primary-checkout-drift: head-probe-failed`, and all of them write `FAILURE_CLASS: cwd-drift`. The exit-2 Reasons are therefore the full set: `primary-checkout-drift: baseline-unavailable` (default), `primary-checkout-drift: head-probe-failed` (`--reason` from a compare that printed `ERROR probe-failed head-probe`), `primary-checkout-drift: probe-failed` (`--cause probe-failed` from a snapshot that printed `ERROR probe-failed`), `primary-checkout-drift: no-usable-primary`, and `primary-checkout-drift: resolver-failed`; each `--cause` value below produces the Reason `primary-checkout-drift: <cause>`.
+
+The `--cause` values, with the producer of each:
+- `probe-failed`: the snapshot printed the literal `ERROR probe-failed` on stdout (the snapshot could not probe the primary checkout).
+- `baseline-unavailable`: the default; the baseline snapshot or compare could not produce a usable baseline.
+- `no-usable-primary`: `primary-checkout-drift.py primary` exited 3 (`NOTE: no usable primary checkout (<detail>)`), or a re-check block found the recorded `<PRIMARY_CHECKOUT>` literal is not the primary checkout.
+- `resolver-failed`: `primary-checkout-drift.py primary` exited with another non-zero status (`ERROR resolver-failed <detail>`).
+
+Retry does not help with `no-usable-primary` or `resolver-failed`: the repo layout or the resolver's inputs must be fixed first, and no flag overrides the check. Take over (fix the layout by hand, then re-run) or Abort are the real options.
+
+Pass `--cause` only on the exit-2 paths listed above; the barrier passes no `--cause` on drift (exit 1) paths. Receipt shape: `ATTEMPT`, `Decision: FAILED`, `Reason`, `FAILURE_CLASS`, (with `--detail`: `FAIL_PATHS`, `WARN_PATHS`, `TICKET_MATCH_STATUS`, `OWNED_FILE_OVERLAP`, `NOTE`), `IMPLEMENTER_MODEL`, `UNITS`, `TURNS_USED: unknown`, `MAX_TURNS`, `TURNS_EXHAUSTED: unknown`, `<!-- step-end -->`. Do not inline the telemetry call or a receipt heredoc at a barrier; call `fail`.
 
 ## Step 4d: Join barrier
 
@@ -1852,8 +2001,7 @@ R2_WT_PATH="${WT_PARENT}/${R2_BRANCH}"
 git worktree add "$R2_WT_PATH" -b "$R2_BRANCH" "$ROUND2_START_SHA"
 ```
 
-`R2_WT_PATH` is fully determined by strings you already hold as literals (`WT_PARENT` from Step 2.5,
-`BRANCH` from Step 2.5) — compute its literal absolute value yourself and use that literal string
+`R2_WT_PATH` is fully determined by strings you already hold as literals (`WT_PARENT` and `BRANCH` from the unit-worktree creation block above) — compute its literal absolute value yourself and use that literal string
 below, never the shell variable name (same rule as decision 14: a prompt containing the literal text
 `$R2_WT_PATH` hands the agent a path that does not exist, since shell variables don't persist across
 separate Bash calls).
@@ -2076,8 +2224,42 @@ fi
 ```
 
 **Drift check — before deciding the worktree is empty, verify the primary checkout is clean.**
-A drifted Round 2 agent's test files may have landed in the primary checkout instead. If the
-R2 worktree is empty but `git -C "$PRIMARY_CHECKOUT" status --porcelain` shows test files, this is cwd drift.
+A drifted Round 2 agent's test files may have landed in the primary checkout instead. The primary checkout
+is the recorded `<PRIMARY_CHECKOUT>` literal from Step 2, never re-resolved here. The re-check block first
+confirms that literal still names the primary checkout; a failed re-check stops the run with the cause
+`no-usable-primary`:
+```bash
+# primary-recheck: begin
+RECHECK_FAIL=""
+PRIMARY_TOP=$(git -C "<PRIMARY_CHECKOUT>" rev-parse --show-toplevel 2>/dev/null) || RECHECK_FAIL="rev-parse failed"
+if [[ -z "$RECHECK_FAIL" ]]; then
+  LIT_REAL=$(cd "<PRIMARY_CHECKOUT>" 2>/dev/null && pwd -P)
+  TOP_REAL=$(cd "$PRIMARY_TOP" 2>/dev/null && pwd -P)
+  [[ -n "$LIT_REAL" && "$LIT_REAL" == "$TOP_REAL" ]] || RECHECK_FAIL="show-toplevel mismatch"
+fi
+[[ -z "$RECHECK_FAIL" && "<PRIMARY_CHECKOUT>" == *.bare ]] && RECHECK_FAIL="literal ends in .bare"
+if [[ -z "$RECHECK_FAIL" ]]; then
+  FIRST_BLOCK=$(git worktree list --porcelain | sed '/^$/,$d')
+  if [[ -z "$FIRST_BLOCK" ]]; then RECHECK_FAIL="empty worktree list"; fi
+fi
+if [[ -z "$RECHECK_FAIL" ]]; then
+  FIRST_LINE=${FIRST_BLOCK%%$'\n'*}; FIRST_REAL=$(cd "${FIRST_LINE#worktree }" 2>/dev/null && pwd -P)
+  if printf '%s\n' "$FIRST_BLOCK" | grep -qx 'bare' && [[ -n "$FIRST_REAL" && "$FIRST_REAL" == "$LIT_REAL" ]]; then RECHECK_FAIL="literal is the bare first porcelain entry"; fi
+fi
+if [[ -z "$RECHECK_FAIL" && -r "<SCRATCH_PATH>/primary-baseline.json" ]]; then
+  python3 -c 'import json, os, sys; sys.exit(0 if os.path.realpath(sys.argv[1]) in json.load(open(sys.argv[2])).get("checkouts", {}) else 1)' "$LIT_REAL" "<SCRATCH_PATH>/primary-baseline.json" 2>/dev/null || RECHECK_FAIL="literal not in baseline"
+fi
+if [[ -n "$RECHECK_FAIL" ]]; then
+  python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 --cause no-usable-primary \
+    --label "(primary re-check, round 2 drift check: ${RECHECK_FAIL})" \
+    ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+    --units "<n>" --max-turns "<n>"
+  exit $?
+fi
+# primary-recheck: end
+git -C "<PRIMARY_CHECKOUT>" status --porcelain
+```
+If the R2 worktree is empty but the primary checkout shows test files, this is cwd drift.
 Harvest the diff first via the failure procedure (Step 4c's failure steps 1–4, adapted for
 test files), then proceed to teardown and apply.
 
