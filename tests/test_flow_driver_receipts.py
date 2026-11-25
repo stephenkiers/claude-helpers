@@ -53,24 +53,25 @@ def _has_state(flow: Path) -> bool:
     return (flow / "state.json").exists()
 
 
-def _commit_fix_record(locked: object, state: str, receipt_seen: Optional[object]) -> None:
+def _commit_record(locked: object, state: str, receipt_seen: Optional[object], step: str = "fix") -> None:
     current = locked.require_state()  # type: ignore[attr-defined]
-    pending = PendingSpawn(step="fix", attempt=1, nonce="n0", state=state, receipt_seen=receipt_seen)  # type: ignore[arg-type]
-    locked.commit(dataclasses.replace(current, step="fix", pending_spawn=pending, attempts={"fix": 1}))  # type: ignore[attr-defined]
+    pending = PendingSpawn(step=step, attempt=1, nonce="n0", state=state, receipt_seen=receipt_seen)  # type: ignore[arg-type]
+    locked.commit(dataclasses.replace(current, step=step, pending_spawn=pending, attempts={step: 1}))  # type: ignore[attr-defined]
 
 
-def make_flow(flow: Path, state: str, receipt_seen: Optional[object] = None, text: Optional[str] = PLACEHOLDER) -> None:
-    """A flow with one fix record in the given state and, when text is given, an incomplete receipt on disk."""
+def make_flow(flow: Path, state: str, receipt_seen: Optional[object] = None, text: Optional[str] = PLACEHOLDER,
+              step: str = "fix") -> None:
+    """A flow with one record for step (default fix) in the given state and, when text is given, an incomplete receipt on disk."""
     spec = InitSpec(repo="o/n", issue=1, worktree=str(flow))
     if _has_state(flow):
         with mutating(flow) as locked:
-            _commit_fix_record(locked, state, receipt_seen)
+            _commit_record(locked, state, receipt_seen, step)
     else:
         with mutating(flow, create=spec) as locked:
             init_state(locked, spec)
-            _commit_fix_record(locked, state, receipt_seen)
+            _commit_record(locked, state, receipt_seen, step)
     if text is not None:
-        path = receipts.receipt_path(flow, "fix")
+        path = receipts.receipt_path(flow, step)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
 
@@ -125,10 +126,11 @@ def test_549_05d_resumed_two_markers_is_awaiting_answer(flow: Path) -> None:
         "ATTEMPT: 1\n<!-- awaiting-answers: questions/fix-01.json -->\n"
         "<!-- awaiting-answers: questions/fix-02.json -->\n"
     )
-    make_flow(flow, "resumed", receipt_seen=None, text=text)
-    result = classify_now(flow)
-    expect(isinstance(result, receipts.InProgress) and result.basis == "awaiting-answer",
-           f"a resumed two-marker receipt classified as {result!r}, expected InProgress awaiting-answer")
+    for step in ("fix", "review"):
+        make_flow(flow, "resumed", receipt_seen=None, text=text, step=step)
+        result = classify_now(flow)
+        expect(isinstance(result, receipts.InProgress) and result.basis == "awaiting-answer",
+               f"a resumed two-marker {step} receipt classified as {result!r}, expected InProgress awaiting-answer")
 
 
 def test_549_06a_settle_does_not_store_for_awaiting_answer(flow: Path) -> None:

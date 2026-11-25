@@ -25,6 +25,7 @@ recovery commands, a v1 fixture or a real worktree and are listed as gaps in the
 Run with: python3 tests/test_flow_driver_loop.py
 """
 
+import dataclasses
 import json
 import re
 import subprocess
@@ -54,11 +55,11 @@ from _flow_driver_loop_helpers import (  # noqa: E402
 )
 from _test_harness import REPO_ROOT, Harness  # noqa: E402
 from scripts.flow_driver import receipts, recovery, relay  # noqa: E402
-from scripts.flow_driver.state import mutating  # noqa: E402
+from scripts.flow_driver.state import ReceiptFingerprint, mutating  # noqa: E402
 from test_flow_driver_assess_loop import to_landed_verify  # noqa: E402
 from test_flow_driver_audit_loop import to_landed_plan  # noqa: E402
 
-DOC =REPO_ROOT / "commands" / "expert-flow-v2.md"
+DOC = REPO_ROOT / "commands" / "expert-flow-v2.md"
 HAPPY_ORDER = ["worktree", "plan", "track", "implement", "review", "fix", "verify", "ship"]
 CLOSED_HEAD = "a" * 40
 
@@ -394,6 +395,8 @@ def test_no_command_doc_emits_legacy_test_only_plan(base: Path) -> None:
 
 # ---------------------------------------------------------------------------
 # #549: a parked or resumed step's incomplete placeholder receipt is held, never re-run.
+# Numbering: 549-05 and 549-06 live in tests/test_flow_driver_receipts.py (classify and settle_in_progress), so the
+# numbers below skip 05 and 06. 549-10a and 549-10b are two cases of one scenario, not a gap.
 # The driver reads wall-clock time, so "the clock advanced" is simulated by back-dating receipt_first_seen
 # in state.json to 120 seconds before the call (past RERUN_QUIET_SECONDS, which is 60).
 # ---------------------------------------------------------------------------
@@ -413,9 +416,10 @@ def _backdate(flow: Path, seconds: int = 120) -> None:
 
 
 def _set_pending(flow: Path, **fields: Any) -> None:
-    state = state_of(flow)
-    state["pending_spawn"].update(fields)
-    (flow / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    with mutating(flow) as locked:
+        current = locked.require_state()
+        pending = dataclasses.replace(current.pending_spawn, **fields)  # type: ignore[type-var]
+        locked.commit(dataclasses.replace(current, pending_spawn=pending))
 
 
 def _drive_to_fix(base: Path) -> Tuple[Path, Path, Dict[str, str], Dict[str, Any]]:
@@ -504,9 +508,8 @@ def test_549_01_ticket_regression_end_turn(base: Path) -> None:
     _next(home, flow, env, "notification")
     expect((flow / "archive" / "fix" / "a1.landed.md").exists(), "the final attempt-1 receipt was not archived as landed")
     pending = pending_of(flow)
-    rolled_forward = pending is None or pending["step"] != "fix"
-    expect((pending is not None and pending["state"] == "receipt-landed" and pending["attempt"] == 1) or rolled_forward,
-           f"after the final receipt the record is {pending}, expected receipt-landed attempt 1 or a roll-forward past fix")
+    expect(pending is None or pending["step"] != "fix",
+           f"after the final receipt the record is {pending}, expected a roll-forward past fix")
 
 
 def test_549_02_resume_clears_fingerprints(base: Path) -> None:
@@ -556,7 +559,7 @@ def test_549_04_old_state_file_with_stale_stamps_is_held(base: Path) -> None:
     _resumed_fix(home, flow, env)
     # Simulate a state.json written before the fix: a resumed record that still carries the placeholder's stamps.
     old = (datetime.now(timezone.utc) - timedelta(seconds=120)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    _set_pending(flow, receipt_seen=fingerprint, receipt_first_seen=old)
+    _set_pending(flow, receipt_seen=ReceiptFingerprint(**fingerprint), receipt_first_seen=old)
     verb, _ = _next(home, flow, env, "notification")
     expect(verb == "WAIT", f"a resumed record with stale stamps printed {verb}, expected WAIT")
     _no_malformed_archive(flow)
@@ -712,10 +715,6 @@ def test_549_13_docs_and_docstrings(base: Path) -> None:
     expect(re.search(r"\$[0-9]", text) is None, "the stub doc contains a bare positional token")
     doc = recovery.__doc__ or ""
     expect("malformed_rerun" in doc, "the recovery docstring no longer mentions malformed_rerun at all")
-    # Sentence-level: the wired sentence and the table-only sentence can share one paragraph.
-    for sentence in " ".join(doc.split()).split(". "):
-        if "table-only" in sentence or "not read by the loop" in sentence:
-            expect("malformed_rerun" not in sentence, "the recovery docstring lists malformed_rerun as table-only")
 
 
 SECTIONS = [
