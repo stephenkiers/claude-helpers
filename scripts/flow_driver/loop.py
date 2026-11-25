@@ -28,7 +28,7 @@ import secrets
 import shlex
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Dict, Mapping, Optional, Tuple, Union
+from typing import Callable, Dict, Literal, Mapping, Optional, Tuple, Union
 
 from scripts.workflow.fsutil import atomic_write_text
 
@@ -96,9 +96,10 @@ from .steps import (
 # notification says the step's subagent is gone. Measured across invocations from the injected clock.
 RERUN_QUIET_SECONDS = 60
 _TS = "%Y-%m-%dT%H:%M:%SZ"
-# Clear-live is the human's way out of a wait-timeout STOP; this code reopens the step. A resume-failed STOP is never
-# reopened by clear-live: the W1 re-spawn allowlist is empty (session D3), so every failed RESUME stays a STOP.
-_CLEARABLE_STOPS = ("wait-timeout",)
+# Clear-live is the human's way out of a wait-timeout STOP and of the two receipt STOPs that name it (a gone subagent and
+# an unattributed notification); this code reopens the step. A resume-failed STOP is never reopened by clear-live: the W1
+# re-spawn allowlist is empty (session D3), so every failed RESUME stays a STOP.
+_CLEARABLE_STOPS = ("wait-timeout", "subagent-gone-no-receipt", "notification-unattributed")
 # Steps whose agent carries the restricted guard hooks (flow-plan, flow-implement, flow-review, flow-ship, flow-merge).
 RESTRICTED_STEPS = frozenset(("plan", "implement", "review", "fix", "ship", "merge"))
 # Steps that run the North Star files preflight before they spawn (ADR-0003 2026-10-09 amendment).
@@ -233,32 +234,110 @@ def _malformed_gate(locked: LockedFlow, pending: PendingSpawn, notified: bool, n
     return "rerun"
 
 
-def _settle_receipt(locked: LockedFlow, notified: bool, now: datetime) -> ReceiptFact:
-    """Act on the pending attempt's receipt under the lock. Returns the fact transition() reads."""
+NotificationAttribution = Literal["none", "attributed", "foreign", "missing"]
+# The worktree residue of a gone subagent: the summary text and the changed-path count (None when unknown).
+Residue = Tuple[str, Optional[int]]
+
+
+def _git_failure(result: pf.CommandResult) -> str:
+    """The first line of a failed git read's stderr, or its exit code when stderr is empty."""
+    lines = result.stderr.strip().splitlines()
+    return lines[0] if lines else f"exit {result.returncode}"
+
+
+def _worktree_residue(worktree: Optional[str]) -> Residue:
+    """
+    A pure-read summary of what a gone subagent left in its worktree: the HEAD and the count of changed paths. Only
+    `rev-parse` and `status` run, both with --no-optional-locks, never a command that takes index.lock. A git failure
+    is reported as unknown; it never blocks the STOP and never raises.
+    """
+    if not worktree:
+        return "no worktree recorded", None
+    head = pf.run_command(["git", "--no-optional-locks", "-C", worktree, "rev-parse", "--short=12", "HEAD"])
+    if head.returncode != 0:
+        return f"residue unknown ({_git_failure(head)})", None
+    status = pf.run_command(
+        ["git", "--no-optional-locks", "-C", worktree, "status", "--porcelain=v1", "--untracked-files=normal"]
+    )
+    if status.returncode != 0:
+        return f"residue unknown ({_git_failure(status)})", None
+    count = sum(1 for line in status.stdout.splitlines() if line.strip())
+    return f"HEAD {head.stdout.strip()}, {count} changed path(s)", count
+
+
+def _attribution(event: object, pending: Optional[PendingSpawn]) -> NotificationAttribution:
+    """
+    Attribute a notification to the live attempt by its nonce. No Notification is "none"; a notification with no nonce is
+    "missing" (fail closed); a nonce that is not the live attempt's (or no live attempt) is "foreign"; the live nonce is
+    "attributed". No process or worktree probe is involved.
+    """
+    if not isinstance(event, Notification):
+        return "none"
+    if event.nonce is None:
+        return "missing"
+    if pending is None or event.nonce != pending.nonce:
+        return "foreign"
+    return "attributed"
+
+
+def _gone(locked: LockedFlow, state: V2State, pending: PendingSpawn, receipt: str) -> Tuple[ReceiptFact, Residue]:
+    """The subagent is gone: log it once and take the worktree residue the STOP detail names."""
+    residue = _worktree_residue(state.worktree)
+    locked.log(
+        "subagent-gone",
+        step=pending.step,
+        attempt=pending.attempt,
+        nonce=pending.nonce,
+        receipt=receipt,
+        residue_paths=residue[1],
+    )
+    return "gone", residue
+
+
+def _settle_receipt(locked: LockedFlow, attribution: NotificationAttribution, now: datetime) -> Tuple[ReceiptFact, Optional[Residue]]:
+    """
+    Act on the pending attempt's receipt under the lock. Returns the fact transition() reads, and the residue summary when
+    the fact is gone. The gone and unattributed rules apply only to a running flow whose live attempt is spawned or
+    resumed with no question awaiting: an agent that asked and ended its turn is a normal park, never gone.
+    """
     state = locked.require_state()
     pending = state.pending_spawn
     if pending is None:
-        return "none"
+        return "none", None
     if pending.state == "receipt-landed":
-        return "failed" if _archived_landed_failed(locked, pending) else "none"
+        return ("failed" if _archived_landed_failed(locked, pending) else "none"), None
     key = TransitionKey(state.run_id, pending.step, pending.attempt)
-    classified = receipts.classify(locked, pending)
+    live_rules = (
+        state.status == "running"
+        and pending.state in ("spawned", "resumed")
+        and _question_fact(locked.path, pending) != "awaiting"
+    )
+    attributed = live_rules and attribution == "attributed"
+    classified = receipts.classify(locked, pending, attributed=attributed)
     if isinstance(classified, receipts.Absent):
         # A crash between an archive move and its state commit leaves the receipt gone and the archive present:
         # finish that move here, so `next` and `resume` roll forward the same way.
         forward = receipts.roll_forward(locked, key, pending)
         if forward == "rerun":
-            return "rerun"
+            return "rerun", None
         if forward == "receipt-landed":
             landed = locked.require_state().pending_spawn
-            return "failed" if landed is not None and _archived_landed_failed(locked, landed) else "none"
-        return "none"
+            return ("failed" if landed is not None and _archived_landed_failed(locked, landed) else "none"), None
+        if attributed:
+            return _gone(locked, state, pending, "absent")
+        if live_rules and attribution == "missing":
+            return "unattributed", None
+        return "none", None
+    if isinstance(classified, receipts.Gone):
+        return _gone(locked, state, pending, "incomplete")
     if isinstance(classified, receipts.InProgress):
+        if live_rules and attribution == "missing":
+            return "unattributed", None
         receipts.settle_in_progress(locked, key, pending, classified)
-        return "none"
+        return "none", None
     if isinstance(classified, receipts.Landed):
         receipts.land(locked, key)
-        return "failed" if classified.receipt.decision == "FAILED" else "none"
+        return ("failed" if classified.receipt.decision == "FAILED" else "none"), None
     if isinstance(classified, receipts.Stale):
         receipts.archive_stale(locked, key, classified.fingerprint.sha256)
         locked.log(
@@ -268,9 +347,11 @@ def _settle_receipt(locked: LockedFlow, notified: bool, now: datetime) -> Receip
             nonce=pending.nonce,
             receipt_attempt=classified.receipt.attempt,
         )
-        return "none"
+        return "none", None
     if isinstance(classified, receipts.Malformed):
-        return _malformed_gate(locked, pending, notified, now)
+        if live_rules and attribution == "missing":
+            return "unattributed", None
+        return _malformed_gate(locked, pending, attribution == "attributed", now), None
     assert_never(classified)
 
 
@@ -861,6 +942,7 @@ def _decide(
     nonce: str,
     headless: bool,
     forced_gate: Optional[Step] = None,
+    gone_residue: Optional[str] = None,
 ) -> Tuple[V2State, Directive, str, str]:
     """
     The gate stage, the pure transition for this call and, when it chose a SPAWN or MERGE, the spawn edge checks and the
@@ -880,13 +962,16 @@ def _decide(
         headless=headless,
         gate=gate,
         failed_stop=_failed_stop(locked, before.pending_spawn) if receipt_fact == "failed" else None,
+        gone_residue=gone_residue,
     )
     new_state, directive = transition(before, event, facts)  # type: ignore[arg-type]
     if isinstance(directive, SpawnDirective) and directive.step == "ship":
         guarded = _ship_guard(before, flow)
         if isinstance(guarded, _SkipShip):
             locked.commit(guarded.skipped)
-            return _decide(locked, flow, event, event_is_start, receipt_fact, nonce, headless, forced_gate="ship")
+            return _decide(
+                locked, flow, event, event_is_start, receipt_fact, nonce, headless, forced_gate="ship", gone_residue=gone_residue
+            )
         if guarded is not None:
             return guarded[0], guarded[1], "", ""
     if not isinstance(directive, (SpawnDirective, MergeDirective)):
@@ -1056,12 +1141,25 @@ def _assess_stage(locked: LockedFlow, flow: Path, receipt_fact: ReceiptFact, non
     )
 
 
-def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: datetime, headless: bool) -> str:
-    event = event_from_label(event_label)
-    notified = isinstance(event, Notification)
+def _step_once(
+    locked: LockedFlow, event_label: Optional[str], flow: Path, now: datetime, headless: bool, notified_nonce: Optional[str] = None
+) -> str:
+    event = event_from_label(event_label, nonce=notified_nonce)
     event_is_start = event_label == "start"
     nonce = secrets.token_hex(4)
-    receipt_fact = _settle_receipt(locked, notified, now)
+    live = locked.require_state()
+    attribution = _attribution(event, live.pending_spawn)
+    if attribution == "foreign" and isinstance(event, Notification):
+        # A duplicate or late notification of another attempt is logged and otherwise ignored.
+        locked.log(
+            "notification-foreign",
+            step=live.pending_spawn.step if live.pending_spawn is not None else live.step,
+            attempt=live.pending_spawn.attempt if live.pending_spawn is not None else live.attempts.get(live.step, 0),
+            nonce=live.pending_spawn.nonce if live.pending_spawn is not None else None,
+            notification_nonce=event.nonce,
+        )
+    receipt_fact, residue = _settle_receipt(locked, attribution, now)
+    gone_residue = None if residue is None else residue[0]
     landed = _record_landed_edges(locked, flow, locked.require_state(), receipt_fact)
     ledger_line = ""
     extra = ""
@@ -1074,7 +1172,9 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
     elif assessed is not None:
         new_state, directive = assessed
     else:
-        new_state, directive, ledger_line, extra = _decide(locked, flow, event, event_is_start, receipt_fact, nonce, headless)
+        new_state, directive, ledger_line, extra = _decide(
+            locked, flow, event, event_is_start, receipt_fact, nonce, headless, gone_residue=gone_residue
+        )
     if _changed(locked.require_state(), new_state):
         locked.commit(new_state)  # the state replace is the first write of the commit order
     directive, ledger_line, extra = _replay_unwritten(locked, flow, directive, ledger_line, extra)
@@ -1098,14 +1198,17 @@ def _step_once(locked: LockedFlow, event_label: Optional[str], flow: Path, now: 
     file_nonce = "none" if pending is None else pending.nonce
     attempt = committed.attempts.get(committed.step, 0) if pending is None else pending.attempt
     step = committed.step if pending is None else pending.step
-    locked.log(directive.verb.lower(), step=step, attempt=attempt, nonce=file_nonce)
+    received: Dict[str, object] = {}
+    if isinstance(event, Notification):
+        received["notification_nonce"] = event.nonce
+    locked.log(directive.verb.lower(), step=step, attempt=attempt, nonce=file_nonce, **received)
     return f"NEXT: {directive.verb} {dfile}"
 
 
-def run_next(flow: Path, after: Optional[str], *, now: Clock = _utc_now, headless: bool = False) -> str:
+def run_next(flow: Path, after: Optional[str], *, nonce: Optional[str] = None, now: Clock = _utc_now, headless: bool = False) -> str:
     """
-    One mutating `next`. after is the logged event label (None for a bare re-entry, `start` for the first call).
-    Returns the NEXT line.
+    One mutating `next`. after is the logged event label (None for a bare re-entry, `start` for the first call). nonce is
+    the spawn nonce a `notification` names (cli.py allows it only with that label). Returns the NEXT line.
 
     Raises:
         Refusal: the flow cannot be driven (a locked flow, or a state.json that is missing or invalid).
@@ -1113,7 +1216,7 @@ def run_next(flow: Path, after: Optional[str], *, now: Clock = _utc_now, headles
     """
     try:
         with mutating(flow) as locked:
-            return _step_once(locked, after, flow, now(), headless)
+            return _step_once(locked, after, flow, now(), headless, nonce)
     except Refusal as exc:
         if exc.refusal_class == "locked":
             _log_locked_refusal(flow, after or "")
@@ -1210,8 +1313,9 @@ def _clear_gate_record(locked: LockedFlow, state: V2State, reason: str) -> str:
 
 def run_clear_live(flow: Path, reason: str) -> str:
     """
-    Clear a spawned or resumed record without a receipt (logged with its nonce). Only a wait-timeout STOP is reopened,
-    so the next `next` re-spawns the step with a fresh nonce; a resume-failed STOP stays stopped (D3). A parked record
+    Clear a spawned or resumed record without a receipt (logged with its nonce). Only a wait-timeout,
+    subagent-gone-no-receipt or notification-unattributed STOP is reopened, so the next `next` re-spawns the step with a
+    fresh nonce; a resume-failed STOP stays stopped (D3). A parked record
     is answered, never cleared. The clear and any reopen are one committed transition.
 
     Raises:

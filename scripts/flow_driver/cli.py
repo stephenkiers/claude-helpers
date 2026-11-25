@@ -131,7 +131,9 @@ def _cmd_start(args: argparse.Namespace) -> int:
 def _cmd_next(args: argparse.Namespace) -> int:
     """next: one mutating loop step. Single-caller invariant: the orchestrator runs one next at a time."""
     flow = _v2_flow(args)
-    return _run_loop(lambda: run_next(flow, args.after), stream="stdout")
+    if args.nonce is not None and args.after != "notification":
+        return _usage_error("usage: --nonce is accepted only together with --after notification")
+    return _run_loop(lambda: run_next(flow, args.after, nonce=args.nonce), stream="stdout")
 
 
 def _cmd_recover(args: argparse.Namespace) -> int:
@@ -459,7 +461,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     nxt = sub.add_parser("next", help="decide the next directive and print one NEXT line")
     nxt.add_argument("--flow", required=True, help="absolute flow dir")
-    nxt.add_argument("--after", help="the event label that led here (logged only)")
+    nxt.add_argument("--after", help="the event label that led here (logged; `notification` is attributed by --nonce)")
+    nxt.add_argument("--nonce", help="with --after notification: the spawn nonce the notification names (hex)")
 
     ans = sub.add_parser("answer", help="write the human's answer for the parked attempt")
     ans.add_argument("--flow", required=True, help="absolute flow dir")

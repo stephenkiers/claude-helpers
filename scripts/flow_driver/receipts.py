@@ -17,6 +17,8 @@ Classification rules (two-read stability):
   - Stale: well-formed, attempt != pending.attempt
   - InProgress: incomplete receipt on a parked or resumed record (basis "awaiting-answer"), or incomplete with
     fingerprint different from pending.receipt_seen (basis "fingerprint-changed")
+  - Gone: incomplete receipt on a spawned record with a new or changed fingerprint, and the notification attributed
+    to the live attempt (the subagent handed back without a landed receipt; loop.py turns this into a STOP)
   - Malformed: incomplete receipt on a spawned record with fingerprint stable across two invocations (== pending.receipt_seen)
 
 Transitions via apply_transition:
@@ -196,6 +198,15 @@ class InProgress(NamedTuple):
     state: Literal["in-progress"] = "in-progress"
 
 
+class Gone(NamedTuple):
+    """
+    Incomplete receipt with a new or changed fingerprint, classified while the notification is attributed to the live
+    attempt: the subagent is gone. fingerprint is None when the receipt file is absent.
+    """
+    fingerprint: Optional[ReceiptFingerprint]
+    state: Literal["gone"] = "gone"
+
+
 class Landed(NamedTuple):
     """Well-formed receipt for the pending attempt."""
     receipt: Receipt
@@ -224,7 +235,7 @@ class Malformed(NamedTuple):
     state: Literal["malformed"] = "malformed"
 
 
-Classification = Union[Absent, InProgress, Landed, Stale, Malformed]
+Classification = Union[Absent, InProgress, Gone, Landed, Stale, Malformed]
 
 
 class RebuildRefused(Exception):
@@ -287,7 +298,7 @@ def _archive_move(path: Path, dest: Path, accept: Callable[[bytes], bool]) -> No
     _fsync_dir(path.parent)
 
 
-def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
+def classify(locked: LockedFlow, pending: PendingSpawn, *, attributed: bool = False) -> Classification:
     """
     Classify a receipt based on well-formedness and attempt match.
 
@@ -307,6 +318,11 @@ def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
     apply to spawned records with Malformed receipts. The D4 gate is wired for `next` in loop._malformed_gate
     but does not apply to parked or resumed records. The `resume` command still reruns a spawned record's
     stable incomplete receipt (rule-1-live-step, no D4 gate and no D5 cap; ADR-0026 2026-11-16).
+
+    attributed (default False) says the step's notification named the live attempt's nonce. Then, on a spawned
+    record, an incomplete receipt whose fingerprint is new or changed is Gone (the subagent handed back without a
+    receipt) rather than InProgress. Absent, Landed, Stale, a parked or resumed record's InProgress, and a stable
+    incomplete (Malformed) receipt are the same with or without it.
     """
     path = receipt_path(locked.path, pending.step)
 
@@ -335,7 +351,9 @@ def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
 
     # Incomplete on spawned record: InProgress or Malformed via two-read stability
     if pending.receipt_seen is None or fingerprint != pending.receipt_seen:
-        # Fingerprint changed or not yet stored: InProgress
+        # Fingerprint changed or not yet stored: InProgress, or Gone when the notification names this attempt
+        if attributed:
+            return Gone(fingerprint=fingerprint)
         return InProgress(fingerprint=fingerprint, basis="fingerprint-changed")
     else:
         # Fingerprint stable: Malformed
