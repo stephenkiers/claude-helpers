@@ -25,6 +25,7 @@ import tempfile
 import time
 import traceback
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import telemetry_schema
@@ -1871,6 +1872,87 @@ def test_append_never_writes_finished_or_hash_lines():
         sb.close()
 
 
+def test_append_write_short_exit_2():
+    """When os.write returns fewer bytes than the row, append exits 2 and no APPENDED line."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-short-write")
+        run.init()
+        ev = run.evidence("a")
+        before = _al_ledger_bytes(run)
+
+        # Patch os.write to return only 1 byte instead of the full write
+        original_write = os.write
+        def short_write(fd, data):
+            return 1
+
+        with mock.patch('os.write', side_effect=short_write):
+            r = _al_append(run, ["--done", "round1", "--evidence", ev])
+
+        after = _al_ledger_bytes(run)
+        # Exit code should be 2
+        # No APPENDED line in output
+        # Ledger may have partial write but not the full row
+        exit_ok = r.returncode == 2
+        appended_ok = "APPENDED:" not in _out(r)
+        ok = exit_ok and appended_ok
+        return ok, f"rc={r.returncode} appended_in_output={'APPENDED:' in _out(r)} {_brief(r)}"
+    finally:
+        sb.close()
+
+
+def test_append_write_oserror_exit_2():
+    """When os.write raises OSError, append exits 2 and no APPENDED line."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-app-write-error")
+        run.init()
+        ev = run.evidence("a")
+
+        # Patch os.write to raise OSError
+        def write_error(fd, data):
+            raise OSError("Simulated write error")
+
+        with mock.patch('os.write', side_effect=write_error):
+            r = _al_append(run, ["--done", "round1", "--evidence", ev])
+
+        # Exit code should be 2
+        # No APPENDED line in output
+        exit_ok = r.returncode == 2
+        appended_ok = "APPENDED:" not in _out(r)
+        ok = exit_ok and appended_ok
+        return ok, f"rc={r.returncode} appended_in_output={'APPENDED:' in _out(r)} {_brief(r)}"
+    finally:
+        sb.close()
+
+
+def test_append_readonly_ledger_exit_nonzero():
+    """A read-only ledger (mode 0444) causes append to exit non-zero with no APPENDED line."""
+    sb = Sandbox()
+    try:
+        # Skip if running as root (root ignores file modes)
+        if os.geteuid() == 0:
+            return True, "skipped (running as root)"
+
+        run = Run(sb, "run-app-readonly")
+        run.init()
+        ev = run.evidence("a")
+
+        # Make ledger read-only
+        run.ledger.chmod(0o444)
+
+        r = _al_append(run, ["--done", "round1", "--evidence", ev])
+
+        # Exit code should be non-zero (2 or similar)
+        # No APPENDED line in output
+        exit_ok = r.returncode != 0
+        appended_ok = "APPENDED:" not in _out(r)
+        ok = exit_ok and appended_ok
+        return ok, f"rc={r.returncode} appended_in_output={'APPENDED:' in _out(r)} {_brief(r)}"
+    finally:
+        sb.close()
+
+
 def test_append_help_and_docstring():
     """--help lists append; the module docstring has append in Usage and an append entry in Exit codes naming 0-6."""
     sb = Sandbox()
@@ -2168,6 +2250,9 @@ TESTS = [
     ("append: missing ledger exits 2 and is not created", test_append_missing_ledger_exit_2),
     ("append: symlinked ledger exits 2, target untouched", test_append_symlinked_ledger_exit_2),
     ("append: never writes '#' or FINISHED lines", test_append_never_writes_finished_or_hash_lines),
+    ("append: write returns short count exits 2, no APPENDED", test_append_write_short_exit_2),
+    ("append: write raises OSError exits 2, no APPENDED", test_append_write_oserror_exit_2),
+    ("append: read-only ledger (0444) exits non-zero, no APPENDED", test_append_readonly_ledger_exit_nonzero),
     ("append: --help and module docstring document append and exit codes 0-6", test_append_help_and_docstring),
     ("append doc: no printf/>> ledger redirect in commands/ or prompts/", test_append_doc_no_printf_redirect),
     ("append doc: call-site counts and --run-key form", test_append_doc_call_site_counts),
