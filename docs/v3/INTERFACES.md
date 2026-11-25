@@ -365,6 +365,11 @@ def run_unit(ctx: Ctx, unit: Dict[str, Any], role: str, prompt: str, message: st
 def protected_paths(ctx: Ctx) -> List[str]          # cfg.protected_paths + flow.get("protected")
 def check_fixer(ctx: Ctx, allowed: Sequence[str]) -> Callable[[CheckRun, int], None]
     # round 1: fixer on the cheap model with the trimmed failure; round 2: the stronger model
+```
+
+Read-only helpers shared by every stage: `steps/common.py` (built)
+
+```python
 def file_map(root: Path, limit: int = 400) -> str    # tracked files, one per line, for prompts
 def reviewers(context: str) -> List[Dict[str, Any]]  # reviewers/index.yaml entries having that context
 def persona_text(entry: Dict[str, Any]) -> str       # the persona file's text
