@@ -317,10 +317,12 @@ def rev_list_not_remotes(tip: str, cwd: Optional[Path] = None) -> Tuple[bool, Op
     Returns (True, None) if tip is reachable from some remote (clean).
     Returns (False, None) if `git rev-list <tip> --not --remotes` is empty (unpushed).
     Returns (False, Unknown(...)) if any error occurs.
+
+    F1: tip is placed FIRST so --not does not negate the tip.
     """
     try:
         output = run_git_command(
-            ["--no-optional-locks", "rev-list", "--not", "--remotes", "--end-of-options", tip],
+            ["--no-optional-locks", "rev-list", "--end-of-options", tip, "--not", "--remotes"],
             cwd=cwd,
             check=True
         )

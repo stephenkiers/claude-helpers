@@ -9,16 +9,26 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Callable, Union, Tuple
 
 from . import paths
 from .safety import Unknown
 
-# Tri-state liveness results
-LIVE = "live"
-NOT_LIVE = "not_live"
-UNKNOWN = "unknown"
+
+# Tri-state results enum (F30: stringly-typed tri-state)
+class TriState(str, Enum):
+    """Tri-state enum for liveness, pushed, and clean states."""
+    LIVE = "live"
+    NOT_LIVE = "not_live"
+    UNKNOWN = "unknown"
+
+
+# Backwards-compatible constants (JSON output unchanged)
+LIVE = TriState.LIVE.value
+NOT_LIVE = TriState.NOT_LIVE.value
+UNKNOWN = TriState.UNKNOWN.value
 
 
 @dataclass
@@ -39,13 +49,16 @@ def parse_ps_output(text: str) -> List[ProcRow]:
 
     Returns a list of ProcRow, or raises if parsing fails.
     lstart is a fixed 5-token field: Mon Nov 24 10:00:00 2026
+    comm is the remainder after lstart (may contain spaces in theory, but ps output is well-defined).
     """
     rows: List[ProcRow] = []
     for line in text.strip().splitlines():
         if not line.strip():
             continue
-        parts = line.split(None, 6)  # Split on whitespace, max 7 parts
-        if len(parts) < 7:
+        # Fixed field split: pid(1) ppid(1) uid(1) tty(1) rss(1) lstart(5) comm(1+)
+        # rsplit from the right: split at most into 7 parts from the left
+        parts = line.split(None, 5)  # Split on whitespace: pid, ppid, uid, tty, rss, rest
+        if len(parts) < 6:
             continue
         try:
             pid = int(parts[0])
@@ -53,10 +66,9 @@ def parse_ps_output(text: str) -> List[ProcRow]:
             uid = int(parts[2])
             tty = parts[3]
             rss = int(parts[4])
-            # lstart is parts[5-9]: Mon Nov 24 10:00:00 2026 (5 tokens)
-            # Need to reconstruct it properly
-            remaining = line[len(f"{pid} {ppid} {uid} {tty} {rss} "):].split(None)
-            if len(remaining) < 6:  # 5 lstart tokens + 1 comm
+            # Remaining is "lstart (5 tokens) comm"
+            remaining = parts[5].split(None, 5)  # Split: lstart_1, lstart_2, lstart_3, lstart_4, lstart_5, comm
+            if len(remaining) < 6:  # Need 5 lstart tokens + at least comm
                 continue
             lstart = " ".join(remaining[:5])
             comm = remaining[5]
@@ -102,11 +114,18 @@ def list_claude_processes(
     """
     List all claude processes via ps.
 
+    Pure parser: filters the full ps output for processes with comm == "claude".
+    Returns the unordered list of live processes at the moment ps runs; subsequent
+    pids may exit before the caller acts on the list.
+
     Args:
         runner: Injectable subprocess runner (default: subprocess.run with timeout).
                 Signature: runner(argv, timeout) -> stdout text
 
-    Returns list of ProcRow for processes with comm == "claude", or Unknown on error.
+    Returns:
+        List of ProcRow for processes with comm == "claude", or Unknown on any error
+        (timeout, ps failure, exception). The returned list is never an empty string
+        or None; on success it is a list (possibly empty); on failure it is Unknown.
     """
     if runner is None:
         def default_runner(argv: List[str], timeout: int) -> str:
@@ -229,8 +248,20 @@ def descendants(
     """
     Find all descendants of a process by walking down the process tree.
 
-    Returns list of descendant ProcRow (including the given pid if it exists),
-    or Unknown on error.
+    Pure tree walker: takes a snapshot of ps output (or fetches one if all_procs is None)
+    and returns all processes reachable from pid by following child ppid links.
+    Includes the given pid if it exists in the snapshot.
+
+    Args:
+        pid: Process ID to find descendants of
+        all_procs: Injected process list from ps (optional; fetched if None)
+        runner: Injectable subprocess runner (default: subprocess.run with timeout)
+
+    Returns:
+        List of descendant ProcRow (including pid if found), or Unknown on any error
+        (timeout, ps failure, exception). The returned list is never an empty string
+        or None; on success it is a list (possibly empty if pid is not found);
+        on failure it is Unknown.
     """
     if runner is None:
         def default_runner(argv: List[str], timeout: int) -> str:
@@ -474,7 +505,9 @@ def signal_process(
     uid: int,
     allowed_roots: List[str],
     verify_runner: Optional[Callable[..., bool]] = None,
-    kill_runner: Optional[Callable[[int, int], None]] = None
+    kill_runner: Optional[Callable[[int, int], None]] = None,
+    caller_pids: Optional[List[int]] = None,
+    discovery_cwd: Optional[str] = None
 ) -> Tuple[bool, str]:
     """
     Send a signal to a process after verifying its identity.
@@ -483,6 +516,18 @@ def signal_process(
     - (True, "signal sent") if signal was sent
     - (False, reason) if verify_process failed or signal failed
     Never raises on a vanished pid.
+
+    Args:
+        pid: Process ID to signal
+        sig: Signal number
+        lstart: Process start time (from ps output)
+        comm: Process command name
+        uid: Process user ID
+        allowed_roots: List of allowed root paths for the process cwd
+        verify_runner: Injectable verification function
+        kill_runner: Injectable kill function
+        caller_pids: Pids in the caller chain (threaded to verify_runner)
+        discovery_cwd: Original discovery cwd (threaded to verify_runner)
     """
     if verify_runner is None:
         verify_runner = verify_process
@@ -492,8 +537,8 @@ def signal_process(
             os.kill(p, s)
         kill_runner = default_kill
 
-    # Verify the process
-    if not verify_runner(pid, lstart, comm, uid, allowed_roots):
+    # Verify the process (thread caller_pids and discovery_cwd through)
+    if not verify_runner(pid, lstart, comm, uid, allowed_roots, caller_pids=caller_pids, discovery_cwd=discovery_cwd):
         return False, f"process {pid} failed verification"
 
     # Send the signal
@@ -513,7 +558,7 @@ def live_in(
     caller_pids: Union[List[int], Unknown],
     allowed_roots: Optional[List[str]] = None,
     runner: Optional[Callable[..., Any]] = None
-) -> Union[str, Unknown]:
+) -> str:
     """
     Tri-state answer to "does any process other than the caller chain have its cwd inside path?".
 
@@ -526,10 +571,10 @@ def live_in(
     Returns:
     - LIVE: some process other than caller has cwd in path
     - NOT_LIVE: no such process found
-    - UNKNOWN: probe failed or caller chain is unknown
+    - UNKNOWN: probe failed or caller chain is unknown (F2: returns typed value, not Unknown object)
     """
     if isinstance(caller_pids, Unknown):
-        return Unknown(f"caller chain unknown: {caller_pids}")
+        return UNKNOWN
 
     if runner is None:
         def default_runner(argv: List[str], timeout: int) -> str:
@@ -566,8 +611,8 @@ def live_in(
 
         return NOT_LIVE
     except subprocess.TimeoutExpired:
-        return Unknown("process discovery timed out")
-    except subprocess.CalledProcessError as e:
-        return Unknown(f"process discovery failed: {e}")
-    except Exception as e:
-        return Unknown(f"live_in error: {e}")
+        return UNKNOWN
+    except subprocess.CalledProcessError:
+        return UNKNOWN
+    except Exception:
+        return UNKNOWN

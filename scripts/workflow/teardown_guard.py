@@ -144,11 +144,27 @@ def validate_target(kind: str, path: str, ctx: GuardContext) -> Tuple[bool, str]
             # Inside worktrees parent: valid
             pass
         elif real_path.startswith(real_primary + "/.claude/worktrees/agent-"):
-            # Inside agent-* under primary: check basename
-            agent_dir = os.path.dirname(real_path)
-            if os.path.basename(agent_dir).startswith("agent-"):
+            # Inside agent-* under primary: validate the agent-* directory structure
+            # F16: Check the immediate parent is agent-* and has no symlinks
+            agent_parent = os.path.dirname(real_path)
+            agent_dir_name = os.path.basename(agent_parent)
+
+            # agent_dir_name must be exactly "agent-*" (the worktree name itself)
+            # or be under an agent-* directory. Check that path is at most one level deep under agent-*
+            if agent_dir_name.startswith("agent-"):
+                # Immediate parent is agent-*, check for symlinks in the path
+                if _has_symlink_component(agent_parent, real_primary):
+                    return False, "agent worktree path contains symlinked component"
                 # Valid agent worktree
                 pass
+            elif real_path == agent_parent:
+                # Path is the agent-* directory itself
+                if os.path.basename(real_path).startswith("agent-"):
+                    if _has_symlink_component(real_path, real_primary):
+                        return False, "agent worktree path contains symlinked component"
+                    pass
+                else:
+                    return False, f"worktree {path} not in allowed locations"
             else:
                 return False, f"worktree {path} not in allowed locations"
         else:
@@ -217,6 +233,23 @@ def guarded_rmtree(kind: str, path: str, ctx: GuardContext) -> Tuple[bool, str]:
         shutil.rmtree(path)
         return True, ""
     except Exception as e:
+        # F42: Report partial state (which paths remain) instead of plain failure
+        remaining_items = []
+        try:
+            if os.path.exists(path):
+                for root, dirs, files in os.walk(path):
+                    for d in dirs:
+                        remaining_items.append(os.path.join(root, d))
+                    for f in files:
+                        remaining_items.append(os.path.join(root, f))
+                # Limit to first 10 items in report
+                if remaining_items:
+                    remaining_str = "; ".join(remaining_items[:10])
+                    if len(remaining_items) > 10:
+                        remaining_str += f" ... and {len(remaining_items) - 10} more"
+                    return False, f"rmtree failed: {e}; remaining items: {remaining_str}"
+        except Exception:
+            pass
         return False, f"rmtree failed: {e}"
 
 

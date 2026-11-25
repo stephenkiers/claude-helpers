@@ -548,7 +548,8 @@ def apply_cleanup(
 
         # Acquire removal lock (non-blocking) for the worktree removal phase
         # This prevents concurrent removals of the same worktree
-        removal_lock_path = Path(main_worktree_path) / ".cleanup-removal.lock"
+        # F31: Move lock to stable shared root under ~/.claude instead of cwd
+        removal_lock_path = Path.home() / ".claude" / "cleanup-removal.lock"
         try:
             with fsutil.nonblocking_flock(removal_lock_path):
                 # Now proceed with worktree removal and branch deletion
@@ -653,10 +654,7 @@ def worktree_dirty_state(target_worktree: Path) -> Tuple[str, str]:
         reason = str(e)
         if e.stderr:
             reason = e.stderr.strip()
-        # Special handling: if the directory is not a git repository at all, treat it as clean.
-        # Old code didn't check dirty state on non-git-repo paths, so a plain temp dir should not block.
-        if "not a git repository" in reason.lower():
-            return CLEAN, ""
+        # F15: Map probe errors (not a git repo, git failure) to UNKNOWN, never CLEAN/PUSHED
         return UNKNOWN, f"git status failed: {reason}"
     except RuntimeError as e:
         return UNKNOWN, f"git status timed out or failed: {e}"
@@ -697,20 +695,21 @@ def unpushed_state(
     Returns (state, detail) where state is one of PUSHED, UNPUSHED, or UNKNOWN.
     - PUSHED: tip is reachable from remotes OR merged_head_oid check passes
     - UNPUSHED: tip is not reachable and merged check doesn't apply/fails
-    - UNKNOWN: any error (missing PR data, timeout, exception)
+    - UNKNOWN: any error (missing PR data, timeout, exception, not a git repo)
 
     Args:
         tip: Commit/ref to check
         merged_head_oid: Optional headRefOid from a MERGED PR
         repo: Working directory for git commands (defaults to cwd)
 
-    Special handling: "not a git repository" errors are treated as PUSHED, since there's no actual
-    git worktree to check push status on (old code didn't perform this check on non-git-repo paths).
+    F15: Probe errors (not a git repository, git failures) are UNKNOWN, never PUSHED/CLEAN.
     """
     # Check (a): reachability from remotes
+    # F1: Put tip FIRST so --not doesn't negate the tip
+    rev_list_error: Optional[str] = None
     try:
         output = git.run_git_command(
-            ["--no-optional-locks", "rev-list", "--not", "--remotes", "--end-of-options", tip],
+            ["--no-optional-locks", "rev-list", "--end-of-options", tip, "--not", "--remotes"],
             cwd=repo,
             check=True
         )
@@ -721,14 +720,10 @@ def unpushed_state(
         reason = str(e)
         if e.stderr:
             reason = e.stderr.strip()
-        # Special handling: if it's not a git repository at all, treat as PUSHED
-        # (old code didn't check push state on non-git-repo paths)
-        if "not a git repository" in reason.lower():
-            return PUSHED, "not a git repository (no push check needed)"
-        # On other errors, fall through to check (b) if headRefOid is available
-    except (RuntimeError, Exception):
-        # On error, fall through to check (b) if headRefOid is available
-        pass
+        # F15: Probe errors go to rev_list_error; will decide UNKNOWN vs UNPUSHED at end
+        rev_list_error = reason
+    except (RuntimeError, Exception) as e:
+        rev_list_error = str(e)
 
     # Check (b): ancestry from merged PR's headRefOid
     if merged_head_oid:
@@ -746,6 +741,10 @@ def unpushed_state(
             return UNKNOWN, f"merge-base check failed: {e}"
 
     # Neither reachability nor merged PR ancestry check passed
+    # F15: If rev-list failed and no merged PR available, it's a probe error (UNKNOWN)
+    if rev_list_error and not merged_head_oid:
+        return UNKNOWN, f"reachability check failed and no merged PR data: {rev_list_error}"
+
     if merged_head_oid is not None:
         return UNPUSHED, "not reachable from remotes and not ancestor of merged PR"
     else:
@@ -850,10 +849,12 @@ def remove_worktree(
             return RemovalResult(path, REMOVED, "", pids=pids_list, used_trash=False)
         elif err:
             # On failure, try fallback: move_to_trash, git worktree prune, guarded_rmtree
+            # F21: Only fall back for known benign refusals, not unknown errors
             reason_lower = (err.reason or "").lower()
             is_directory_not_empty = "directory not empty" in reason_lower
+            is_benign_refusal = is_directory_not_empty or "worktree is locked" in reason_lower
 
-            if is_directory_not_empty or not force_after_hook:
+            if is_benign_refusal and not force_after_hook:
                 # Try fallback path
                 try:
                     success_trash, trash_reason, new_path = teardown_guard.move_to_trash(path, ctx)
@@ -865,8 +866,18 @@ def remove_worktree(
                             pass
 
                         # Try guarded_rmtree on the trash item
+                        # F6: Create a new context that includes the trash path so validation passes
+                        trash_ctx = teardown_guard.GuardContext(
+                            worktrees_parent=ctx.worktrees_parent,
+                            primary_worktree=ctx.primary_worktree,
+                            registered=list(ctx.registered) + [new_path],
+                            plan_paths=list(ctx.plan_paths) + [new_path],
+                            trash_root=ctx.trash_root,
+                            home=ctx.home,
+                            claude_dir=ctx.claude_dir
+                        )
                         success_rm, rm_reason = teardown_guard.guarded_rmtree(
-                            teardown_guard.KIND_TRASH, new_path, ctx
+                            teardown_guard.KIND_TRASH, new_path, trash_ctx
                         )
                         if success_rm:
                             return RemovalResult(path, REMOVED, "", pids=pids_list, used_trash=True)
@@ -883,20 +894,6 @@ def remove_worktree(
 
     except Exception as e:
         return RemovalResult(path, FAILED, f"worktree removal error: {e}", pids=pids_list, used_trash=False)
-
-    # 4. Post-check: verify worktree is gone
-    try:
-        wt_list = git.get_worktree_list_porcelain(cwd=repo)
-        for line in wt_list.splitlines():
-            if line.strip().startswith(path):
-                return RemovalResult(path, FAILED, "worktree still registered after removal", pids=pids_list, used_trash=False)
-
-        if path_obj.exists():
-            return RemovalResult(path, FAILED, "worktree directory still exists after removal", pids=pids_list, used_trash=False)
-    except Exception as e:
-        return RemovalResult(path, FAILED, f"post-removal verification failed: {e}", pids=pids_list, used_trash=False)
-
-    return RemovalResult(path, REMOVED, "", pids=pids_list, used_trash=False)
 
 
 def _run_cleanup_hook(
