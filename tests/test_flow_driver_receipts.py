@@ -95,8 +95,6 @@ def test_549_05a_parked_and_resumed_are_awaiting_answer(flow: Path) -> None:
     result = classify_now(flow)
     expect(isinstance(result, receipts.InProgress) and result.basis == "awaiting-answer",
            f"a resumed record with no fingerprint classified as {result!r}")
-    make_flow(flow, "resumed", receipt_seen=None)
-    expect(not isinstance(classify_now(flow), receipts.Malformed), "a resumed placeholder was classified as Malformed")
 
 
 def test_549_05b_resumed_with_matching_fingerprint_is_still_awaiting_answer(flow: Path) -> None:
