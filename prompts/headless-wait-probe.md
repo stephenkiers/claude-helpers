@@ -175,7 +175,9 @@ and the child result in `step-report.md` is `LONG CHILD DONE`.
 
 ## Choosing the branch
 
-- **Branch F** if Probe A shows (a) blocking, (b) parallel and (c) a synchronous report.
+- **Branch F** only if Probe A shows (a) blocking, (b) parallel and (c) a synchronous report **in both
+  modes**: headless (`claude -p`) and an interactive session. Record (d), the Agent tool's schema as the
+  session sees it, in each mode: a `run_in_background` the schema does not list is silently dropped.
 - **Branch W** otherwise.
 - **Units foreground** only if the result is Branch F and Probe B survived. Otherwise units use a
   background launch plus `wait-files.py`.
@@ -186,7 +188,16 @@ recorded result.
 
 ## Recorded decision
 
-**2026-11-23, human-approved: Branch F, units background.** This is the decision later plan steps follow.
+**2026-11-24, human-approved: Branch W everywhere (#553).** This supersedes the 2026-11-23 decision below.
+
+The 2026-11-23 probe ran only under `claude -p`. In an interactive session the Agent tool's schema has
+no `run_in_background` parameter, so `false` is dropped and every launch returns an async
+acknowledgement. A #545 review step stopped at its first foreground site (the Summarizer) for that
+reason. Every site now launches in the background and is collected with `wait-files.py` over a receipt
+file the child writes last (`prompts/join-barrier-pattern.md` § Waiting for the barrier). That works
+the same in both modes, and a hung child now meets a deadline at every site.
+
+**Superseded: 2026-11-23, human-approved: Branch F, units background.**
 
 - **Branch F** for bounded sites: panel reviewers, scouts, Router, Q&A and other short dispatches
   launch with `run_in_background: false`, in one message, and the step reads their reports from the
@@ -213,7 +224,8 @@ it here with the date, the Claude Code version, and the flow dir's `child-wait.j
 
 | Date | Claude Code | (a) blocks | (b) parallel | (c) sync report | (d) foreground option | Probe B survives | Branch | Units |
 |------|-------------|------------|--------------|-----------------|-----------------------|------------------|--------|-------|
-| 2026-11-23 | 2.1.331 | yes: `step-after` 3 s after the last `child-N.end` | yes: children started within 3 s; last end 97 s after `step-before` | yes: 3 × `CHILD N DONE`, 0 "Async agent launched" in the stream | yes: `run_in_background` in the schema; all three launched `false` | yes: child ran 967 s, `step-after` 6 s after `child.end`, `LONG CHILD DONE` returned | F | foreground allowed; background chosen (see Recorded decision) |
+| 2026-11-24 (interactive) | 2.1.332 | no: the call returned at once | n/a | no: "Async agent launched" acknowledgement | no: `run_in_background` absent from the interactive Agent schema; `false` dropped | not run | W | background |
+| 2026-11-23 (`claude -p`) | 2.1.331 | yes: `step-after` 3 s after the last `child-N.end` | yes: children started within 3 s; last end 97 s after `step-before` | yes: 3 × `CHILD N DONE`, 0 "Async agent launched" in the stream | yes: `run_in_background` in the schema; all three launched `false` | yes: child ran 967 s, `step-after` 6 s after `child.end`, `LONG CHILD DONE` returned | F | foreground allowed; background chosen (see Recorded decision) |
 
 Notes for 2026-11-23: top level and step agent on Sonnet, children on Haiku, step agent `general-purpose`
 (not a `flow-*` agent, so no flow guard hooks were in play). Probe A's first two runs measured nothing:

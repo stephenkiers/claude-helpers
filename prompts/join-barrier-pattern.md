@@ -20,51 +20,59 @@ agent escalates to the user).
 
 This section defines when a barrier closes and how a subagent or skill waits for it. It binds every
 subagent and every skill, interactive or run by an `/expert-flow` step agent: there is one mechanism
-for both modes (ADR-0023 amendment 2026-11-23, #532). The headless probe that chose it is recorded in
-`~/.claude/prompts/headless-wait-probe.md` (Branch F: bounded sites collect by a foreground return;
-units, sweeps, check runs and merge applies collect by a file wait).
+for both modes (ADR-0023 amendments 2026-11-23, #532, and 2026-11-24, #553). Every child is launched in
+the background and collected by a file wait. There is no foreground site: an interactive session's
+Agent tool has no foreground mode (its schema has no `run_in_background` parameter, a `false` value is
+silently dropped, and the call returns a launch acknowledgement), so a wait that relies on a blocking
+return works only under `claude -p`. The probe history is in `~/.claude/prompts/headless-wait-probe.md`.
 
-1. **Launch** the whole batch in one message. A site designated *foreground* launches every call with
-   `run_in_background: false`. A site designated a *file wait* runs `wait-files.py mark` immediately
-   before the launch (rule 6) and launches with `run_in_background: true`.
+1. **Launch** the whole batch in one message. Run `wait-files.py mark` immediately before the launch
+   (rule 6), and launch every call with `run_in_background: true`.
 
 2. **The launched set** is the list of ids you just dispatched, taken from existing on-disk artifacts: the Router's selection in the review dir, `selected-experts.md` in the plan session dir, the unit ids in implement-with-haiku, or the single background Bash check run in implement-with-haiku's Final check. It is re-derivable after context compaction. There is no new manifest file.
 
-3. **Per-id state** is `launched → returned → ok | bad`, with a branch to `launched (retry)` on first failure. An id becomes *returned* when its final report arrives: a synchronous result containing the report, an `<agent-message from="{id}">` hand-back, or a task notification whose `<result>` contains the report. A synchronous result that only says the agent was launched ("Async agent launched", "working in the background") is a launch acknowledgement: the id stays `launched`. A notification whose `<result>` only points at a hand-back marks the id *returned*, but the receipt is read from the hand-back message. The hand-back and the notification for one id may arrive in separate turns: that is two partial turns and one state change, never a retry. A second or late notification for an id that has already returned, or that a file wait already closed, is a no-op, including one that arrives after that id's stand-in was written: it never overwrites the stand-in or triggers another retry. Never keep a running count of notifications.
+3. **Receipt files.** Every dispatch prompt names the child's receipt file with a literal line
+   `Receipt file: <RUN_DIR>/receipts/<phase>-<id>.md` (absolute path; `<phase>` is the part of the phase name after the colon, so a reviewer's Pass 1, Q&A and Pass 2 receipts never collide; `<RUN_DIR>` is the review dir, the plan
+   session dir, or the implement scratch dir, never `FLOW_DIR`) and ends with this instruction: "Your
+   last action: `Write` that file with your receipt line, then a final line `<!-- report-end -->`. A
+   role that returns its result inline (Router, judges, effort-1 scouts) writes its whole report there
+   instead of the receipt line." The receipt file is what the parent waits on and what it reads; the
+   child's reply is never needed. A site that already names a report file ending with
+   `<!-- report-end -->` (implement-with-haiku's units, sweeps, gate-fix and round3-followup reports) uses that file as the receipt file.
+   Outputs keep their own formats and sentinels; the receipt file is the only new file.
 
-4. **On return**, check that id's checkpoint file and sentinel and mark it `ok` or `bad`. This applies at **foreground sites**, where a `bad` id is retried once per rule 5. At **file-wait sites** the same file check decides `ok` or not-yet-`ok`, but a `bad` file never triggers a retry or stand-in; rule 5 governs that case. For agents that write no checkpoint file and return their result inline (Router, Q&A), the report carried by the hand-back (or synchronous result or notification, whichever contains it) is the whole receipt. **After context compaction, or whenever remembered state is uncertain,** an id whose checkpoint file exists with its sentinel is `ok` regardless of remembered receipt state; only ids without a valid file remain outstanding, and a missing file still never triggers a retry. A present-but-invalid file (exists, but lacks a sentinel or is unreadable) is `bad`.
+4. **Per-id state** is `launched → returned → ok | bad`, with a branch to `launched (retry)` on first failure. An id is `ok` when its receipt file is fresh (rule 6's mark), ends with `<!-- report-end -->`, and, where the site names an output file and sentinel, that file exists and ends with its sentinel. An id becomes *returned* when its completion arrives: an `<agent-message from="{id}">` hand-back or a task notification. A launch acknowledgement ("Async agent launched", "working in the background") is never a return. A second or late notification for an id that is already `ok`, that was stood in, or that is `launched (retry)` and comes from the failed first attempt, is a no-op: it never overwrites the stand-in or triggers another retry. Only the retry's own fresh receipt can make a retried id `ok`. Never keep a running count of notifications. **After context compaction, or whenever remembered state is uncertain,** an id whose files pass the `ok` check is `ok` regardless of remembered state.
 
-5. **Retry once** only at a foreground site, when an id has *returned* and is `bad` — state becomes `launched (retry)`. Evaluate the next return once: if still `bad`, write the stand-in file per the existing pattern. **File-wait sites have no "returned bad" state, no retry and no stand-in:** a child is `ok`, or the phase ends at its deadline with the hard stop of rule 8. (A per-id retry there needs per-id freshness and a defined `bad` marker; that belongs to the self-heal follow-up.)
+5. **Retry once** only where the site has a stand-in (Pass 1 reviewers, plan contributions, pods, alignment, reconciliation): when an id has *returned* and is not `ok`, it is `bad`. Delete the bad receipt, then re-launch that one child with the same receipt path under a per-attempt phase name `<STEP or command>:<phase>-retry`. Run `mark` for the retry phase immediately before the re-launch, so the retry has its own anchor and deadline, and wait on the receipt under that phase; the first attempt's files are older than that mark and can never satisfy it. Its state is `launched (retry)`. If it returns `bad` again, write the stand-in file per the existing pattern and treat its receipt as `ok`. A site with no stand-in never retries: a `bad` id there fails the phase with reason `child returned without a valid receipt: <id>`. Soft sites are the carve-out: Contrarian Carl and the Pass 2 skeptic-verifier are soft, so a `bad` id there does not fail the phase; it is recorded and the review continues without that child's output. An id that never returns is handled by the deadline (rule 8), never by a retry.
 
-6. **Never end your turn while any launched id is outstanding.** Collect the children in the same turn:
-   - **Foreground sites** collect by the foreground return: the dispatch call blocks until every child returns and carries its report. The bound here is the harness and each child's own turn limits; a foreground return has no `wait-files.py` deadline. An outer step deadline, where one is named, still applies.
-   - **File-wait sites** collect with `~/.claude/scripts/wait-files.py`. Run `mark` immediately before the launch, then repeat `wait` in the foreground until it exits 0 (closed) or 4 (deadline). Exit 3 (`pending: <ids>`) means the slice ended: re-issue the same `wait` call at once. Each call blocks for up to `--timeout` seconds (default 540, never below 300) and polls the files every 5 s, so it costs no model tokens while it waits.
-     - **Bash tool timeout.** Every Bash tool call that runs `wait-files.py wait` must pass an explicit `timeout: 600000` (milliseconds) parameter on the tool call. The default Bash tool timeout is shorter than the 540 s slice, so without it the call is killed mid-slice.
-     - **Killed or exit 2.** If a `wait` Bash call is killed or returns exit 2, re-issue the same `wait` exactly once. If that re-issue is also killed or returns exit 2, write the FAILED receipt (rule 8 wording, `Reason: child-wait call failed: phase <P>`) and stop. Do not relaunch the children.
-     - **Setup.** This requires `/setup-local` to have been run after pulling, so that `~/.claude/scripts/wait-files.py` exists.
-     - **Marks.** `mark` refuses to overwrite an open phase without `--force`. There is one phase per `STATE_DIR`. A wait that exits 4 (deadline) leaves the phase open, so re-running the same phase requires `mark --force`. After context compaction, pass an explicit `--since <EPOCH>` to `wait` (the epoch recorded at the mark) rather than relying on the recorded mark.
+6. **Never end your turn while any launched id is outstanding.** Collect the children in the same turn with `~/.claude/scripts/wait-files.py`. Run `mark` immediately before the launch, then repeat `wait` on the receipt files in the foreground until it exits 0 (closed) or 4 (deadline). Exit 3 (`pending: <ids>`) means the slice ended: before re-issuing the same `wait`, apply rule 5 to any pending id that has *returned* since the last slice. On exit 0, check each id's output file per rule 4 before continuing; an id that fails it has returned `bad` (rule 5), and the wait for its retry lists that id alone. Each call blocks for up to `--timeout` seconds (default 540, never below 300) and polls the files every 5 s, so it costs no model tokens while it waits.
+   - **Bash tool timeout.** Every Bash tool call that runs `wait-files.py wait` must pass an explicit `timeout: 600000` (milliseconds) parameter on the tool call. The default Bash tool timeout is shorter than the 540 s slice, so without it the call is killed mid-slice.
+   - **Killed or exit 2.** If a `wait` Bash call is killed or returns exit 2, re-issue the same `wait` exactly once. If that re-issue is also killed or returns exit 2, write the FAILED receipt (rule 8 wording, `Reason: child-wait call failed: phase <P>`) and stop. Do not relaunch the children.
+   - **Setup.** This requires `/setup-local` to have been run after pulling, so that `~/.claude/scripts/wait-files.py` exists.
+   - **Marks.** `mark` refuses to overwrite an open phase without `--force`. Phases are keyed by name, so batches that overlap (North Star scouts beside Pass 1) each take their own phase name. A wait that exits 4 (deadline) leaves the phase open, so re-running the same phase requires `mark --force`. A phase that repeats per round (plan reaction rounds) is marked again after its previous wait closed. After context compaction, pass an explicit `--since <EPOCH>` to `wait` (the epoch recorded at the mark) rather than relying on the recorded mark.
 
      ```bash
      python3 "$HOME/.claude/scripts/wait-files.py" mark --phase <STEP or command>:<phase> --state-dir <STATE_DIR>
-     # ... launch the batch ...
+     # ... launch the batch, every call with run_in_background: true ...
      # Bash tool call, with timeout: 600000 (milliseconds)
      python3 "$HOME/.claude/scripts/wait-files.py" wait --phase <STEP or command>:<phase> --state-dir <STATE_DIR> \
-       --deadline <SECS> --sentinel '<sentinel>' <id>=<path> [<id>=<path> ...]   # or --exists for exit-status files
+       --deadline <SECS> --sentinel '<!-- report-end -->' <id>=<RUN_DIR>/receipts/<phase>-<id>.md [<id>=<path> ...]
      ```
-   - `<STATE_DIR>` is `FLOW_DIR` when set, otherwise the run's own directory (the plan session dir, the review dir, or the implement scratch dir). The phase name is `<STEP or command>:<phase>`, for example `implement:round1`.
-   - Per-phase deadlines (initial values, to be calibrated from the `closed` rows in `<STATE_DIR>/child-wait.jsonl`): panel, scout, Q&A and Pass 2 phases 1800 s; Round 2 and Round 3 sweeps 3600 s; implementer units 5400 s; the check run `timeout_secs` + 300; merge apply `MERGE_APPLY_TIMEOUT_SECS` (default 1800) + 300; queued merge 3600 s.
+   - Repeating a phase after a deadline exit (4) needs `mark --force`: the deadline row is not a closed row, so `mark` refuses the still-open phase with exit 2 and names `--force`.
+   - `<STATE_DIR>` is `FLOW_DIR` when set, otherwise the run's own directory (the plan session dir, the review dir, or the implement scratch dir). The phase name is `<STEP or command>:<phase>`, for example `implement:round1` or `review:summarize`. Outside a flow `<STEP or command>` is the command name (`expert-review`, `expert-plan`).
+   - Per-phase deadlines (initial values, to be calibrated from the `closed` rows in `<STATE_DIR>/child-wait.jsonl`): single bounded children (Summarizer, Router, Carl, Amalgamator, Triage Chief, synthesis, audit, judges, single fix agents) and panel, scout, Q&A, reaction and Pass 2 phases 1800 s; Precedent Pat 300 s (on deadline it fails soft, see its site); Round 2 and Round 3 sweeps 3600 s; implementer units 5400 s; the check run `timeout_secs` + 300; merge apply `MERGE_APPLY_TIMEOUT_SECS` (default 1800) + 300; queued merge 3600 s.
    - `ScheduleWakeup`, where granted, is never used to wait for children. Never sleep or poll with a short interval of your own: `wait-files.py` is the only polling, and its floor is what keeps it from becoming #216-style polling.
 
-7. **A launch acknowledgement at a foreground site is a hard failure.** If a dispatch at a site designated foreground comes back with only a launch acknowledgement, stop the phase with reason `foreground dispatch returned a launch acknowledgement: <id>`. Do not wait for that child in a later turn.
+7. **Never rely on a blocking return.** Do not pass `run_in_background: false` and do not read a child's result from the Agent call's return. If an Agent call does return a full report (a harness that still blocks), ignore it and collect the receipt file as usual; the wait closes at once.
 
 8. **Deadline hard stop.** On `wait-files.py` exit 4, stop the phase:
    - emit `run-metrics.py stage-end --outcome failure --failure-class timeout`;
    - inside a flow, write the FAILED receipt with `Reason: child-wait deadline: phase <P>, outstanding <ids>, attempt <n>`, prefixed `repeated ` when the script printed its `loop:` line;
-   - never relaunch and never write a stand-in for an outstanding id. The flow's existing Retry / Take over / Abort stop handles it; a repeated deadline is visible in the receipt and in `child-wait-attempts.json`.
+   - never relaunch and never write a stand-in for an outstanding id. The flow's existing Retry / Take over / Abort stop handles it; a repeated deadline is visible in the receipt and in `child-wait-attempts.json`. A site that names a soft deadline (Precedent Pat) continues as that site says instead.
 
-9. **The barrier closes** when every id is `ok` (or stood-in, at a foreground site). A launch acknowledgement alone never closes it.
+9. **The barrier closes** when every id is `ok` (or stood in). A launch acknowledgement alone never closes it.
 
-**Known tradeoff.** At a file-wait site, a dead child is invisible until the full phase deadline expires; nothing reports it earlier. This is accepted for now (plan Q4: hard stop, no relaunch). A self-heal follow-up issue is to be filed to address per-id freshness and a defined `bad` marker.
+**Known tradeoff.** A child that dies without returning is invisible until the full phase deadline expires; a child that returns without a valid receipt is caught at the next slice boundary (at most one `--timeout` slice later). This is accepted for now. A self-heal follow-up issue is to address per-id freshness for children that never return.
 
 **Carve-out: the top-level orchestrator.** `commands/expert-flow.md` is not a step agent. It waits on its one step subagent at a time (N=1) and may still end its turn to await that single step's completion, with at most one `ScheduleWakeup` of 1800 seconds per step as a heartbeat that writes a status report only. Rules 6 to 8 bind every subagent and skill it runs, and every other caller.
 
@@ -95,7 +103,7 @@ The subagent writes to a file path and sentinel pattern determined by its contex
 | Step 3 (pod contributions, effort 2) | `{PLAN_SESSION_DIR}/{pod-id}-pod.md` | `<!-- pod-end -->` | Effort 2 pod path — separate sentinel |
 | Step 4 (Carl) | `{PLAN_SESSION_DIR}/contrarian-carl-contribution.md` | `<!-- contribution-end -->` | After per-expert barrier |
 | Step 8 (alignment) | `{PLAN_SESSION_DIR}/{expert}-alignment.md` | `<!-- alignment-end -->` | Per-expert alignment pass |
-| Inline-return children at a file-wait site (Router, Q&A, effort-1 scouts) | the report file named in the dispatch prompt | `<!-- report-end -->` | Only when such a child is collected by `wait-files.py`; at a foreground site its report is the returned result |
+| Every child's receipt file | `<RUN_DIR>/receipts/<phase>-<id>.md` (the `Receipt file:` line in the dispatch prompt) | `<!-- report-end -->` | Written last; holds the receipt line, or the whole report for an inline-return role (Router, judges, effort-1 scouts). The barrier waits on it; outputs keep their own sentinels |
 | Step 9 (reconciliation, single agent) | `{PLAN_SESSION_DIR}/plan-reconciled.md` | `<!-- reconciliation-end -->` | Single-agent step — N=1; on join-barrier failure after retry, this is a hard command failure (no stand-in — plan-reconciled.md IS the deliverable, unlike per-expert alignment notes where a FAILED stand-in is harmless input signal) |
 
 The file **must end with its designated sentinel on a new line**.

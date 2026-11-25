@@ -76,7 +76,7 @@ The design decisions are documented as ADRs in [`docs/adr/`](docs/adr/):
   for mechanical work, the strong model for judgment. ([ADR-0004](docs/adr/0004-model-cost-routing.md))
 - **Three-layer context cascade** — generic persona → `project.yaml` → per-reviewer local override, so
   the same personas sharpen themselves on any project. ([ADR-0005](docs/adr/0005-three-layer-context-cascade.md))
-- **Join-barrier pattern for parallel subagents** — coordinates N parallel subagents by checking receipt, file existence, and sentinel per id; step agents block on a foreground return or a `scripts/wait-files.py` file wait; ending the turn to wait survives only as the top-level orchestrator carve-out (ADR-0023 2026-11-23 amendment, #532). ([ADR-0018](docs/adr/0018-parallel-planning-checkpoint-architecture.md))
+- **Join-barrier pattern for parallel subagents** — coordinates N parallel subagents by checking receipt, file existence, and sentinel per id; step agents launch children in the background and block on a `scripts/wait-files.py` wait over each child's receipt file; ending the turn to wait survives only as the top-level orchestrator carve-out (ADR-0023 2026-11-23 and 2026-11-24 amendments, #532, #553). ([ADR-0018](docs/adr/0018-parallel-planning-checkpoint-architecture.md))
 
 ## A note on cost
 

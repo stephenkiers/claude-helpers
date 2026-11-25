@@ -1068,7 +1068,7 @@ Each prompt must include:
 - The unit's sub-task text, owned files, forbidden files, and report-file instruction (all per Step 4b's template)
 - When `IMPLEMENTER_MODEL` is set (escalated attempt), `--split-finer` is set, or `--partial-base` is given and HEAD or the working tree differs from `START_SHA`, add a line `Partial work since: <START_SHA>` right after the working-directory line. Any subsequent retry with the escalated model carries the same `model: <IMPLEMENTER_MODEL>` and `Partial work since:` flags.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 The agent stages its changes (`git add -A`, no commit); you commit them yourself in the ticket worktree once `STAGED: yes` is confirmed via `git status --porcelain`. After commit, run `unit-progress.py mark --unit-id <id> --status committed --sha <new HEAD>` (pass `--flow-dir "$FLOW_DIR"` in flows; use `--scratch "<SCRATCH_PATH>"` otherwise). On failure, run `mark --status failed` with the same progress argument. Proceed to the Integration Gate when it completes.
 
@@ -1171,7 +1171,7 @@ When `IMPLEMENTER_MODEL` is set (escalated attempt) or `--split-finer` is set or
 
 For sequential runs, each unit prompt must also note that earlier units' code is already present and committed, it may modify files owned by earlier units, and its `forbidden-files` list is only the files owned by later units.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 **Collecting units (file wait).** Round-1 units, and the single-unit fallback, are a *file-wait* site: they run in the background and you block on their report files in the foreground, in the same turn (`~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier, rule 6). `<STATE_DIR>` is `FLOW_DIR` when set, otherwise `<SCRATCH_PATH>`. The phase is `<STEP>:round1` (`implement:round1` outside a flow); a sequential run uses `<STEP>:round1-<unit-id>`, one phase per unit.
 ```bash
@@ -1591,7 +1591,7 @@ Pass `--cause` only on the exit-2 paths listed above; the barrier passes no `--c
 
 Unit outcomes map to join-barrier states: `committed` (including conflict-resolved) or `skipped` → `ok`; `failed` → `bad`. Units do not automatically retry; they use the existing Incomplete-report menu (Re-run / Inspect / Skip / Abort) if a unit's report or diff is incomplete, rather than the join-barrier's automatic retry mechanism. Accepted tradeoff: a dead child is invisible until the barrier deadline, and a self-heal follow-up is to be filed.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 **Checkpoint — Round 1 join (opt-in via `--pause`).** If `PAUSE` is not `yes`, do **not** pause: close
 the stage with the two telemetry commands below, skip the rest of the checkpoint (command-id capture,
@@ -1863,7 +1863,7 @@ that were built but never connected to anything).
 
 Max **K = 3** iterations. On each iteration:
 
-1. Launch a fix `plan-implementer` agent in the foreground (`run_in_background: false`): the call blocks on its foreground return, so no file wait or collector is needed. It runs in an isolated worktree branched from current HEAD (not START_SHA). Prompt it with:
+1. Launch a fix `plan-implementer` agent with `run_in_background: true`. **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (state dir and `<STEP>` as in "Collecting units" above): phase `gate-fix-<i>` (`<i>` is the iteration number), id `fix`, report file `<SCRATCH_PATH>/gate-fix-<i>-report.md` with sentinel `<!-- report-end -->`, deadline 5400 s. That report file is a receipt-path exception, listed with the round-1 unit report files in `~/.claude/prompts/join-barrier-pattern.md`. It runs in an isolated worktree branched from current HEAD (not START_SHA). Prompt it with:
    - A literal line **`Working directory: <FIX_WT_PATH>`** (this exact prefix —
      `plan-implementer`'s first step greps for it verbatim to `cd` there before doing anything else),
      where `<FIX_WT_PATH>` is the absolute path of this iteration's fix worktree
@@ -1874,7 +1874,8 @@ Max **K = 3** iterations. On each iteration:
      commits it."
    - The owned files that need fixing
    - The Project conventions block (see Step 2)
-2. When it returns, validate its trailer (same incomplete-report check as Step 4c, `STAGED:` not
+   - "Write your full report, trailer included, to `<SCRATCH_PATH>/gate-fix-<i>-report.md` as your last action, whether you succeeded or not, ending with `<!-- report-end -->` on its own line. Set `REPORT_FILE:` in your trailer to that path."
+2. When the wait closes, validate the trailer in its report file (same incomplete-report check as Step 4c, `STAGED:` not
    `COMMITTED:`).
 3. **Check for planned-change-breaks-test.** After trailer validation passes, read the agent's report for the `STAGED:` line. If it begins `STAGED: no NEEDS_TEST_UPDATE: `, stop the loop at once with no further iteration. Do not apply the diff. Write the FAILED receipt with Reason `planned-change-breaks-test: <path>` (extracted from the line), `FAILURE_CLASS: gate_not_converged`, and the CHECK key lines from the last gate run. Telemetry: the existing `command-end … --failure-class gate_not_converged` line. This early exit runs before item 4's diff application, so it costs nothing to detect and no retry is offered for this class.
 4. Apply its diff back (same apply-and-commit pattern as Step 4c — `git diff --staged` from the
@@ -1969,7 +1970,7 @@ python3 "$HOME/.claude/scripts/wait-files.py" wait --phase "<STEP>:fanout" --sta
 ```
 Exit 3 means re-issue the same `wait` at once; exit 0 closes the barrier; exit 4 is the deadline hard stop of rule 8. Never relaunch an outstanding agent yourself. Issue the Bash tool call that runs this `wait` with its `timeout` parameter set to `600000` (milliseconds). If that call is killed or exits 2, re-issue it once; if it still fails, write the FAILED receipt (`~/.claude/prompts/join-barrier-pattern.md` rule 6).
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 Round 2 gets its own worktree with the diff-handoff protocol, which is what makes running
 it alongside Round 3 pass 1 safe — Round 3 pass 1 only reads the ticket worktree's round-1 result and
@@ -2461,7 +2462,7 @@ Also record the pre-Round-3 SHA for the fence, before the agent launches:
 git rev-parse HEAD > "<SCRATCH_PATH>/pre-round3-sha.txt"
 ```
 
-Launch a foreground `plan-implementer` (`run_in_background: false`, main worktree); the call blocks on its foreground return, so no file wait is needed, with:
+Launch a `plan-implementer` (`run_in_background: true`, main worktree). **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (state dir and `<STEP>` as in "Collecting units" above): phase `round3-followup`, id `followup`, report file `<SCRATCH_PATH>/round3-followup-report.md` with sentinel `<!-- report-end -->`, deadline 5400 s. That report file is a receipt-path exception, listed with the round-1 unit report files in `~/.claude/prompts/join-barrier-pattern.md`. Prompt it with:
 
 > `Working directory: <TICKET_WT_PATH>` (this exact prefix — `plan-implementer`'s first step greps for
 > it verbatim to `cd` there before doing anything else)
@@ -2528,6 +2529,7 @@ Launch a foreground `plan-implementer` (`run_in_background: false`, main worktre
 >    `<SCRATCH_PATH>/round3-followup-report.md` using the `Write` tool, and set `REPORT_FILE:` in your
 >    trailer to that exact path. Put the register path `<SCRATCH_PATH>/disagreements.json` in the report
 >    body (not on its first line). For every test you added, add one line `<new id> | overlaps: <existing id or none>`.
+>    Write it as your last action, whether you succeeded or not, and end it with `<!-- report-end -->` on its own line.
 >    Keep your reply to the trailer plus at most two sentences.
 >
 > [Full report trailer per plan-implementer instructions, ending in `REPORT_FILE: <path> | none`]
@@ -2664,6 +2666,8 @@ flag an implementation change that an earlier entry's fix committed:
 git rev-parse HEAD > "<SCRATCH_PATH>/pre-4a-sha.txt"   # <PRE_4A_SHA>
 ```
 Then, for each such entry, in order:
+
+Each judge is launched with `run_in_background: true` and collected per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier: phase `judge-<entry id>`, id `sonnet` or `opus`, receipt `<SCRATCH_PATH>/receipts/judge-<entry id>-<sonnet|opus>.md`, deadline 1800 s; run `mark` again before the Opus launch. It is an inline-return role: its prompt carries a `Receipt file:` line, and it writes its whole verdict (and any binding-only patch) there, ending with `<!-- report-end -->`. Read the verdict from that file. No stand-in: a `bad` judge counts as `escalate` for Sonnet and sends the entry to step 4 for Opus.
 
 1. **Sonnet judge** (fresh subagent, read-only). Inputs: the original plan, the test, its failure, and the
    implementation. Verdict: `test-correct` or `escalate`. `test-correct` must cite the plan line the expected
@@ -2914,7 +2918,7 @@ output exits `2` without starting the run, which is the not-run outcome `check-n
 clean-tree checks before and after the run are what tie the check to the tree the step hands on. They are deliberately strict: an untracked file that is not gitignored counts as a dirty tree, so the project's check command must write only gitignored output (build artifacts, caches, coverage); a check that litters the tree is `check-not-run: worktree not clean` by design.
 
 Launch the run with `run_in_background` and collect it with the join-barrier file wait, in the same turn.
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; block on the children (a foreground return, or `wait-files.py` in the foreground); never use `ScheduleWakeup` to wait for children. Never poll on a short interval of your own (`wait-files.py` is the only polling); never poll the background run. The launched set is this one background Bash run. Immediately before the launch, record the mark (a status file left from an earlier run predates the mark, so it reads as stale, never as this run's exit); after the launch, repeat the `wait` until it exits 0 or 4 (exit 3: re-issue it at once):
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children. Never poll on a short interval of your own (`wait-files.py` is the only polling); never poll the background run. The launched set is this one background Bash run. Immediately before the launch, record the mark (a status file left from an earlier run predates the mark, so it reads as stale, never as this run's exit); after the launch, repeat the `wait` until it exits 0 or 4 (exit 3: re-issue it at once):
 ```bash
 if [[ -n "${FLOW_DIR}" ]]; then WAIT_STATE="${FLOW_DIR}"; else WAIT_STATE="<SCRATCH_PATH>"; fi
 python3 "$HOME/.claude/scripts/wait-files.py" mark --phase "<STEP>:check" --state-dir "$WAIT_STATE"
