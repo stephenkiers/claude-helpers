@@ -230,6 +230,28 @@ def test_v2_reserved_marker_in_cause() -> None:
            f"<<<ITEM marker in cause was not caught: {err!r}")
 
 
+def test_v2_parse_options_adapter_fails_closed() -> None:
+    """Gap 7: a verifier with no parse_options, a wrong signature, or a non-pair result is (None, reason), never a raise."""
+    from types import SimpleNamespace
+
+    saved = assess._OPTIONS_MODULE
+    try:
+        stubs = {
+            "missing": SimpleNamespace(FIXED_CHOICE_LABELS=()),
+            "wrong-arity": SimpleNamespace(FIXED_CHOICE_LABELS=(), parse_options=lambda: ((), None)),
+            "not-a-pair": SimpleNamespace(FIXED_CHOICE_LABELS=(), parse_options=lambda text: None),
+        }
+        for name, stub in stubs.items():
+            assess._OPTIONS_MODULE = stub  # type: ignore[assignment]
+            try:
+                options, err = assess._parse_options("A => pause")
+            except Exception as e:  # noqa: BLE001
+                raise AssertionError(f"{name}: raised {type(e).__name__}: {e}")
+            expect(options is None and bool(err), f"{name}: expected (None, reason), got {(options, err)!r}")
+    finally:
+        assess._OPTIONS_MODULE = saved
+
+
 SECTIONS = [
     ("[Audit]", [
         ("1: verdict parsing", test_audit_verdicts),
@@ -243,6 +265,7 @@ SECTIONS = [
         ("7: hostile or malformed replies fail closed", test_v2_hostile_or_malformed_replies_fail_closed),
         ("8: label length boundary and labels are kept", test_v2_label_length_boundary_and_labels_are_kept),
         ("12: D1 v1-grammar reply parses into two records", test_v2_v1_grammar_reply_parses_into_two_records),
+        ("14: gap 7 parse_options adapter fails closed", test_v2_parse_options_adapter_fails_closed),
     ]),
     ("[Assess - D2: Label Collision]", [
         ("9: label collision with fixed choice case-insensitive", test_v2_label_collision_with_fixed_choice_case_insensitive),

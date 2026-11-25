@@ -616,7 +616,11 @@ def _load_bases(fields: _Fields) -> Bases:
     """An absent block loads as both None, so a file without it needs no migration."""
     if not fields.present("bases"):
         return Bases()
-    block = _Fields(_as_object("bases", fields.raw("bases")), "bases.")
+    obj = _as_object("bases", fields.raw("bases"))
+    unknown = sorted(set(obj) - {"implement", "fix"})
+    if unknown:
+        raise StateSchemaError("bases", f"unknown key {unknown[0]!r}")
+    block = _Fields(obj, "bases.")
     return Bases(
         implement=_load_head(block.raw_or_none("implement"), block.field("implement")),
         fix=_load_head(block.raw_or_none("fix"), block.field("fix")),

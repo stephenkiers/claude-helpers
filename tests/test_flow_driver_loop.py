@@ -854,6 +854,9 @@ def test_p29_state_load_rejects_a_bad_base_and_defaults_assess_off(base: Path) -
         broken = json.loads(json.dumps(raw))
         broken["bases"]["implement"] = bad
         expect(_raises(lambda: state.load_v2_state(broken), state.StateSchemaError), f"a base of {bad!r} loaded")
+    unknown = json.loads(json.dumps(raw))
+    unknown["bases"]["bogus"] = "x"
+    expect(_raises(lambda: state.load_v2_state(unknown), state.StateSchemaError), "an unknown bases key loaded")
     good = json.loads(json.dumps(raw))
     good["bases"]["implement"] = "a" * 64
     expect(state.load_v2_state(good).bases.implement == "a" * 64, "a 64-hex base did not load")
@@ -925,7 +928,7 @@ SECTIONS = [
         ("p26: clear-live is refused on a spawn-failed pause", test_p26_clear_live_is_refused_on_a_spawn_failed_pause),
         ("p27: bases recorded at the first spawn and kept on retry", test_p27_bases_recorded_at_first_spawn_and_kept_on_retry),
         ("p28: an unreadable worktree HEAD logs base-unavailable", test_p28_unreadable_worktree_head_logs_base_unavailable),
-        ("p29: state load rejects a bad base; D17 absent assess loads False", test_p29_state_load_rejects_a_bad_base_and_defaults_assess_off),
+        ("p29: state load rejects a bad base or unknown bases key; D17 absent assess loads False", test_p29_state_load_rejects_a_bad_base_and_defaults_assess_off),
     ]),
 ]
 

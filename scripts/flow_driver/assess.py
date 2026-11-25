@@ -125,7 +125,15 @@ def _parse_options(text: str) -> Tuple[Optional[List[Tuple[str, OptionRoute]]], 
         module = _load_options_module()
     except (ImportError, OSError, SyntaxError) as e:
         return None, f"cannot load the option parser: {e}"
-    options, err = module.parse_options(text)
+    parse = getattr(module, "parse_options", None)
+    if not callable(parse):
+        return None, "the option parser has no parse_options function"
+    try:
+        options, err = parse(text)
+    except (TypeError, ValueError) as e:
+        # A wrong signature (TypeError) or a result that is not an (options, error) pair (TypeError/ValueError on
+        # unpacking) fails closed like a load error.
+        return None, f"the option parser failed: {e}"
     if err:
         return None, err
     out: List[Tuple[str, OptionRoute]] = []
