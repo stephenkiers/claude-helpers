@@ -114,6 +114,8 @@ Seen and not fixed:
 - **A re-review asked again about a decision the human had already made**, and the plan auditor
   re-raised an `assumed` answer.
 - `flow3 gate` prints a screen for a flow that is not at the gate.
+- `tests/test_spec_blind_341_followups.py` (a v1 suite this branch does not touch) failed once in one
+  full `just check` run, passed three times alone, and passed in the full run before and after.
 - `flow3 why` always shows "Downstream: (none recorded)".
 - A card said "What we decided before: Nothing relevant" when the same flow's plan had a related
   decision.
