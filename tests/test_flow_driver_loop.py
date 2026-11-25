@@ -688,10 +688,9 @@ def test_549_14_wait_timeout_on_parked_record_is_held_stop(base: Path) -> None:
     expect(pending_of(flow)["state"] == "parked-awaiting-answer", "the record did not park")
     attempt_before = pending_of(flow)["attempt"]
     fingerprint_before = pending_of(flow)["receipt_seen"]
-    verb, directive = _next(home, flow, env, "wait-timeout")
-    expect(verb == "STOP", f"a parked record at wait-timeout printed {verb}, expected STOP")
-    expect(state_of(flow)["stop_reason"]["fix"].startswith("wait-timeout:"), "the STOP is not wait-timeout")
-    expect("clear-live" in directive_text(directive), "the wait-timeout STOP does not name clear-live")
+    verb, _ = _next(home, flow, env, "wait-timeout")
+    expect(verb == "ASK", f"a parked record at wait-timeout printed {verb}, expected ASK (the question is still pending)")
+    expect(pending_of(flow)["state"] == "parked-awaiting-answer", "wait-timeout un-parked the record")
     expect(pending_of(flow)["attempt"] == attempt_before, "wait-timeout on a parked record re-ran the step (new attempt)")
     expect(pending_of(flow)["receipt_seen"] == fingerprint_before, "wait-timeout stored a fingerprint for the held receipt")
     _no_malformed_archive(flow)
