@@ -7,12 +7,14 @@ a later probe to detect new files or status changes. Never modifies any checkout
 
 Primary checkout (resolved by `primary`, from `git worktree list --porcelain`):
   Rule 1: if the first worktree entry is not bare, it is the primary checkout. Its path
-          is used verbatim, even if it is prunable or on a feature branch.
-  Rule 2: otherwise (first entry bare, or no entries), the primary checkout is the first
-          worktree on refs/heads/<candidate>, trying candidates in order: the origin/HEAD
-          short name, then main, then master (de-duplicated).
+          is printed exactly as git reports it (`primary` reads `-z` output, so no quoting or
+          newline splitting), even if it is prunable or on a feature branch. `primary` also
+          requires it to be an existing directory; otherwise rule 1 is skipped.
+  Rule 2: otherwise (first entry bare, no entries, or rule 1 skipped), the primary checkout is
+          the first worktree on refs/heads/<candidate>, trying candidates in order: the
+          origin/HEAD short name, then main, then master (de-duplicated).
   Otherwise there is no primary checkout and the resolver fails closed. A rule-2 match
-  that is prunable also fails closed.
+  that is prunable, or not an existing directory, also fails closed.
   Note: for a first-entry path containing a space, the old `head -1 | cut -d' ' -f2`
   pipeline truncated the path at the first space; rule 1 returns the full path.
 
@@ -38,8 +40,10 @@ Subcommands:
     - A fast-forward reachable from the upstream is INFO <primary> head-advanced <old>..<new>, exit 0
     - Exit 0 clean, 1 drift, 2 error (probe failed including head-probe)
     - ERROR lines to stdout: baseline-unavailable, probe-failed, probe-failed head-probe, planned-set-unavailable
+      (exit 1 drift also prints `ERROR primary-checkout-drift <fail paths>`)
 
   fail --compare-exit <1|2> [--cause <probe-failed|baseline-unavailable|no-usable-primary|resolver-failed>]
+       (--cause with --reason is an argparse error, exit 2)
        [--label <text>] [--receipt <path>] [--attempt <k>]
        [--implementer-model <m>] [--units <n>] [--max-turns <n>] [--fail-paths <a,b>]
        [--reason <primary-checkout-drift: ...>] [--detail --warn-paths <a,b>
@@ -51,10 +55,14 @@ Subcommands:
       FAILED line, best-effort emits run-metrics.py command-end (failure-class cwd_drift),
       and writes the FAILED receipt (ending with <!-- step-end -->) only when --receipt is given
     - --compare-exit 1 = drift (Reason: primary-checkout-drift: <fail paths>), 2 = error (baseline unavailable or head probe failed); --reason applies to both
+    - --reason values emitted by the barrier docs: `primary-checkout-drift: head-probe-failed`
+      (compare-exit 2, head probe failed; prints `FAILED: primary-checkout-drift head probe failed`)
     - --cause (valid with --compare-exit 2 only; default baseline-unavailable) sets the Reason
-      to primary-checkout-drift: <cause> unless --reason is given (--reason wins); baseline-unavailable
+      to primary-checkout-drift: <cause>. --cause together with --reason is rejected by argparse
+      (exit 2, nothing written). With --compare-exit 1 --cause is ignored with the stderr warning
+      `fail: --cause is only valid with --compare-exit 2; ignored`. baseline-unavailable
       keeps the original text.
-      Causes and their producers:
+      Causes and their producers (the four values of the Cause type in the code):
         probe-failed       site 1 snapshot, when its output has an ERROR probe-failed line
         baseline-unavailable  default: a snapshot failing for another reason, and every
                            compare barrier's exit 2
@@ -89,6 +97,7 @@ Exit codes and streams:
 Note: `primary` deliberately puts its errors on STDERR as `ERROR resolver-failed ...`, while the
 other subcommands put ERROR lines on stdout. Exit 3 means only "no candidate", never a failure.
 The snapshot's failure line is `ERROR probe-failed` on stdout (the step's grep depends on that exact prefix).
+An exception that escapes main prints `ERROR unexpected-error <detail>` on stdout and exits 2.
 Exit codes: 0 clean, 1 drift, 2 error (missing evidence, probe failures, etc.), 3 no primary candidate (primary only).
 The rules and exit codes are recorded in docs/adr/0008-machine-enforced-agent-guardrails.md (2026-11-05 amendment).
 
@@ -100,13 +109,18 @@ would pass, and pushes are guarded separately).
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple, get_args
 
 # Outcome of classify_head_move(): how HEAD moved relative to the baseline.
 HeadOutcome = Literal["clean", "advanced", "fail", "error"]
+
+# Values of `fail --cause` (the single source: argparse choices and the cause default derive from it).
+Cause = Literal["probe-failed", "baseline-unavailable", "no-usable-primary", "resolver-failed"]
+CAUSES: Tuple[str, ...] = get_args(Cause)
 
 # Exit code constants
 EXIT_CLEAN = 0
@@ -698,7 +712,8 @@ def cmd_fail(args: argparse.Namespace) -> int:
         if args.cause is not None:
             print("fail: --cause is only valid with --compare-exit 2; ignored", file=sys.stderr)
     else:
-        # Exit 2: --reason (e.g. head-probe-failed) wins; otherwise --cause picks the Reason
+        # Exit 2: --reason (e.g. head-probe-failed) wins (--cause with --reason is rejected in main);
+        # otherwise --cause picks the Reason
         cause = args.cause or "baseline-unavailable"
         suffix = f" {args.label}" if args.label else ""
         if args.reason:
@@ -735,19 +750,29 @@ class WorktreeRecord(NamedTuple):
     path: str
     branch: Optional[str]
     bare: bool
-    detached: bool
+    detached: bool  # retained for the parse contract (tests read it); select_primary does not use it
     prunable: bool
+
+
+class PrimarySelection(NamedTuple):
+    """Result of select_primary: the chosen path (None = fail closed) and a human-readable detail."""
+
+    path: Optional[str]
+    detail: str
 
 
 def parse_worktree_porcelain(text: str) -> List[WorktreeRecord]:
     """Split `git worktree list --porcelain` output into one record per blank-line block.
 
+    Accepts the `-z` form (NUL-separated fields, an empty field ending each record; used by
+    cmd_primary, so a newline inside a path cannot split a record) and the newline form.
     Raises ValueError when a block does not start with a `worktree ` line or repeats it.
     Other attribute lines (HEAD, locked, ...) are ignored.
     """
+    sep = "\0" if "\0" in text else "\n"
     blocks: List[List[str]] = []
     current: List[str] = []
-    for line in text.split("\n"):
+    for line in text.split(sep):
         if line == "":
             if current:
                 blocks.append(current)
@@ -782,24 +807,28 @@ def parse_worktree_porcelain(text: str) -> List[WorktreeRecord]:
 
 
 def select_primary(
-    records: List[WorktreeRecord], default_branch_candidates: List[str]
-) -> Tuple[Optional[str], str]:
-    """Pick the primary checkout from parsed records. Pure: returns (path, detail).
+    records: List[WorktreeRecord], default_branch_candidates: List[str], *, require_dir: bool = False
+) -> PrimarySelection:
+    """Pick the primary checkout from parsed records. Pure: returns PrimarySelection(path, detail).
 
-    Rule 1: a first record that is not bare is the primary, verbatim.
+    Rule 1: a first record that is not bare is the primary, path as given.
     Rule 2: otherwise the first worktree on refs/heads/<candidate>, candidates in order.
-    A rule-2 match that is prunable, or no match at all, returns None (fail closed).
+    A rule-2 match that is prunable, or no match at all, returns path None (fail closed).
+    With require_dir (used by cmd_primary), rule 1 applies only when the path is an existing
+    directory, otherwise rule 2 decides; a rule-2 match that is not a directory also fails closed.
     """
-    if records and not records[0].bare:
-        return records[0].path, "first worktree entry (not bare)"
+    if records and not records[0].bare and (not require_dir or os.path.isdir(records[0].path)):
+        return PrimarySelection(records[0].path, "first worktree entry (not bare)")
     for candidate in default_branch_candidates:
         wanted = f"refs/heads/{candidate}"
         for record in records:
             if record.branch == wanted:
                 if record.prunable:
-                    return None, f"worktree {record.path} on {wanted} is prunable"
-                return record.path, f"worktree on {wanted}"
-    return None, "no worktree on refs/heads/" + "|".join(default_branch_candidates)
+                    return PrimarySelection(None, f"worktree {record.path} on {wanted} is prunable")
+                if require_dir and not os.path.isdir(record.path):
+                    return PrimarySelection(None, f"worktree {record.path} on {wanted} is not a directory")
+                return PrimarySelection(record.path, f"worktree on {wanted}")
+    return PrimarySelection(None, "no worktree on refs/heads/" + "|".join(default_branch_candidates))
 
 
 def resolve_default_branch_candidates() -> List[str]:
@@ -834,7 +863,7 @@ def cmd_primary() -> int:
     """
     try:
         result = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"],
+            ["git", "worktree", "list", "--porcelain", "-z"],
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT,
@@ -843,7 +872,7 @@ def cmd_primary() -> int:
             print(f"ERROR resolver-failed git worktree list exited {result.returncode}", file=sys.stderr)
             return EXIT_ERROR
         records = parse_worktree_porcelain(result.stdout)
-        path, detail = select_primary(records, resolve_default_branch_candidates())
+        path, detail = select_primary(records, resolve_default_branch_candidates(), require_dir=True)
         if path is None:
             print(f"NOTE: no usable primary checkout ({detail})", file=sys.stderr)
             return EXIT_NO_PRIMARY
@@ -884,7 +913,7 @@ def main() -> int:
     fail_parser.add_argument("--max-turns", default="unknown")
     fail_parser.add_argument("--fail-paths", default="", help="Comma-separated FAIL paths")
     fail_parser.add_argument("--cause", default=None,
-                             choices=["probe-failed", "baseline-unavailable", "no-usable-primary", "resolver-failed"],
+                             choices=list(CAUSES),
                              help="Cause for --compare-exit 2 (default baseline-unavailable)")
     fail_parser.add_argument("--reason", default="", help="Override Reason (must start with primary-checkout-drift:)")
     fail_parser.add_argument("--detail", action="store_true",
@@ -913,6 +942,9 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    if args.command == "fail" and args.cause is not None and args.reason:
+        fail_parser.error("--cause cannot be combined with --reason (--reason wins); pass only one")
+
     if args.command == "snapshot":
         return cmd_snapshot(args.checkout, args.orchestrator_cwd, args.out)
     elif args.command == "compare":
@@ -931,5 +963,5 @@ if __name__ == "__main__":
         exit_code = main()
         sys.exit(exit_code)
     except Exception as e:
-        print(f"ERROR probe-failed {e}", file=sys.stdout)
+        print(f"ERROR unexpected-error {e}", file=sys.stdout)
         sys.exit(EXIT_ERROR)
