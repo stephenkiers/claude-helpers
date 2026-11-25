@@ -461,3 +461,23 @@ and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.
 - **Audit and assess are opt-in** on `driver start` for now, so the approved Layer 2 loop tests are unchanged by default. The audit is wired behind `driver start --audit`, with its own `audit_gate` state record (keyed by step and attempt) beside `pending_spawn`, which stays the single landed-step slot. Accept and continue after an allowlisted audit rejection is wired as the human-only `recover --choice accept --note <why>` (it records the audit as passed and writes `steps/audit-<step>-a<k>.accepted.md`); `recover --choice reverify` re-reads the PR after a `merge-head-mismatch` stop at ship (the PR head differs from the shipped head): it clears the stop and any stale `merge_gate`, so the next `next` asks the merge gate only if the head now matches, else stops again (a mismatch after a merge receipt landed is not reopened this way). A spawned audit or assessor whose output never lands stops on `next --after wait-timeout` with `wait-timeout`, and `clear-live` drops its gate record so the next `next` re-spawns it with a fresh nonce. The assess stage is wired behind `driver start --assess`, with its own `assess_gate` record (the audit record's shape, step `assess`, keyed by the verify attempt). After a landed verify the driver derives the outstanding set from the latest landed implement and fix receipts, SPAWNs the assessor (records in `steps/07-assess-records.txt`), WAITs, then ASKs one batch (`questions/assess-1.json`) whose items are answered one at a time with `answer --item <id>`; the disposition marker and the outstanding gate run once every item has an answer, and the flow then advances to ship. The v2 outstanding set has no coverage-table or ledger-parked items yet.
   Audit rejections key on step and attempt; Accept is eligible only for allowlisted classes imported from `flow-accept.py`.
 - Folds #304, #408 and #476 (Session D3).
+
+### 2026-11-24 — #533 slice 1: subagent-gone detect-and-stop
+
+- **The `notification` event carries the spawn nonce.** `next --after notification --nonce <nonce>` (the flag is accepted
+  only with `--after notification`). Only an attributed notification satisfies the Decision 8 "gone at once" gate.
+- **Unattributed and foreign notifications.** A nonce-less notification on an unlanded live record fails closed to STOP
+  `notification-unattributed`. A notification whose nonce belongs to another attempt is logged (`notification-foreign`)
+  and ignored. This is a behaviour change for the malformed-receipt path: a nonce-less notification on a malformed
+  receipt used to rerun at once; it now STOPs `notification-unattributed`.
+- **Subagent gone.** An attributed notification with no landed receipt and no awaiting question is STOP
+  `subagent-gone-no-receipt`. Its detail carries a non-locking worktree residue summary. Both new codes are clearable by
+  `clear-live`, which reopens the step with no Retry budget spent.
+- **Detect-and-stop only.** This is a STOP, not remediation, so the five bounded exceptions are unchanged ("no widening
+  and no sixth" holds). ADR-0023 and CLAUDE.md need no edit.
+- **Deferred.** The automatic re-spawn (the ticket's proposal: sixth-exception framing, cap of 1, residue archive) waits
+  for a follow-up ticket, gated on the measured `subagent-gone` count. That count is derived from the driver log, so
+  there is no persisted counter and no state-schema change.
+- **Known gaps.** (a) A grandchild process that outlives the step agent's turn is not detected (Decision 8 residual).
+  (b) Foreground WAIT (`fleet.py wait`) delivers no notification, so it still ends in `wait-timeout`. (c) A crash with no
+  notification is not detected. (d) Audit and assessor spawns, whose records live outside `pending_spawn`, are not covered.

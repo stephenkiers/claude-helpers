@@ -36,7 +36,7 @@ points to, and obeys it. It never guesses a verb or a path, and it never writes 
 | `next --flow <dir> [--after <label>]` | One loop step. With no `--after` it is a re-entry, which is how a later session resumes a parked flow. |
 | `answer --flow <dir> --text <answer> [--note <text>] [--item <id>]` | Record the human's answer for a parked attempt. Prints to stderr. One answer per attempt. `--note` only for an option that takes a note (Redo, Drop). `--item` answers one item of a parked assess batch. |
 | `recover --flow <dir> --choice retry\|take-over\|keep-previous\|resume` | Answer a stopped step. `retry` works only after a FAILED receipt or an audit rejection and at most twice per step. `resume` re-asks a step gate the human paused or a merge they held. `keep-previous` is refused: no redo lineage is built. |
-| `clear-live --flow <dir> --reason <text>` | Clear a live `spawned` or `resumed` record, logged with its nonce. The step reopens only after a `wait-timeout` STOP. A timed-out audit or assessor is cleared the same way and re-spawns on the next `next`. **Warning:** `clear-live` is only safe for an agent known to be gone. Clearing a record whose agent is alive re-spawns and recreates the concurrent-writer hazard (two step agents in one worktree). |
+| `clear-live --flow <dir> --reason <text>` | Clear a live `spawned` or `resumed` record, logged with its nonce. The step reopens only after a `wait-timeout`, `subagent-gone-no-receipt` or `notification-unattributed` STOP; a `resume-failed` STOP stays stopped. A timed-out audit or assessor is cleared the same way and re-spawns on the next `next`. Clearing a `subagent-gone-no-receipt` or `notification-unattributed` STOP reopens the step, so the next `next` re-spawns it with a fresh nonce; it is a human action and spends no Retry. **Warning:** `clear-live` is only safe for an agent known to be gone. Clearing a record whose agent is alive re-spawns and recreates the concurrent-writer hazard (two step agents in one worktree). |
 | `abandon --flow <dir>` | Mark the flow abandoned. Refused while an attempt is `spawned` or `resumed`, and the refusal names `clear-live`. Deletes nothing. |
 | `retro --flow <dir>` | Not built for v2: it exits 3 (`not-yet-built`). Refused for v1 flows. |
 | `status --json --flow <dir>` | Read-only JSON of the flow. |
@@ -64,15 +64,19 @@ Accept the `NEXT:` line from `start`, read its directive file, and take the acti
 After each event, run the directive's `next_command`, with ` --after <label>` appended. Each action names its label.
 
 - **SPAWN**: launch `Task` in the background with `subagent_type` set to the directive's `agent_type` and the prompt
-  "Read and follow <prompt_file>". Keep the agent id this session gets for this step and attempt. Then run
-  `next --after spawn-launched`.
+  "Read and follow <prompt_file>". Keep the agent id this session gets for this step and attempt, together with the
+  directive's `nonce`. Then run `next --after spawn-launched`.
 - **MERGE**: launch `Task` exactly as for SPAWN (`subagent_type` from the directive's `agent_type`, the prompt from its
-  prompt file). Never run MERGE without a directive file the driver printed.
+  prompt file), and keep the directive's `nonce` with the agent id the same way. Never run MERGE without a directive
+  file the driver printed.
 - **RESUME**: `SendMessage` to the agent this session spawned for this step and attempt, saying the answer is at the
   directive's `answer_file`. On success run `next --after resume-sent`, which yields WAIT. If this session does not hold
   that agent id, do not guess: run `next --after resume-failed`, then print `RESUME FAILED: no agent id in this session`
   and end.
-- **WAIT, end-turn**: end the turn. The completion notification wakes the stub, which runs `next --after notification`.
+- **WAIT, end-turn**: end the turn. The completion notification wakes the stub, which runs
+  `next --after notification --nonce <nonce>`. The nonce is the one recorded with the agent whose notification arrived.
+  If the session cannot tell which agent's notification it is, omit `--nonce`: the driver fails closed to STOP
+  `notification-unattributed`. Never guess a nonce.
 - **WAIT, foreground**: run `python3 "$HOME/.claude/scripts/fleet.py" wait <receipt_file>`. When the directive's
   `require_change` is true, run `python3 "$HOME/.claude/scripts/fleet.py" wait --require-change <receipt_file>`
   instead, and `settled` then means the receipt changed from its bytes at wait start and now holds a Decision line or the
@@ -95,7 +99,8 @@ A FAILED step receipt is STOP `step-failed` and nothing more. The driver never r
 
 Stop and print the directive's reason for any other STOP, including `ship-head-differs`,
 `ship-pr-closed`, `expected-head-mismatch`, `north-star-preflight`, `hook-preflight`, `uncarried-direction`,
-`ledger-error`, `gh-error`, `retry-cap`, `malformed-cap` and `wait-timeout`. Do not work around any of them.
+`ledger-error`, `gh-error`, `retry-cap`, `malformed-cap`, `wait-timeout`, `subagent-gone-no-receipt` and
+`notification-unattributed`. Do not work around any of them.
 
 ## Receipt and markers
 
