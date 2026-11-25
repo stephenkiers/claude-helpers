@@ -1689,16 +1689,15 @@ t("(#441) the PRIMARY_CHECKOUT= assignment calls primary-checkout-drift.py prima
   re.search(r'(?<![A-Za-z_])PRIMARY_CHECKOUT=\$\([^\n]*primary-checkout-drift\.py" primary\)', DOC_441) is not None,
   "no PRIMARY_CHECKOUT=$(... primary-checkout-drift.py\" primary) assignment")
 
-# A1: the old pipeline occurs once, feeding FIRST_WORKTREE_ENTRY and then WT_PARENT
+# A1 (N1): WT_PARENT derives from the PRIMARY_CHECKOUT literal, not the first porcelain entry
 pipeline_hits = len(re.findall(PIPELINE_RE, DOC_441))
-t("(#441) git worktree list --porcelain | grep '^worktree ' | head -1 occurs exactly once",
-  pipeline_hits == 1, f"found {pipeline_hits}")
-t("(#441) the pipeline is assigned to FIRST_WORKTREE_ENTRY",
-  re.search(r"FIRST_WORKTREE_ENTRY=\$\(" + PIPELINE_RE + r" \| cut -d' ' -f2\)", DOC_441) is not None,
-  "no FIRST_WORKTREE_ENTRY=$(... | cut -d' ' -f2) assignment")
-t("(#441) WT_PARENT is dirname of FIRST_WORKTREE_ENTRY (A1)",
-  'WT_PARENT="$(dirname "$FIRST_WORKTREE_ENTRY")"' in DOC_441,
-  'WT_PARENT="$(dirname "$FIRST_WORKTREE_ENTRY")" not found')
+t("(#441) git worktree list --porcelain | grep '^worktree ' | head -1 no longer occurs",
+  pipeline_hits == 0, f"found {pipeline_hits}")
+t("(#441) FIRST_WORKTREE_ENTRY is gone from the doc",
+  "FIRST_WORKTREE_ENTRY" not in DOC_441, "FIRST_WORKTREE_ENTRY still present")
+t("(#441) WT_PARENT is dirname of the PRIMARY_CHECKOUT literal (A1)",
+  'WT_PARENT="<dirname-of-PRIMARY_CHECKOUT-literal>"' in DOC_441,
+  'WT_PARENT="<dirname-of-PRIMARY_CHECKOUT-literal>" not found')
 
 # Site 1: case arms on the primary exit code
 case_m = re.search(r'case\s+"\$PRIMARY_EXIT"\s+in(.*?)\besac\b', DOC_441, re.S)
