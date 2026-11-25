@@ -956,10 +956,11 @@ def count_driver_events(flow: Path, event: str, step: Optional[Step] = None) -> 
     Count the driver-log records whose `event` equals the argument, optionally only those of one step. A missing log
     counts 0, and a line that does not parse is skipped. Derived on read: no counter is persisted (telemetry only).
     """
+    # Test-only today: slice 2 (ADR-0026) adds the runtime reader.
     try:
         lines = (flow / DRIVER_LOG_FILE).read_text(encoding="utf-8").splitlines()
-    except (FileNotFoundError, OSError, ValueError):
-        # OSError covers permission errors, UnicodeDecodeError is a ValueError
+    except (OSError, ValueError):
+        # OSError covers a missing log and permission errors (FileNotFoundError is an OSError); UnicodeDecodeError is a ValueError
         return 0
     count = 0
     for line in lines:

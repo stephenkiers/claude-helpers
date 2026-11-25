@@ -345,14 +345,14 @@ def _cmd_status(args: argparse.Namespace) -> int:
         try:
             v1_state_text = (resolved_path / "state.json").read_text(encoding="utf-8")
             state_obj = json.loads(v1_state_text)
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError):
             state_obj = None
     elif isinstance(flow_view.owned, SkeletonForeign):
         owner_str = "skeleton"
         try:
             skeleton_state_text = (resolved_path / "state.json").read_text(encoding="utf-8")
             state_obj = json.loads(skeleton_state_text)
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError):
             state_obj = None
     elif isinstance(flow_view.owned, InvalidState):
         owner_str = "invalid"

@@ -201,9 +201,10 @@ class InProgress(NamedTuple):
 class Gone(NamedTuple):
     """
     Incomplete receipt with a new or changed fingerprint, classified while the notification is attributed to the live
-    attempt: the subagent is gone. fingerprint is None when the receipt file is absent.
+    attempt: the subagent is gone. Gone is returned only for a receipt file that exists, so the fingerprint is always set.
+    resume never requests an attributed classify, so it never receives a Gone.
     """
-    fingerprint: Optional[ReceiptFingerprint]
+    fingerprint: ReceiptFingerprint
     state: Literal["gone"] = "gone"
 
 
@@ -453,6 +454,20 @@ def archive_stale(locked: LockedFlow, key: TransitionKey, receipt_sha256: str) -
         content=receipt_sha256,
         postcondition=lambda s: _receipt_sha_is_not(path, receipt_sha256),
     )
+
+
+def archive_reopened(locked: LockedFlow, step: Step, attempt: int) -> None:
+    """
+    Archive the receipt file that a clear-live reopen leaves behind (an incomplete, stale or malformed receipt of the
+    cleared attempt), so the next attempt starts without it. A missing receipt is a no-op. Called inside the clear
+    transition, under the lock.
+    """
+    path = receipt_path(locked.path, step)
+    try:
+        captured = path.read_bytes()
+    except FileNotFoundError:
+        return
+    _archive_move(path, locked.path / "archive" / step / f"a{attempt}.cleared.md", lambda b: b == captured)
 
 
 def rerun_malformed(locked: LockedFlow, key: TransitionKey) -> int:
