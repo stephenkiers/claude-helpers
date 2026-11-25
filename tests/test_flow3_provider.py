@@ -193,4 +193,14 @@ h.test_result("CLI merge-local exit 0 on success", r.returncode == 0 and prov.pr
 r = cli("merge-local", "--repo-root", str(clone), "--pr", "3", "--head", c_head, "--title", "Conflicting")
 h.test_result("CLI merge-local exit 3 on BaseMoved", r.returncode == 3, "%d %s" % (r.returncode, r.stderr))
 
+# a merge done outside the provider (the repo's own merge command pushes the branch to base)
+sh(["git", "fetch", "--quiet", "origin"], clone)
+sh(["git", "checkout", "--quiet", "-B", "main", "origin/main"], clone)
+h9 = feature(clone, "flow/9-pushed", "nine.txt", "nine\n")
+pr9 = prov.open_pr("flow/9-pushed", "main", "Nine", "Closes #2")
+h.test_result("a PR whose commits are not on base stays open", prov.pr_state(pr9.number) == "open")
+sh(["git", "push", "--quiet", "origin", "%s:refs/heads/main" % h9], clone)
+h.test_result("a PR whose head landed on base reads as merged", prov.pr_state(pr9.number) == "merged"
+              and prov.get_issue(2).state == "closed")
+
 h.summarize_and_exit()

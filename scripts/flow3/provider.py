@@ -169,7 +169,26 @@ class LocalProvider(Provider):
         return self._as_pr(found) if found else None
 
     def pr_state(self, number: int) -> str:
-        return str(self._read_pr(number)["state"])
+        rec = self._read_pr(number)
+        if rec["state"] == "open" and self._landed(str(rec["branch"]), str(rec["base"])):
+            # the repo's own merge command pushed the branch's commits to base: that is a merge
+            self._mark_merged(rec)
+        return str(rec["state"])
+
+    def _landed(self, branch: str, base: str) -> bool:
+        tip, base_tip = self._branch_tip(branch), self._branch_tip(base)
+        if not tip or not base_tip:
+            return False
+        done = subprocess.run(["git", "merge-base", "--is-ancestor", tip, base_tip], cwd=str(self.origin),
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return done.returncode == 0
+
+    def _mark_merged(self, rec: Dict[str, Any]) -> None:
+        rec["state"] = "merged"
+        atomic_write_text(self._pr_file(int(rec["number"])), json.dumps(rec, indent=1) + "\n")
+        for num in _CLOSES.findall(str(rec.get("body", ""))):
+            if self._issue_file(int(num)).exists():
+                atomic_write_text(self.data / "issues" / ("%s.closed" % int(num)), "")
 
     def merge_pr(self, number: int, head_sha: str, title: str) -> None:
         rec = self._read_pr(number)
@@ -202,11 +221,7 @@ class LocalProvider(Provider):
             gitops.git(["push", "--quiet", "origin", "--delete", branch], clone, check=False)
         finally:
             shutil.rmtree(str(tmp), ignore_errors=True)
-        rec["state"] = "merged"
-        atomic_write_text(self._pr_file(number), json.dumps(rec, indent=1) + "\n")
-        for num in _CLOSES.findall(str(rec.get("body", ""))):
-            if self._issue_file(int(num)).exists():
-                atomic_write_text(self.data / "issues" / ("%s.closed" % int(num)), "")
+        self._mark_merged(rec)
 
 
 # -- GitHub ----------------------------------------------------------------------------------
