@@ -178,7 +178,25 @@ class _Stage:
         else:
             u["base"] = gitops.head_sha(self.wt)
             self.save()
-            result, run = work.run_unit_checked(ctx, unit, "fixer", prompt, message)
+            try:
+                result, run = work.run_unit_checked(ctx, unit, "fixer", prompt, message)
+            except heal.UnitUnfinished as stop:
+                # A fixer that could not finish is not a stop: its work so far is committed, the
+                # verifier rules on each finding, and what it left stays open for the merge gate.
+                self.log("Fix %s was left unfinished after a retry on a stronger model. Left: %s" % (
+                    uid, "; ".join(stop.remaining) or "(not stated)"))
+                ctx.flow.event("heal", cls="unit-shortfall", action="fix left open for the merge gate", unit=uid)
+                work.check_unit(ctx, unit["files"])
+                u["done"] = True
+                u["unfinished"] = True
+                head = gitops.head_sha(self.wt)
+                u["commit"] = head if head != u.get("base") else None
+                u["summary"] = "unfinished: " + ("; ".join(stop.remaining) or "(not stated)")
+                if uid == SENDBACK_UNIT:
+                    ctx.flow.set_data("sendback", {"notes": p["sendback"], "handled": True})
+                    p["sendback_done"] = True
+                self.save()
+                return False
             run_check = run is None
         while work.needs_answers(result):
             u["asked"] += 1

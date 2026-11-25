@@ -201,6 +201,23 @@ op = review.open_findings(b.flow)
 h.test_result("review.open_findings reports it as not fixed",
               [(f["id"], f["reason"]) for f in op] == [("r0-2", "not fixed")], str(op))
 
+# -- a fixer that cannot finish leaves its findings open; it does not stop the flow ------------
+PART = {"status": "partial", "summary": "did the part I may", "remaining": ["the test file is protected"]}
+b = Box("unfinished", [finding("r0-1", "src/a.py"), finding("r0-2", "src/a.py")])
+part = {"role": "fixer", "write_files": {"src/a.py": "x = 1\n"}, "output": PART}
+b.script([part, part, verdicts(("r0-1", True), ("r0-2", False)), part, part, verdicts(("r0-2", False))])
+try:
+    res = fix.run(b.ctx)
+    stopped: Optional[FlowStop] = None
+except FlowStop as exc:
+    stopped = exc
+r = b.rounds()
+h.test_result("an unfinished fixer is not a stop: the verifier rules and the rest stays open",
+              stopped is None and res.kind == "done" and r[0]["fixed"] == ["r0-1"] and r[0]["open"] == ["r0-2"],
+              "%s %s" % (stopped, r))
+h.test_result("its partial work is kept", (b.clone / "src" / "a.py").exists()
+              and any("(partial)" in x for x in b.subjects()), str(b.subjects()))
+
 # -- send-back notes --------------------------------------------------------------------------
 b = Box("sendback", [], notes="Please rename the helper in src/a.py to something clearer.")
 b.script([w("unit-sendback", "src/a.py")])

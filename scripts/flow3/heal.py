@@ -164,8 +164,15 @@ def _call_evidence(ctx: Ctx, result: Optional[CallResult]) -> Optional[str]:
     return None
 
 
+class UnitUnfinished(FlowStop):
+    """The unit-shortfall stop: the work so far is committed. `remaining` is what the worker left."""
+
+    remaining: List[str] = []
+
+
 def _stop(ctx: Ctx, failure_cls: str, reason: str, evidence: Optional[str], tried: List[str]) -> FlowStop:
-    stop = FlowStop(STOP_FOR[failure_cls], reason, evidence=evidence, tried=tried)
+    kind = UnitUnfinished if failure_cls == "unit-shortfall" else FlowStop
+    stop = kind(STOP_FOR[failure_cls], reason, evidence=evidence, tried=tried)
     ctx.flow.event("heal", cls=failure_cls, action="stop", stop=stop.cls, reason=stop.reason)
     return stop
 
@@ -348,9 +355,13 @@ def write_call(ctx: Ctx, spec: CallSpec, allowed: Sequence[str], protected: Sequ
         if shortfall:
             sha = gitops.commit_all(wt, message + " (partial)")
             if shortfall_used:
-                raise _stop(ctx, "unit-shortfall", "the unit is still unfinished after a retry on %s" % result.model,
-                            evidence, ["kept the partial work (%s)" % (sha or "nothing new to commit"),
-                                       "retried once on a stronger model"])
+                stop = _stop(ctx, "unit-shortfall",
+                             "the unit is still unfinished after a retry on %s" % result.model,
+                             evidence, ["kept the partial work (%s)" % (sha or "nothing new to commit"),
+                                        "retried once on a stronger model"])
+                if isinstance(stop, UnitUnfinished) and isinstance(result.output, dict):
+                    stop.remaining = [str(r) for r in result.output.get("remaining") or []]
+                raise stop
             shortfall_used = True
             stronger = config.stronger(result.model)
             remaining = []
