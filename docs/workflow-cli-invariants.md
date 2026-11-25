@@ -197,7 +197,7 @@ The CLI never executes a command derived from prose. `deps ensure` runs only a f
 
 **Example:** If a fork wants to prioritize different checks or detect additional toolchains, it edits `checks.py` and commits its own version.
 
-## Cleanup Teardown Hook (ADR-0013 Amendment 12)
+## Cleanup Teardown Hook (ADR-0013 Amendment 12.1)
 
 **Invariant:** `cleanup apply` may run one project-declared teardown command, `commands.cleanup`, read only from the main worktree's `.claude/project.yaml` (never the target worktree's own copy), immediately before the worktree is removed. The main worktree is resolved explicitly, and when it is the target itself no hook runs.
 

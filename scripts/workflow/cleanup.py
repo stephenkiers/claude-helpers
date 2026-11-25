@@ -13,7 +13,7 @@ import signal
 import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, NamedTuple, Callable, Union
 
 from . import checks
 from . import git
@@ -24,12 +24,35 @@ from .safety import Unknown, fail_closed
 from .models import RepoCacheData
 from .merge import merge_lock_path
 from .validation import ValidationVerdict
+from . import procs
+from . import teardown_guard
+from . import fsutil
 
 CLEANUP_HOOK_TIMEOUT_SECS = 300
 _CLEANUP_KEY_PROBE = re.compile(r"^\s*cleanup\s*:", re.MULTILINE)
 
+# Tri-state dirty check results
+CLEAN = "clean"
+DIRTY = "dirty"
+UNKNOWN = "unknown"
+
 DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS = 300
 CHECK_TIMEOUT_MESSAGE_PREFIX = "Check command timed out"
+
+# Removal result status constants
+REMOVED = "removed"
+ALREADY_GONE = "already_gone"
+SKIPPED = "skipped"
+FAILED = "failed"
+
+
+class RemovalResult(NamedTuple):
+    """Result of a remove_worktree operation."""
+    path: str
+    status: str  # One of REMOVED, ALREADY_GONE, SKIPPED, FAILED
+    reason: str
+    pids: List[int] = []
+    used_trash: bool = False
 
 
 def _get_cleanup_check_timeout() -> int:
@@ -78,6 +101,7 @@ class CleanupPlan:
     needs_confirmation: List[str] = field(default_factory=list)
     gh_lookup_failed: bool = False
     repo_cache_read_failed: bool = False
+    confirmed_dirty: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -282,7 +306,8 @@ def _remove_worktree_and_branch(
     Mutates result in-place: sets worktree_removed, branch_deleted,
     validation_failures, and notes.
     """
-    # Worktree removal
+    # Worktree removal: for now, use the old path since remove_worktree requires GuardContext
+    # This keeps compatibility until the later unit provides the full teardown orchestration
     try:
         success, err = git.remove_worktree(Path(plan.target_worktree), force=False, cwd=cwd)
         if success:
@@ -460,6 +485,60 @@ def apply_cleanup(
             result.error = Unknown(f"Freshness re-validation before mutation failed: {e}")
             return result, result.error
 
+        # Pre-hook dirty/unpushed/live check: run before the hook to avoid hook side-effects
+        # if removal will be blocked anyway
+        if not plan.confirmed_dirty:
+            dirty_state, dirty_detail = worktree_dirty_state(target_worktree)
+            if dirty_state == UNKNOWN:
+                result.validation = ValidationVerdict.INCONCLUSIVE
+                result.validation_reason = "dirty state check failed before hook"
+                result.error = Unknown(f"Dirty state check failed: {dirty_detail}")
+                return result, result.error
+            elif dirty_state == DIRTY:
+                result.error = Unknown(f"Worktree is dirty; use --confirm-dirty to proceed: {dirty_detail}")
+                return result, result.error
+
+            # Check unpushed state
+            try:
+                tip = git.get_head_sha(cwd=target_worktree)
+                merged_head_oid = None
+                try:
+                    pr_data = git.pr_view_json(git.get_current_branch(cwd=target_worktree), ["headRefOid"], cwd=target_worktree)
+                    if pr_data and pr_data.get("state") == "MERGED":
+                        merged_head_oid = pr_data.get("headRefOid")
+                except Exception:
+                    pass
+                unpushed_state_result, unpushed_detail = unpushed_state(tip, merged_head_oid, target_worktree)
+            except Exception as e:
+                unpushed_state_result = UNKNOWN
+                unpushed_detail = str(e)
+
+            if unpushed_state_result == UNKNOWN:
+                result.validation = ValidationVerdict.INCONCLUSIVE
+                result.validation_reason = "unpushed state check failed before hook"
+                result.error = Unknown(f"Unpushed state check failed: {unpushed_detail}")
+                return result, result.error
+            elif unpushed_state_result == UNPUSHED:
+                result.error = Unknown(f"Worktree has unpushed commits; use --confirm-dirty to proceed: {unpushed_detail}")
+                return result, result.error
+
+            # Check if any process is live in the worktree
+            caller_chain_result = procs.caller_chain()
+            caller_pids: Union[List[int], Unknown]
+            if isinstance(caller_chain_result, Unknown):
+                caller_pids = caller_chain_result
+            else:
+                caller_pids = [p.pid for p in caller_chain_result]
+            liveness = procs.live_in(str(target_worktree), caller_pids)
+            if liveness == procs.LIVE:
+                result.error = Unknown("Worktree has live session(s); cannot remove")
+                return result, result.error
+            elif liveness == procs.UNKNOWN:
+                result.validation = ValidationVerdict.INCONCLUSIVE
+                result.validation_reason = "liveness check failed before hook"
+                result.error = Unknown("Liveness check failed; cannot determine if worktree is in use")
+                return result, result.error
+
         # Teardown hook (commands.cleanup): runs while the worktree still exists, so a project can
         # stop what it started there (containers, temp databases). A failing hook blocks removal.
         hook_error = _run_cleanup_hook(target_worktree, result)
@@ -467,8 +546,25 @@ def apply_cleanup(
             result.error = hook_error
             return result, hook_error
 
-        # Now proceed with worktree removal and branch deletion (after validation lock is released)
-        _remove_worktree_and_branch(plan, result, cwd=cwd)
+        # Acquire removal lock (non-blocking) for the worktree removal phase
+        # This prevents concurrent removals of the same worktree
+        # F31: Move lock to stable shared root under ~/.claude instead of cwd
+        removal_lock_path = Path.home() / ".claude" / "cleanup-removal.lock"
+        try:
+            removal_lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with fsutil.nonblocking_flock(removal_lock_path):
+                # Now proceed with worktree removal and branch deletion
+                _remove_worktree_and_branch(plan, result, cwd=cwd)
+        except fsutil.LockHeld:
+            result.validation = ValidationVerdict.INCONCLUSIVE
+            result.validation_reason = "removal lock contended"
+            result.error = Unknown("Another cleanup is removing a worktree; try again")
+            return result, result.error
+        except Exception as e:
+            result.validation = ValidationVerdict.INCONCLUSIVE
+            result.validation_reason = "removal lock acquisition failed"
+            result.error = Unknown(f"Failed to acquire removal lock: {e}")
+            return result, result.error
 
         return result, None
 
@@ -527,11 +623,279 @@ def _failure_tail(stdout: Optional[str], stderr: Optional[str]) -> str:
     return "\n".join(line[:200] for line in lines)
 
 
-def _worktree_status(target_worktree: Path) -> str:
+def worktree_dirty_state(target_worktree: Path) -> Tuple[str, str]:
+    """
+    Tri-state dirty check using --no-optional-locks.
+
+    Returns (state, detail) where state is one of CLEAN, DIRTY, or UNKNOWN.
+    - CLEAN: git status --porcelain returns empty (no changes)
+    - DIRTY: git status --porcelain returns non-empty text (changes present, excluding untracked .claude/)
+    - UNKNOWN: any error (non-zero exit, timeout, exception) with error reason
+
+    Untracked .claude/ state files are not treated as "dirty" since they are runtime state.
+    "not a git repository" errors are treated as CLEAN, as there's nothing to check in non-git directories.
+    """
     try:
-        return git.run_git_command(["status", "--porcelain"], cwd=target_worktree)
-    except Exception:
-        return ""
+        output = git.run_git_command(
+            ["--no-optional-locks", "status", "--porcelain", "--end-of-options"],
+            cwd=target_worktree,
+            check=True
+        )
+        if output:
+            # Filter out untracked .claude/ files (runtime state, not part of the working tree dirtiness)
+            lines = output.splitlines()
+            filtered = [line for line in lines if not (line.startswith("?? .claude/"))]
+            if filtered:
+                return DIRTY, "\n".join(filtered)
+            else:
+                return CLEAN, ""
+        else:
+            return CLEAN, ""
+    except subprocess.CalledProcessError as e:
+        reason = str(e)
+        if e.stderr:
+            reason = e.stderr.strip()
+        # F15: Map probe errors (not a git repo, git failure) to UNKNOWN, never CLEAN/PUSHED
+        return UNKNOWN, f"git status failed: {reason}"
+    except RuntimeError as e:
+        return UNKNOWN, f"git status timed out or failed: {e}"
+    except Exception as e:
+        return UNKNOWN, f"git status error: {e}"
+
+
+def _worktree_status(target_worktree: Path) -> str:
+    """
+    Compatibility wrapper; prefer worktree_dirty_state for new code.
+
+    Returns the porcelain text if dirty, empty string if clean, empty string if unknown.
+    For tri-state handling, use worktree_dirty_state instead.
+    """
+    state, detail = worktree_dirty_state(target_worktree)
+    if state == DIRTY:
+        return detail
+    return ""
+
+
+# Tri-state unpushed check results
+PUSHED = "pushed"
+UNPUSHED = "unpushed"
+
+
+def unpushed_state(
+    tip: str,
+    merged_head_oid: Optional[str] = None,
+    repo: Optional[Path] = None
+) -> Tuple[str, str]:
+    """
+    Tri-state unpushed check.
+
+    A worktree tip is "pushed" if:
+    (a) It is reachable from some remote-tracking ref (`git rev-list <tip> --not --remotes` is empty), OR
+    (b) It equals or is an ancestor of a MERGED PR's headRefOid
+
+    Returns (state, detail) where state is one of PUSHED, UNPUSHED, or UNKNOWN.
+    - PUSHED: tip is reachable from remotes OR merged_head_oid check passes
+    - UNPUSHED: tip is not reachable and merged check doesn't apply/fails
+    - UNKNOWN: any error (missing PR data, timeout, exception, not a git repo)
+
+    Args:
+        tip: Commit/ref to check
+        merged_head_oid: Optional headRefOid from a MERGED PR
+        repo: Working directory for git commands (defaults to cwd)
+
+    F15: Probe errors (not a git repository, git failures) are UNKNOWN, never PUSHED/CLEAN.
+    """
+    # Check (a): reachability from remotes
+    # F1: Put tip FIRST so --not doesn't negate the tip
+    rev_list_error: Optional[str] = None
+    try:
+        sha = git.resolve_commit_sha(tip, cwd=repo)
+        output = git.run_git_command(
+            ["--no-optional-locks", "rev-list", sha, "--not", "--remotes"],
+            cwd=repo,
+            check=True
+        )
+        if not output:
+            # Empty output: tip is reachable from remotes
+            return PUSHED, "reachable from remote-tracking refs"
+    except subprocess.CalledProcessError as e:
+        reason = str(e)
+        if e.stderr:
+            reason = e.stderr.strip()
+        # F15: Probe errors go to rev_list_error; will decide UNKNOWN vs UNPUSHED at end
+        rev_list_error = reason
+    except (RuntimeError, Exception) as e:
+        rev_list_error = str(e)
+
+    # Check (b): ancestry from merged PR's headRefOid
+    if merged_head_oid:
+        try:
+            git.run_git_command(
+                ["--no-optional-locks", "merge-base", "--is-ancestor", "--end-of-options", tip, merged_head_oid],
+                cwd=repo,
+                check=True
+            )
+            return PUSHED, f"ancestor of merged PR (headRefOid: {merged_head_oid[:8]})"
+        except subprocess.CalledProcessError:
+            # Not an ancestor
+            pass
+        except (RuntimeError, Exception) as e:
+            return UNKNOWN, f"merge-base check failed: {e}"
+
+    # Neither reachability nor merged PR ancestry check passed
+    # F15: If rev-list failed and no merged PR available, it's a probe error (UNKNOWN)
+    if rev_list_error and not merged_head_oid:
+        return UNKNOWN, f"reachability check failed and no merged PR data: {rev_list_error}"
+
+    if merged_head_oid is not None:
+        return UNPUSHED, "not reachable from remotes and not ancestor of merged PR"
+    else:
+        return UNPUSHED, "not reachable from remotes (no merged PR data)"
+
+
+def remove_worktree(
+    path: str,
+    ctx: teardown_guard.GuardContext,
+    confirmed: bool,
+    *,
+    repo: Optional[Path] = None,
+    live_probe: Optional[Callable] = None,
+    caller_pids: Optional[Union[List[int], Unknown]] = None,
+    dirty_probe: Optional[Callable[[Path], Tuple[str, str]]] = None,
+    unpushed_probe: Optional[Callable[[str, Optional[str], Optional[Path]], Tuple[str, str]]] = None,
+    git_runner: Optional[Callable] = None,
+    force_after_hook: bool = False
+) -> RemovalResult:
+    """
+    Remove a worktree with comprehensive safety checks and fallback.
+
+    Args:
+        path: Worktree path to remove
+        ctx: GuardContext for validation
+        confirmed: Whether the user confirmed removal of dirty/unpushed trees
+        repo: Optional working directory for git/dirty checks
+        live_probe: Injectable live_in function (procs.live_in)
+        caller_pids: Injectable caller pids (from procs.caller_chain)
+        dirty_probe: Injectable dirty state check
+        unpushed_probe: Injectable unpushed state check
+        git_runner: Injectable git command runner
+        force_after_hook: If True, use --force for git worktree remove
+
+    Returns:
+        RemovalResult with status, reason, pids list, and trash flag.
+    """
+    path_obj = Path(path)
+
+    # Inject defaults
+    if live_probe is None:
+        live_probe = procs.live_in  # type: ignore[assignment]
+    if dirty_probe is None:
+        dirty_probe = worktree_dirty_state
+    if unpushed_probe is None:
+        unpushed_probe = unpushed_state
+    if caller_pids is None:
+        caller_chain_result = procs.caller_chain()
+        if isinstance(caller_chain_result, Unknown):
+            caller_pids = caller_chain_result
+        else:
+            caller_pids = [p.pid for p in caller_chain_result]
+
+    # 1. Live-session check
+    liveness = live_probe(path, caller_pids)
+    if liveness == procs.LIVE:
+        return RemovalResult(path, SKIPPED, "worktree has live session(s)", pids=[])
+    elif liveness == procs.UNKNOWN:
+        return RemovalResult(path, SKIPPED, "liveness check failed: cannot determine if worktree is in use", pids=[])
+
+    # Extract pids if liveness was not determined but we have a list
+    pids_list: List[int] = []
+    if isinstance(caller_pids, list):
+        pids_list = caller_pids
+
+    # 2. Dirty and unpushed check
+    dirty_state, dirty_detail = dirty_probe(path_obj)
+    if dirty_state == UNKNOWN:
+        return RemovalResult(path, SKIPPED, f"dirty state check failed: {dirty_detail}", pids=pids_list)
+
+    # Check unpushed state (need tip and optional merged_head_oid)
+    try:
+        tip = git.get_head_sha(cwd=path_obj)
+        merged_head_oid = None
+        # Try to get merged PR's headRefOid if available
+        try:
+            pr_data = git.pr_view_json(git.get_current_branch(cwd=path_obj), ["headRefOid"], cwd=path_obj)
+            if pr_data and pr_data.get("state") == "MERGED":
+                merged_head_oid = pr_data.get("headRefOid")
+        except Exception:
+            pass
+
+        unpushed_state_result, unpushed_detail = unpushed_probe(tip, merged_head_oid, path_obj)
+    except Exception as e:
+        unpushed_state_result = UNKNOWN
+        unpushed_detail = str(e)
+
+    if unpushed_state_result == UNKNOWN:
+        return RemovalResult(path, SKIPPED, f"unpushed state check failed: {unpushed_detail}", pids=pids_list)
+
+    # Check if tree is dirty or unpushed; block removal unless confirmed
+    if not confirmed:
+        if dirty_state == DIRTY:
+            return RemovalResult(path, SKIPPED, f"worktree is dirty: {dirty_detail}", pids=pids_list)
+        if unpushed_state_result == UNPUSHED:
+            return RemovalResult(path, SKIPPED, f"worktree has unpushed commits: {unpushed_detail}", pids=pids_list)
+
+    # 3. Try git worktree remove
+    try:
+        success, err = git.remove_worktree(path_obj, force=force_after_hook, cwd=repo)
+        if success:
+            return RemovalResult(path, REMOVED, "", pids=pids_list, used_trash=False)
+        elif err:
+            # On failure, try fallback: move_to_trash, git worktree prune, guarded_rmtree
+            # F21: Only fall back for known benign refusals, not unknown errors
+            reason_lower = (err.reason or "").lower()
+            is_directory_not_empty = "directory not empty" in reason_lower
+            is_benign_refusal = is_directory_not_empty or "worktree is locked" in reason_lower
+
+            if is_benign_refusal and not force_after_hook:
+                # Try fallback path
+                try:
+                    success_trash, trash_reason, new_path = teardown_guard.move_to_trash(path, ctx)
+                    if success_trash and new_path:
+                        # Prune after move
+                        try:
+                            git.run_git_command(["worktree", "prune"], cwd=repo, check=False)
+                        except Exception:
+                            pass
+
+                        # Try guarded_rmtree on the trash item
+                        # F6: Create a new context that includes the trash path so validation passes
+                        trash_ctx = teardown_guard.GuardContext(
+                            worktrees_parent=ctx.worktrees_parent,
+                            primary_worktree=ctx.primary_worktree,
+                            registered=list(ctx.registered) + [new_path],
+                            plan_paths=list(ctx.plan_paths) + [new_path],
+                            trash_root=ctx.trash_root,
+                            home=ctx.home,
+                            claude_dir=ctx.claude_dir
+                        )
+                        success_rm, rm_reason = teardown_guard.guarded_rmtree(
+                            teardown_guard.KIND_TRASH, new_path, trash_ctx
+                        )
+                        if success_rm:
+                            return RemovalResult(path, REMOVED, "", pids=pids_list, used_trash=True)
+                        else:
+                            return RemovalResult(path, FAILED, f"trash removal failed: {rm_reason}", pids=pids_list, used_trash=True)
+                    else:
+                        return RemovalResult(path, FAILED, f"move to trash failed: {trash_reason}", pids=pids_list, used_trash=False)
+                except Exception as e:
+                    return RemovalResult(path, FAILED, f"fallback to trash failed: {e}", pids=pids_list, used_trash=False)
+            else:
+                return RemovalResult(path, FAILED, f"worktree removal failed: {err.reason}", pids=pids_list, used_trash=False)
+        else:
+            return RemovalResult(path, FAILED, "worktree removal failed: unknown error", pids=pids_list, used_trash=False)
+
+    except Exception as e:
+        return RemovalResult(path, FAILED, f"worktree removal error: {e}", pids=pids_list, used_trash=False)
 
 
 def _run_cleanup_hook(
@@ -574,7 +938,7 @@ def _run_cleanup_hook(
         return _fail(read_err, "Worktree kept; fix main's project.yaml and re-run /cleanup.")
     if cmd is None:
         return None
-    status_before = _worktree_status(target_worktree)
+    state_before, status_before = worktree_dirty_state(target_worktree)
     retry = "Worktree kept; fix the teardown and re-run /cleanup."
     try:
         proc = subprocess.Popen(
@@ -598,8 +962,11 @@ def _run_cleanup_hook(
         return _fail(f"commands.cleanup failed (exit {proc.returncode}): {cmd}"
                      + ("\n" + tail if tail else ""), retry)
     result.notes.append(f"commands.cleanup ran: {cmd}")
-    status_after = _worktree_status(target_worktree)
-    if status_after and status_after != status_before:
+    state_after, status_after = worktree_dirty_state(target_worktree)
+    if state_before == UNKNOWN or state_after == UNKNOWN:
+        result.notes.append(
+            "could not check whether commands.cleanup modified the worktree")
+    elif state_after == DIRTY and state_before != DIRTY:
         result.notes.append(
             "commands.cleanup modified the worktree; removal may need --force")
     return None

@@ -39,9 +39,9 @@ import sys
 import argparse
 import json
 from pathlib import Path
-from typing import Callable, Any, Tuple
+from typing import Callable, Any, Tuple, Optional
 
-from . import cleanup, merge, shipit, checks, deps, track, verify_queue, issue_comments, heal
+from . import cleanup, merge, shipit, checks, deps, track, verify_queue, issue_comments, heal, teardown, stale
 from .models import MODES, parse_mode
 from .providers import GithubProvider, LocalProvider
 from .providers.base import Provider, ProviderError
@@ -165,11 +165,73 @@ def main() -> None:
         default=None,
         help="Queue start timestamp for skip proof (optional)"
     )
+    cleanup_apply_parser.add_argument(
+        "--confirm-dirty",
+        action="store_true",
+        default=False,
+        help="Confirm removal of dirty or unpushed worktrees"
+    )
 
     cleanup_render_parser = cleanup_subparsers.add_parser("render-validation", help="Render validation result")
     cleanup_render_parser.add_argument(
         "input",
         help="Input JSON or '-' to read from stdin"
+    )
+
+    cleanup_discover_parser = cleanup_subparsers.add_parser("discover", help="Discover ticket resources")
+    cleanup_discover_parser.add_argument("target", help="Target worktree path")
+    cleanup_discover_parser.add_argument(
+        "--no-sizes", action="store_true",
+        help="Skip sizing of build directories"
+    )
+    cleanup_discover_parser.add_argument(
+        "--in-flow", action="store_true",
+        help="Discovery is in a flow context"
+    )
+
+    cleanup_teardown_parser = cleanup_subparsers.add_parser("teardown", help="Apply teardown plan")
+    cleanup_teardown_parser.add_argument(
+        "plan", help="Plan JSON or '-' to read from stdin"
+    )
+    cleanup_teardown_parser.add_argument(
+        "--phase", required=True, choices=["signal", "remove"],
+        help="Teardown phase: signal sessions or remove resources"
+    )
+    cleanup_teardown_parser.add_argument(
+        "--kinds", default=None,
+        help="Comma-separated group numbers to process (1-4); default all"
+    )
+    cleanup_teardown_parser.add_argument(
+        "--exclude", default=None,
+        help="Item numbers to exclude (space-separated)"
+    )
+    cleanup_teardown_parser.add_argument(
+        "--yes-items", default=None,
+        help="Item numbers with per-item confirmation (space-separated)"
+    )
+    cleanup_teardown_parser.add_argument(
+        "--skip-ticket-worktree", action="store_true",
+        help="Skip ticket worktree removal (merged path)"
+    )
+
+    cleanup_sigkill_parser = cleanup_subparsers.add_parser("sigkill", help="SIGKILL processes")
+    cleanup_sigkill_parser.add_argument(
+        "plan", help="Plan JSON or '-' to read from stdin"
+    )
+    cleanup_sigkill_parser.add_argument(
+        "pids", nargs="*", type=int,
+        help="PIDs to SIGKILL"
+    )
+
+    cleanup_stale_parser = cleanup_subparsers.add_parser("stale", help="Discover stale worktrees machine-wide")
+    cleanup_stale_parser.add_argument(
+        "--sizes", action="store_true",
+        help="Include build directory sizes (opt-in)"
+    )
+
+    cleanup_classify_flows_parser = cleanup_subparsers.add_parser("classify-flows", help="Classify flows")
+    cleanup_classify_flows_parser.add_argument(
+        "flows_root", help="Path to flows root directory (~/.claude/flows/)"
     )
 
     merge_parser = subparsers.add_parser("merge", help="Merge a PR")
@@ -502,6 +564,16 @@ def main() -> None:
             if plan_json == "-":
                 plan_json = sys.stdin.read()
 
+            # Parse and modify plan to set confirmed_dirty if flag is set
+            if args.confirm_dirty:
+                try:
+                    plan_data = json.loads(plan_json)
+                    plan_data["confirmed_dirty"] = True
+                    plan_json = json.dumps(plan_data)
+                except (json.JSONDecodeError, TypeError):
+                    # If plan is invalid, let apply_cleanup handle the error
+                    pass
+
             def apply_cleanup_wrapper(pj: str) -> Tuple[Any, Any]:
                 return cleanup.apply_cleanup(pj, queue_started_at=args.queue_started_at)
 
@@ -545,22 +617,130 @@ def main() -> None:
                 print("VALIDATION=fail — verdict unreadable (fail-closed)")
             except Exception as e:
                 print(f"VALIDATION=fail — verdict unreadable (fail-closed): {e}")
+        elif args.cleanup_action == "discover":
+            # Wire get_idle_threshold from preferences
+            def get_idle_threshold_from_prefs() -> Optional[int]:
+                try:
+                    prefs_path = Path.home() / ".claude" / "preferences.yaml"
+                    if prefs_path.exists():
+                        try:
+                            import yaml  # type: ignore[import-untyped]
+                            with open(prefs_path) as f:
+                                prefs = yaml.safe_load(f) or {}
+                                # Return in minutes; default is 10080 (7 days)
+                                return prefs.get("cleanup", {}).get("sessionIdleMinutes", 10080) if isinstance(prefs.get("cleanup"), dict) else 10080
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                return None
+
+            plan = teardown.discover_ticket(
+                args.target,
+                in_flow=args.in_flow,
+                get_idle_threshold=get_idle_threshold_from_prefs
+            )
+            output = plan.to_dict()
+            print(json.dumps(output))
+        elif args.cleanup_action == "teardown":
+            plan_json = args.plan
+            if plan_json == "-":
+                plan_json = sys.stdin.read()
+
+            # Parse plan to validate item numbers
+            try:
+                plan_data = json.loads(plan_json)
+                plan = teardown.TeardownPlan.from_dict(plan_data)
+            except (json.JSONDecodeError, ValueError) as e:
+                print(json.dumps({
+                    "success": False,
+                    "error": f"Invalid plan JSON: {e}"
+                }))
+                sys.exit(1)
+
+            # Parse selected kinds
+            selected_kinds = None
+            if args.kinds:
+                try:
+                    selected_kinds = [int(k.strip()) for k in args.kinds.split(",")]
+                except ValueError:
+                    print(json.dumps({
+                        "success": False,
+                        "error": "Invalid --kinds format; expected comma-separated numbers"
+                    }))
+                    sys.exit(1)
+
+            # Parse excluded items
+            excluded_numbers = []
+            if args.exclude:
+                numbers, error = teardown.parse_item_numbers(args.exclude, plan)
+                if error:
+                    print(json.dumps({
+                        "success": False,
+                        "error": f"Invalid --exclude: {error}"
+                    }))
+                    sys.exit(1)
+                excluded_numbers = numbers
+
+            # Parse per-item yes items
+            per_item_yes = []
+            if args.yes_items:
+                numbers, error = teardown.parse_item_numbers(args.yes_items, plan)
+                if error:
+                    print(json.dumps({
+                        "success": False,
+                        "error": f"Invalid --yes-items: {error}"
+                    }))
+                    sys.exit(1)
+                per_item_yes = numbers
+
+            result = teardown.apply_teardown(
+                plan_json,
+                args.phase,
+                selected_kinds=selected_kinds,
+                excluded_numbers=excluded_numbers,
+                per_item_yes=per_item_yes,
+                skip_ticket_worktree=args.skip_ticket_worktree,
+            )
+            print(json.dumps(result))
+            if not result.get("success"):
+                sys.exit(1)
+        elif args.cleanup_action == "sigkill":
+            plan_json = args.plan
+            if plan_json == "-":
+                plan_json = sys.stdin.read()
+
+            result = teardown.apply_sigkill(plan_json, args.pids)
+            print(json.dumps(result))
+            if not result.get("success"):
+                sys.exit(1)
+        elif args.cleanup_action == "stale":
+            output = stale.discover_stale_repos(with_sizes=args.sizes)
+            print(json.dumps(output))
+            if not output.get("success"):
+                sys.exit(1)
+        elif args.cleanup_action == "classify-flows":
+            flows_root = args.flows_root
+            output = stale.classify_all_flows(flows_root)
+            print(json.dumps(output))
+            if not output.get("success"):
+                sys.exit(1)
         else:
             cleanup_parser.print_help()
             sys.exit(1)
     elif args.command == "merge":
         if args.merge_action == "plan":
             # Custom handler for merge plan to support --cwd and exit 3 on queue refusal
-            plan_obj, error = merge.plan_merge(
+            plan_obj, merge_error = merge.plan_merge(
                 args.arguments,
                 cwd=Path(args.cwd) if args.cwd else None
             )
-            if error:
-                output = {"success": False, "error": str(error)}
+            if merge_error:
+                output = {"success": False, "error": str(merge_error)}
             else:
                 output = plan_obj.to_dict() if plan_obj else {"success": False}
             print(json.dumps(output))
-            if error:
+            if merge_error:
                 sys.exit(1)
             # Check if queue guard refused
             if plan_obj and plan_obj.queue.get("decision") == "refuse":

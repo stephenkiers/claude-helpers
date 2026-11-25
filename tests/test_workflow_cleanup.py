@@ -8,6 +8,7 @@ Run with: python3 tests/test_workflow_cleanup.py
 import sys
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -23,6 +24,7 @@ from workflow.cleanup import (
     _get_cleanup_check_timeout,
 )
 from workflow.safety import Unknown
+from workflow.cleanup import worktree_dirty_state as real_dirty_state, unpushed_state as real_unpushed_state
 from workflow import validation, git
 from _test_harness import Harness
 
@@ -78,6 +80,24 @@ def _setup_test_isolation():
         return (True, None)
 
     git.pull_ff_only = mock_pull_ff_only
+
+    # Patch the pre-removal probes and the removal lock so mocked-git tests never touch the
+    # real checkout, the real process table, or ~/.claude. Real-probe tests build their own
+    # scratch repos and call the unpatched functions via the saved originals below.
+    from workflow import cleanup as _cleanup, procs as _procs, fsutil as _fsutil
+    from contextlib import contextmanager as _cm
+
+    _cleanup.worktree_dirty_state = lambda wt: (_cleanup.CLEAN, "")
+    _cleanup.unpushed_state = lambda tip, merged=None, repo=None: (_cleanup.PUSHED, "")
+    _cleanup._run_cleanup_hook = lambda wt, result: None
+    _procs.caller_chain = lambda: []
+    _procs.live_in = lambda path, pids: _procs.NOT_LIVE
+
+    @_cm
+    def _no_lock(path):
+        yield
+
+    _fsutil.nonblocking_flock = _no_lock
 
 
 if __name__ == "__main__":
@@ -868,6 +888,50 @@ if __name__ == "__main__":
                                     "could not fast-forward main" in result.validation_reason.lower(),
                                     f"Expected pull error in reason; got '{result.validation_reason}'"
                                 )
+
+    print()
+    print("[Real-probe tests]")
+
+    # Real probes against a scratch git repo: no mocks on git, ps or the filesystem.
+    def _git(repo, *args):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+    with tempfile.TemporaryDirectory() as tmp_real:
+        repo = Path(tmp_real) / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        _git(repo, "config", "user.email", "t@t.com")
+        _git(repo, "config", "user.name", "T")
+        (repo / "f.txt").write_text("x")
+        _git(repo, "add", "f.txt")
+        _git(repo, "commit", "-qm", "c")
+        tip = git.get_head_sha(cwd=repo)
+
+        state, _ = real_dirty_state(repo)
+        test_result("Real-probe: clean scratch repo is CLEAN", state == "clean")
+
+        (repo / "f.txt").write_text("changed")
+        state, _ = real_dirty_state(repo)
+        test_result("Real-probe: modified tracked file is DIRTY", state == "dirty")
+        _git(repo, "checkout", "--", "f.txt")
+
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "state.json").write_text("{}")
+        state, _ = real_dirty_state(repo)
+        test_result("Real-probe: untracked .claude/ state alone stays CLEAN", state == "clean")
+
+        state, _ = real_unpushed_state(tip, None, repo)
+        test_result("Real-probe: commit with no remote is UNPUSHED, never PUSHED", state == "unpushed")
+
+        state, _ = real_unpushed_state(tip, tip, repo)
+        test_result("Real-probe: tip equal to merged PR head is PUSHED", state == "pushed")
+
+    with tempfile.TemporaryDirectory() as tmp_notgit:
+        state, _ = real_dirty_state(Path(tmp_notgit))
+        test_result("Real-probe: non-git directory is not reported DIRTY", state != "dirty")
+
+    from workflow.procs import parse_ps_output
+    test_result("Real-probe: parse_ps_output of empty text is an empty list", parse_ps_output("") == [])
 
     print()
     h.summarize_and_exit()

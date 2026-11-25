@@ -2,8 +2,8 @@
 """
 Test suite for workflow.paths.is_within(path, root).
 
-Contract: True iff realpath(path) is strictly inside realpath(root), compared
-component-wise. Equal paths are False, sibling string-prefix paths are False,
+Contract: True iff realpath(path) is inside or equal to realpath(root), compared
+component-wise (F8: inclusive). Equal paths are True, sibling string-prefix paths are False,
 and symlinks are resolved on both sides before comparing.
 
 Run with: python3 tests/test_workflow_paths.py
@@ -33,9 +33,9 @@ if __name__ == "__main__":
         t("child directory is within root", is_within(root / "child", root))
         t("deeply nested path is within root", is_within(root / "x" / "y" / "z.txt", root))
         t("accepts str arguments", is_within(str(root / "child"), str(root)))
-        t("equal paths are not within", not is_within(root, root))
-        t("equal paths given with a trailing slash are not within",
-          not is_within(str(root) + os.sep, root))
+        t("equal paths are within (inclusive)", is_within(root, root))
+        t("equal paths given with a trailing slash are within",
+          is_within(str(root) + os.sep, root))
         t("parent of root is not within", not is_within(root.parent, root))
         t("sibling string-prefix (/a/bc vs /a/b) is not within",
           not is_within(base / "a" / "bc" / "file", root))
@@ -65,8 +65,8 @@ if __name__ == "__main__":
           is_within(real_root / "child", link_root))
         t("symlinked path: child reached via link is within the real root",
           is_within(link_root / "child", real_root))
-        t("symlinked root: root reached via its own link is not within itself",
-          not is_within(link_root, real_root))
+        t("symlinked root: root reached via its own link is within itself",
+          is_within(link_root, real_root))
 
         inside_link_src = root / "inner-link"
         inside_link_src.symlink_to(root / "x")

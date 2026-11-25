@@ -7,13 +7,13 @@ import os
 
 def is_within(path: str, root: str) -> bool:
     """
-    True iff path is strictly inside root, compared component-wise.
+    True iff path is inside root or equal to root, compared component-wise.
 
     Both path and root must be absolute paths; relative paths raise ValueError.
 
     Contract:
-    - Strictly inside: a path that is a descendant of root returns True.
-    - Equal paths return False: is_within(root, root) is False.
+    - Inside or equal: a path that is a descendant of root or equal to root returns True.
+    - Equal paths return True: is_within(root, root) is True (F8: inclusive containment).
     - Symlinks are resolved: both sides go through os.path.realpath, so a
       symlinked spelling of the same directory compares as the real one.
     - Component-wise comparison, not string-prefix: is_within("/a/bc", "/a/b")
@@ -26,7 +26,7 @@ def is_within(path: str, root: str) -> bool:
         root: An absolute root path (raises ValueError if relative).
 
     Returns:
-        True if path is strictly inside root (component-wise).
+        True if path is inside or equal to root (component-wise).
         False otherwise.
 
     Raises:
@@ -38,4 +38,6 @@ def is_within(path: str, root: str) -> bool:
         raise ValueError(f"root must be absolute, got relative path: {root!r}")
 
     real_root = os.path.realpath(root).rstrip("/")
-    return os.path.realpath(path).startswith(real_root + "/")
+    real_path = os.path.realpath(path)
+    # F8: Inclusive containment - equal or startswith with /
+    return real_path == real_root or real_path.startswith(real_root + "/")

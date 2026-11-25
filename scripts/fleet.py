@@ -773,8 +773,11 @@ def run(fleet_dir: Path, issue: int, message_file: Optional[Path]) -> int:
         return 2
 
     def set_pid(pid: Optional[int]) -> Callable[[Dict[str, Any]], None]:
+        pid_started = _proc_start(pid) if pid else None
         def f(d: Dict[str, Any]) -> None:
-            ticket(d, issue)["pid"] = pid
+            t = ticket(d, issue)
+            t["pid"] = pid
+            t["pid_started"] = pid_started
         return f
 
     data = update_fleet(fleet_dir, set_pid(os.getpid()))

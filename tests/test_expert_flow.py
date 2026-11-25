@@ -75,7 +75,7 @@ READ_ONLY_BASH = (
     # Named exceptions for Start fresh: resolve the helpers dir, then delete the old worktree
     # through the /cleanup helper (ADR-0023 Start-fresh amendment); human-gated.
     r"source \"\$HOME/\.claude/scripts/resolve-claude-helpers-dir\.sh\"(?::\*)?",
-    r"python3 -m scripts\.workflow\.cli (?:cleanup plan|cleanup apply -|worktree detect-parent)(?::\*)?",
+    r"python3 -m scripts\.workflow\.cli (?:cleanup plan|cleanup apply -|cleanup classify-flows|worktree detect-parent)(?::\*)?",
     r"realpath(?: .*)?",
     r"sed -n(?: .*)?",
     r".*run-metrics\.py['\"]?(?: .*)?",

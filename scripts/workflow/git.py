@@ -309,6 +309,71 @@ def is_ancestor(ancestor: str, descendant: str, cwd: Optional[Path] = None) -> b
         return False
 
 
+def resolve_commit_sha(rev: str, cwd: Optional[Path] = None) -> str:
+    """Resolve rev to a full commit SHA (raises CalledProcessError if it is not a commit).
+
+    The result always starts with a hex digit, so it is safe to place before `--not`, where
+    `--end-of-options` cannot be used (git rejects `--not` after it).
+    """
+    out = run_git_command(
+        ["--no-optional-locks", "rev-parse", "--verify", "--end-of-options", f"{rev}^{{commit}}"],
+        cwd=cwd,
+        check=True,
+    )
+    return out.strip()
+
+
+def rev_list_not_remotes(tip: str, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Check if a tip is reachable from any remote-tracking ref.
+
+    Uses --no-optional-locks and --end-of-options.
+    Returns (True, None) if tip is reachable from some remote (clean).
+    Returns (False, None) if `git rev-list <tip> --not --remotes` is empty (unpushed).
+    Returns (False, Unknown(...)) if any error occurs.
+
+    F1: tip is placed FIRST so --not does not negate the tip.
+    """
+    try:
+        sha = resolve_commit_sha(tip, cwd=cwd)
+        output = run_git_command(
+            ["--no-optional-locks", "rev-list", sha, "--not", "--remotes"],
+            cwd=cwd,
+            check=True
+        )
+        # Empty output means tip is reachable from remotes (pushed)
+        return (not output), None
+    except subprocess.CalledProcessError as e:
+        return False, Unknown(f"rev-list check failed: {e}")
+    except RuntimeError as e:
+        return False, Unknown(f"rev-list timed out: {e}")
+    except Exception as e:
+        return False, Unknown(f"rev-list error: {e}")
+
+
+def merge_base_is_ancestor(ancestor: str, descendant: str, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Check if ancestor is an ancestor of descendant using merge-base with --no-optional-locks.
+
+    Returns (True, None) if ancestor is an ancestor.
+    Returns (False, None) if ancestor is not an ancestor.
+    Returns (False, Unknown(...)) if any error occurs.
+    """
+    try:
+        run_git_command(
+            ["--no-optional-locks", "merge-base", "--is-ancestor", "--end-of-options", ancestor, descendant],
+            cwd=cwd,
+            check=True
+        )
+        return True, None
+    except subprocess.CalledProcessError:
+        return False, None
+    except RuntimeError as e:
+        return False, Unknown(f"merge-base timed out: {e}")
+    except Exception as e:
+        return False, Unknown(f"merge-base error: {e}")
+
+
 def branch_exists(branch: str, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
     """
     Check if a branch exists.

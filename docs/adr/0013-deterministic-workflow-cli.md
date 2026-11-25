@@ -417,7 +417,7 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 
 **Consequences:** The off-queue merge gate, shipit, implement/fix and stack-sync now hit only when the toolchain and installed dependencies match the record. A toolchain change is a miss, and a `None` digest is a logged, uncached run. Tests cover a hit on unchanged inputs, a miss when the deps stamp or the Python version changes, and the check still running with `toolchain_digest` returning `None`.
 
-### Amendment 12: `commands.cleanup` teardown hook (2026-11-11)
+### Amendment 12.1: `commands.cleanup` teardown hook (2026-11-11)
 
 **Problem:** A worktree can own resources outside the tree (containers, temporary databases) that only the project knows how to stop. `cleanup apply` removed the worktree without giving the project a chance to tear them down, which orphaned them. Decision 3 and Amendment 10 allow the CLI no such subprocess.
 
@@ -429,4 +429,19 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 - **Retry:** the hook must be idempotent; a failed run is retried by re-running `/cleanup`. A hook that can never succeed is escaped by editing main's `project.yaml`.
 
 **Consequences:** This is the CLI's only shell-string execution, and it is limited to this one key from this one file. A new one needs its own amendment.
+
+### Amendment 15: Full-ticket teardown with process checks and removal guards (2026-11-24)
+
+**Problem:** When a ticket's PR is not merged or the ticket is never opened, the worktree and its build caches, branches, and session pid record persist indefinitely, consuming disk and creating stale state. Manual discovery and cleanup of unmerged or abandoned work is error-prone. Decision 1 and the cleanup module lack the machinery to remove them safely.
+
+**Decision:** Add `discover`, `teardown`, and `sigkill` (in `scripts/workflow/teardown.py`) and `stale` and `classify-flows` (in `scripts/workflow/stale.py`) subcommands, wired in `scripts/workflow/cli.py`. All removal is fail-closed: a worktree is never removed while a live or UNKNOWN process (other than the caller chain) holds its cwd; every removal operation re-validates against the hashed plan before execution; removed files are renamed to trash before deletion.
+
+- **Process safety (Decision 1 carve-out):** A new module `scripts/workflow/procs.py` provides `verify_process` (is a pid alive?), `signal_process` (send a signal), `live_in` (is a process or its parent chain inside a worktree?), and `caller_chain` (the calling script's ancestry). `discover_ticket` reads live process state and classifies each worktree as MERGED / NOT_MERGED / UNKNOWN (tri-state, determined by `pr_merged_by_head`; only a HEAD-matched PR is considered merged). A worktree is never removed when `live_in` returns True for any process outside the caller chain.
+- **Removal guard (Decision 1 carve-out):** A new module `scripts/workflow/teardown_guard.py` implements `validate_target` (block removal of main worktree, refuse symlinks, refuse if cwd is inside the target), `guarded_rmtree` (atomic rename to trash, then rmtree), and `move_to_trash` (rename to `<worktrees-parent>/.cleanup-trash/`). After `move_to_trash` and before `rmtree`, `git worktree prune` runs to clean up stale worktree records. No half-deleted directory survives a failure.
+- **Act order:** Sessions and their process group are signalled first (SIGTERM, then SIGKILL for survivors), then the `commands.cleanup` hook runs (Amendment 12.1) for the ticket worktree, then the hook removal (branch/worktree), then cached data, then the trash collection. This order ensures that the hook can clean project resources while the worktree still exists, the hook runs exactly once immediately before the worktree is removed (Amendment 12.1), and stale signals do not wake the process after trash collection.
+- **Tri-state signals:** A `HEAD --short` to worktree SHA check (the dirty probe) distinguishes NOT_MERGED (HEAD does not match any PR) from UNKNOWN (HEAD matches but cannot verify via gh API). The Step 5 `signal_process` decision alone decides the merged path: a head-matched PR is merged; unmatched or unverifiable goes to teardown (teardown-only entry, no post-merge pull-and-check gate from Decision 7, only validation and removal).
+- **Flow state preservation:** The teardown path applies `apply_cleanup`'s removal steps but never writes flow state. `in_flow` field in the plan signals whether the ticket is mid-flow; inside a flow, SIGKILL and remote deletion stay human-run (via `/cleanup` with `--stale` for read-only classification, or manual hand-off to `/heal-flow`). W2 sets the boundary: `in_flow: true` blocks SIGKILL and remote branch deletion, enforced in the plan's allow-list (no code suppression). Q1 C notes that this ticket writes no flow state; #357 is the future writer.
+- **Citation:** ADR-0023 §3 ("Flow directories are never deleted by the command") is unchanged: `/cleanup` removes the work worktree and its descendants, never the flow directory.
+
+**Consequences:** A fail-closed removal contract with one delete guard, one process check, and atomic trash collection ensures a half-deleted state is not reachable. `apply_cleanup` gains the teardown-only entry alongside its existing merged path, keeping its pull-and-full-check gate only for the merged path (Decision 7). The plan's `in_flow` field gates SIGKILL and remote deletion inside flows. No removal ever spans a process check that failed with UNKNOWN.
 

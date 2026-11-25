@@ -1418,3 +1418,13 @@ Rewording it is the deferred W2/#538 follow-up, because agent files are frozen f
 
 - **No remaining intentional difference.** The "No Round 1 work left" row in the implement/fix parity table (ADR-0019 2026-11-17 amendment) is closed. The implement step no longer stops on a test-only plan. It runs a zero-unit run instead (ADR-0019 2026-11-23 amendment), so both steps handle a run with no Round 1 work the same way.
 - **Fidelity audit accepts zero-unit runs.** A run with `SPLIT_BASIS: zero-units` that ran Round 2 is not a reduced run, so the fidelity audit does not treat it as one.
+
+## Amendment (2026-11-24): `/expert-flow --stale` read-only flow classifier
+
+A new `--stale` flag (`commands/expert-flow.md` §Flags) provides read-only classification of flows in this repository as ACTIVE, STALLED, DEAD, or UNKNOWN. No new orchestrator behavior is added beyond reporting. The classifier delegates to `cleanup classify-flows` (ADR-0013 Amendment 15) and prints a table of flows, their states, signals, suggested commands, and directories. See ADR-0013 Amendment 15 for classification logic and signal definitions. This amendment does not create a new command; it is a flag of the existing `/expert-flow` orchestrator.
+
+- **What the flag does.** `--stale` reads all flows in `~/.claude/flows/<repo>` and returns a read-only classification without modifying any state. It does not answer questions, run checks, or interact with the worktree.
+- **Classification states.** ACTIVE (a Claude session is live in the flow's worktree), STALLED (the flow is in progress but nothing is live, or liveness is unknown), DEAD (the PR is MERGED by head, the issue is closed, the worktree is missing, or the worktree is clean with nothing ahead), or UNKNOWN (some signals cannot be determined).
+- **Signals and rules.** See ADR-0013 Amendment 15 for the full list. Classification is an ordered rule set (first match wins, see `stale.classify_flow`) over liveness, worktree existence, commits ahead, uncommitted state, issue state, and PR state (tri-state: MERGED, NOT_MERGED, UNKNOWN).
+- **Future deletion.** See #357 for future flow-state deletion. This amendment records `/expert-flow --stale` only as a classifier; it does not delete flows.
+- **Impact on fleet.** Unchanged; `/expert-fleet` (ADR-0025) is not affected by this amendment.
