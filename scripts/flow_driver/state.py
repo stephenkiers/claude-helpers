@@ -958,7 +958,8 @@ def count_driver_events(flow: Path, event: str, step: Optional[Step] = None) -> 
     """
     try:
         lines = (flow / DRIVER_LOG_FILE).read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
+    except (FileNotFoundError, OSError, ValueError):
+        # OSError covers permission errors, UnicodeDecodeError is a ValueError
         return 0
     count = 0
     for line in lines:

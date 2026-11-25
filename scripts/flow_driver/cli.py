@@ -133,6 +133,8 @@ def _cmd_next(args: argparse.Namespace) -> int:
     flow = _v2_flow(args)
     if args.nonce is not None and args.after != "notification":
         return _usage_error("usage: --nonce is accepted only together with --after notification")
+    if args.nonce is not None and not (isinstance(args.nonce, str) and len(args.nonce) == 8 and all(c in "0123456789abcdef" for c in args.nonce)):
+        return _usage_error("usage: --nonce must be 8 lowercase hex characters")
     return _run_loop(lambda: run_next(flow, args.after, nonce=args.nonce), stream="stdout")
 
 

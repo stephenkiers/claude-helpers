@@ -253,6 +253,19 @@ def _worktree_residue(worktree: Optional[str]) -> Residue:
     """
     if not worktree:
         return "no worktree recorded", None
+    # First, verify that the worktree path is a git repository rooted at the recorded path (not a parent repo).
+    # Use show-toplevel to detect if git walks up to a parent repo.
+    toplevel = pf.run_command(["git", "--no-optional-locks", "-C", worktree, "rev-parse", "--show-toplevel"])
+    if toplevel.returncode != 0:
+        return f"residue unknown ({_git_failure(toplevel)})", None
+    try:
+        # Resolve both paths to handle symlinks and relative paths (macOS /tmp -> /private/tmp)
+        toplevel_path = Path(toplevel.stdout.strip()).resolve()
+        worktree_path = Path(worktree).resolve()
+        if toplevel_path != worktree_path:
+            return "residue unknown (git root does not match worktree path)", None
+    except (OSError, ValueError):
+        return "residue unknown (cannot resolve paths)", None
     head = pf.run_command(["git", "--no-optional-locks", "-C", worktree, "rev-parse", "--short=12", "HEAD"])
     if head.returncode != 0:
         return f"residue unknown ({_git_failure(head)})", None
@@ -351,6 +364,9 @@ def _settle_receipt(locked: LockedFlow, attribution: NotificationAttribution, no
     if isinstance(classified, receipts.Malformed):
         if live_rules and attribution == "missing":
             return "unattributed", None
+        if attribution == "missing":
+            # Non-live missing: restore old behaviour (notified=True for immediate rerun)
+            return _malformed_gate(locked, pending, True, now), None
         return _malformed_gate(locked, pending, attribution == "attributed", now), None
     assert_never(classified)
 

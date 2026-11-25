@@ -468,8 +468,11 @@ and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.
   only with `--after notification`). Only an attributed notification satisfies the Decision 8 "gone at once" gate.
 - **Unattributed and foreign notifications.** A nonce-less notification on an unlanded live record fails closed to STOP
   `notification-unattributed`. A notification whose nonce belongs to another attempt is logged (`notification-foreign`)
-  and ignored. This is a behaviour change for the malformed-receipt path: a nonce-less notification on a malformed
-  receipt used to rerun at once; it now STOPs `notification-unattributed`.
+  and ignored. Both rules apply only while the flow status is `running`, the pending state is `spawned` or `resumed`, and no
+  question is awaiting an answer. On a malformed receipt, a nonce-less notification STOPs `notification-unattributed`
+  only under those live conditions; outside them it reruns at once, as before. `--nonce` must be 8 lowercase hex
+  characters or the command is refused with a usage error. An answered question is not exempt: a late duplicate
+  notification after a resume can still read as gone (open question for the slice-2 design).
 - **Subagent gone.** An attributed notification with no landed receipt and no awaiting question is STOP
   `subagent-gone-no-receipt`. Its detail carries a non-locking worktree residue summary. Both new codes are clearable by
   `clear-live`, which reopens the step with no Retry budget spent.
@@ -477,7 +480,7 @@ and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.
   and no sixth" holds). ADR-0023 and CLAUDE.md need no edit.
 - **Deferred.** The automatic re-spawn (the ticket's proposal: sixth-exception framing, cap of 1, residue archive) waits
   for a follow-up ticket, gated on the measured `subagent-gone` count. That count is derived from the driver log, so
-  there is no persisted counter and no state-schema change.
+  there is no persisted counter and no state-schema change. Nothing reads `count_driver_events` yet; it is read ad hoc until slice 2. The `subagent-gone` log record is written before the state commit, so it is at-least-once.
 - **Known gaps.** (a) A grandchild process that outlives the step agent's turn is not detected (Decision 8 residual).
   (b) Foreground WAIT (`fleet.py wait`) delivers no notification, so it still ends in `wait-timeout`. (c) A crash with no
   notification is not detected. (d) Audit and assessor spawns, whose records live outside `pending_spawn`, are not covered.
