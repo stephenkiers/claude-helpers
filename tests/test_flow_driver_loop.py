@@ -397,7 +397,7 @@ def test_no_command_doc_emits_legacy_test_only_plan(base: Path) -> None:
     expect(not offenders, f"commands/ files still contain test-only-plan: {offenders}")
 
 
-# Finding 3: validate --nonce format (plan item 2 addition)
+# A malformed --nonce is rejected before any state write
 def test_61_nonce_format_is_validated(base: Path) -> None:
     """Invalid nonce format is rejected with exit code 2 before any state write."""
     home = make_home(base)
@@ -418,26 +418,26 @@ def test_61_nonce_format_is_validated(base: Path) -> None:
     expect(state_path.read_bytes() == before, "invalid nonce changed state.json")
 
 
-# Finding 4: count_driver_events robust (implicit in test_58, testing UTF-8 failure explicitly)
+# count_driver_events returns 0 when the log cannot be read or decoded
 def test_62_count_driver_events_handles_read_errors(base: Path) -> None:
-    """count_driver_events is robust to file read errors (OSError, UnicodeDecodeError, ValueError)."""
-    from scripts.flow_driver.state import count_driver_events
+    """count_driver_events returns 0 for a log that raises OSError or UnicodeDecodeError on read."""
+    from scripts.flow_driver.state import DRIVER_LOG_FILE, count_driver_events
 
-    # Test: unreadable file (permission denied simulation)
-    unreadable = Path(tempfile.mkdtemp(dir=str(base)))
-    log_file = unreadable / "driver-log.jsonl"
-    log_file.write_text(json.dumps({"event": "test"}) + "\n", encoding="utf-8")
-    # Set to unreadable
-    os.chmod(str(log_file), 0o000)
-    try:
-        count = count_driver_events(unreadable, "test")
-        expect(count == 0, f"unreadable file returned {count}, expected 0")
-    finally:
-        os.chmod(str(log_file), 0o644)
+    # A directory where the log file belongs: read_text raises IsADirectoryError (an OSError), with no chmod needed.
+    as_dir = Path(tempfile.mkdtemp(dir=str(base)))
+    (as_dir / DRIVER_LOG_FILE).mkdir()
+    count = count_driver_events(as_dir, "test")
+    expect(count == 0, f"a directory in place of the log returned {count}, expected 0")
+
+    # Invalid UTF-8 bytes: read_text raises UnicodeDecodeError (a ValueError).
+    bad_bytes = Path(tempfile.mkdtemp(dir=str(base)))
+    (bad_bytes / DRIVER_LOG_FILE).write_bytes(b'{"event": "test"}\n\xff\xfe\n')
+    count = count_driver_events(bad_bytes, "test")
+    expect(count == 0, f"an undecodable log returned {count}, expected 0")
 
 
-# Finding 7: git rev-parse validation (implicit in test_54)
-def test_63_residue_probe_validates_git_toplevel(base: Path) -> None:
+# A worktree path that is a subdirectory of another repo is residue unknown
+def test_63_residue_probe_rejects_worktree_inside_another_repo(base: Path) -> None:
     """Residue probe verifies that git show-toplevel matches the recorded worktree path."""
     home = make_home(base)
     git_commit_file(home)
@@ -452,15 +452,12 @@ def test_63_residue_probe_validates_git_toplevel(base: Path) -> None:
     gone_stop(home, flow, pending["nonce"])
     reason = state_of(flow).get("stop_reason", {}).get("implement", "")
     # The residue should be unknown because git show-toplevel in subdir returns parent, not subdir
-    expect("residue unknown" in reason, f"mismatched repo path was not reported as unknown: {reason!r}")
+    expect(
+        "residue unknown (git root does not match worktree path)" in reason,
+        f"mismatched repo path was not reported by the toplevel check: {reason!r}",
+    )
     recs = records(flow, "subagent-gone")
     expect(len(recs) == 1 and recs[0].get("residue_paths") is None, f"residue_paths should be None for unknown residue: {recs!r}")
-
-
-# Finding 2: nonce-less on malformed outside live rules (implicit test via existing test 50a)
-# Test 50a already covers the live case. The non-live case is hard to construct but the fix ensures
-# that if live_rules is False and attribution == "missing", we call _malformed_gate(..., True, now)
-# instead of falling through to the wrong branch. This is covered by the logic flow.
 
 
 # ---------------------------------------------------------------------------
@@ -1173,11 +1170,14 @@ def test_55_residue_probe_leaves_index_untouched(base: Path) -> None:
     git_commit_file(home)
     flow, _ = start_flow(home)
     pending = advance_to(home, flow, "implement")
-    index = home / "wt" / ".git" / "index"
-    before = index.stat().st_mtime_ns
+    wt = home / "wt"
+    (wt / "tracked.txt").write_text("one\nstaged\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(wt), "add", "tracked.txt"], check=True, capture_output=True, env=GIT_ENV)
+    index = wt / ".git" / "index"
+    before = index.read_bytes()
     gone_stop(home, flow, pending["nonce"])
-    expect(not (home / "wt" / ".git" / "index.lock").exists(), "the probe left .git/index.lock behind")
-    expect(index.stat().st_mtime_ns == before, "the residue probe changed the index mtime")
+    expect(not (wt / ".git" / "index.lock").exists(), "the probe left .git/index.lock behind")
+    expect(index.read_bytes() == before, "the residue probe changed the index contents")
 
 
 # Test 56: Facts carries gone_residue exactly when receipt is gone (plan item 12)
@@ -1352,9 +1352,9 @@ SECTIONS = [
         ("58: derived count reads the driver log", test_58_derived_count_reads_the_driver_log),
         ("59: replay after gone STOP is idempotent", test_59_replay_after_gone_stop_is_idempotent),
         ("60: command doc passes the nonce and names the new stops", test_60_command_doc_passes_nonce_and_names_new_stops),
-        ("61: nonce format validation rejects invalid hex/length (#533 Finding 3)", test_61_nonce_format_is_validated),
-        ("62: count_driver_events handles read errors robustly (#533 Finding 4)", test_62_count_driver_events_handles_read_errors),
-        ("63: residue probe validates git show-toplevel matches worktree (#533 Finding 7)", test_63_residue_probe_validates_git_toplevel),
+        ("61: nonce format validation rejects invalid hex/length", test_61_nonce_format_is_validated),
+        ("62: count_driver_events handles read errors robustly", test_62_count_driver_events_handles_read_errors),
+        ("63: residue probe rejects a worktree inside another repo", test_63_residue_probe_rejects_worktree_inside_another_repo),
     ]),
 ]
 
