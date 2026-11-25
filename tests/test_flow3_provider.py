@@ -80,8 +80,8 @@ try:
     provider.for_repo(clone, repoconfig.parse("provider: github\ncheck: {full: x}\n"))
     ok = False
 except ProviderError as exc:
-    ok = "not built yet" in str(exc)
-h.test_result("for_repo github raises ProviderError", ok)
+    ok = "owner/name" in str(exc)
+h.test_result("for_repo github with a non-GitHub origin raises ProviderError", ok)
 
 # issues
 n1 = prov.create_issue("First thing", "Do the first thing.\nMore.")

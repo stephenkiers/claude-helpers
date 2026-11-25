@@ -1,6 +1,6 @@
 """
 Issue, pull request, and merge operations behind one interface. `LocalProvider` keeps its data inside
-the bare remote that `origin` points at (for tests and sandbox runs); the GitHub provider is a later unit.
+the bare remote that `origin` points at (for tests and sandbox runs); `GithubProvider` shells out to `gh`.
 
 Layout under the bare remote: flow3/issues/<n>.md (first line `# <title>`, then the body; a line
 `Depends on: #4, #5`), flow3/issues/<n>.closed when closed, flow3/prs/<n>.json.
@@ -9,8 +9,10 @@ Layout under the bare remote: flow3/issues/<n>.md (first line `# <title>`, then 
 import argparse
 import fcntl
 import json
+import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -207,6 +209,116 @@ class LocalProvider(Provider):
                 atomic_write_text(self.data / "issues" / ("%s.closed" % int(num)), "")
 
 
+# -- GitHub ----------------------------------------------------------------------------------
+
+_GH_URL = re.compile(r"^(?:https?://[^/]+/|ssh://[^/]+/|[\w.-]+@[^:/]+:|git://[^/]+/)"
+                     r"(?P<owner>[\w.-]+)/(?P<name>[\w.-]+?)(?:\.git)?/?$")
+_DEPENDS_LINE = re.compile(r"^\s*(?:depends\s+on|blocked\s+by)\b:?\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+_BASE_MOVED = re.compile(r"head branch was modified|base branch was modified|match-head-commit|"
+                         r"not mergeable|merge conflict|out of date|behind", re.IGNORECASE)
+_PR_NUMBER = re.compile(r"/pull/(\d+)")
+_GH_TIMEOUT_SECS = 120
+
+
+def parse_remote_url(url: str) -> str:
+    """`owner/name` from an https, ssh:// or scp-style remote url. Raises ProviderError otherwise."""
+    match = _GH_URL.match(url.strip())
+    if not match:
+        raise ProviderError("cannot read owner/name from the origin url: %r" % url)
+    return "%s/%s" % (match.group("owner"), match.group("name"))
+
+
+class GithubProvider(Provider):
+    """The GitHub provider: every call is one `gh` run with `-R owner/name` and JSON output."""
+
+    name = "github"
+
+    def __init__(self, slug: str, gh_bin: Optional[str] = None) -> None:
+        self.slug = slug
+        self.gh_bin = gh_bin or os.environ.get("FLOW3_GH_BIN") or "gh"
+
+    def _gh(self, args: List[str]) -> str:
+        argv = [self.gh_bin] + args + ["-R", self.slug]
+        try:
+            proc = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, timeout=_GH_TIMEOUT_SECS)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ProviderError("gh %s could not run: %s" % (" ".join(args[:2]), exc))
+        if proc.returncode != 0:
+            raise ProviderError("gh %s failed (exit %d): %s" % (
+                " ".join(args[:2]), proc.returncode, proc.stderr.decode("utf-8", "replace").strip()))
+        return proc.stdout.decode("utf-8", "replace")
+
+    def _json(self, args: List[str]) -> Any:
+        text = self._gh(args)
+        try:
+            return json.loads(text)
+        except ValueError:
+            raise ProviderError("gh %s returned something that is not JSON" % " ".join(args[:2]))
+
+    @staticmethod
+    def _as_pr(rec: Dict[str, Any]) -> PullRequest:
+        return PullRequest(number=int(rec["number"]), url=str(rec.get("url") or ""),
+                           branch=str(rec.get("headRefName") or ""), base=str(rec.get("baseRefName") or ""),
+                           state=str(rec.get("state") or "").lower())
+
+    def get_issue(self, number: int) -> Issue:
+        rec = self._json(["issue", "view", str(number), "--json", "number,title,body,state"])
+        if not isinstance(rec, dict):
+            raise ProviderError("issue #%d: unexpected gh output" % number)
+        body = str(rec.get("body") or "")
+        deps: List[int] = []
+        for match in _DEPENDS_LINE.finditer(body):
+            deps += [int(n) for n in re.findall(r"#(\d+)", match.group(1))]
+        return Issue(number=int(rec.get("number") or number), title=str(rec.get("title") or ""), body=body,
+                     state=str(rec.get("state") or "").lower(), depends_on=tuple(dict.fromkeys(deps)))
+
+    def find_pr(self, branch: str) -> Optional[PullRequest]:
+        rows = self._json(["pr", "list", "--head", branch, "--state", "all", "--limit", "20", "--json",
+                           "number,url,headRefName,baseRefName,state"])
+        prs = [self._as_pr(r) for r in rows if isinstance(r, dict) and r.get("headRefName") == branch]
+        for wanted in ("open", "merged"):
+            hits = sorted((p for p in prs if p.state == wanted), key=lambda p: p.number)
+            if hits:
+                return hits[-1]
+        return None
+
+    def open_pr(self, branch: str, base: str, title: str, body: str) -> PullRequest:
+        fd, tmp = tempfile.mkstemp(prefix="flow3-pr-", suffix=".md")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            out = self._gh(["pr", "create", "--head", branch, "--base", base, "--title", title,
+                            "--body-file", tmp])
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        match = _PR_NUMBER.search(out)
+        if not match:
+            raise ProviderError("gh pr create did not print a pull request url: %r" % out.strip()[:200])
+        url = match.group(0)
+        found = re.search(r"\S*" + re.escape(url), out)
+        return PullRequest(number=int(match.group(1)), url=found.group(0) if found else url,
+                           branch=branch, base=base, state="open")
+
+    def pr_state(self, number: int) -> str:
+        rec = self._json(["pr", "view", str(number), "--json", "state"])
+        if not isinstance(rec, dict) or not rec.get("state"):
+            raise ProviderError("PR #%d: unexpected gh output" % number)
+        return str(rec["state"]).lower()
+
+    def merge_pr(self, number: int, head_sha: str, title: str) -> None:
+        try:
+            self._gh(["pr", "merge", str(number), "--squash", "--match-head-commit", head_sha,
+                      "--subject", title])
+        except ProviderError as exc:
+            if _BASE_MOVED.search(str(exc)):
+                raise BaseMoved(str(exc))
+            raise
+
+
 class _Lock:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -228,7 +340,12 @@ def local_for(repo_root: Path) -> LocalProvider:
 def for_repo(repo_root: Path, cfg: RepoConfig) -> Provider:
     if cfg.provider == "local":
         return local_for(repo_root)
-    raise ProviderError("github provider not built yet")
+    if cfg.provider == "github":
+        url = gitops.git(["remote", "get-url", "origin"], repo_root, check=False)
+        if not url:
+            raise ProviderError("the repo has no origin remote")
+        return GithubProvider(parse_remote_url(url))
+    raise ProviderError("unknown provider %r" % cfg.provider)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
