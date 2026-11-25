@@ -78,7 +78,7 @@ After each event, run the directive's `next_command`, with ` --after <label>` ap
   instead, and `settled` then means the receipt changed from its bytes at wait start and now holds a Decision line or the
   `<!-- awaiting-answers:` marker. It prints `settled` when the receipt holds a Decision line or the `<!-- awaiting-answers:`
   marker, and `timeout` otherwise. Run `next --after wait-settled` on `settled` and `next --after wait-timeout` on `timeout`. A timeout never means success;
-  the driver decides from disk.
+  the driver decides from disk. `fleet.py wait --require-change` snapshots the receipt bytes when the call starts, so a receipt that completes in the gap between the driver printing WAIT and the wait call starting costs a full timeout (accepted latency).
 - **ASK**: print the question file contents, the `answer_file` path and the `answer_command`, then end the turn. On the
   human's next message, run `answer_command` with the human's text in place of `<your answer>`, then run
   `next --after human-continue`.
@@ -119,5 +119,5 @@ old, and their whole flow directories. It never touches a running flow, the flow
   A failed step stops; see Recovery.
 - **parked-awaiting-answer, resumed:** an incomplete receipt is held and never re-run (ADR-0026 Decision 8: never malformed, fingerprint not stored; #549). In end-turn mode a dead resumed agent has no
   time bound: only the human's `clear-live` ends it. In foreground mode the 540s default `fleet.py wait --timeout`
-  applies to a live resumed agent too, so a slow-but-alive agent reaches STOP `wait-timeout` the same as a dead one.
+  applies to a live resumed agent too, so a slow-but-alive agent reaches STOP `wait-timeout` the same as a dead one. A LIVE resumed agent that writes a second `<!-- awaiting-answers:` marker (a step that asks several questions across a resume, such as plan briefs, review rulings or fix per-item asks) also gets WAIT, not a new ASK; in end-turn mode there is no timer, so it stalls until the human runs `clear-live`, and in foreground mode it burns the 540s default timeout and then STOPs with `wait-timeout`. This is accepted behavior (plan ruling Q1 = A: multi-ask receipts are held, not re-run), pinned by the test `test_549_08_multi_marker_placeholder_is_held`; a follow-up issue tracks changing it. The unbounded hold in end-turn mode is tracked in #533.
 - Fleet behaviour is a later layer (ADR-0026). `--auto-merge` is not supported, by design.
