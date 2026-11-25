@@ -190,7 +190,7 @@ def run_recheck(block: str, literal: str, cwd: Path, stub: Path, work: Path) -> 
     body = re.sub(r'"[^"\n]*primary-checkout-drift\.py"', lambda m: f'"{stub}"', body)
     body = re.sub(r"<[A-Za-z][A-Za-z0-9_-]*>", "PLACEHOLDER", body)
     body += 'printf "RECHECK_FAIL=%s\\n" "${RECHECK_FAIL:-}"\n'
-    script = work / f"recheck-{abs(hash((literal, str(cwd))))}.sh"
+    script = work / f"recheck-{len(list(work.glob('recheck-*.sh')))}.sh"
     script.write_text(body)
     r = subprocess.run(["bash", str(script)], cwd=str(cwd), env=git_env(), capture_output=True, text=True)
     return r.returncode, r.stdout, r.stderr
@@ -405,6 +405,8 @@ def main() -> None:
             )
             work = root / "work"
             work.mkdir()
+            (bare_repo / "notes").mkdir(exist_ok=True)
+            (classic_repo / "sub").mkdir(exist_ok=True)
             cases = [
                 ("bare: worktrees/main literal passes", bare_repo, bare_repo / "worktrees" / "main", True),
                 ("bare: .bare literal fails with no-usable-primary", bare_repo, bare_repo / ".bare", False),

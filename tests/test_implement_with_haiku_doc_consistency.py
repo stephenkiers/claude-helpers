@@ -221,7 +221,9 @@ print("[Directives 6 & 7] Full report trailer reference consistency")
 # that happens to contain the phrase — that bug previously made this check match spurious
 # unrelated sections (verified via mutation: it silently matched "### Parse claude-action-plan.md
 # into directives" and "### Apply Round 2's diff" instead of the two real read-only headings).
-heading_matches = list(re.finditer(r"^(#{2,3}) .*$", IMPLEMENT_WITH_HAIKU, re.MULTILINE))
+fence_spans = [m.span() for m in re.finditer(r"^```.*?^```", IMPLEMENT_WITH_HAIKU, re.MULTILINE | re.DOTALL)]
+heading_matches = [m for m in re.finditer(r"^(#{2,3}) .*$", IMPLEMENT_WITH_HAIKU, re.MULTILINE)
+                   if not any(start <= m.start() < end for start, end in fence_spans)]
 read_only_headings = []
 for idx, heading_match in enumerate(heading_matches):
     title_line = heading_match.group(0)
