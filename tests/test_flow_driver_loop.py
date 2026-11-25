@@ -680,6 +680,23 @@ def test_549_12_foreground_bound_for_resumed_record(base: Path) -> None:
     expect((flow / "archive" / "fix" / "a1.landed.md").exists(), "the landed receipt was not archived at wait-timeout")
 
 
+def test_549_14_wait_timeout_on_parked_record_is_held_stop(base: Path) -> None:
+    home, flow, env, _ = _drive_to_fix(base)
+    _write_placeholder(flow)
+    verb, _ = _next(home, flow, env, "spawn-launched")
+    expect(verb == "ASK", f"the launched fix with a question printed {verb}, expected ASK (driver parks)")
+    expect(pending_of(flow)["state"] == "parked-awaiting-answer", "the record did not park")
+    attempt_before = pending_of(flow)["attempt"]
+    fingerprint_before = pending_of(flow)["receipt_seen"]
+    verb, directive = _next(home, flow, env, "wait-timeout")
+    expect(verb == "STOP", f"a parked record at wait-timeout printed {verb}, expected STOP")
+    expect(state_of(flow)["stop_reason"]["fix"].startswith("wait-timeout:"), "the STOP is not wait-timeout")
+    expect("clear-live" in directive_text(directive), "the wait-timeout STOP does not name clear-live")
+    expect(pending_of(flow)["attempt"] == attempt_before, "wait-timeout on a parked record re-ran the step (new attempt)")
+    expect(pending_of(flow)["receipt_seen"] == fingerprint_before, "wait-timeout stored a fingerprint for the held receipt")
+    _no_malformed_archive(flow)
+
+
 def _section(text: str, heading_pattern: str) -> str:
     match = re.search(heading_pattern, text, re.MULTILINE | re.IGNORECASE)
     expect(match is not None, f"no heading matches {heading_pattern!r}")
@@ -744,6 +761,7 @@ SECTIONS = [
         ("549-11: WAIT directive require_change true for resumed, false otherwise", test_549_11_wait_directive_carries_require_change),
         ("549-11b: audit and assessor WAITs keep require_change false", test_549_11b_audit_and_assessor_waits_keep_require_change_false),
         ("549-12: foreground wait-timeout bounds a resumed record; a landed receipt wins", test_549_12_foreground_bound_for_resumed_record),
+        ("549-14: wait-timeout on a parked record is a held STOP, no rerun, no fingerprint", test_549_14_wait_timeout_on_parked_record_is_held_stop),
         ("549-13: stub doc Known gaps, --require-change, no bare positional token; recovery docstring", test_549_13_docs_and_docstrings),
     ]),
 ]

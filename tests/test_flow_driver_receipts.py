@@ -151,6 +151,16 @@ def test_549_06b_settle_does_not_overwrite_parked_fingerprint(flow: Path) -> Non
     expect(stored_fingerprint(flow) == parked_value, "settle_in_progress changed a parked record's fingerprint")
 
 
+def test_549_06c_settle_stores_fingerprint_for_fingerprint_changed(flow: Path) -> None:
+    make_flow(flow, "spawned", receipt_seen=None)
+    first = classify_now(flow)
+    expect(isinstance(first, receipts.InProgress) and first.basis == "fingerprint-changed", f"precondition: {first!r}")
+    with mutating(flow) as locked:
+        receipts.settle_in_progress(locked, _transition_key(locked), locked.require_state().pending_spawn, first)  # type: ignore[arg-type]
+    expect(stored_fingerprint(flow) == first.fingerprint,
+           "settle_in_progress did not store the fingerprint for a fingerprint-changed hold")
+
+
 CHECKS = [
     ("549-05a: parked and resumed incomplete receipts are InProgress awaiting-answer", test_549_05a_parked_and_resumed_are_awaiting_answer),
     ("549-05b: resumed with a matching fingerprint is still awaiting-answer", test_549_05b_resumed_with_matching_fingerprint_is_still_awaiting_answer),
@@ -158,6 +168,7 @@ CHECKS = [
     ("549-05d: resumed two-marker receipt is awaiting-answer", test_549_05d_resumed_two_markers_is_awaiting_answer),
     ("549-06a: settle_in_progress stores no fingerprint for awaiting-answer", test_549_06a_settle_does_not_store_for_awaiting_answer),
     ("549-06b: settle_in_progress leaves a parked fingerprint alone", test_549_06b_settle_does_not_overwrite_parked_fingerprint),
+    ("549-06c: settle_in_progress stores the fingerprint for fingerprint-changed", test_549_06c_settle_stores_fingerprint_for_fingerprint_changed),
 ]
 
 
