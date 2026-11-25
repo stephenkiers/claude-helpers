@@ -8,11 +8,11 @@ If this session restarts: read this file first, then continue from the first uni
 |---|---|---|---|
 | 0 | Probes (`docs/v3/probes.md`) | accepted | (with interfaces commit) |
 | - | Shared interfaces: `types.py`, `config.py`, `schemas.py`, `docs/v3/INTERFACES.md` | accepted | (with interfaces commit) |
-| 1 | `runner.py` + fake `claude` binary | in progress | |
-| 2 | `state.py`, `driver.py`, `engine.py`, `record.py`, `cli.py` skeleton | in progress | |
-| 3 | `repoconfig.py`, `checks.py`, `gitops.py`, `provider.py` (local), init, doctor | in progress | |
-| 4 | `heal.py` | not started | |
-| 5 | `questions.py`, `voice.py`, `principles.py` | not started | |
+| 1 | `runner.py` + fake `claude` binary | accepted | 60a79ce4 |
+| 2 | `state.py`, `driver.py`, `engine.py`, `record.py`, `cli.py` skeleton | accepted | e4a78535 |
+| 3 | `repoconfig.py`, `checks.py`, `gitops.py`, `provider.py` (local), doctor (init CLI lands with unit 10) | accepted | next commit |
+| 4 | `heal.py` | in progress | |
+| 5 | `questions.py`, `voice.py`, `principles.py` | in progress | |
 | 6 | `steps/worktree.py`, `steps/plan.py` + prompts | not started | |
 | 7 | `steps/spec_tests.py`, `steps/implement.py` + prompts | not started | |
 | 8 | `steps/review.py` + prompts | not started | |
@@ -52,6 +52,12 @@ If this session restarts: read this file first, then continue from the first uni
 7. **The `local` provider stores issues and PRs inside the bare remote** (`<origin>/flow3/`).
 8. **"What the experts think" on a card** may hold a single view from the step that asked, when the
    question did not come from a panel (an implementer's question has no panel behind it).
+
+9. **A crashed flow can be resumed.** `resume` on a flow whose status is still `running` re-runs the
+   stage (stages are re-enterable); `engine.run_flow` holds a per-flow lock so a live run is never doubled.
+10. **Merge hook keys are `merge.pre_merge` / `merge.post_merge`** as PLAN section 9 writes them.
+11. **Doctor's merge dry run** is limited to what is safe: for `method: command` it checks the
+    command's program exists; it never runs the merge command.
 
 ## Spend (notional USD, real model calls)
 
