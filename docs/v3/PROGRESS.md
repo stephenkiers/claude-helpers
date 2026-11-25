@@ -10,13 +10,13 @@ If this session restarts: read this file first, then continue from the first uni
 | - | Shared interfaces: `types.py`, `config.py`, `schemas.py`, `docs/v3/INTERFACES.md` | accepted | (with interfaces commit) |
 | 1 | `runner.py` + fake `claude` binary | accepted | 60a79ce4 |
 | 2 | `state.py`, `driver.py`, `engine.py`, `record.py`, `cli.py` skeleton | accepted | e4a78535 |
-| 3 | `repoconfig.py`, `checks.py`, `gitops.py`, `provider.py` (local), doctor (init CLI lands with unit 10) | accepted | next commit |
-| 4 | `heal.py` | in progress | |
-| 5 | `questions.py`, `voice.py`, `principles.py` | in progress | |
-| 6 | `steps/worktree.py`, `steps/plan.py` + prompts | not started | |
-| 7 | `steps/spec_tests.py`, `steps/implement.py` + prompts | not started | |
-| 8 | `steps/review.py` + prompts | not started | |
-| 9 | `steps/fix.py`, `steps/ship.py`, `mergegate.py`, `provider.py` (github) | not started | |
+| 3 | `repoconfig.py`, `checks.py`, `gitops.py`, `provider.py` (local), doctor (init CLI lands with unit 10) | accepted | ed1c552c |
+| 4 | `heal.py` | accepted | 892ae847 |
+| 5 | `questions.py`, `voice.py`, `principles.py` | accepted | db264af0 |
+| 6 | `steps/worktree.py`, `steps/plan.py` + prompts | in progress | |
+| 7 | `steps/spec_tests.py`, `steps/implement.py`, `steps/work.py` + prompts | in progress | |
+| 8 | `steps/review.py` + prompts | in progress | |
+| 9 | `steps/fix.py`, `steps/ship.py`, `mergegate.py`, `provider.py` (github) | in progress (ship, mergegate, github first; fix after 7 and 8) | |
 | 10 | `fleet.py`, inbox, `commands/flow3.md`, `why`, `principles init`, docs | not started | |
 | 11 | End-to-end sandbox runs | not started | |
 
@@ -24,13 +24,13 @@ If this session restarts: read this file first, then continue from the first uni
 
 | Row | Covered by |
 |---|---|
-| Machinery (bad structured output) | pending: heal `schema` test |
-| Environment (base behind, check timeout, cleanup after merge) | pending: heal `base-stale`, `environment`, `cleanup` tests |
-| Work failed (fix loop, partial unit) | pending: heal `check-work`, `unit-shortfall` tests |
+| Machinery (bad structured output) | `tests/test_flow3_heal.py`: schema and transient tests |
+| Environment (base behind, check timeout, cleanup after merge) | `tests/test_flow3_heal.py`: base-stale, environment (timeout, missing dependency), cleanup tests |
+| Work failed (fix loop, partial unit) | `tests/test_flow3_heal.py`: check-work and unit-shortfall tests |
 | Test-edit approval | pending: test-edit rule test (implement) |
-| No reason recorded | pending: `FlowStop` / `make_stop` construction tests |
+| No reason recorded | `tests/test_flow3_heal.py` final tests; `tests/test_flow3_driver.py` stop construction |
 | Genuine (prerequisite not merged) | pending: worktree stage dependency test |
-| Questions: principle / fact / detail / human | pending: resolver order tests |
+| Questions: principle / fact / detail / human | `tests/test_flow3_questions.py`: resolver order tests |
 
 ## Decisions the plan did not settle
 
@@ -58,6 +58,14 @@ If this session restarts: read this file first, then continue from the first uni
 10. **Merge hook keys are `merge.pre_merge` / `merge.post_merge`** as PLAN section 9 writes them.
 11. **Doctor's merge dry run** is limited to what is safe: for `method: command` it checks the
     command's program exists; it never runs the merge command.
+12. **`heal.write_call`** wraps a writing call with the path rule, partial-work keeping, one escalation
+    and the commit, so implement and fix share one code path. Stages never call `runner.run`.
+13. **Risk and purpose questions never go to the principle resolver** (no model call at all): they
+    always reach the human.
+14. **Stage data shapes and the shared `steps/work.py` helper** are fixed in `INTERFACES.md`
+    ("Stage contracts") so units 6 to 9 could be built in parallel.
+15. **Send back from the merge gate** is a saved direction plus `data.sendback`; fix turns it into one
+    fix unit, then review runs on the fix diff and the flow ships again.
 
 ## Spend (notional USD, real model calls)
 
