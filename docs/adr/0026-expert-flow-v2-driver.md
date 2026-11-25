@@ -76,6 +76,8 @@ copy of the atomic-write pattern is the failure mode this decision prevents.
 
 ### 3. The disk-only boundary and the closed verb set
 
+> Amended in part by the 2026-11-24 #533 amendment: the stub now carries the spawn nonce on notification calls.
+
 The driver is a pure transition function: `(disk state, "something happened") -> (new state, one
 directive)`. The stub (`commands/expert-flow-v2.md`, a model) is a dumb executor. It calls
 `driver next <flow>` after any event, reads the one-line `NEXT: <verb> <file>` the driver prints, and does
@@ -171,6 +173,8 @@ prompt string (`/expert-flow-v2`), the flows root (`flows-v2`), and the fleet ru
 session. The v1 command line and environment are pinned by a test as unchanged.
 
 ### 8. Liveness: `pending_spawn`, the driver nonce, and clear-live (Q5, human direction seq 1)
+
+> Amended in part by the 2026-11-24 #533 amendment: the nonce now crosses the model boundary on notification calls.
 
 Every SPAWN or RESUME is preceded by a `pending_spawn` record: step, attempt, a driver-written nonce, a state,
 and in fleet mode the recording fleet run identity (`FLEET_RUN_ID`). Its states are:
@@ -485,14 +489,20 @@ and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.
 - **Subagent gone.** An attributed notification with no landed receipt and no awaiting question is STOP
   `subagent-gone-no-receipt`. Its detail carries a non-locking worktree residue summary. Both new codes are clearable by
   `clear-live`, which reopens the step with no Retry budget spent.
+- **Stale and attributed.** An attributed notification that meets a Stale receipt (one for another attempt) is archived and
+  treated as gone: STOP `subagent-gone-no-receipt`, not WAIT.
+- **clear-live reopening archives the receipt.** When `clear-live` reopens a `subagent-gone-no-receipt` step, the incomplete
+  receipt is archived first, so the next attempt starts from a clean landing path.
+- **Audit and assessor completions.** Their nonces live outside `pending_spawn`, so a late completion is logged
+  `notification-foreign` with `source` set to `audit` or `assess` (a step attempt is `step`) and resolves to WAIT.
 - **Detect-and-stop only.** This is a STOP, not remediation, so the five bounded exceptions are unchanged ("no widening
   and no sixth" holds). ADR-0023 and CLAUDE.md need no edit.
 - **Deferred.** The automatic re-spawn (the ticket's proposal: sixth-exception framing, cap of 1, residue archive) waits
   for a follow-up ticket, gated on the measured `subagent-gone` count. That count is derived from the driver log, so
-  there is no persisted counter and no state-schema change. Nothing reads `count_driver_events` yet; it is read ad hoc until slice 2. The `subagent-gone` log record is written before the state commit, so it is at-least-once.
+  there is no persisted counter and no state-schema change. `count_driver_events` is a helper with no production reader yet (tests only); slice 2 is its first reader. The `subagent-gone` log record is written before the state commit, so it is at-least-once.
 - **Overlap with #556 and #557.** The notified, attributed Malformed rerun gate in this amendment overlaps the
   Malformed-branch notification handling tracked in #556 and #557. This amendment's behaviour applies to the v2 driver
   only; #556 and #557 govern any other driver or v1 path.
 - **Known gaps.** (a) A grandchild process that outlives the step agent's turn is not detected (Decision 8 residual).
   (b) Foreground WAIT (`fleet.py wait`) delivers no notification, so it still ends in `wait-timeout`. (c) A crash with no
-  notification is not detected. (d) Audit and assessor spawns, whose records live outside `pending_spawn`, are not covered.
+  notification is not detected. (d) Audit and assessor spawns, whose records live outside `pending_spawn`, are not covered. (e) The issued-nonce set is read from the driver log plus committed state. The live, audit and assess nonces always come from state, so only an earlier attempt's nonce can be lost with a lost log line; that nonce then reads as never issued and fails closed to a STOP (the safe direction). (f) The driver log is re-read on every `next` that carries a nonce; acceptable at current log sizes.
