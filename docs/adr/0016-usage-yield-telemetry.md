@@ -228,7 +228,8 @@ will be updated to say so.
 was denied ("Undermining Oversight"). A human allow rule for the script did not help, because the denied command
 was a shell redirect, not a call to the script. Ledger rows now go through `implement-ledger.py append` under the
 same narrow grant, and the redirect form is retired. The grant is still unverified for the new form in a non-bypass
-mode until the post-merge checklist runs. It is not widened to `Bash(python3:*)`.
+mode until the post-merge checklist runs (the "Open Items" section of the #548 implementation plan, posted as a comment on issue #548). It is not widened to `Bash(python3:*)`.
+Accepted residual: nothing at runtime blocks a `printf` redirect (`>>`) into the ledger file; the append command is the sanctioned writer, and this is enforced by the doc tests and review, not by a runtime guard.
 
 ## Amendment — Agent data guard in `diagnose` (#143 PR 2)
 
