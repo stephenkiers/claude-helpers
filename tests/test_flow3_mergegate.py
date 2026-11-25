@@ -337,6 +337,14 @@ mergegate._run_command = run_cmd  # type: ignore[assignment]
 h.test_result("command method merges once the provider confirms", res.kind == "done"
               and b.flow.data("merge").get("merged") is True)
 
+# a resumed merge whose PR is already merged never runs the merge command again
+marker = TMP / "g10d-ran"
+b = Box("g10d", ["method: command", "command: \"touch %s\"" % marker])
+b.ctx.provider.merge_pr(1, gitops.head_sha(b.wt), "t")
+res = mergegate.run(b.ctx)
+h.test_result("already merged PR: done without running the merge command", res.kind == "done"
+              and not marker.exists() and b.flow.data("merge").get("merged") is True, str(res))
+
 # a failing merge command is a merge stop
 b = Box("g10c", ["method: command", "command: \"exit 4\""])
 stop = stops(lambda: mergegate.run(b.ctx))

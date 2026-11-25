@@ -309,6 +309,13 @@ def _confirm_merged(ctx: Ctx, pr: int) -> None:
                    tried=["asked the provider %d times" % CONFIRM_TRIES])
 
 
+def _already_merged(ctx: Ctx, pr: int) -> bool:
+    try:
+        return ctx.provider.pr_state(pr) == "merged"
+    except ProviderError:
+        return False
+
+
 def _merge_locked(ctx: Ctx) -> Dict[str, Any]:
     wt = ctx.worktree
     branch = str(ctx.flow.get("branch"))
@@ -365,8 +372,13 @@ def run(ctx: Ctx) -> StageResult:
         wt = ctx.worktree
         branch = str(ctx.flow.get("branch"))
         pr = int(ctx.flow.get("pr") or ctx.flow.data("ship").get("pr") or 0)
-        won = _merge_locked(ctx)
-        _confirm_merged(ctx, pr)
+        if pr and _already_merged(ctx, pr):
+            # a resumed merge stage: never hand an already merged PR to the merge command again
+            record.journal(ctx.flow, "PR #%d was already merged; the merge was not run again." % pr)
+            won: Dict[str, Any] = {"attempts": 0, "head": gitops.head_sha(wt)}
+        else:
+            won = _merge_locked(ctx)
+            _confirm_merged(ctx, pr)
         merged_sha = ""
         try:
             gitops.fetch(wt)
