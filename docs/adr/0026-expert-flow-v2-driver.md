@@ -466,9 +466,18 @@ and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.
 
 - **The `notification` event carries the spawn nonce.** `next --after notification --nonce <nonce>` (the flag is accepted
   only with `--after notification`). Only an attributed notification satisfies the Decision 8 "gone at once" gate.
-- **Unattributed and foreign notifications.** A nonce-less notification on an unlanded live record fails closed to STOP
-  `notification-unattributed`. A notification whose nonce belongs to another attempt is logged (`notification-foreign`)
-  and ignored. Both rules apply only while the flow status is `running`, the pending state is `spawned` or `resumed`, and no
+- **Supersession (#533 Q2 A).** This amendment supersedes Decisions 3 and 8 in part, and the matching rejected alternative,
+  for the spawn nonce only. Decision 3's "no stub-carried nonce" and Decision 8's "the nonce never crosses the model
+  boundary as a value to return" no longer hold: the stub carries the spawn nonce back to the driver on notification
+  calls. The rejected "Token handshake (Q4 B/C)" entry is superseded to the same extent, because it rejected stub-carried
+  nonces. Every other part of Decisions 3 and 8 stands, including the disk-only boundary, the closed verb set, and the
+  rule that the stub never guesses a nonce. The human chose the nonce because it lets the driver tell a live
+  notification from a stale one without trusting timing. The driver fails closed on a missing or unissued nonce, so the
+  carried value is checked, not trusted.
+- **Unattributed and foreign notifications.** A notification is unattributed when it carries no nonce, or when its nonce
+  was never issued by this flow. Both fail closed to STOP `notification-unattributed`. A notification whose nonce matches
+  a previously issued nonce of this flow (a stale duplicate from an earlier attempt) is logged (`notification-foreign`)
+  and ignored, which is WAIT. Both rules apply only while the flow status is `running`, the pending state is `spawned` or `resumed`, and no
   question is awaiting an answer. On a malformed receipt, a nonce-less notification STOPs `notification-unattributed`
   only under those live conditions; outside them it reruns at once, as before. `--nonce` must be 8 lowercase hex
   characters or the command is refused with a usage error. An answered question is not exempt: a late duplicate
@@ -481,6 +490,9 @@ and ADR-0025, and updates `CLAUDE.md` when the D6 bar is met.
 - **Deferred.** The automatic re-spawn (the ticket's proposal: sixth-exception framing, cap of 1, residue archive) waits
   for a follow-up ticket, gated on the measured `subagent-gone` count. That count is derived from the driver log, so
   there is no persisted counter and no state-schema change. Nothing reads `count_driver_events` yet; it is read ad hoc until slice 2. The `subagent-gone` log record is written before the state commit, so it is at-least-once.
+- **Overlap with #556 and #557.** The notified, attributed Malformed rerun gate in this amendment overlaps the
+  Malformed-branch notification handling tracked in #556 and #557. This amendment's behaviour applies to the v2 driver
+  only; #556 and #557 govern any other driver or v1 path.
 - **Known gaps.** (a) A grandchild process that outlives the step agent's turn is not detected (Decision 8 residual).
   (b) Foreground WAIT (`fleet.py wait`) delivers no notification, so it still ends in `wait-timeout`. (c) A crash with no
   notification is not detected. (d) Audit and assessor spawns, whose records live outside `pending_spawn`, are not covered.
