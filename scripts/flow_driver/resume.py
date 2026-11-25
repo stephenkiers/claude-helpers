@@ -219,9 +219,9 @@ def _rule_1_action(locked: LockedFlow, pending: PendingSpawn) -> Literal["wait",
         return "wait"
     if isinstance(classification, receipts.Gone):
         # Gone only arises for an attributed classify, which resume never requests; handled like a changed fingerprint.
-        # Store the fingerprint for two-read stability detection (None when the receipt file is absent).
-        if classification.fingerprint is not None:
-            receipts.store_fingerprint(locked, key, classification.fingerprint)
+        # Store the fingerprint for two-read stability detection (always set: Gone is classified only from a present
+        # receipt file).
+        receipts.store_fingerprint(locked, key, classification.fingerprint)
         return "wait"
     try:
         if isinstance(classification, receipts.Landed):

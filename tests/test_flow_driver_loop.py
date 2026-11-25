@@ -1287,6 +1287,111 @@ def test_60_command_doc_passes_nonce_and_names_new_stops(base: Path) -> None:
     expect(result.returncode == 0, f"shell conventions test exited {result.returncode}: {result.stdout[-400:]}")
 
 
+# ---------------------------------------------------------------------------
+# #533 round 2 behaviours (F2 reason, F3, F4, F12, F15), written spec-blind from the action plan
+# ---------------------------------------------------------------------------
+
+# F2: a nonce this flow never issued fails closed to a notification-unattributed STOP (not a silent WAIT)
+def test_64_never_issued_nonce_stops_as_unattributed(base: Path) -> None:
+    home = make_home(base)
+    flow, _ = start_flow(home)
+    nonce = pending_of(flow)["nonce"]
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", other_nonce(nonce))
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "STOP", f"a never-issued nonce printed {verb}, expected STOP")
+    state = state_of(flow)
+    reason = state.get("stop_reason", {}).get("worktree", "")
+    expect(reason.startswith("notification-unattributed:"), f"stop reason was {reason!r}")
+    expect(state.get("status") == "failed", f"status is {state.get('status')!r}, expected failed")
+
+
+# F3: an attributed notification that meets a Stale receipt (an earlier attempt's) is gone: archive, then STOP
+def test_65_attributed_notification_on_stale_receipt_is_gone(base: Path) -> None:
+    from scripts.flow_driver import receipts
+
+    home = make_home(base)
+    flow, _ = start_flow(home)
+    code, _, err = run_cli(home, "clear-live", "--flow", str(flow), "--reason", "stale receipt")
+    expect(code == 0, f"clear-live exited {code}: {err}")
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "start")
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "SPAWN", f"re-spawn printed {verb}")
+    second = pending_of(flow)
+    expect(second["attempt"] == 2 and second["step"] == "worktree", f"re-spawn was {second!r}")
+    write_receipt(flow, "worktree", 1, extra=f"WORKTREE: {home / 'wt'}\n")  # the cleared attempt's receipt
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", second["nonce"])
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "STOP", f"an attributed notification on a stale receipt printed {verb}, expected STOP")
+    state = state_of(flow)
+    reason = state.get("stop_reason", {}).get("worktree", "")
+    expect(reason.startswith("subagent-gone-no-receipt:"), f"stop reason was {reason!r}")
+    expect(state.get("status") == "failed", f"status is {state.get('status')!r}, expected failed")
+    expect(not receipts.receipt_path(flow, "worktree").exists(), "the stale receipt was not archived before the STOP")
+
+
+# F4: clear-live after a subagent-gone STOP archives the incomplete receipt, so attempt 2 never sees it
+def test_66_clear_live_after_gone_archives_incomplete_receipt(base: Path) -> None:
+    from scripts.flow_driver import receipts
+
+    home, flow, pending = implement_flow(base)
+    write_raw_receipt(flow)
+    gone_stop(home, flow, pending["nonce"])
+    code, _, err = run_cli(home, "clear-live", "--flow", str(flow), "--reason", "gone agent")
+    expect(code == 0, f"clear-live exited {code}: {err}")
+    expect(not receipts.receipt_path(flow, "implement").exists(), "the incomplete receipt is still at the landing path after clear-live")
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "start")
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "SPAWN", f"re-spawn printed {verb}")
+    expect(pending_of(flow)["attempt"] == 2, "the re-spawn did not open attempt 2")
+    expect(not receipts.receipt_path(flow, "implement").exists(), "attempt 2 finds the incomplete receipt at the landing path")
+
+
+# F12: git stderr in the residue probe is capped and control-character-free in the STOP detail
+def test_67_residue_probe_output_is_capped_and_control_free(base: Path) -> None:
+    home, flow, pending = implement_flow(base)
+    long_dir = "/".join(["e\x1b[2J" + "x" * 190] * 6)  # about 1.2 KB of path with an ESC sequence; never created
+    state = state_of(flow)
+    state["worktree"] = str(home / long_dir)
+    write_state(flow, state)
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", "--nonce", pending["nonce"])
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "STOP", f"a nonexistent worktree printed {verb}, expected STOP")
+    reason = state_of(flow).get("stop_reason", {}).get("implement", "")
+    expect(reason.startswith(GONE_PREFIX), f"stop reason was {reason!r}")
+    expect(not any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in reason), f"control characters in STOP detail: {reason!r}")
+    expect(len(reason) < 2000, f"STOP detail is {len(reason)} characters, not capped")
+
+
+# F15: an audit completion that arrives after the audit has passed is not tagged notification-foreign
+def test_68_audit_completion_is_tagged_with_its_source(base: Path) -> None:
+    from test_flow_driver_audit_loop import ENVS, to_landed_plan
+
+    home, flow, nxt = to_landed_plan(base, audit=True)
+    audit_nonce = nxt["nonce"]
+    (flow / "steps" / "audit-plan-a1.md").write_text("pass\n", encoding="utf-8")
+    code, out, err = run_cli(home, "next", "--flow", str(flow), "--after", "notification", extra_env=ENVS[str(flow)])
+    expect(code == 0, f"next exited {code}: {err}")
+    verb, _ = next_line(out)
+    expect(verb == "SPAWN", f"a passed audit printed {verb}, expected SPAWN of track")
+    track_nonce = pending_of(flow)["nonce"]
+    code, out, err = run_cli(
+        home, "next", "--flow", str(flow), "--after", "notification", "--nonce", audit_nonce, extra_env=ENVS[str(flow)],
+    )
+    expect(code == 0, f"late audit notification exited {code}: {err}")
+    expect(pending_of(flow)["nonce"] == track_nonce, "the late audit notification changed the live nonce")
+    tagged = [
+        rec for rec in records(flow, "notification-foreign")
+        if rec.get("notification_nonce") == audit_nonce
+    ]
+    expect(len(tagged) == 1 and tagged[0].get("source") == "audit",
+           f"a late audit completion is not tagged with source=audit: {tagged!r}")
+
+
 SECTIONS = [
     ("[Happy path and merge pin]", [
         ("1: happy path worktree..ship, then a landed ship parks the merge-gate question", test_01_landed_ship_parks_the_merge_gate_question),
@@ -1357,6 +1462,11 @@ SECTIONS = [
         ("61: nonce format validation rejects invalid hex/length", test_61_nonce_format_is_validated),
         ("62: count_driver_events handles read errors robustly", test_62_count_driver_events_handles_read_errors),
         ("63: residue probe rejects a worktree inside another repo", test_63_residue_probe_rejects_worktree_inside_another_repo),
+        ("64: never-issued nonce is a notification-unattributed STOP", test_64_never_issued_nonce_stops_as_unattributed),
+        ("65: attributed notification on a stale receipt is gone and archives it", test_65_attributed_notification_on_stale_receipt_is_gone),
+        ("66: clear-live after gone archives the incomplete receipt", test_66_clear_live_after_gone_archives_incomplete_receipt),
+        ("67: residue probe detail is capped and control-free", test_67_residue_probe_output_is_capped_and_control_free),
+        ("68: late audit completion is tagged with source audit", test_68_audit_completion_is_tagged_with_its_source),
     ]),
 ]
 

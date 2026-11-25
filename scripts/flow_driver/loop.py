@@ -241,7 +241,7 @@ NotificationAttribution = Literal["none", "attributed", "foreign", "missing", "u
 # The worktree residue of a gone subagent: the summary text and the changed-path count (None when unknown).
 Residue = Tuple[str, Optional[int]]
 # A spawn nonce as cli.py validates it: 8 lowercase hex characters.
-_NONCE_FORMAT = re.compile(r"^[0-9a-f]{8}$")
+_NONCE_FORMAT = re.compile(r"[0-9a-f]{8}")
 # The cap on git stderr carried into a STOP detail.
 _GIT_DETAIL_CAP = 200
 
@@ -326,7 +326,7 @@ def _issued_nonces(locked: LockedFlow) -> Set[str]:
             continue
         if isinstance(record, dict):
             nonce = record.get("nonce")
-            if isinstance(nonce, str) and _NONCE_FORMAT.match(nonce):
+            if isinstance(nonce, str) and _NONCE_FORMAT.fullmatch(nonce):
                 issued.add(nonce)
     state = locked.require_state()
     if state.pending_spawn is not None:
@@ -450,8 +450,8 @@ def _settle_receipt(locked: LockedFlow, attribution: NotificationAttribution, no
         if live_rules and nonce_less:
             return "unattributed", None
         # The D4 gate is satisfied at once by a notified attempt, or by a nonce-less notification (the old immediate
-        # rerun, kept for a non-live record); any other attribution waits out the quiet interval.
-        return _malformed_gate(locked, pending, notified or nonce_less, now), None
+        # rerun, kept for a non-live record; a never-issued nonce is a caller bug, not a nonce-less one); any other attribution waits out the quiet interval.
+        return _malformed_gate(locked, pending, notified or attribution == "missing", now), None
     assert_never(classified)
 
 
