@@ -82,6 +82,11 @@ def _named(ids: List[Any], titles: Dict[str, str]) -> str:
 
 
 def _findings(ctx: Ctx) -> List[str]:
+    """
+    Fixed and open findings. Open is every *doing it* finding no fix round fixed, from every review round:
+    that includes the last allowed round, whose fixes are never run, and a finding the human answered
+    `fix` there. Those are marked, because the human was told the answer was recorded.
+    """
     titles = _finding_titles(ctx)
     rounds = [r for r in ctx.flow.data("fix").get("rounds") or [] if isinstance(r, dict)]
     review = [r for r in ctx.flow.data("review").get("rounds") or [] if isinstance(r, dict)]
@@ -89,13 +94,32 @@ def _findings(ctx: Ctx) -> List[str]:
     fixed: List[Any] = [i for r in rounds for i in r.get("fixed") or []]
     if fixed:
         lines.append("  Fixed: " + _named(fixed, titles))
-    if rounds:
-        still = rounds[-1].get("open") or []
-        lines.append("  Open: " + (_named(still, titles) if still else "none"))
-    elif review:
-        triage = _d(review[-1].get("triage"))
-        todo = [d.get("finding_id") for d in triage.get("doing_it") or [] if isinstance(d, dict)]
-        lines.append("  Open (no fix recorded): " + (_named(todo, titles) if todo else "none"))
+    if not rounds and not review:
+        return lines
+    asked = {str(k) for r in review for k, a in _d(r.get("answers")).items()
+             if _d(a).get("source") == "human" and _d(a).get("option_id") == "fix"}
+    done = {str(i) for i in fixed}
+    still: List[str] = []
+    capped = 0
+    for rnd in review:
+        for f in rnd.get("findings") or []:
+            fid = str(_d(f).get("id"))
+            if _d(f).get("bucket") == "doing_it" and fid not in done and fid not in still:
+                still.append(fid)
+                capped += 1 if rnd.get("last_round") else 0
+    for i in (rounds[-1].get("open") or []) if rounds else []:
+        if str(i) not in still and str(i) not in done:
+            still.append(str(i))
+    if not still:
+        lines.append("  Open: none")
+        return lines
+    lines.append("  Open (%d), not fixed:" % len(still))
+    for fid in still:
+        lines.append("  - %s (%s)%s" % (fid, titles.get(fid, ""),
+                                        ": YOU ANSWERED `fix`, and it was not done" if fid in asked else ""))
+    if capped:
+        lines.append("  %d of these came from the last review round the flow allows, so no fix was run for them. "
+                     "Send back with notes to have them fixed." % capped)
     return lines
 
 

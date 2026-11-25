@@ -148,6 +148,19 @@ h.test_result("screen shows the principle decision and how to overrule it",
               "P3" in text and "Use retries?" in text and "overrule" in text)
 
 b = Box("g1b")
+b.flow.set_data("review", {"rounds": [
+    {"findings": [{"id": "F1", "title": "Null deref", "bucket": "doing_it"}]},
+    {"last_round": True, "answers": {"L2": {"option_id": "fix", "source": "human", "text": "fix it"}},
+     "findings": [{"id": "L1", "title": "Late one", "bucket": "doing_it"},
+                  {"id": "L2", "title": "Asked one", "bucket": "doing_it"},
+                  {"id": "L3", "title": "Put off", "bucket": "deferred"}]}]})
+b.flow.set_data("fix", {"rounds": [{"fixed": ["F1"], "open": []}]})
+late = mergegate.screen(b.ctx)
+h.test_result("gate: findings of the last review round are listed open, a human `fix` answer is marked",
+              "Open (2), not fixed" in late and "Fixed: F1" in late and "L1 (Late one)" in late and "L3 (Put off)" not in late.split("Deferred")[0]
+              and "L2 (Asked one): YOU ANSWERED `fix`" in late and "Send back with notes" in late
+              and "- F1" not in late, late)
+
 bare = mergegate.screen(b.ctx)
 h.test_result("screen renders with no records", "MERGE GATE" in bare and "(nothing recorded)" in bare)
 b.ctx.flow.set_data("ship", {})
