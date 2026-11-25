@@ -281,5 +281,53 @@ res = fix.run(b.ctx)
 h.test_result("after the answer the worker resumes and the round completes",
               res.kind == "done" and b.rounds()[0]["fixed"] == ["r0-1"], str(b.labels()))
 
+# -- a finding in a protected file is left open, never sent to a fixer ------------------------
+def allowed_of(prompt: str) -> str:
+    return prompt.split("## Files you may change (and no others)")[1].split("## Protected paths")[0]
+
+
+b = Box("prot-only", [finding("r0-1", "tests/spec_test.py")])
+b.flow.set("protected", ["tests/spec_test.py"])
+b.script([])
+res = fix.run(b.ctx)
+h.test_result("a finding only in a protected file gets no fixer call and is listed open",
+              res.kind == "done" and b.launches() == [] and b.rounds()[0]["fixed"] == []
+              and b.rounds()[0]["open"] == ["r0-1"], str(b.rounds()))
+h.test_result("review.open_findings still reports it", [f["id"] for f in review.open_findings(b.flow)] == ["r0-1"])
+h.test_result("the step record says it was left open because the file is protected",
+              any("protected" in x.read_text() for x in b.flow.path.rglob("*") if x.is_file() and "fix" in x.name),
+              str([x.name for x in b.flow.path.rglob("*")]))
+
+b = Box("prot-config", [finding("r0-1", "docs/spec.md")])
+b.script([])
+fix.run(b.ctx)
+h.test_result("a path from protected_paths in flow.yaml blocks the same way",
+              b.launches() == [] and b.rounds()[0]["open"] == ["r0-1"], str(b.rounds()))
+
+b = Box("prot-plus-normal", [finding("r0-1", "tests/spec_test.py"), finding("r0-2", "src/b.py")])
+b.flow.set("protected", ["tests/spec_test.py"])
+b.script([w("unit-a1-1", "src/b.py"), verdicts(("r0-2", True))])
+res = fix.run(b.ctx)
+h.test_result("a protected-only finding beside a normal one: the normal one is fixed, the protected one is open",
+              res.kind == "done" and b.labels() == ["unit-a1-1", "fix-verify-1"] and b.rounds()[0]["fixed"] == ["r0-2"]
+              and b.rounds()[0]["open"] == ["r0-1"], str((b.labels(), b.rounds())))
+vp = [x for x in b.launches() if x["label"] == "fix-verify-1"][0]["prompt"]
+h.test_result("the verify call does not see the blocked finding", "r0-1" not in vp)
+
+mixed = finding("r0-1", "src/a.py")
+b = Box("prot-mixed", [mixed])
+b.flow.set("protected", ["tests/spec_test.py"])
+rd = b.flow.data("review")
+rd["rounds"][0]["triage"]["doing_it"][0]["files"] = ["src/a.py", "tests/spec_test.py"]
+b.flow.set_data("review", rd)
+b.script([w("unit-a1-1", "src/a.py"), verdicts(("r0-1", True))])
+res = fix.run(b.ctx)
+al = allowed_of(b.launches()[0]["prompt"]) if b.launches() else ""
+h.test_result("a mixed finding keeps only its unprotected file in the fixer's allowed list",
+              res.kind == "done" and "src/a.py" in al and "tests/spec_test.py" not in al and b.rounds()[0]["open"] == [],
+              al)
+h.test_result("the protected file still appears under protected paths",
+              "tests/spec_test.py" in b.launches()[0]["prompt"].split("## Protected paths")[1])
+
 if __name__ == "__main__":
     h.summarize_and_exit()

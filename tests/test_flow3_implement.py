@@ -362,5 +362,24 @@ card = card_of(b) if res.kind == "needs_human" else {}
 h.test_result("an edit the judge did not classify counts as weakens: reverted and asked",
               res.kind == "needs_human" and b.read("tests/test_old.py") == OLD and card.get("kind") == "risk", str(res))
 
+# -- protected paths are stripped from the plan -----------------------------------------------
+pl = mkplan(two=False)
+pl["units"][0]["files"] = ["src/a.py", "tests/test_a.py"]
+b = mkbox("i-protfiles", pl)
+b.script([w("unit-u1", "src/a.py")])
+res = implement.run(b.ctx)
+pr = b.launches()[0]["prompt"] if b.launches() else ""
+allowed = pr.split("Files you may create or change (and no others):")[1].split("## ")[0] if pr else ""
+h.test_result("a protected spec test listed in a unit's files is not in the implementer's allowed list",
+              res.kind == "done" and "src/a.py" in allowed and "tests/test_a.py" not in allowed, allowed)
+h.test_result("it still appears under protected paths", "tests/test_a.py" in pr.split("## Protected paths")[1])
+
+b = mkbox("i-protedit", mkplan(two=False, edits=[{"file": "tests/test_a.py", "why": "rename helper"}]))
+b.script([w("unit-u1", "src/a.py")])
+res = implement.run(b.ctx)
+h.test_result("an existing_test_edit naming a protected file is dropped: no edit or judge call, stage completes",
+              res.kind == "done" and labels(b) == ["unit-u1"] and questions.open_batch(b.flow) is None
+              and b.flow.data("implement")["test_edits"] == [], str(labels(b)))
+
 if __name__ == "__main__":
     h.summarize_and_exit()
