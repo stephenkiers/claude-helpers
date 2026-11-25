@@ -157,8 +157,11 @@ def test_549_06c_settle_stores_fingerprint_for_fingerprint_changed(flow: Path) -
     expect(isinstance(first, receipts.InProgress) and first.basis == "fingerprint-changed", f"precondition: {first!r}")
     with mutating(flow) as locked:
         receipts.settle_in_progress(locked, _transition_key(locked), locked.require_state().pending_spawn, first)  # type: ignore[arg-type]
-    expect(stored_fingerprint(flow) == first.fingerprint,
-           "settle_in_progress did not store the fingerprint for a fingerprint-changed hold")
+    stored = stored_fingerprint(flow)
+    expect(stored is not None, "settle_in_progress did not store a fingerprint")
+    expect(isinstance(stored, ReceiptFingerprint), f"stored fingerprint is not ReceiptFingerprint, got {type(stored)}")
+    expect(stored.sha256 == first.fingerprint.sha256, "stored fingerprint sha256 does not match")
+    expect(stored.size == first.fingerprint.size, "stored fingerprint size does not match")
 
 
 CHECKS = [

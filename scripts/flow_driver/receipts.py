@@ -296,8 +296,9 @@ def classify(locked: LockedFlow, pending: PendingSpawn) -> Classification:
 
     For parked or resumed records, an incomplete receipt is always InProgress (basis "awaiting-answer"),
     never Malformed: it is held and never re-run, even if its fingerprint appears stable. The fingerprint
-    is not stored for such receipts. A held awaiting-answer receipt is exited only by a WAIT timeout (foreground
-    mode) or the human's `clear-live` (end-turn mode has no time bound).
+    is not stored for such receipts. While the receipt stays incomplete, it is held and exited only by a WAIT
+    timeout (foreground: STOP wait-timeout, then the human's clear-live) or clear-live (end-turn, no time bound).
+    A receipt that becomes well-formed is classified normally (Landed or Stale).
 
     Precondition: an InProgress value is settled only via settle_in_progress, which stores the fingerprint only for
     basis "fingerprint-changed", never for "awaiting-answer".
