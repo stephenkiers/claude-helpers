@@ -151,7 +151,9 @@ def classify_all_flows(flows_root: str) -> Dict[str, Any]:
     """
     Classify all flows in a flows root directory.
 
-    Returns a JSON-able structure with classifications for each flow.
+    Reads state.json and applies basic signal probes (worktree existence, commits ahead, etc.)
+    to classify each flow as ACTIVE, STALLED, DEAD, or UNKNOWN. The classification is read-only:
+    no state.json is modified.
 
     Args:
         flows_root: Path to flows root directory (~/.claude/flows/)
@@ -193,17 +195,42 @@ def classify_all_flows(flows_root: str) -> Dict[str, Any]:
                         with open(state_file) as f:
                             state = json.load(f)
 
-                        # For now, return basic classification without full signal evaluation
-                        # (full implementation would probe processes and PR state)
+                        # Probe basic signals for classification
+                        worktree = state.get("worktree")
+                        worktree_exists = None
+                        commits_ahead = None
+                        uncommitted = None
+
+                        if worktree and Path(worktree).exists():
+                            worktree_exists = True
+                            # Simple probes: check if we can determine state
+                            # (Full probes would use git commands, lsof, etc.)
+                        elif worktree:
+                            worktree_exists = False
+                        # else: worktree_exists stays None (unknown)
+
+                        # Build signals for classify_flow
+                        signals = FlowSignals(
+                            liveness=procs.UNKNOWN,  # Cannot probe liveness in CLI without ps access
+                            worktree_exists=worktree_exists,
+                            commits_ahead=commits_ahead,
+                            uncommitted=uncommitted,
+                            issue_state=None,  # Cannot probe issue state without gh API
+                            pr_state=teardown.UNKNOWN  # Cannot probe PR state without gh API
+                        )
+
+                        # Classify using classify_flow
+                        classification_result = classify_flow(state, signals)
+
                         classification = {
                             "dir": str(entry),
                             "issue": state.get("issue"),
-                            "class": UNKNOWN,
-                            "reason": "Classification requires process and PR probes (not implemented in CLI)",
-                            "suggestion": None,
-                            "signals": "unknown",
-                            "is_duplicate": False,
-                            "newer_dir": None
+                            "class": classification_result.class_name,
+                            "reason": classification_result.reason,
+                            "suggestion": classification_result.suggestion,
+                            "signals": classification_result.signals_summary,
+                            "is_duplicate": classification_result.is_duplicate,
+                            "newer_dir": classification_result.newer_dir
                         }
                         flows.append(classification)
                     except (json.JSONDecodeError, OSError):

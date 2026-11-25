@@ -430,7 +430,7 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 
 **Consequences:** This is the CLI's only shell-string execution, and it is limited to this one key from this one file. A new one needs its own amendment.
 
-### Amendment 13: Full-ticket teardown with process checks and removal guards (2026-11-24)
+### Amendment 15: Full-ticket teardown with process checks and removal guards (2026-11-24)
 
 **Problem:** When a ticket's PR is not merged or the ticket is never opened, the worktree and its build caches, branches, and session pid record persist indefinitely, consuming disk and creating stale state. Manual discovery and cleanup of unmerged or abandoned work is error-prone. Decision 1 and the cleanup module lack the machinery to remove them safely.
 

@@ -171,10 +171,8 @@ If `$ARGUMENTS` contains `--stale`, run a machine-wide sweep instead of single-t
 ```bash
 # Check if --stale is passed
 if printf '%s' "$ARGUMENTS" | grep -q -e '--stale' || [ "${1}" = "--stale" ]; then
-  python3 -m scripts.workflow.cli cleanup stale --sizes 2>/dev/null | jq -r '.repos[] | .path' | while read repo; do
-    echo "Stale worktrees in $repo:"
-    python3 -m scripts.workflow.cli cleanup stale --sizes 2>/dev/null | jq -r ".repos[] | select(.path == \"$repo\") | .items[] | \"\(.number): \(.name)\"" || true
-  done
+  source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+  PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup classify-flows "$HOME/.claude/flows" 2>/dev/null | jq -r '.flows[] | "[\(.class)] \(.issue): \(.signals_summary)\n  \(.suggestion // .dir)"' || true
   exit 0
 fi
 ```
@@ -830,13 +828,15 @@ if [ -n "$GROUPS_WITH_SELECTABLE" ]; then
 
 (Other: exclude specific item numbers, space-separated)"
 
-  # AskUserQuestion via Ask block from ~/.claude/prompts/flow-reference.md (Cleanup section, Step 2.5)
-  # This ask is relayed through the flow if FLOW_DIR is set, or returns answers directly.
-  # Answer format (from the Ask block): multiSelect result with selected group numbers + Other free text for exclusions
-  # The Ask block will capture this and return SELECTED_GROUPS and EXCLUDED_NUMBERS variables.
-
-  # For now, placeholder: the Ask block processes the above ASK_MSG and sets:
-  # SELECTED_GROUPS (space-separated group numbers) and EXCLUDED_NUMBERS (space-separated item numbers)
+  # INSERT HERE: Ask block from ~/.claude/prompts/flow-reference.md (Cleanup section, Step 2.5)
+  # Reference: see ~/..claude/prompts/flow-reference.md Ask block
+  # The block processes the teardown confirmation (multiSelect group numbers + exclusions)
+  # and returns SELECTED_GROUPS and EXCLUDED_NUMBERS variables for the teardown phase.
+  
+  # When FLOW_DIR is set, the Ask block relays through the flow's question mechanism.
+  # When FLOW_DIR is empty, the Ask block from flow-reference.md uses AskUserQuestion to ask the user directly.
+  # Result: SELECTED_GROUPS (space-separated group numbers) and EXCLUDED_NUMBERS (space-separated item numbers)
+  
   SELECTED_GROUPS=""
   EXCLUDED_NUMBERS=""
 else
@@ -859,12 +859,12 @@ fi
 
 # Check if any items need per-item yes (UNKNOWN, dirty, unpushed)
 # These require an additional per-item confirmation ask
-ITEMS_NEEDING_YES=$(printf '%s' "$TEARDOWN_PLAN" | jq -r '[.items[] | select((.status == "unknown" or .dirty or .unpushed) and .selectable == false) | .number] | join(" ")')
+ITEMS_NEEDING_YES=$(printf '%s' "$TEARDOWN_PLAN" | jq -r '[.items[] | select((.status == "unknown" or .dirty or .unpushed) and .selectable == true) | .number] | join(" ")')
 
 if [ -n "$ITEMS_NEEDING_YES" ]; then
   echo ""
   echo "Items requiring individual confirmation (UNKNOWN, dirty, or unpushed):"
-  printf '%s' "$TEARDOWN_PLAN" | jq -r '.items[] | select((.status == "unknown" or .dirty or .unpushed) and .selectable == false) | "  [\(.number)] \(.kind): \(.name)"'
+  printf '%s' "$TEARDOWN_PLAN" | jq -r '.items[] | select((.status == "unknown" or .dirty or .unpushed) and .selectable == true) | "  [\(.number)] \(.kind): \(.name)"'
 
   # AskUserQuestion via Ask block: per-item yes for each of these items (W6)
   # Format: "Confirm removal of item N?" × number of items
@@ -950,7 +950,7 @@ if [ "$PR_SIGNAL_STATE" = "merged" ]; then
   fi
   APPLY_CMD="$APPLY_CMD -"
 
-  APPLY_RESULT=$(printf '%s' "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $APPLY_CMD 2>&1)
+  APPLY_RESULT=$(printf '%s' "$TEARDOWN_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $APPLY_CMD 2>&1)
   APPLY_CODE=$?
 
   if [ $APPLY_CODE -ne 0 ]; then
