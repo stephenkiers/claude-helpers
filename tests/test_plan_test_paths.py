@@ -40,6 +40,78 @@ def load_is_test_path():
     return module.is_test_path
 
 
+def _targets_plan(targets_line):
+    """A test-only plan: no non-test Files path, a non-empty Tests section, optional Targets line."""
+    body = """# Plan
+
+## Implementation Steps
+
+### Step 1: Read-only trace
+- **What**: read, do not run
+- **Files**: none
+
+## Testing Strategy
+
+### Tests (written spec-blind in Round 2)
+"""
+    if targets_line:
+        body += targets_line + "\n"
+    body += "- The sizing helper clamps min_units to 1.\n"
+    return body
+
+
+def check_targets_line(h):
+    """Plan Step 6 (#526): the Targets line and its plan-time checks."""
+    print("\n[Section 4] plan mode: Targets line (#526)")
+    cases = [
+        ("no Targets line on a test-only plan", "", 1, "plan-test-paths: test-only plan has no Targets line"),
+        ("existing non-test Targets path", "Targets: `scripts/unit-sizing.py`", 0, None),
+        ("missing Targets path", "Targets: `scripts/does-not-exist-526.py`", 1,
+         "plan-test-paths: Targets path missing: scripts/does-not-exist-526.py"),
+        ("test-path Targets entry", "Targets: `tests/test_plan_test_paths.py`", 1,
+         "plan-test-paths: Targets path is a test path: tests/test_plan_test_paths.py"),
+        ("absolute Targets path", "Targets: `/etc/passwd`", 1, "plan-test-paths: Targets path is absolute: /etc/passwd"),
+        ("Targets path with ..", "Targets: `scripts/../scripts/unit-sizing.py`", 1,
+         "plan-test-paths: Targets path contains '..'"),
+        ("directory Targets path", "Targets: `scripts`", 1, "plan-test-paths: Targets path is not a file: scripts"),
+        ("Targets line without backticks", "Targets: scripts/unit-sizing.py", 1,
+         "plan-test-paths: Targets line has no backticked paths"),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, (label, line, want_rc, want_msg) in enumerate(cases):
+            plan_file = Path(tmp) / f"targets_{i}.md"
+            plan_file.write_text(_targets_plan(line))
+            result = subprocess.run([sys.executable, str(SCRIPT), "plan", "--plan", str(plan_file)],
+                                    capture_output=True, text=True, cwd=str(REPO_ROOT))
+            out = result.stdout + result.stderr
+            ok = result.returncode == want_rc and (want_msg is None or want_msg in out)
+            h.test_result(f"Targets: {label}", ok, f"rc={result.returncode} out={out[:300]!r}")
+
+        plan_file = Path(tmp) / "from_subdir.md"
+        plan_file.write_text(_targets_plan("Targets: `scripts/unit-sizing.py`"))
+        result = subprocess.run([sys.executable, str(SCRIPT), "plan", "--plan", str(plan_file)],
+                                capture_output=True, text=True, cwd=str(REPO_ROOT / "scripts"))
+        h.test_result("Targets: repo-relative path resolves from a subdirectory cwd",
+                      result.returncode == 0, f"rc={result.returncode} err={result.stderr[:200]!r}")
+        plan_file = Path(tmp) / "nontest_files.md"
+        plan_file.write_text("""# Plan
+
+## Implementation Steps
+
+### Step 1: Edit
+- **Files**: `scripts/unit-sizing.py`
+
+## Testing Strategy
+
+### Tests (written spec-blind in Round 2)
+- Something is tested.
+""")
+        result = subprocess.run([sys.executable, str(SCRIPT), "plan", "--plan", str(plan_file)],
+                                capture_output=True, text=True, cwd=str(REPO_ROOT))
+        h.test_result("Targets: plan with a non-test Files path needs no Targets line (unchanged)",
+                      result.returncode == 0, f"rc={result.returncode} out={(result.stdout + result.stderr)[:300]!r}")
+
+
 def main():
     h = Harness("PLAN-TEST-PATHS TEST SUITE")
 
@@ -405,6 +477,8 @@ Steps will be described later.
             expected_rc = 1 if predicate_says else 0
             h.test_result(f"predicate parity: script exit for {path} matches is_test_path (rc={expected_rc})",
                           rc == expected_rc, f"rc={rc} for path {path} predicate={predicate_says}")
+
+    check_targets_line(h)
 
     h.summarize_and_exit()
 

@@ -97,6 +97,37 @@ def verify_e2e(home, repo, base_sha, text):
     return result.returncode, (result.stdout + result.stderr)
 
 
+def check_zero_units_basis(h, tmp, repo, base_sha, head_sha):
+    """Plan Step 3 (#526): the zero-units basis and its UNITS cross-field rules."""
+    print("[zero-units] UNITS 0 requires the zero-units basis, and vice versa")
+    rc, out = verify_e2e(tmp, repo, base_sha,
+                         receipt(head_sha, "SPLIT_BASIS: zero-units", min_units="1", units="0"))
+    h.test_result("zero-units with UNITS 0 and MIN_UNITS 1 raises no UNITS-vs-MIN_UNITS error",
+                  "cannot be less than" not in out and "requires UNITS: 0" not in out
+                  and "requires SPLIT_BASIS: zero-units" not in out, f"rc={rc} out={out[:400]!r}")
+
+    rc, out = verify_e2e(tmp, repo, base_sha,
+                         receipt(head_sha, "SPLIT_BASIS: zero-units", min_units="1", units="1"))
+    h.test_result("zero-units with UNITS 1 is rejected: SPLIT_BASIS zero-units requires UNITS: 0",
+                  rc != 0 and "SPLIT_BASIS zero-units requires UNITS: 0" in out, f"rc={rc} out={out[:400]!r}")
+
+    rc, out = verify_e2e(tmp, repo, base_sha,
+                         receipt(head_sha, "SPLIT_BASIS: parallel", min_units="1", units="0"))
+    h.test_result("UNITS 0 under parallel is rejected: needs SPLIT_BASIS: zero-units",
+                  rc != 0 and "UNITS: 0 on an OK receipt requires SPLIT_BASIS: zero-units" in out,
+                  f"rc={rc} out={out[:400]!r}")
+
+    rc, out = verify_e2e(tmp, repo, base_sha, receipt(head_sha, "SPLIT_BASIS: none"))
+    h.test_result("SPLIT_BASIS: none on an OK receipt stays rejected",
+                  rc != 0 and "ARTIFACTS: ok" not in out, f"rc={rc} out={out[:300]!r}")
+
+    text = receipt(head_sha, "SPLIT_BASIS: parallel").replace(
+        "PRIOR_SPLIT_BASIS: none", "PRIOR_SPLIT_BASIS: zero-units")
+    rc, out = verify_e2e(tmp, repo, base_sha, text)
+    h.test_result("PRIOR_SPLIT_BASIS: zero-units is accepted",
+                  rc == 0 and "ARTIFACTS: ok" in out, f"rc={rc} out={out[:300]!r}")
+
+
 def main():
     h = Harness("FLOW VERIFY RECEIPT SPLIT_BASIS AND UNITS")
     with tempfile.TemporaryDirectory() as tmp:
@@ -137,6 +168,8 @@ def main():
         rc, out = verify(tmp, repo, base_sha, receipt(head_sha, "SPLIT_BASIS: parallel", min_units="1", units="1.5"))
         h.test_result("fractional UNITS '1.5' is rejected as invalid",
                       rc != 0 and "must be integer" in out, f"rc={rc} out={out[:300]!r}")
+
+        check_zero_units_basis(h, tmp, repo, base_sha, head_sha)
 
     h.summarize_and_exit()
 

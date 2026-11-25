@@ -364,6 +364,29 @@ def test_41_wait_timeout_is_stop_naming_clear_live_and_repeats(base: Path) -> No
     expect(pending_of(flow)["attempt"] == first["attempt"] + 1, "the next SPAWN did not use attempt N+1")
 
 
+def test_zero_unit_stop_codes_parse_and_are_listed(base: Path) -> None:
+    """#526: zero-unit-plan-incomplete is a typed stop code; test-only-plan stays parseable (legacy)."""
+    from scripts.flow_driver import receipts
+    from scripts.flow_driver.steps import StopCode, parse_stop_reason
+
+    expect(parse_stop_reason("test-only-plan: legacy detail") == ("test-only-plan", "legacy detail"),
+           "legacy test-only-plan no longer parses")
+    got = parse_stop_reason("zero-unit-plan-incomplete: no Round 2 tests")
+    expect(got == ("zero-unit-plan-incomplete", "no Round 2 tests"), f"parse returned {got!r}")
+    stop_codes = set(typing.get_args(StopCode))
+    expect("zero-unit-plan-incomplete" in stop_codes, "zero-unit-plan-incomplete missing from StopCode")
+    expect("zero-unit-plan-incomplete" in receipts.TEST_PATH_CODES, "zero-unit-plan-incomplete missing from TEST_PATH_CODES")
+    missing = set(receipts.TEST_PATH_CODES) - stop_codes
+    expect(not missing, f"TEST_PATH_CODES members not in StopCode: {sorted(missing)}")
+
+
+def test_no_command_doc_emits_legacy_test_only_plan(base: Path) -> None:
+    """#526: nothing under commands/ names the retired test-only-plan stop code."""
+    offenders = [str(p.relative_to(REPO_ROOT)) for p in sorted((REPO_ROOT / "commands").rglob("*.md"))
+                 if "test-only-plan" in p.read_text(encoding="utf-8")]
+    expect(not offenders, f"commands/ files still contain test-only-plan: {offenders}")
+
+
 SECTIONS = [
     ("[Happy path and merge pin]", [
         ("1: happy path worktree..ship, then a landed ship parks the merge-gate question", test_01_landed_ship_parks_the_merge_gate_question),
@@ -390,6 +413,8 @@ SECTIONS = [
         ("38: stub doc is under 150 lines, experimental, one-at-a-time rule", test_38_stub_doc_limits_and_rules),
         ("40: stop reason round trip for every StopCode", test_40_stop_reason_round_trip_for_every_code),
         ("41: wait-timeout STOP names clear-live and repeats without an attempt", test_41_wait_timeout_is_stop_naming_clear_live_and_repeats),
+        ("zero-unit-plan-incomplete is a typed stop and test-only-plan still parses", test_zero_unit_stop_codes_parse_and_are_listed),
+        ("no commands/ doc contains the retired test-only-plan code", test_no_command_doc_emits_legacy_test_only_plan),
     ]),
 ]
 

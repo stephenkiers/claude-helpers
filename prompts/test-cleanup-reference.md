@@ -21,7 +21,7 @@ This document is read by `/implement-with-haiku` at Round 4 time and by the one-
 
 Classify in this order. The first class that applies wins.
 
-- **(0) Exempt.** `test-correct-blocking` entries, and tests a human ruled to keep. **Never deleted.** They
+- **(0) Exempt.** `test-correct-blocking` entries (and, in a zero-unit run, `test-correct-zero-unit` entries), and tests a human ruled to keep. **Never deleted.** They
   still go through 4.5 as Unique (merged and renamed), with the test body byte-identical: only the location,
   enclosing names and import lines change, so the oracle is untouched and no spec-blind name survives.
 - **(1) Duplicate.** Part C's `comm` dedup against `START_SHA`, or a Sonnet-judged duplicate of a sibling
@@ -173,7 +173,7 @@ failure that stops the gate immediately.
   folded-in count. A same-name collision (e.g. two `test_boundary()` in one module) silently shadows one test
   with no error, and only a per-file count check catches it.
 - **(d) Red set.** The set of red tests must equal **exactly** the `final_id`s of the register's
-  `test-correct-blocking` entries. Every other test must be green, and every blocking test must still be red.
+  `test-correct-blocking` entries (plus `test-correct-zero-unit` entries in a zero-unit run). Every other test must be green, and every blocking or zero-unit test must still be red.
   Any other red test is a mistake to fix (an import or path, as today) before committing. It is not cleanup.
 - **(e) No spec-blind name survives.**
   ```bash

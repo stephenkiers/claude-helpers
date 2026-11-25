@@ -423,8 +423,8 @@ def test_468_doc_contract(h):
                   "planned-change-breaks-test: <path>" in impl_text)
     h.test_result("commands/implement-with-haiku.md has gate_not_converged failure class for that reason",
                   "FAILURE_CLASS: gate_not_converged" in impl_text and "planned-change-breaks-test" in impl_text)
-    h.test_result("commands/implement-with-haiku.md has test-only-plan stop reason",
-                  "test-only-plan: no Round 1 work; tests are a Round 2 deliverable" in impl_text)
+    h.test_result("commands/implement-with-haiku.md no longer has the test-only-plan stop reason (#526)",
+                  "test-only-plan: no Round 1 work; tests are a Round 2 deliverable" not in impl_text)
     h.test_result("commands/implement-with-haiku.md has existing-test-edit stop reason",
                   "existing-test-edit: <step or finding id> <path>" in impl_text)
 

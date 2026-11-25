@@ -48,7 +48,7 @@ EXPECTED_STEP_IDS = {
 }
 EXPECTED_SKIP_REASONS = {
     "mechanical", "test-only", "no-test-files-changed", "dirty-file",
-    "no-comparison-operator", "no-new-tests", "pause-not-requested",
+    "no-comparison-operator", "no-new-tests", "pause-not-requested", "no-round1-units",
 }
 PAUSE_ROWS = {"pause", "usage-check-round1-join"}
 MECHANICAL_REQUIRED = ["round1", "integration-gate", "round-sizing", "usage-check-final", "full-check"]
@@ -1450,6 +1450,32 @@ def test_resolve_for_check_render_finish_unchanged_by_bound():
         sb.close()
 
 
+def test_zero_unit_skip_reason_matrix():
+    """#526: no-round1-units is permitted for round1 in class full only, never mechanical or Part C rows."""
+    full_r1 = il.permitted_skip_reasons("full", "round1", False)
+    mech_r1 = il.permitted_skip_reasons("mechanical", "round1", False)
+    ref = il.permitted_skip_reasons("full", "partc-reference-check", False)
+    mut_a = il.permitted_skip_reasons("full", "partc-mutation-a", False)
+    mut_b = il.permitted_skip_reasons("full", "partc-mutation-b", False)
+    ok = ("no-round1-units" in full_r1 and "no-round1-units" not in mech_r1
+          and "no-round1-units" not in ref and "no-round1-units" not in mut_a
+          and "no-round1-units" not in mut_b)
+    return ok, f"full/round1={full_r1} mechanical/round1={mech_r1} ref={ref} mutA={mut_a} mutB={mut_b}"
+
+
+def test_no_round1_units_rejected_without_zero_units_basis():
+    """#526: SKIPPED round1 no-round1-units is bound to a zero-units run; an ordinary full run is rejected."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-zu-unbound")
+        run.init()
+        run.append(full_rows(run, cls="full", skip={"round1": "no-round1-units"}))
+        rc, out = _check_rows(run)
+        return rc != 0, f"rc={rc} out={out[:300]!r}"
+    finally:
+        sb.close()
+
+
 TESTS = [
     ("STEP_IDS and SKIP_REASONS match the plan vocabulary", test_vocabulary_pinned),
     ("init writes ledger and pointer", test_init_writes_ledger_and_pointer),
@@ -1506,6 +1532,8 @@ TESTS = [
     ("bounded locate: attempt start is the newest begin|retry in file order", test_attempt_start_is_newest_begin_or_retry_in_file_order),
     ("bounded locate: CRLF, NUL, future-dated, escaping symlink, and ../ fail closed", test_hardening_cases_fail_closed),
     ("check, render, finish without a key still do not resolve another session's tombstone", test_resolve_for_check_render_finish_unchanged_by_bound),
+    ("zero-unit: no-round1-units permitted for round1 in class full only", test_zero_unit_skip_reason_matrix),
+    ("zero-unit: SKIPPED round1 no-round1-units rejected without a zero-units basis", test_no_round1_units_rejected_without_zero_units_basis),
 ]
 
 

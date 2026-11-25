@@ -54,9 +54,10 @@ StopCode = Literal[
     "assess-error",
     "plan-test-paths",
     "test-path-in-units",
-    "test-only-plan",
+    "test-only-plan",  # legacy: never emitted since #526; kept so archived receipts classify
     "existing-test-edit",
     "planned-change-breaks-test",
+    "zero-unit-plan-incomplete",
 ]
 STOP_CODES: Tuple[StopCode, ...] = get_args(StopCode)
 _STOP_BY_NAME: Dict[str, StopCode] = {code: code for code in STOP_CODES}
@@ -321,7 +322,7 @@ class Facts:
     question: QuestionFact
     headless: bool  # PARK instead of ASK
     gate: Optional[GateFact] = None  # the gate outcome for this call, or None when no gate stage applies
-    # a FAILED receipt whose Reason names one of the five test-path codes: (code, detail); None otherwise
+    # a FAILED receipt whose Reason names one of the six test-path codes: (code, detail); None otherwise
     failed_stop: Optional[Tuple[StopCode, str]] = None
 
     def __post_init__(self) -> None:

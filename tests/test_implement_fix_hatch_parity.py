@@ -26,7 +26,6 @@ ALLOWED_ASPECTS = [
     "Live re-verify (step 0)",
     "Parent invariant (step 5)",
     "Answers file",
-    "No Round 1 work left",
     "Ledger",
 ]
 

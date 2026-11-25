@@ -40,6 +40,7 @@ import sys
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import cast, Dict, FrozenSet, get_args, List, Literal, NamedTuple, NoReturn, Optional, Set, Tuple, TypedDict
 
 # Import shared schema module
@@ -56,6 +57,13 @@ try:
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent))
     import flow_log
+
+# Shared zero-unit run shape (basis token, plan grammar, Targets rules); same pattern as flow_log.
+try:
+    import zero_units
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent))
+    import zero_units
 
 # Constants for timeouts and mtime skew tolerance
 MTIME_SKEW_SECS = 5
@@ -123,7 +131,8 @@ DIRECTION_SCOPE: Tuple[str, ...] = ("plan", "implement", "review", "fix")
 QUOTE_MIN_LENGTH = 20
 
 # Step 3 receipt split-basis grammar and field names (unit sizing #319)
-SPLIT_BASIS_VALUES = ("parallel", "sequential", "none")  # "single" must be in form single(<reason>)
+SPLIT_BASIS_VALUES = ("parallel", "sequential", "none", "zero-units")  # "single" must be in form single(<reason>)
+ZERO_UNITS_BASIS = zero_units.ZERO_UNITS_BASIS  # a plan whose only work is new tests; no Round 1 units, UNITS: 0
 MIN_UNITS_FIELD = "MIN_UNITS"
 SPLIT_BASIS_FIELD = "SPLIT_BASIS"
 PRIOR_SPLIT_BASIS_FIELD = "PRIOR_SPLIT_BASIS"
@@ -2755,6 +2764,64 @@ def _undecided_reason(receipt: str) -> Optional[str]:
     )
 
 
+def _load_plan_test_paths() -> ModuleType:
+    """Load plan-test-paths.py via importlib (hyphenated filename, next to this script)."""
+    module_path = Path(__file__).parent / "plan-test-paths.py"
+    spec = importlib.util.spec_from_file_location("plan_test_paths", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"no import spec for {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def check_zero_unit_plan(plan_path: Path, root: Optional[Path] = None) -> Optional[str]:
+    """Cross-check a plan for an OK zero-units receipt (#526).
+
+    A zero-unit plan's Implementation Steps may list only test files (none in practice), and its
+    "### Tests (written spec-blind in Round 2)" section must be non-empty and carry a Targets: line.
+    Targets resolve against root (the repo being verified; default: the git top level of the cwd).
+    The grammar and path rules are shared with plan-test-paths.py through zero_units.py.
+    Returns an error reason, or None when the plan is consistent with a zero-unit run.
+    """
+    try:
+        text = plan_path.read_text(encoding="utf-8")
+    except OSError as e:
+        return f"zero-unit plan unreadable: {plan_path} ({e})"
+
+    try:
+        plan_test_paths = _load_plan_test_paths()
+        is_test_path = plan_test_paths._get_is_test_path()
+        step_file_paths = plan_test_paths._get_step_file_paths()
+    except Exception as e:
+        return f"zero-unit plan cross-check unavailable: {e}"
+
+    return zero_units.zero_unit_plan_problem(
+        text, is_test_path, step_file_paths, root if root is not None else zero_units.repo_root()
+    )
+
+
+def _check_zero_unit_receipt(
+    receipt: str, decision: Optional[str], plan_path: Optional[Path], step: str = "implement",
+    repo: Optional[str] = None,
+) -> Optional[str]:
+    """Run the zero-units plan cross-check for an OK zero-units implement receipt (#526).
+
+    Without --plan the receipt does not name its plan, so the check is skipped with a note.
+    A fix step's plan is a claude-action-plan.md, which has no Tests section or Targets line
+    (its zero-unit rule is the new-test anchor check in /implement-with-haiku), so the
+    cross-check is restricted to implement and a fix step is never failed by it.
+    """
+    if decision != "OK" or parse_receipt_field(receipt, SPLIT_BASIS_FIELD) != ZERO_UNITS_BASIS:
+        return None
+    if step != "implement":
+        return None
+    if plan_path is None:
+        print("zero-units plan cross-check: plan unresolved (no --plan given)", file=sys.stderr)
+        return None
+    return check_zero_unit_plan(plan_path, Path(repo) if repo else None)
+
+
 def check_implement(
     receipt_file: Path,
     repo: str,
@@ -2763,6 +2830,7 @@ def check_implement(
     main_worktree: Optional[str] = None,
     check_worktree: Optional[str] = None,
     flow_dir: Optional[Path] = None,
+    plan_path: Optional[Path] = None,
 ) -> Optional[str]:
     """Check implement artifacts. Return error reason or None."""
     count = _count_commits(repo, base, branch)
@@ -2782,6 +2850,9 @@ def check_implement(
     split_basis_error = validate_split_basis_fields(receipt, decision)
     if split_basis_error:
         return split_basis_error
+    zero_unit_error = _check_zero_unit_receipt(receipt, decision, plan_path, repo=repo)
+    if zero_unit_error:
+        return zero_unit_error
 
     # An OK receipt must carry a check outcome that matches the resolver and the final HEAD.
     undecided = _undecided_reason(receipt)
@@ -3464,6 +3535,7 @@ def check_fix(
     home: Path,
     main_worktree: Optional[str] = None,
     check_worktree: Optional[str] = None,
+    plan_path: Optional[Path] = None,
 ) -> Optional[str]:
     """Check fix artifacts (zero-commit carve-out), then the OK receipt's check lines (#338)."""
     artifact_reason = _check_fix_artifacts(repo, branch, base, review_dir, home)
@@ -3477,6 +3549,9 @@ def check_fix(
     split_basis_error = validate_split_basis_fields(receipt, decision)
     if split_basis_error:
         return split_basis_error
+    zero_unit_error = _check_zero_unit_receipt(receipt, decision, plan_path, step="fix")
+    if zero_unit_error:
+        return zero_unit_error
 
     undecided = _undecided_reason(receipt)
     if undecided:
@@ -3718,7 +3793,9 @@ def validate_split_basis_fields(receipt: str, decision: Optional[str]) -> Option
     - 'single()' or whitespace-only reason is rejected
     - 'sequential' with UNITS: 1 is rejected
     - 'single' with integer MIN_UNITS > 1 is rejected
-    - UNITS < integer MIN_UNITS (only when basis is not 'none')
+    - UNITS < integer MIN_UNITS (only when basis is not 'none' and not 'zero-units')
+    - 'zero-units' (a plan whose only work is new tests) is a valid basis and requires UNITS: 0
+    - An OK receipt with UNITS: 0 requires SPLIT_BASIS: zero-units
 
     Returns error reason or None if valid.
     """
@@ -3750,7 +3827,7 @@ def validate_split_basis_fields(receipt: str, decision: Optional[str]) -> Option
             return f"OK receipt missing split-basis field(s): {', '.join(missing_field_names)}"
         # Reject 'none' on OK receipt
         if split_basis_val == "none":
-            return f"OK receipt has {SPLIT_BASIS_FIELD}: none (must be parallel, sequential, or single)"
+            return f"OK receipt has {SPLIT_BASIS_FIELD}: none (must be parallel, sequential, single, or zero-units)"
         # Basis must be valid (single(<reason>) is checked in detail below)
         if split_basis_val not in SPLIT_BASIS_VALUES and not (split_basis_val or "").startswith("single("):
             return f"invalid {SPLIT_BASIS_FIELD}: {split_basis_val!r}"
@@ -3821,6 +3898,13 @@ def validate_split_basis_fields(receipt: str, decision: Optional[str]) -> Option
             if units_int is not None and units_int == 1:
                 return "sequential split basis cannot have UNITS: 1 (sequential implies multi-unit)"
 
+        # 'zero-units' requires UNITS: 0 (no Round 1 units); UNITS: 0 on an OK receipt requires it
+        if split_basis_val == ZERO_UNITS_BASIS:
+            if units_int != 0:
+                return f"{SPLIT_BASIS_FIELD} {ZERO_UNITS_BASIS} requires UNITS: 0"
+        elif decision == "OK" and units_int == 0:
+            return f"UNITS: 0 on an OK receipt requires {SPLIT_BASIS_FIELD}: {ZERO_UNITS_BASIS}"
+
         # 'single' with integer MIN_UNITS > 1 is rejected
         if split_basis_val.startswith("single"):
             if min_units_val and min_units_val != "unknown":
@@ -3831,8 +3915,8 @@ def validate_split_basis_fields(receipt: str, decision: Optional[str]) -> Option
                 except ValueError:
                     pass
 
-        # UNITS < MIN_UNITS (only when basis is not 'none')
-        if units_int is not None and min_units_val and min_units_val != "unknown":
+        # UNITS < MIN_UNITS (only when basis is not 'none'; skipped for 'zero-units')
+        if split_basis_val != ZERO_UNITS_BASIS and units_int is not None and min_units_val and min_units_val != "unknown":
             try:
                 min_units = int(min_units_val)
                 if units_int < min_units:
@@ -5859,6 +5943,7 @@ def coverage_mode(
             error(f"Cannot write evidence artifact: {e}")
 
     # Print output
+    # "no step headings" belongs to a different command (plan coverage); it means the plan has no step headings.
     print(f"UNITS: {len(units)}" + (" (no step headings)" if len(units) == 0 else ""))
     for unit_id, status, evidence in results:
         print(f"{unit_id} | {status} | {evidence}")
@@ -6276,7 +6361,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--plan",
-        help="Plan file path (for coverage mode)",
+        help="Plan file path (for coverage mode; for OK zero-units implement/fix receipts, the plan cross-check)",
     )
     parser.add_argument(
         "--coverage-out",
@@ -6853,6 +6938,7 @@ def main() -> None:
     elif args.step == "review":
         step_error = check_review(receipt_file, since_ts, home, step_flow_dir)
     elif args.step == "implement":
+        plan_arg = Path(args.plan) if args.plan else None
         if not all([args.repo, args.branch, args.base]):
             error("--repo, --branch, --base required for implement")
         # Validate base as hex SHA (7-40 chars)
@@ -6860,9 +6946,10 @@ def main() -> None:
             error(f"Invalid base SHA: {args.base}")
         step_error = check_implement(
             receipt_file, args.repo, args.branch, args.base, args.main_worktree,
-            args.check_worktree, step_flow_dir,
+            args.check_worktree, step_flow_dir, plan_path=plan_arg,
         )
     elif args.step == "fix":
+        plan_arg = Path(args.plan) if args.plan else None
         if not all([args.repo, args.branch, args.base, args.review_dir]):
             error("--repo, --branch, --base, --review-dir required for fix")
         # Validate base as hex SHA (7-40 chars)
@@ -6870,7 +6957,7 @@ def main() -> None:
             error(f"Invalid base SHA: {args.base}")
         step_error = check_fix(
             receipt_file, args.repo, args.branch, args.base, args.review_dir, home,
-            args.main_worktree, args.check_worktree,
+            args.main_worktree, args.check_worktree, plan_path=plan_arg,
         )
     elif args.step == "verify":
         # Heal-aware checks need the flow dir; without one there is nothing to read.

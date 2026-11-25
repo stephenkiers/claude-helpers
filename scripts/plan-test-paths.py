@@ -32,11 +32,15 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, List, Tuple
 
-# The Implementation Steps heading must be a whole line of its own. Anchoring it stops
-# a heading like "## Implementation Steps (draft)" or a "### " subheading from matching.
-_IMPL_HEADING_RE = re.compile(r"^## Implementation Steps[ \t]*$", re.M)
-# The section ends at the next level-2 heading ("## X", but not "### X").
-_NEXT_H2_RE = re.compile(r"^## (?!#)", re.M)
+# The zero-unit plan grammar (headings, Targets line, path rules) is shared with the receipt verifier.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import zero_units  # noqa: E402
+
+_IMPL_HEADING_RE = zero_units.IMPL_HEADING_RE
+_NEXT_H2_RE = zero_units.NEXT_H2_RE
+parse_tests_section = zero_units.parse_tests_section
+parse_targets = zero_units.parse_targets
+_has_nonblank_tests_content = zero_units.has_nonblank_tests_content
 
 
 def _load_module(module_name: str, file_path: Path) -> ModuleType:
@@ -88,6 +92,42 @@ def _get_step_file_paths() -> Callable[..., Any]:
     return func
 
 
+def check_targets(
+    plan_text: str,
+    is_test_path_func: Callable[..., Any],
+    nontest_file_count: int,
+) -> List[str]:
+    """Check the Targets line of the Tests section.
+
+    Each Targets path must exist and must not be a test path. A test-only plan (non-blank
+    Tests content and no non-test Files in any step) must carry a Targets line.
+    """
+    section = parse_tests_section(plan_text)
+    if section is None:
+        return []
+
+    errors: List[str] = []
+    targets = parse_targets(section)
+    if targets is None:
+        if _has_nonblank_tests_content(section) and nontest_file_count == 0:
+            errors.append("plan-test-paths: test-only plan has no Targets line")
+        return errors
+
+    if not targets:
+        errors.append("plan-test-paths: Targets line has no backticked paths")
+        return errors
+
+    root = zero_units.repo_root()
+    for target in targets:
+        if is_test_path_func(target):
+            errors.append(f"plan-test-paths: Targets path is a test path: {target}")
+            continue
+        problem = zero_units.target_problem(target, root)
+        if problem is not None:
+            errors.append(f"plan-test-paths: {problem}")
+    return errors
+
+
 def check_plan(
     plan_path: Path,
     is_test_path_func: Callable[..., Any],
@@ -128,6 +168,7 @@ def check_plan(
         )
 
     errors: List[str] = []
+    nontest_file_count = 0
 
     for i in range(1, len(steps), 2):
         step_num = steps[i]
@@ -150,6 +191,10 @@ def check_plan(
                     f"plan-test-paths: Step {step_num} ({step_title}) lists test file {file_path}; "
                     f"tests are a Round 2 deliverable, move this to \"Tests (written spec-blind in Round 2)\""
                 )
+            else:
+                nontest_file_count += 1
+
+    errors.extend(check_targets(text, is_test_path_func, nontest_file_count))
 
     return errors, step_count
 

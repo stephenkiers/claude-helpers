@@ -60,6 +60,7 @@ Include user answers, tied to expert input where relevant.]
 
 ### Tests (written spec-blind in Round 2)
 Spec statements a spec-blind author can test without reading the implementation. Include the exact expected values and exact strings to assert. Tests are written by the Round 2 spec-blind author (ADR-0019 2026-11-12 amendment).
+Optional `Targets:` line: a line starting with the word `Targets:` followed by backtick-quoted paths, comma-separated, one per entry. It names the existing non-test source files the tests exercise. It is **required** when no Implementation Step lists a non-test file (a test-only plan); otherwise it may be omitted. Targets never name a test file.
 
 ## Out of Scope
 [Things explicitly deferred — from cost analysis, user decisions, or Carl's skepticism. State the reason.]

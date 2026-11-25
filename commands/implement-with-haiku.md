@@ -176,7 +176,7 @@ When `FLOW_DIR` is set:
   ATTEMPT: <k>
   Decision: FAILED
   Reason: <the failure class, plus the one-line detail named at that site>
-  SPLIT_BASIS: parallel|sequential|single(<non-empty reason>)|none
+  SPLIT_BASIS: parallel|sequential|single(<non-empty reason>)|zero-units|none
   MIN_UNITS: <n>|unknown
   PRIOR_SPLIT_BASIS: <basis>|none
   FAILURE_CLASS: <class>
@@ -793,6 +793,8 @@ fi
 
 On success with nothing pending, skip Steps 4a–4d and proceed directly to the Integration Gate. On success with pending units, continue to the fresh split below using the persisted record's basis. Exit code 3 (no record found) proceeds directly to fresh split.
 
+**Zero-unit record.** A record with `split_basis` `zero-units` and an empty `units` list (written by a zero-unit run, see Step 3 below) passes `check`, and `pending` prints nothing on stdout (it labels the record `zero-units: 0 units (zero-unit record)` on stderr). That empty output does **not** mean every unit is done: there are no units. Read it as "no Round 1 work was run"; skip Steps 4a–4d and proceed to the Integration Gate, then Round 2. Do not report it as "all units done". Pass `--split-basis zero-units` to any later `check`, `render` or `finish` call that reads this record.
+
 **2. Fresh split.** When not resuming, analyze the plan and emit **1..N work units**. Each unit must have:
 - `id` — a short slug, e.g. `auth`, `api`, `ui` (used in branch names)
 - `sub-task` — a self-contained description of only this unit's work
@@ -800,7 +802,7 @@ On success with nothing pending, skip Steps 4a–4d and proceed directly to the 
 - (derived) `forbidden-files` — all other units' owned files, which this unit must not touch
 
 **Rules:**
-- Emit at least `MIN_UNITS` units when known; when `MIN_UNITS` is unknown, emit at least 1 unit and write the reason in the split decision.
+- Emit at least `MIN_UNITS` units when known; when `MIN_UNITS` is unknown, emit at least 1 unit and write the reason in the split decision. (This applies to ordinary splits only; a zero-unit run below emits no units.)
 - **Independent seams → `parallel`**: independent work with no shared mutable state; exclusive file ownership (each shared file belongs to exactly one unit; each unit's forbidden files are all other units' owned files). Receipt carries `SPLIT_BASIS: parallel`.
 - **Coupled work → `sequential`**: ordered so each prefix builds; explicitly different ownership (a later unit may modify files owned by earlier, already-committed units, so owned_files may overlap across sequential units and the record allows it; each sequential unit's forbidden files are files owned ONLY by later units). Receipt carries `SPLIT_BASIS: sequential`.
 - **`single(<reason>)` only when `MIN_UNITS` is 1**, or when `MIN_UNITS` is unknown and the plan is genuinely too coupled to split safely — always write the reason. Receipt carries `SPLIT_BASIS: single(<reason>)`.
@@ -809,7 +811,9 @@ On success with nothing pending, skip Steps 4a–4d and proceed directly to the 
 - Every **shared file** (barrel/index exports, `package.json`, route registries, migration registries) must be assigned to **exactly one** unit — never left unassigned.
 - **Units never own test files.** Test requirements found in the plan go in no unit; they reach Round 2 through the plan text, including the plan's "Tests (written spec-blind in Round 2)" section when one exists.
 
-In the `implement` step, when no non-test Round 1 work remains once test requirements are set aside, do not invent a unit to satisfy `MIN_UNITS`. Stop with Reason `test-only-plan: no Round 1 work; tests are a Round 2 deliverable`. The `fix` step does not stop with `test-only-plan`; item b below governs it.
+**Zero-unit run (both `implement` and `fix`).** When no non-test Round 1 work remains once test requirements and `TEST_EDIT_ITEMS` are set aside, and item b below has not stopped the step, the step does **not** invent a unit. It runs as a zero-unit run: `SPLIT_BASIS: zero-units` and `UNITS: 0`. Write `{"split_basis":"zero-units","units":[]}` to split-input.json and call `unit-progress.py init` as usual (it accepts basis `zero-units` with an empty units list). Skip Steps 4a–4d, append the ledger row `<RUN_KEY> SKIPPED round1 no-round1-units` (with `printf '%s SKIPPED round1 %s\n' "<RUN_KEY>" "no-round1-units" >> "<LEDGER_PATH>"`, the same form as the 4.0 skip rows), and continue to the Integration Gate on the empty `START_SHA..HEAD` range (the gate must not misclassify an empty range as a failure), then Round 2. The `MIN_UNITS` rule above and the single-unit fallback do not apply to a zero-unit run. Preconditions, each a stop with a FAILED receipt as the doc writes for other stops, evaluated at item b of the implement or fix block below (before any drafting or asking), not after the `Test changes` ask:
+- `implement` needs a non-empty `### Tests (written spec-blind in Round 2)` section, else stop with Reason `zero-unit-plan-incomplete: no Round 2 tests`; and a `Targets:` line, else stop with Reason `zero-unit-plan-incomplete: no Targets`.
+- `fix` needs at least one new-test item with a non-test `file:line` anchor, else stop with the same two Reasons respectively (`no Round 2 tests` when no new-test item exists, `no Targets` when no such anchor exists).
 
 When a plan step requires changing an existing test's assertion or removing a test (work Round 1 may not do and Round 2 cannot do), the item is classified and set aside. In the `implement` step, the set-aside rules below apply before Round 1. In the `fix` step (a review action-plan item) the same set-aside rules apply. A finding that asks for a *new* test is not a stop; it goes to Round 2 through the plan text.
 
@@ -817,7 +821,8 @@ When a plan step requires changing an existing test's assertion or removing a te
 
 0. **Test-edit directory.** `TEST_EDIT_DIR` is `${FLOW_DIR}/test-edits` when `FLOW_DIR` is set, otherwise `<SCRATCH_PATH>/test-edits`. Create it with `mkdir -p` from Bash. It holds the drafted patches, `asked.txt`, `approval-commit.txt`, and when the integration gate detects remaining red tests in approved paths, the files `still-red.txt`, `still-red-tail.txt`, `still-red-head.txt`, and `still-red-round1.diff`, so a Retry or resume of the implement step finds them again. The `still-red.txt` file holds the paths that failed; `still-red-tail.txt` holds the last 200 lines of the failing check output for those paths; `still-red-head.txt` holds the pre-reset HEAD SHA (40-hex); `still-red-round1.diff` holds the Round 1 diff (patch text). Files there are written from Bash only (`git diff` redirects and `printf`), never with `Write`, and never hold repo content other than the patch text and check output.
 a. **Classify.** Sort each plan step finding or unit change that needs an existing test modified or deleted into `TEST_EDIT_ITEMS`. Each entry is `edit` (status M: an existing test's assertion or logic changes) or `removal` (status D: a whole test or test file is deleted). An entry is `coupled` when the same finding or unit also changes non-test code. Items whose path contains whitespace cannot be carried on a receipt `TEST_EDIT:` line (the verifier reads space-separated fields), so they are set aside before any asking as `OUTSTANDING: <id> (test-edit-declined: <path>)` and are never asked about. **Classifier skip.** An item whose exact change is already present in a live-verified approval commit (see 4.7 step 0) is not re-classified or re-asked. A change present only in an unapproved commit is never skipped; the split range scan in Gate step 2 catches it. Otherwise ordinary items proceed to the ask.
-b. **No Round 1 work left.** This check runs before any drafting or asking, and it does not run in a `--only-units` run (item h governs there: the units named by `--only-units` are the Round 1 work, and a test-edit item is reported with item h's reasons whether or not any unit remains). If no Round 1 work remains once `TEST_EDIT_ITEMS` and the test requirements are set aside, stop with Reason `existing-test-edit: <step or finding id> <path>`. Do not stop with `test-only-plan`. Otherwise a test-edit item never stops the step while ordinary units remain; it is set aside and the step continues.
+b. **No Round 1 work left.** This check runs before any drafting or asking, and it does not run in a `--only-units` run (item h governs there: the units named by `--only-units` are the Round 1 work, and a test-edit item is reported with item h's reasons whether or not any unit remains). If no Round 1 work remains, `TEST_EDIT_ITEMS` is not empty, and there is no Round 2 test work, stop with Reason `existing-test-edit: <step or finding id> <path>`. Otherwise a test-edit item never stops the step while ordinary units remain; it is set aside and the step continues. When Round 2 test work exists, the step runs as a zero-unit run (see "Zero-unit run" above) and the test-edit items are asked about in the usual way.
+   **Zero-unit preconditions run here, before any drafting or asking.** When the step will be a zero-unit run (no non-test Round 1 work remains and Round 2 test work is expected), evaluate the "Zero-unit run" preconditions now and stop with their Reasons (`zero-unit-plan-incomplete: no Round 2 tests`, `zero-unit-plan-incomplete: no Targets`) before the `Test changes` ask, so a human is never asked to approve test edits for a run that will then stop.
 c. **Coupled items are split.** A coupled item's test half is asked about and drafted. The code half is withheld from `units.json` and becomes an ordinary unit only if the test half is approved. If the test half is declined, the code half is set aside and reported `OUTSTANDING: <id> (test-edit-declined: <path>)`.
 d. **Drafting.** For each item (edit or removal):
    - **Edits (M):** draft the change as a unified diff with `git diff --full-index` after the coordinator's own edit to the worktree copy. The file is then restored with `git checkout HEAD -- <path>`. The patch is checked with `git apply --check`. A draft that does not pass the check is set aside as `OUTSTANDING: <id> (test-edit-apply-conflict: <path>)` and is not asked about.
@@ -899,7 +904,6 @@ After all applies, `git status --porcelain --untracked-files=no -- <approved pat
 | Live re-verify (step 0) | ancestor of HEAD, recorded paths, and each blob matches the answered approval's 40-hex id | ancestor of HEAD and recorded paths with their status only; when it verifies, only patches for other findings are applied (a second approval commit replaces the record) |
 | Parent invariant (step 5) | HEAD equals `START_SHA` before the commit; first parent equals `START_SHA` after | none (the commit lands after Round 4) |
 | Answers file | `answers/implement-<SEQ>.json` | `answers/fix-<SEQ>.json` |
-| No Round 1 work left | stop `existing-test-edit` (never `test-only-plan` for a test-edit item); `test-only-plan` stays for plans with no non-test work at all until #526 | stop `existing-test-edit`; never `test-only-plan` |
 | Ledger | the orchestrator, not the step, appends the `answer` record pinning the answers file (`commands/expert-flow.md`, relay step 4a); the step never writes `human.jsonl` | same |
 
 Both steps pass `--allow-test-edit` and `--allow-test-removal` only to the single-commit scan of the approval commit, never to Gate step 2's range scan or any `ROUND2_START_SHA..HEAD` scan.
@@ -908,7 +912,8 @@ Both steps pass `--allow-test-edit` and `--allow-test-removal` only to the singl
 
 0. **Test-edit directory.** `TEST_EDIT_DIR` is `${FLOW_DIR}/test-edits` when `FLOW_DIR` is set, otherwise `<SCRATCH_PATH>/test-edits`. Create it with `mkdir -p` from Bash. It holds the drafted patches, `asked.txt` and `approval-commit.txt` below, so a Retry or a resume of the fix step finds them again. Files there are written from Bash only (`git diff` redirects and `printf`), never with `Write`, and never hold repo content other than the patch text.
 a. **Classify.** Sort each Doing-it item `D<n>` that needs an existing test changed into `TEST_EDIT_ITEMS`. Each entry is `edit` (an existing assertion changes) or `removal` (an existing test or test file is deleted). An entry is `coupled` when the same item also changes non-test code. An `edit` whose path contains whitespace cannot be carried on a receipt `TEST_EDIT:` line (the verifier reads three space-separated fields), so it is set aside before any asking as `OUTSTANDING: D<n> (test-edit-declined: <path>)`; this is a known limitation, and such a path is never asked about. Ordinary items stay Round 1 work.
-b. **No Round 1 work left.** This check runs before any drafting or asking, and it does not run in a `--only-units` run (item h governs there: the units named by `--only-units` are the Round 1 work, and a test-edit item is reported with item h's reasons whether or not any unit remains). If no Round 1 work remains once `TEST_EDIT_ITEMS` and the test requirements are set aside, stop with Reason `existing-test-edit: <finding id> <path>`, as the `implement` step does. Do not stop with `test-only-plan`. Otherwise a test-edit item never stops the step while ordinary units remain; it is set aside and the step continues.
+b. **No Round 1 work left.** This check runs before any drafting or asking, and it does not run in a `--only-units` run (item h governs there: the units named by `--only-units` are the Round 1 work, and a test-edit item is reported with item h's reasons whether or not any unit remains). If no Round 1 work remains, `TEST_EDIT_ITEMS` is not empty, and there is no Round 2 test work, stop with Reason `existing-test-edit: <step or finding id> <path>`. Otherwise a test-edit item never stops the step while ordinary units remain; it is set aside and the step continues. When Round 2 test work exists, the step runs as a zero-unit run (see "Zero-unit run" above) and the test-edit items are asked about in the usual way.
+   **Zero-unit preconditions run here, before any drafting or asking.** When the step will be a zero-unit run (no non-test Round 1 work remains and Round 2 test work is expected), evaluate the "Zero-unit run" preconditions now and stop with their Reasons (`zero-unit-plan-incomplete: no Round 2 tests`, `zero-unit-plan-incomplete: no Targets`) before the `Test changes` ask, so a human is never asked to approve test edits for a run that will then stop.
 c. **Coupled items are set aside whole.** A coupled item's code half is withheld from `units.json`. It is never drafted or asked about, and it is reported `OUTSTANDING: D<n> (test-edit-coupled: <path>)`.
 d. **Drafting (edits and removals).** Drafting is the same as the implement step's Step 2 item d (edits, removals, reload rule and the `test-change-check.py` run), with `<finding id>` in place of `<id>` and the set-aside label `OUTSTANDING: D<n> (test-edit-apply-conflict: <path>)`. Do not restate it here; the implement step's wording is the one source. Its removal check runs as written there:
    - After drafting all items, run `python3 "$HOME/.claude/scripts/test-change-check.py" --repo . --base HEAD --remove <path> [--remove <path>…] --json` once over all removal items. Record its findings in each removal item's brief.
@@ -1790,8 +1795,8 @@ A plan with a non-empty `### Tests (written spec-blind in Round 2)` section, or 
   dependency bumps). No Round 2, no Round 3, no Round 4, no sweeps. Append the `SKIPPED ... mechanical`
   rows for those steps, then go to the Final check.
 - **Test-only deliverable** — the plan's own output *is* tests (not application code). Skip Round 2
-  (there's nothing spec-blind to add); keep Round 3 to review the tests themselves; **Round 4 applies**
-  (relocating/cleaning the delivered tests to repo convention is the whole point).
+  only when the plan carries no Round 2 test requirements to write (there's nothing spec-blind to add); keep Round 3 to review the tests themselves; **Round 4 applies**
+  (relocating/cleaning the delivered tests to repo convention is the whole point). This classification never applies to a zero-unit run: Round 1 writes no tests in that run, and Round 2 is its only producer of tests, so a zero-unit run always runs Round 2 and is always class `full`.
 - **Everything else** — full pipeline below, **including Round 4**.
 
 The gate and anti-tamper scan are never skippable — they already ran — and neither is the Final check.
@@ -1830,8 +1835,10 @@ Record the current HEAD before launching:
 ```bash
 git rev-parse HEAD  # store as ROUND2_START_SHA
 git rev-parse HEAD > "<SCRATCH_PATH>/round2-start-sha.txt"  # resume reads the same value back
-IMPL_FILES=$(git diff --name-only "$START_SHA"..HEAD)  # round-1 implementation files
+IMPL_FILES=$(git diff --name-only "$START_SHA"..HEAD)  # round-1 implementation files; in a zero-unit run see the note below
 ```
+
+In a zero-unit run the diff range is empty, so `IMPL_FILES` is not the diff: it is the target list instead (implement: the plan's Targets line; fix: the non-test anchor paths of the new-test items). The same list feeds every consumer below: the spec-blind author's "DO NOT read" list; the Part C spec-blind overlap check, reference check and mutation-smoke file choice; the Round 3 adversary and the duplication/doc-drift sweeps; and `python3 "$HOME/.claude/scripts/test-cleanup-check.py" --impl-files`.
 
 Gate passed (round sizing: <classification>). No usage-check seam or stop here — dropped per
 [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174). Proceed straight to
@@ -2124,9 +2131,9 @@ state from the moment it is observed, so Rounds 3 and 4 and any resume work from
    - `ladder`: the judge verdicts and their citations, `[]` until a judge runs;
    - `final_id`: `null` until Round 4's 4.5 merge fills it in.
 
-   **Statuses.** `open`, then one of `binding-fixed`, `impl-fixed`, `test-correct-blocking`,
+   **Statuses.** `open`, then one of `binding-fixed`, `impl-fixed`, `test-correct-blocking`, `test-correct-zero-unit` (zero-unit run only),
    `awaiting-human`, `human-spec-wrong`, `human-impl-wrong` or `human-takeover`. The terminal statuses are
-   `binding-fixed`, `impl-fixed`, `test-correct-blocking` and `human-spec-wrong`. `human-impl-wrong` is transient: it
+   `binding-fixed`, `impl-fixed`, `test-correct-blocking`, `test-correct-zero-unit` and `human-spec-wrong`. `human-impl-wrong` is transient: it
    enters the fix loop and ends `impl-fixed` or `test-correct-blocking`. `human-takeover` stops the step and is
    resolved on resume (Step 0).
 
@@ -2446,8 +2453,8 @@ re-running the tests yourself.**
 
 Round 4 runs in a fixed order. **4.0a** closes every spec-blind disagreement first. Cleanup (4.1–4.6)
 runs only once everything is green, except the red tests ruled `test-correct-blocking` (ruling 1a: a test a
-judge called correct that the fix loop could not turn green). A ruling-1a test stays committed red, is never
-deleted, and blocks the run at the Final check's spec-blind gate. Any other red test goes back to the Haiku
+judge called correct that the fix loop could not turn green) and, in a zero-unit run, `test-correct-zero-unit`. A ruling-1a test stays committed red, is never
+deleted, and blocks the run at the Final check's spec-blind gate; a `test-correct-zero-unit` test stays committed red, is never deleted, and goes to the human, never the Haiku fix loop (decision D2). Any other red test goes back to the Haiku
 fix loop, never to cleanup.
 
 ### 4.0 Applicability
@@ -2500,6 +2507,7 @@ Then, for each such entry, in order:
      git rev-parse HEAD > "<SCRATCH_PATH>/pre-4a-sha.txt"   # <PRE_4A_SHA>, per entry
      ```
    - Not converged after K=3 → `test-correct-blocking`. The test stays committed red (ruling 1a).
+   - **Zero-unit run:** a `test-correct` verdict does not enter the Haiku fix loop (Round 1 wrote no implementation in that run, so there is nothing for the loop to change). The test is recorded in the register as `test-correct-zero-unit`, stays committed red, and is reported `OUTSTANDING: <test id> (test-correct-zero-unit: <test path>)` on an OK receipt.
 4. **Human ruling** → `awaiting-human`. This applies on an Opus `escalate`, on any Round 3 **Spec questions**
    entry (map each to its register id), on any fence violation not already recorded, and on any Round 3
    support-edit flip. **The ladder never rules "spec wrong".** Only the human does. A saved approved answer for the entry (see
@@ -2537,7 +2545,7 @@ Then, for each such entry, in order:
    resume"). Any test edit the human made is human-approved by definition and is listed in the summary's
    "Spec-blind disagreements" section.
 5. **Exit condition.** Every register entry is terminal. Every red test in the working set is either
-   `test-correct-blocking` or absent. Any other red test goes back to step 3. The orchestrator checks this with
+   `test-correct-blocking`, `test-correct-zero-unit` (zero-unit run only), or absent. Any other red test goes back to step 3. The orchestrator checks this with
    its own run of the working set, not with `CHECK_EXIT`.
 
 ### 4.1 Enumerate the new tests (the working set)
@@ -2815,7 +2823,7 @@ If this prints nothing, approved paths are untouched — continue to step 6. If 
 
 **6. Spec-blind gate (W1, ruling 1a).** Read `<SCRATCH_PATH>/disagreements.json` and count its
 `test-correct-blocking` entries as `<n>`. A missing file means `<n>` is 0. This runs whatever the check outcome was, before the Final summary.
-- `<n>` is `0`: no blocking entry. Continue to the Final summary.
+- `<n>` is `0`: no blocking entry. Continue to the Final summary. In a zero-unit run, `test-correct-zero-unit` entries are not counted here: they pass this gate and are reported as `OUTSTANDING` items on an OK receipt (see 4.0a). Outside a zero-unit run this gate is unchanged.
 - `<n>` is above `0`: the step **fails loudly**, even when the check passed (the check did not collect the
   blocking test, or the red-set check already held). Write the FAILED receipt below, and stop. Outside a
   flow, stop with the same listing and no success summary.
@@ -2842,8 +2850,8 @@ RECEIPT_CONTRACT: 1
 `spec-blind-takeover` and `spec-blind-disagreement-open` Reasons are ordinary FAILED receipts: Retry, Take over and Abort, and in
 a fleet the ticket parks.
 
-A failing check whose only red tests are `test-correct-blocking` entries is not a fix-loop case. Skip the
-Final check fix loop for that case, and go straight to the gate above. The Haiku fix loop may never touch
+A failing check whose only red tests are `test-correct-blocking` entries (or, in a zero-unit run, `test-correct-zero-unit` entries) is not a fix-loop case. Skip the
+Final check fix loop for that case, and go straight to the gate above. In a zero-unit run a failing check whose only red tests are `test-correct-zero-unit` entries ends in a FAILED receipt with Reason `spec-blind-disagreement-open: <n> test(s)` listing them (the human decides: Retry, Take over or Abort). Honest limit: an OK receipt requires `CHECK_EXIT: 0`, and a committed red test fails the check, so `OUTSTANDING: ... (test-correct-zero-unit: ...)` on an OK receipt is reachable only when the resolved check does not collect that test (for example a check opt-out); otherwise the run stops with the FAILED receipt above and the human rules. The Haiku fix loop may never touch
 a blocking test.
 
 ---
@@ -3017,8 +3025,9 @@ Render the run ledger after the `usage-check-final` row is appended, so the outp
 The `partc-*` and `round4` lines of that output are copied verbatim into the summary below. Any step
 the ledger shows with no `DONE` or `SKIPPED` row is printed as `NOT RUN`. Keep `NOT RUN` in the summary
 as written; never present an unrun step as passed, clean, or successful.
+In a zero-unit run, pass `--split-basis zero-units` to `render` and to `finish` (add `[--split-basis zero-units]` to both calls; omit it in every other run).
 ```bash
-python3 "$HOME/.claude/scripts/implement-ledger.py" render --run-key "<RUN_KEY>"
+python3 "$HOME/.claude/scripts/implement-ledger.py" render --run-key "<RUN_KEY>" [--split-basis zero-units]
 ```
 
 ```
@@ -3026,6 +3035,7 @@ ROUND SIZING: <mechanical | test-only | full>
 ACTION PLAN SOURCE: <path>  [only when PLAN_SOURCE=claude-action-plan]
   Doing it applied: <n>   Rulings applied: <n>   Skipped (still pending): <n>
 ROUND 1 — Implementer (parallel)
+  [zero-unit run: Round 1 SKIPPED (no-round1-units), Units: 0]
   Units: <N>   Applied clean: <c>   Conflicts resolved: <c>   Failed: <c>
 INTEGRATION GATE (trusted)
   Build/type-check: <pass | fail>   Convergence iterations: <i>/<K>
@@ -3132,13 +3142,13 @@ union (the union of the agent's self-report `INCOMPLETE_STEPS:` block with the d
 labeled `[self-report|heuristic|both]`). Extract only the `[self-report]` and `[both]` entries. For each,
 emit one line `OUTSTANDING: <step id> (<reason>) [self-report|both]`. When no entries remain, emit
 `OUTSTANDING: none`. Drop heuristic-only entries (a silent miss stays silent for the verifier to classify
-as `uncovered`). In the fix step, each set-aside test-edit item that was not applied at 4.7 adds one more line, `OUTSTANDING: D<n> (<reason>: <path>) [self-report]`, with reason `test-edit-declined`, `test-edit-coupled`, `test-edit-apply-conflict`, `test-removal` or `test-edit-not-approvable-in-fix-now`. Then write:
+as `uncovered`). In the fix step, each set-aside test-edit item that was not applied at 4.7 adds one more line, `OUTSTANDING: D<n> (<reason>: <path>) [self-report]`, with reason `test-edit-declined`, `test-edit-coupled`, `test-edit-apply-conflict`, `test-removal` or `test-edit-not-approvable-in-fix-now`. In a zero-unit run, each `test-correct-zero-unit` test from 4.0a adds `OUTSTANDING: <test id> (test-correct-zero-unit: <test path>)`, which is the Final summary's mirror of the 4.0a rule; the spec-blind gate counts only `test-correct-blocking`, so these lines do not fail the run. Outside a zero-unit run no such line is emitted. Then write:
 
 ```
 ATTEMPT: <k>
 Decision: OK
 Reason: completed
-SPLIT_BASIS: parallel|sequential|single(<non-empty reason>)|none
+SPLIT_BASIS: parallel|sequential|single(<non-empty reason>)|zero-units|none
 MIN_UNITS: <n>|unknown
 UNIT_CEILINGS: steps=8 files=12 findings=16 (provisional; MIN_UNITS is a lower bound only)
 PRIOR_SPLIT_BASIS: <basis>|none
@@ -3159,6 +3169,8 @@ TEST_EDIT_COMMIT: <40-hex sha>
 
 **Test-edit and test-removal lines (implement and fix steps).** The `TEST_EDIT:`, `TEST_REMOVAL:` and `TEST_EDIT_COMMIT:` lines sit after `Addressed:`. Implement and fix emit `TEST_EDIT: <finding id> <path> answers/<step>-<SEQ>.json` per applied edit and `TEST_REMOVAL: <finding id> <path> answers/<step>-<SEQ>.json` per applied removal. When the hatch applied a change, emit these lines and `TEST_EDIT_COMMIT: <sha>` with the 40-hex approval commit from 4.7. When no change was applied, emit neither line (there is no `TEST_EDIT: none` token; the absence of these lines is the rule). The approval record schema and where the commit SHA lives are stated once in 4.7 step 3. `UNITS:` counts ordinary units only (Step 3, item e).
 
+**Zero-unit receipts.** `SPLIT_BASIS: zero-units` is valid only with `UNITS: 0`, and `UNITS: 0` on an OK receipt requires `SPLIT_BASIS: zero-units`. `SPLIT_BASIS: none` stays invalid on an OK receipt. In a zero-unit run, each `test-correct-zero-unit` test (4.0a) is reported `OUTSTANDING: <test id> (test-correct-zero-unit: <test path>)` and the receipt stays OK. A zero-unit run in which every `Test changes` item was declined reports `Decision: OK`, each item `OUTSTANDING: <id> (test-edit-declined: <path>)`.
+
 **Header block.** The verifier reads `CHECK`, `CHECK_EXIT`, `CHECK_SOURCE`, `CHECK_SHA`, `ATTEMPT`, `Decision`, `Reason`, `RUN_KEY`, `RECEIPT_CONTRACT` and
 `OUTSTANDING` only up to the first blank line, so write the receipt as one contiguous block with no blank line from the first
 summary line through `<!-- step-end -->` (drop the summary's blank lines when copying it). A receipt whose `Decision:` sits below a
@@ -3178,5 +3190,5 @@ After emitting the summary, record completion through the ledger. This is the on
 recorded. Run it bare: do not wrap it in `|| true` or redirect its errors. A nonzero exit means the
 run is reported as incomplete, and the orchestrator surfaces the `NOT RUN` output of `finish` verbatim.
 ```bash
-python3 "$HOME/.claude/scripts/implement-ledger.py" finish --run-key "<RUN_KEY>"
+python3 "$HOME/.claude/scripts/implement-ledger.py" finish --run-key "<RUN_KEY>" [--split-basis zero-units]
 ```
