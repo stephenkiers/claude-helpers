@@ -21,8 +21,8 @@ from _test_harness import Harness, REPO_ROOT
 POINTER_SENTENCE = (
     "**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier "
     "— never end your turn while any launched id is outstanding; launch in the background and "
-    "block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` "
-    "to wait for children."
+    "block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), "
+    "in the foreground; never use `ScheduleWakeup` to wait for children."
 )
 
 # Forbidden wording patterns (these should NOT appear in the named files)
