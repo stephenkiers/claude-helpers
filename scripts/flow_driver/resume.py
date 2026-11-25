@@ -217,6 +217,12 @@ def _rule_1_action(locked: LockedFlow, pending: PendingSpawn) -> Literal["wait",
         # Route through the helper: stores fingerprint only for "fingerprint-changed" basis
         receipts.settle_in_progress(locked, key, pending, classification)
         return "wait"
+    if isinstance(classification, receipts.Gone):
+        # Gone only arises for an attributed classify, which resume never requests; handled like a changed fingerprint.
+        # Store the fingerprint for two-read stability detection (None when the receipt file is absent).
+        if classification.fingerprint is not None:
+            receipts.store_fingerprint(locked, key, classification.fingerprint)
+        return "wait"
     try:
         if isinstance(classification, receipts.Landed):
             receipts.land(locked, key)
