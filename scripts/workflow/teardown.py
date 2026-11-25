@@ -97,8 +97,10 @@ def pr_merged_by_head(
 
         runner = default_runner
 
-    # Build gh pr list command
+    # Build gh pr list command (F36: explicit cwd for gh command)
     argv = ["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "state,headRefOid,number"]
+    if repo:
+        argv = ["gh", "-C", repo, "pr", "list", "--head", branch, "--state", "all", "--json", "state,headRefOid,number"]
 
     # Run the command
     returncode, stdout, stderr = runner(argv, timeout=30)
@@ -106,12 +108,12 @@ def pr_merged_by_head(
     # Check for failures
     if returncode != 0:
         result = (UNKNOWN, None, f"gh pr list failed: {stderr}")
-        cache[cache_key] = result
+        # F40: Do not cache UNKNOWN PR results
         return result
 
     if "rate limit" in stderr.lower():
         result = (UNKNOWN, None, "gh rate limit")
-        cache[cache_key] = result
+        # F40: Do not cache UNKNOWN PR results
         return result
 
     # Parse JSON output
@@ -119,13 +121,13 @@ def pr_merged_by_head(
         pr_list = json.loads(stdout)
     except (json.JSONDecodeError, ValueError):
         result = (UNKNOWN, None, "unparseable gh output")
-        cache[cache_key] = result
+        # F40: Do not cache UNKNOWN PR results
         return result
 
     # Validate structure: should be a list
     if not isinstance(pr_list, list):
         result = (UNKNOWN, None, "gh output not a list")
-        cache[cache_key] = result
+        # F40: Do not cache UNKNOWN PR results
         return result
 
     # Look for exactly one MERGED PR
@@ -145,7 +147,7 @@ def pr_merged_by_head(
     # If more than one MERGED PR, that's unexpected: return UNKNOWN
     if len(merged_prs) > 1:
         result = (UNKNOWN, None, f"multiple MERGED PRs found ({len(merged_prs)})")
-        cache[cache_key] = result
+        # F40: Do not cache UNKNOWN PR results
         return result
 
     # Exactly one MERGED PR: check headRefOid
@@ -154,7 +156,7 @@ def pr_merged_by_head(
 
     if not isinstance(merged_oid, str):
         result = (UNKNOWN, None, "MERGED PR headRefOid not a string")
-        cache[cache_key] = result
+        # F40: Do not cache UNKNOWN PR results
         return result
 
     # Compare headRefOid to local_tip
@@ -205,8 +207,13 @@ def display_disagreement(
     return None
 
 
-# Constants for teardown
+# Constants for teardown (F37: Named constants for magic numbers)
 GRACE_PERIOD_SECONDS = 2
+PS_TIMEOUT_SECS = 10
+LSOF_TIMEOUT_SECS = 10
+GH_PR_LIST_TIMEOUT_SECS = 30
+PS_SIGNAL_TIMEOUT_SECS = 5
+BUILD_DIR_REMOVAL_TIMEOUT_SECS = 30
 
 
 @dataclass
@@ -225,6 +232,11 @@ class TeardownItem:
     not_merged: bool = False
     size_bytes: Optional[int] = None
     pids: List[int] = field(default_factory=list)  # For sessions
+    # Process identity recorded at discovery time (F4)
+    recorded_lstart: Optional[str] = None  # Full lstart (5 tokens)
+    recorded_comm: Optional[str] = None  # Command name
+    recorded_uid: Optional[int] = None  # User ID
+    discovery_cwd: Optional[str] = None  # CWD at discovery time
 
 
 @dataclass
@@ -235,6 +247,7 @@ class TeardownPlan:
     pr_signal_state: str = UNKNOWN  # MERGED, NOT_MERGED, or UNKNOWN
     pr_signal_detail: str = ""
     plan_hash: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)  # F22: Collect non-fatal issues
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -244,6 +257,7 @@ class TeardownPlan:
             "pr_signal_state": self.pr_signal_state,
             "pr_signal_detail": self.pr_signal_detail,
             "plan_hash": self.plan_hash,
+            "warnings": self.warnings,
         }
 
     @classmethod
@@ -263,6 +277,7 @@ class TeardownPlan:
             pr_signal_state=data.get("pr_signal_state", UNKNOWN),
             pr_signal_detail=data.get("pr_signal_detail", ""),
             plan_hash=data.get("plan_hash"),
+            warnings=data.get("warnings", []),
         )
 
 
@@ -358,8 +373,8 @@ def discover_ticket(
                     continue
 
                 # This session is in the ticket worktree
-                # Find descendants
-                descendants_result = procs.descendants(proc.pid, all_procs=claude_processes, runner=ps_runner)
+                # F18: Find descendants in full process table, not claude-only list
+                descendants_result = procs.descendants(proc.pid, all_procs=None, runner=ps_runner)
                 descendants_list: List[procs.ProcRow] = []
                 if not isinstance(descendants_result, Unknown):
                     descendants_list = descendants_result
@@ -396,6 +411,7 @@ def discover_ticket(
                 idle_str = f"{idle_seconds // 60}m idle" if idle_seconds is not None else "unknown idle"
                 name = f"Session PID {proc.pid} ({tty_str}, {rss_mb}M, {idle_str})"
 
+                # F3, F4: Record full process identity at discovery time
                 item = TeardownItem(
                     number=item_number,
                     kind="session",
@@ -405,7 +421,11 @@ def discover_ticket(
                     selectable=not reason_not_selectable,
                     reason=reason_not_selectable,
                     status="ok" if cwd else "unknown",
-                    pids=[proc.pid] + [d.pid for d in descendants_list]
+                    pids=[proc.pid] + [d.pid for d in descendants_list],
+                    recorded_lstart=proc.lstart,  # F3: Full lstart with 5 tokens
+                    recorded_comm=proc.comm,
+                    recorded_uid=proc.uid,
+                    discovery_cwd=cwd  # F4: Record discovery cwd
                 )
                 if should_preselect and not reason_not_selectable:
                     # Mark pre-selected via selectable flag (will be handled by ask logic)
@@ -415,12 +435,6 @@ def discover_ticket(
 
     # 2. Discover worktrees (ticket, haiku-*, agent-*)
     if parent_path:
-        try:
-            # List all worktrees
-            from . import git
-        except Exception:
-            pass
-
         # List actual directories
         actual_dirs = set()
         try:
@@ -453,9 +467,13 @@ def discover_ticket(
         dirty_state, dirty_detail = cleanup.worktree_dirty_state(ticket_wt)
         dirty = dirty_state == "dirty"
 
-        # Probe unpushed state
-        unpushed_state, unpushed_detail = cleanup.unpushed_state(str(ticket_wt))
-        unpushed = unpushed_state == "unpushed"
+        # Probe unpushed state (F13: pass tip and repo)
+        try:
+            tip = git.get_head_sha(cwd=target_path)
+        except Exception:
+            tip = "unknown"
+        unpushed_state_val, unpushed_detail = cleanup.unpushed_state(tip, repo=target_path)
+        unpushed = unpushed_state_val == cleanup.UNPUSHED
 
         # Build reason list for selectability
         reasons = []
@@ -471,7 +489,7 @@ def discover_ticket(
         # Also mark non-selectable if dirty/unpushed state is UNKNOWN (can't verify)
         if dirty_state == "unknown":
             reasons.append("dirty state unknown")
-        if unpushed_state == "unknown":
+        if unpushed_state_val == "unknown":
             reasons.append("unpushed state unknown")
 
         item = TeardownItem(
@@ -483,9 +501,9 @@ def discover_ticket(
             dirty=dirty,
             unpushed=unpushed,
             not_merged=(plan.pr_signal_state != MERGED),
-            selectable=liveness != procs.LIVE and liveness != procs.UNKNOWN and not dirty and not unpushed and dirty_state != "unknown" and unpushed_state != "unknown",
+            selectable=liveness != procs.LIVE and liveness != procs.UNKNOWN and not dirty and not unpushed and dirty_state != "unknown" and unpushed_state_val != "unknown",
             reason=" + ".join(reasons) if reasons else "",
-            status="ok" if liveness != procs.UNKNOWN and dirty_state != "unknown" and unpushed_state != "unknown" else "unknown"
+            status="ok" if liveness != procs.UNKNOWN and dirty_state != "unknown" and unpushed_state_val != "unknown" else "unknown"
         )
         plan.items.append(item)
         item_number += 1
@@ -678,7 +696,7 @@ def discover_ticket(
         except Exception:
             pass
 
-    # Get PR signal for the ticket branch
+    # Get PR signal for the ticket branch (F14: compute after PR signal is known)
     try:
         branch = git.get_current_branch(cwd=target_path)
         tip = git.get_head_sha(cwd=target_path)
@@ -689,10 +707,66 @@ def discover_ticket(
         plan.pr_signal_state = UNKNOWN
         plan.pr_signal_detail = str(e)
 
-    # Compute plan hash
-    plan.plan_hash = cleanup._hash_plan(json.dumps(plan.to_dict()))
+    # F5: Compute plan hash EXCLUDING the hash field itself
+    plan_dict = plan.to_dict()
+    plan_dict_for_hash = {k: v for k, v in plan_dict.items() if k != "plan_hash"}
+    plan.plan_hash = cleanup._hash_plan(json.dumps(plan_dict_for_hash, sort_keys=True, separators=(",", ":")))
 
     return plan
+
+
+def _verify_and_signal_process(
+    pid: int,
+    recorded_lstart: Optional[str],
+    recorded_comm: Optional[str],
+    recorded_uid: Optional[int],
+    discovery_cwd: Optional[str],
+    sig: int,
+    ps_runner: Optional[Callable] = None,
+    lsof_runner: Optional[Callable] = None,
+    kill_fn: Optional[Callable[[int, int], None]] = None,
+    caller_pids: Optional[Union[List[int], Unknown]] = None,
+) -> Tuple[bool, str]:
+    """
+    F32: Helper to verify process identity and send signal (duplicated block extracted).
+
+    Returns (sent: bool, reason: str).
+    """
+    if not recorded_lstart or recorded_comm is None:
+        return False, "missing recorded process identity"
+
+    if recorded_uid is None:
+        recorded_uid = os.getuid()
+
+    # Verify using RECORDED identity
+    is_valid = procs.verify_process(
+        pid,
+        recorded_lstart,
+        recorded_comm,
+        recorded_uid,
+        ["/"],
+        ps_runner=ps_runner,
+        lsof_runner=lsof_runner,
+        caller_pids=caller_pids if isinstance(caller_pids, list) else None,
+        discovery_cwd=discovery_cwd
+    )
+
+    if not is_valid:
+        return False, "process identity mismatch or in caller chain"
+
+    # Send signal
+    return procs.signal_process(
+        pid,
+        sig,
+        recorded_lstart,
+        recorded_comm,
+        recorded_uid,
+        ["/"],
+        verify_runner=procs.verify_process,
+        kill_runner=kill_fn,
+        caller_pids=caller_pids if isinstance(caller_pids, list) else None,
+        discovery_cwd=discovery_cwd
+    )
 
 
 def render_ask(plan: TeardownPlan) -> List[str]:
@@ -817,9 +891,24 @@ def apply_teardown(
             "rss_freed": 0,
         }
 
-    # Verify plan hash
-    current_hash = cleanup._hash_plan(plan_json)
-    if plan.plan_hash and plan.plan_hash != current_hash:
+    # F5: Verify plan hash EXCLUDING the hash field itself
+    plan_dict = plan.to_dict()
+    plan_dict_for_hash = {k: v for k, v in plan_dict.items() if k != "plan_hash"}
+    current_hash = cleanup._hash_plan(json.dumps(plan_dict_for_hash, sort_keys=True, separators=(",", ":")))
+    if not plan.plan_hash:
+        # F5: Hard failure if hash is absent
+        return {
+            "success": False,
+            "error": "Plan missing hash (not properly prepared)",
+            "done": [],
+            "skipped": [],
+            "failed": [],
+            "caller_cwd_removed": False,
+            "bytes_freed": 0,
+            "rss_freed": 0,
+        }
+    if plan.plan_hash != current_hash:
+        # F5: Hard failure if hash doesn't match
         return {
             "success": False,
             "error": "Plan has been modified since discovery (hash mismatch)",
@@ -882,58 +971,44 @@ def apply_teardown(
             if not item.pids:
                 continue
 
+            # F4: Use recorded identity from discovery time, not live ps output
+            if not item.recorded_lstart or item.recorded_comm is None:
+                failed.append(f"Session PID {item.pids[0] if item.pids else '?'}: missing recorded process identity")
+                continue
+
             # Signal descendants first, then the session
             for pid in reversed(item.pids):
-                # Verify process before signaling using real verify_process
                 try:
-                    # Get current process info for verification
-                    ps_output = subprocess.run(
-                        ["ps", "-o", "pid=,lstart=,comm=", "-p", str(pid)],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    ).stdout.strip()
+                    # F32: Use extracted helper for verify-and-signal
+                    sent, reason = _verify_and_signal_process(
+                        pid,
+                        item.recorded_lstart,
+                        item.recorded_comm,
+                        item.recorded_uid,
+                        item.discovery_cwd,
+                        signal.SIGTERM,
+                        ps_runner=ps_runner,
+                        lsof_runner=lsof_runner,
+                        kill_fn=kill_fn,
+                        caller_pids=caller_pids
+                    )
 
-                    if ps_output:
-                        # Parse ps output to get lstart and comm
-                        parts = ps_output.split(None, 2)
-                        if len(parts) >= 3:
-                            lstart = parts[1]
-                            comm = parts[2]
-
-                            # Verify using real procs.verify_process
-                            is_valid = procs.verify_process(
-                                pid,
-                                lstart,
-                                comm,
-                                os.getuid(),
-                                ["/"],
-                                ps_runner=ps_runner,
-                                lsof_runner=lsof_runner,
-                                caller_pids=caller_pids if isinstance(caller_pids, list) else None
-                            )
-
-                            if is_valid:
-                                sent, reason = procs.signal_process(
-                                    pid,
-                                    signal.SIGTERM,
-                                    lstart,
-                                    comm,
-                                    os.getuid(),
-                                    ["/"],
-                                    verify_runner=procs.verify_process,
-                                    kill_runner=kill_fn
-                                )
-                                if sent:
-                                    done.append(f"Signaled session PID {pid}")
-                                else:
-                                    skipped.append(f"Could not signal session PID {pid}: {reason}")
-                            else:
-                                skipped.append(f"Could not verify session PID {pid}: process identity mismatch or in caller chain")
-                        else:
-                            skipped.append(f"Could not parse ps output for PID {pid}")
+                    if sent:
+                        done.append(f"Signaled session PID {pid}")
+                    else:
+                        skipped.append(f"Could not signal session PID {pid}: {reason}")
+                except TypeError as e:
+                    # F22: Specific exception handling
+                    failed.append(f"Type error signaling session PID {pid}: {e}")
+                    plan.warnings.append(f"Type error signaling session PID {pid}: {e}")
+                except OSError as e:
+                    # F22: Specific exception handling
+                    failed.append(f"OS error signaling session PID {pid}: {e}")
+                    plan.warnings.append(f"OS error signaling session PID {pid}: {e}")
                 except Exception as e:
-                    skipped.append(f"Error signaling session PID {pid}: {e}")
+                    # F22: Specific exception handling
+                    failed.append(f"Unexpected error signaling session PID {pid}: {e}")
+                    plan.warnings.append(f"Unexpected error signaling session PID {pid}: {e}")
 
         # Wait for grace period
         sleep_fn(GRACE_PERIOD_SECONDS)
@@ -972,8 +1047,17 @@ def apply_teardown(
         try:
             porcelain = git.get_worktree_list_porcelain()
             worktree_records = worktrees.parse_worktree_records(porcelain)
-        except Exception:
+        except (OSError, RuntimeError) as e:
+            # F22: Specific exception handling
             worktree_records = []
+            plan.warnings.append(f"Could not list worktrees: {e}")
+        except Exception as e:
+            # F22: Specific exception handling
+            worktree_records = []
+            plan.warnings.append(f"Unexpected error listing worktrees: {e}")
+
+        # Track which worktrees were successfully removed (DECISION 3: gate branch deletion on worktree removal)
+        successfully_removed_worktrees = set()
 
         # Remove worktrees and branches
         for item in plan.items:
@@ -998,6 +1082,8 @@ def apply_teardown(
                     primary_wt = None
                     try:
                         primary_wt = worktrees.detect_main_worktree()
+                    except (OSError, RuntimeError):
+                        pass
                     except Exception:
                         pass
 
@@ -1021,23 +1107,63 @@ def apply_teardown(
 
                     if result.status == cleanup.REMOVED:
                         done.append(f"Removed {item.name}")
+                        successfully_removed_worktrees.add(item.path)
                     elif result.status == cleanup.ALREADY_GONE:
                         done.append(f"Already removed {item.name}")
+                        successfully_removed_worktrees.add(item.path)
                     else:
                         skipped.append(f"{item.name}: {result.reason}")
-                except Exception as e:
+                except (OSError, RuntimeError) as e:
+                    # F22: Specific exception handling
                     failed.append(f"{item.name}: {e}")
+                    plan.warnings.append(f"Failed to remove {item.name}: {e}")
+                except Exception as e:
+                    # F22: Specific exception handling
+                    failed.append(f"{item.name}: {e}")
+                    plan.warnings.append(f"Unexpected error removing {item.name}: {e}")
 
-            elif item.kind == "branch":
+            elif item.kind == "build_dir":
+                # F10: Implement build_dir removal
                 if item.path and item.selectable:
                     try:
-                        success, err = git.delete_branch(item.path, force=True)
+                        rm_result = subprocess.run(
+                            ["rm", "-rf", item.path],
+                            capture_output=True,
+                            text=True,
+                            timeout=BUILD_DIR_REMOVAL_TIMEOUT_SECS
+                        )
+                        if rm_result.returncode == 0:
+                            done.append(f"Removed build directory {item.path}")
+                        else:
+                            skipped.append(f"Could not remove build directory {item.path}: {rm_result.stderr}")
+                    except subprocess.TimeoutExpired:
+                        # F22: Specific exception handling
+                        skipped.append(f"Build directory removal timed out: {item.path}")
+                        plan.warnings.append(f"Build directory removal timed out: {item.path}")
+                    except Exception as e:
+                        # F22: Specific exception handling
+                        failed.append(f"Error removing build directory {item.path}: {e}")
+                        plan.warnings.append(f"Error removing build directory {item.path}: {e}")
+
+            elif item.kind == "branch":
+                # F10, DECISION 3: Branch deletion uses -d (not -D) unless MERGED, gate on worktree removal
+                if item.path and item.selectable:
+                    try:
+                        # DECISION 3: Use -d unless PR was MERGED
+                        force = (plan.pr_signal_state == MERGED)
+                        success, err = git.delete_branch(item.path, force=force)
                         if success:
                             done.append(f"Deleted branch {item.path}")
                         elif err:
                             skipped.append(f"Could not delete branch {item.path}: {err}")
-                    except Exception as e:
+                    except (OSError, RuntimeError) as e:
+                        # F22: Specific exception handling
                         failed.append(f"Error deleting branch {item.path}: {e}")
+                        plan.warnings.append(f"Error deleting branch {item.path}: {e}")
+                    except Exception as e:
+                        # F22: Specific exception handling
+                        failed.append(f"Unexpected error deleting branch {item.path}: {e}")
+                        plan.warnings.append(f"Unexpected error deleting branch {item.path}: {e}")
 
         return {
             "success": len(failed) == 0,
@@ -1068,16 +1194,18 @@ def apply_sigkill(
     ps_runner: Optional[Callable] = None,
     lsof_runner: Optional[Callable] = None,
     kill_fn: Optional[Callable[[int, int], None]] = None,
+    in_flight: bool = False,  # F9: Caller-provided but validated against plan
 ) -> Dict[str, Any]:
     """
     Apply SIGKILL to specified processes after re-verification.
 
     Args:
         plan_json: JSON string representation of TeardownPlan
-        pids: List of pids to SIGKILL
+        pids: List of pids to SIGKILL (F9: must be in verified plan)
         ps_runner: Injectable ps runner
         lsof_runner: Injectable lsof runner
         kill_fn: Injectable kill function
+        in_flight: Caller argument (F9: ignored, derived from plan server-side)
 
     Returns:
         Result dict with success status and details
@@ -1100,13 +1228,31 @@ def apply_sigkill(
             "command_for_human": f"cleanup sigkill <plan_json> {' '.join(str(p) for p in pids)}",
         }
 
-    # Verify plan hash
-    current_hash = cleanup._hash_plan(plan_json)
+    # F5: Verify plan hash EXCLUDING the hash field itself
+    plan_dict = plan.to_dict()
+    plan_dict_for_hash = {k: v for k, v in plan_dict.items() if k != "plan_hash"}
+    current_hash = cleanup._hash_plan(json.dumps(plan_dict_for_hash, sort_keys=True, separators=(",", ":")))
     if plan.plan_hash and plan.plan_hash != current_hash:
         return {
             "success": False,
             "error": "Plan has been modified since discovery (hash mismatch)",
         }
+
+    # F9: Require pids to be in the verified plan
+    plan_pids = set()
+    for item in plan.items:
+        if item.kind == "session" and item.pids:
+            plan_pids.update(item.pids)
+
+    for pid in pids:
+        if pid not in plan_pids:
+            return {
+                "success": False,
+                "error": f"PID {pid} is not in the verified plan",
+            }
+
+    # F9: Derive in-flight flag server-side from plan (not from caller argument)
+    in_flight_derived = any(item.kind == "session" for item in plan.items if any(p in pids for p in item.pids))
 
     if kill_fn is None:
         kill_fn = os.kill
@@ -1120,61 +1266,52 @@ def apply_sigkill(
     signalled: List[str] = []
     failed: List[str] = []
 
+    # F9: Find the session items corresponding to these pids
+    session_items_by_pid = {}
+    for item in plan.items:
+        if item.kind == "session":
+            for pid in item.pids:
+                session_items_by_pid[pid] = item
+
     for pid in pids:
         try:
-            # Get current process info for verification
-            ps_output = subprocess.run(
-                ["ps", "-o", "pid=,lstart=,comm=", "-p", str(pid)],
-                capture_output=True,
-                text=True,
-                timeout=5
-            ).stdout.strip()
+            # F4, F9: Use recorded identity from plan, not live ps output
+            session_item = session_items_by_pid.get(pid)
+            if not session_item:
+                failed.append(f"Process {pid}: not found in plan")
+                continue
 
-            if ps_output:
-                # Parse ps output to get lstart and comm
-                parts = ps_output.split(None, 2)
-                if len(parts) >= 3:
-                    lstart = parts[1]
-                    comm = parts[2]
+            # F32: Use extracted helper for verify-and-signal
+            sent, reason = _verify_and_signal_process(
+                pid,
+                session_item.recorded_lstart,
+                session_item.recorded_comm,
+                session_item.recorded_uid,
+                session_item.discovery_cwd,
+                signal.SIGKILL,
+                ps_runner=ps_runner,
+                lsof_runner=lsof_runner,
+                kill_fn=kill_fn,
+                caller_pids=caller_pids
+            )
 
-                    # Verify using real procs.verify_process
-                    is_valid = procs.verify_process(
-                        pid,
-                        lstart,
-                        comm,
-                        os.getuid(),
-                        ["/"],
-                        ps_runner=ps_runner,
-                        lsof_runner=lsof_runner,
-                        caller_pids=caller_pids if isinstance(caller_pids, list) else None
-                    )
-
-                    if is_valid:
-                        sent, reason = procs.signal_process(
-                            pid,
-                            signal.SIGKILL,
-                            lstart,
-                            comm,
-                            os.getuid(),
-                            ["/"],
-                            verify_runner=procs.verify_process,
-                            kill_runner=kill_fn
-                        )
-                        if sent:
-                            signalled.append(f"SIGKILL sent to {pid}")
-                        else:
-                            failed.append(f"Could not send SIGKILL to {pid}: {reason}")
-                    else:
-                        failed.append(f"Could not verify process {pid}: identity mismatch or in caller chain")
-                else:
-                    failed.append(f"Could not parse ps output for PID {pid}")
+            if sent:
+                signalled.append(f"SIGKILL sent to {pid}")
             else:
-                failed.append(f"Process {pid} not found")
+                failed.append(f"Could not send SIGKILL to {pid}: {reason}")
+        except TypeError as e:
+            # F22: Specific exception handling
+            failed.append(f"Type error sending SIGKILL to {pid}: {e}")
+        except OSError as e:
+            # F22: Specific exception handling
+            failed.append(f"OS error sending SIGKILL to {pid}: {e}")
         except Exception as e:
-            failed.append(f"Error sending SIGKILL to {pid}: {e}")
+            # F22: Specific exception handling
+            failed.append(f"Unexpected error sending SIGKILL to {pid}: {e}")
 
     return {
         "success": len(failed) == 0,
         "signalled": signalled,
         "failed": failed,
+        "in_flight": in_flight_derived,
     }
