@@ -47,7 +47,7 @@ they are the difference between a ~180k review and a ~430k one:
 2. **The file is the contract.** Every panel agent Writes its output to `{REVIEW_DIR}` and returns a
    one-line **receipt**, never its report. A returned report reaches you *twice* — as the tool result
    and again in any task notification's `<result>` block. The Amalgamator reads the files once; you never do.
-3. **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children. Launch a batch in one message, every call with `run_in_background: true`, with a `Receipt file:` line in each prompt; each child writes its receipt line there last.
+3. **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children. Launch a batch in one message, every call with `run_in_background: true`, with a `Receipt file:` line in each prompt; each child writes its receipt line there last.
 4. **The diff is a file, not a string.** Write `full-diff.patch` once (Step 1);
    pass paths. Never `cat` the diff into your own context and never paste it into a prompt — a
    44k-token diff inlined into 20 prompts is 880k tokens of *your* context, re-read from cache on
@@ -825,7 +825,7 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
    - Output path: `${REVIEW_DIR}/precedent.md` (always under `~/.claude/reviews/`, **never under `FLOW_DIR`**)
    - Receipt file: `${REVIEW_DIR}/receipts/precedent-pat.md`
    
-   **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (`<STEP or command>` is `review` in a flow, else `expert-review`): phase `precedent`, id `pat`, one slice with `--timeout 300 --deadline 300` (rule 8's soft exception: on exit 4 go to step 9 without retry). Join on file-exists (`-f "${REVIEW_DIR}/precedent.md"`) and a receipt line starting with `precedent-pat |` in the receipt file (the exact format defined in `prompts/precedent-pat.md`'s Receipt section). If the join fails or times out, do not retry. On failure, write `pat-failed` to `${REVIEW_DIR}/precedent-trace.txt` and go to step 9.
+   **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (`<STEP or command>` is `review` in a flow, else `expert-review`): phase `precedent`, id `pat`, one slice with `--timeout 300 --deadline 300` (Bash call with `timeout: 600000` milliseconds) (rule 8's soft exception: on exit 4 go to step 9 without retry). Join on file-exists (`-f "${REVIEW_DIR}/precedent.md"`) and a receipt line starting with `precedent-pat |` in the receipt file (the exact format defined in `prompts/precedent-pat.md`'s Receipt section). If the join fails or times out, do not retry. On failure, write `pat-failed` to `${REVIEW_DIR}/precedent-trace.txt` and go to step 9.
 
 8. **Validate.** Check the file's completeness with `precedent-render.py`:
    ```bash

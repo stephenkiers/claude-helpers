@@ -617,7 +617,7 @@ No proposed design, no other expert's report, no digest. Expected receipt format
 {expert}-contribution.md written — {n} requirements, {n} risks, {n} open questions
 ```
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 **Join barrier.** All Step 3 agents launched in one message apply `~/.claude/prompts/join-barrier-pattern.md`'s pattern: receipt validation, file existence, sentinel (`<!-- contribution-end -->`), retry once on failure, stand-in file on second failure. The orchestrator never hangs.
 
@@ -632,7 +632,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage contrarian >/
 
 One `Task` call (`run_in_background: true`; **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (`<STEP or command>` is `plan` in a flow, else `expert-plan`): phase `contrarian`, id `contrarian-carl`, receipt `{SESSION_DIR}/receipts/contrarian-contrarian-carl.md`, output `contrarian-carl-contribution.md` with sentinel `<!-- contribution-end -->`, deadline 1800 s) after all Step 3 contributions land: persona `~/.claude/reviewers/contrarian-carl.yaml` + `~/.claude/prompts/plan-contribution-contract.md` + `{SESSION_DIR}/context.md` + all `{expert}-contribution.md` paths.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 Inline addition to the dispatch prompt: "Also examine the cost of the panel's recommendations — which risks already existed vs. which are introduced by a proposed retry/abstraction/API change, and whether a smaller adequate design avoids them; check for shared unverified premises (e.g., treating a probe as a pure read)."
 
@@ -762,7 +762,7 @@ Then exit cleanly.
 
 **Join barrier.** Receipt validation, file existence with `"complete": true` sentinel, retry once on failure. On second failure, write `Decision: FAILED` with `Reason: reaction pass failed: {expert}` and stop — no stand-in file is written for reaction failures.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 Assign tiers mechanically with `python3 "$HOME/.claude/scripts/plan-checkpoint-tiers.py" --decisions "${SESSION_DIR}/decisions.md" --fragment`, which reads the ledger's expected reaction files and the briefs' types and prints the handle-keyed checkpoint ledger fragment (handles numbered per tier in numeric brief_id order (B2 before B10)) with `tier`, `brief_id`, `brief_type`, and `evidence` fields. Without `--fragment` it prints brief_id → tier JSON instead. The rule (documented in flow-reference.md "Checkpoint ledger and reaction schema"):
 - **Q:** the brief's `Type` is `disagreement`, or any expert `protested` entry exists, or any expert marked `needs-human`.
@@ -796,7 +796,7 @@ Write the round-1 `kind: report` question file per the Ask block in `~/.claude/p
 
 **Join barrier.** Receipt validation, file existence with `"complete": true` sentinel, retry once on failure. On second failure, write `Decision: FAILED` with `Reason: reaction pass failed: {expert}` and stop.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 Collect first-time pushbacks; any ruling with a pushback, plus any changed item, goes into a round-N+1 report file as `must_answer: true`. The handle is unchanged and the pushback is shown.
 
@@ -895,7 +895,7 @@ Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-tr
    - Output path: `${SESSION_DIR}/precedent.md` (always under `~/.claude/plan-sessions/`, **never under `FLOW_DIR`**)
    - Receipt file: `${SESSION_DIR}/receipts/precedent-pat.md`
    
-   **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (`<STEP or command>` is `plan` in a flow, else `expert-plan`): phase `precedent`, id `pat`, one slice with `--timeout 300 --deadline 300` (rule 8's soft exception: on exit 4 go to step 9 without retry). Join on file-exists (`-f "${SESSION_DIR}/precedent.md"`) and a receipt line starting with `precedent-pat |` in the receipt file (the exact format defined in `prompts/precedent-pat.md`'s Receipt section). If the join fails or times out, do not retry. On failure, write `PRECEDENT_TRACE="pat-failed"` to `${SESSION_DIR}/precedent-trace.txt` and go to step 9.
+   **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (`<STEP or command>` is `plan` in a flow, else `expert-plan`): phase `precedent`, id `pat`, one slice with `--timeout 300 --deadline 300` (Bash call with `timeout: 600000` milliseconds) (rule 8's soft exception: on exit 4 go to step 9 without retry). Join on file-exists (`-f "${SESSION_DIR}/precedent.md"`) and a receipt line starting with `precedent-pat |` in the receipt file (the exact format defined in `prompts/precedent-pat.md`'s Receipt section). If the join fails or times out, do not retry. On failure, write `PRECEDENT_TRACE="pat-failed"` to `${SESSION_DIR}/precedent-trace.txt` and go to step 9.
 
 8. **Validate.** Check the file's completeness with `precedent-render.py`:
    ```bash
@@ -978,7 +978,7 @@ Pass `OWED_DIRECTIONS` as a fenced data block to the step prompt (as documented 
 
 Ignore any `## Precedent` section in `decisions.md`; it is display-only (ADR-0024) and not a decision or requirement.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 The subagent **first** writes `{SESSION_DIR}/plan.md` using the synthesis template:
 
@@ -1058,13 +1058,13 @@ fi
 
   Ignore any `## Precedent` section in `decisions.md`; it is display-only (ADR-0024) and not a decision or requirement.
 
-  **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+  **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
   It reads original contributions itself. Writes `{SESSION_DIR}/audit.md`: actionable discrepancies with evidence and affected section, or a compact "No findings." result.
 
 - **Effort 2**: No automatic auditor. Escalate the same role prompt (`run_in_background: true`, collected as the effort-3 audit is), scoped to one concrete question, only if a material disagreement remains unresolved after checking sources, or synthesis introduced a mechanism no expert reviewed. State the question and why existing work can't settle it before spawning it — this is a recorded exception, not silent scope creep.
 
-  **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+  **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
   One retry on join-barrier failure, same as contributors.
 

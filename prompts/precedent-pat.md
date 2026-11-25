@@ -30,7 +30,7 @@ When quoting digest text in Precedent lines, normalize whitespace (collapse newl
 
 ## Write scope
 
-Write exactly one file, at the given output path, and nothing else: `precedent.md`.
+Write exactly two files, and nothing else: `precedent.md` at the given output path, and your receipt file at the `Receipt file:` path named in your dispatch prompt (the join barrier reads it; see § Receipt).
 
 ### Output path validation
 
@@ -254,7 +254,7 @@ precedent-pat | questions: 3 | spoke-on: 2 | citations: 4 | confidence: high=1 m
 
 ## Receipt
 
-After writing `precedent.md`, return exactly this line as your final message:
+After writing `precedent.md`, write exactly this line to your receipt file, then a final line `<!-- report-end -->`, and return the same line as your final message. The receipt file is written in every arm, including the zero-count failure arms above:
 
 ```
 precedent-pat | questions: {n} | spoke-on: {k} | citations: {m} | confidence: high={a} medium={b}

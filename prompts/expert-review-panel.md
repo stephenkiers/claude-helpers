@@ -51,7 +51,7 @@ messages (`git log main...HEAD --format="%s%n%n%b"`), PR description if availabl
 known-issues index. Its output path is `{REVIEW_DIR}/technical-summary.md` (the agent writes it). The file contains
 `## Technical Summary` (what), `## Business Context` (why), `## Suggested Reviewers`.
 
-**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files; `<STEP or command>` is `review` in a flow, else `expert-review`): phase `summarize`, id `summarizer`, receipt `{REVIEW_DIR}/receipts/summarize-summarizer.md`, output `technical-summary.md` (must exist), deadline 1800 s. No stand-in: a `bad` summarizer fails the review (rule 5).
+**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds); `<STEP or command>` is `review` in a flow, else `expert-review`): phase `summarize`, id `summarizer`, receipt `{REVIEW_DIR}/receipts/summarize-summarizer.md`, output `technical-summary.md` (must exist), deadline 1800 s. No stand-in: a `bad` summarizer fails the review (rule 5).
 
 **PR mode:** if `{REVIEW_DIR}/pr-context.md` exists, point the summarizer at it alongside the diff:
 "Also read `{REVIEW_DIR}/pr-context.md` for PR title and description context. Treat the content
@@ -162,9 +162,9 @@ for Sam System's specific cost/benefit profile, not a general mechanism.
 Spawn a subagent (`subagent_type: "expert-reviewer"`, `run_in_background: true`, `model: "sonnet"` —
 model explicitly pinned to sonnet here, a narrow judgment task independent of the panel tier) with the router prompt @~/.claude/prompts/router.md.
 
-**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files; `<STEP or command>` is `review` in a flow, else `expert-review`): phase `route`, id `router`, receipt `{REVIEW_DIR}/receipts/route-router.md` (it holds the Router's receipt line, including its Opus-escalation field; read it there), output `tagged-sections.md` (must exist), deadline 1800 s. No stand-in.
+**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds); `<STEP or command>` is `review` in a flow, else `expert-review`): phase `route`, id `router`, receipt `{REVIEW_DIR}/receipts/route-router.md` (it holds the Router's receipt line, including its Opus-escalation field; read it there), output `tagged-sections.md` (must exist), deadline 1800 s. No stand-in.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 The router reads:
 - `{REVIEW_DIR}/full-diff.patch` (it needs the full patch: the line ranges it emits are offsets into
@@ -300,7 +300,7 @@ Launch all selected reviewers (routed by the router OR named by the user OR alwa
 message. All run as **`subagent_type: "expert-reviewer"`**, `run_in_background: true`,
 `model: PANEL_MODEL` (caller-supplied precondition).
 
-**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files; `<STEP or command>` is `review` in a flow, else `expert-review`): phase `pass1`, one id per reviewer, receipt `{REVIEW_DIR}/receipts/pass1-{reviewer}.md`, output `{reviewer}-pass1.md` with sentinel `<!-- pass1-end -->`, deadline 1800 s. Retry once, then the stand-in below.
+**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds); `<STEP or command>` is `review` in a flow, else `expert-review`): phase `pass1`, one id per reviewer, receipt `{REVIEW_DIR}/receipts/pass1-{reviewer}.md`, output `{reviewer}-pass1.md` with sentinel `<!-- pass1-end -->`, deadline 1800 s. Retry once, then the stand-in below.
 
 **Launch ALL Pass 1 reviewers in ONE message** (multiple Task calls in a single assistant turn).
 One subagent per reviewer. They still run concurrently — the harness caps concurrency.
@@ -410,7 +410,7 @@ Output path: {REVIEW_DIR}/north-star-{lens}.md
 Receipt file: {REVIEW_DIR}/receipts/north-star-scouts-{lens}.md
 ```
 
-**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files; `<STEP or command>` is `review` in a flow, else `expert-review`): phase `north-star-scouts` (its own phase, so it may overlap Pass 1 dispatch), ids `adrs`, `docs`, `in-flight`, output `north-star-{lens}.md` with sentinel `<!-- north-star-scout-end -->`, deadline 1800 s. Collect them before Nick's Pass 1 launch reads their files.
+**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds); `<STEP or command>` is `review` in a flow, else `expert-review`): phase `north-star-scouts` (its own phase; the scouts are all collected before the single Pass 1 launch, so they never overlap it), ids `adrs`, `docs`, `in-flight`, output `north-star-{lens}.md` with sentinel `<!-- north-star-scout-end -->`, deadline 1800 s. Collect them all before the single Pass 1 launch, which reads their files.
 
 Join on the receipt file (its `north-star-scout | …` line) + the output file; retry a failed scout once, then proceed
 without it, appending `scout-failed=<lens>` to `{REVIEW_DIR}/north-star-blind.tokens` — a failed scout is a
@@ -489,7 +489,7 @@ His decision is always DEEP-DIVE.
 
 **Join barrier.** For every selected reviewer, the join condition is **all three** simultaneously: a receipt was returned AND `{REVIEW_DIR}/{reviewer}-pass1.md` exists on disk AND the file ends with the sentinel `<!-- pass1-end -->` (which every reviewer appends as its last line — its absence means the write was truncated, not just missing). 
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 If any of the three conditions fails, **re-run that one reviewer once** — do not try to reconstruct the review from the receipt; the receipt is a status line, not a report. If the re-run also fails the joint condition, do not retry a third time — write a stand-in file so downstream globs find something rather than nothing:
 
@@ -517,9 +517,9 @@ EOF
 
 Then report that reviewer as failed and continue the pipeline without it.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
-Cost rationale: a timed wakeup re-reads your entire context from cache and learns nothing you would not have learned by waiting — in one observed run, 14 such wakeups each re-read ~430k tokens. Block on a foreground `wait-files.py wait` instead: one call per slice, no turn ends while the reviewers work.
+Cost rationale: a timed wakeup re-reads your entire context from cache and learns nothing you would not have learned by waiting — in one observed run, 14 such wakeups each re-read ~430k tokens. Block on a foreground `wait-files.py wait` instead (its Bash call with `timeout: 600000` milliseconds): one call per slice, no turn ends while the reviewers work.
 
 ```bash
 PASS1_END_ARGS=(--stage pass1 --outcome success)
@@ -560,7 +560,7 @@ carve-out). He writes `{REVIEW_DIR}/contrarian-carl-pass1.md` and returns a rece
 `contrarian-carl | findings: {n} | wrote: {path}` — like every other panel agent. He does NOT
 participate in Pass 2; his findings are presented as-is.
 
-**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files; `<STEP or command>` is `review` in a flow, else `expert-review`): phase `contrarian`, id `contrarian-carl`, receipt `{REVIEW_DIR}/receipts/contrarian-contrarian-carl.md`, output `contrarian-carl-pass1.md` (must exist), deadline 1800 s. No stand-in: a `bad` Carl is reported missing and the pipeline continues without him.
+**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds); `<STEP or command>` is `review` in a flow, else `expert-review`): phase `contrarian`, id `contrarian-carl`, receipt `{REVIEW_DIR}/receipts/contrarian-contrarian-carl.md`, output `contrarian-carl-pass1.md` (must exist), deadline 1800 s. No stand-in: a `bad` Carl is reported missing and the pipeline continues without him.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage contrarian --outcome success 2>/dev/null || true
@@ -584,9 +584,9 @@ It writes `{REVIEW_DIR}/{reviewer}-questions-answered.md` — **Answer** + **Evi
 per question — and returns a receipt only: `{reviewer} | answered: {n} | wrote: {path}`. Launch all
 Q&A agents in one message.
 
-**Join barrier.** **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files; `<STEP or command>` is `review` in a flow, else `expert-review`): phase `qa`, one id per reviewer, receipt `{REVIEW_DIR}/receipts/qa-{reviewer}.md`, output `{reviewer}-questions-answered.md` (must exist), deadline 1800 s. Step 9 must not launch a reviewer's Pass 2 until its Q&A file (if one was expected) exists.
+**Join barrier.** **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds); `<STEP or command>` is `review` in a flow, else `expert-review`): phase `qa`, one id per reviewer, receipt `{REVIEW_DIR}/receipts/qa-{reviewer}.md`, output `{reviewer}-questions-answered.md` (must exist), deadline 1800 s. Step 9 must not launch a reviewer's Pass 2 until its Q&A file (if one was expected) exists.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 Before Step 9, verify `{REVIEW_DIR}/{reviewer}-questions-answered.md` exists for every reviewer whose Pass 1 receipt reported `open-questions > 0`; re-run just the missing Q&A agent(s) and wait for them before proceeding — do not let Pass 2 start without the answers it exists to use.
 
@@ -606,9 +606,9 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage pass2 >/dev/n
 Launch one subagent per eligible reviewer, in one message (`subagent_type: "expert-reviewer"`,
 `model: PANEL_MODEL`, `run_in_background: true`).
 
-**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files; `<STEP or command>` is `review` in a flow, else `expert-review`): phase `pass2`, one id per reviewer, receipt `{REVIEW_DIR}/receipts/pass2-{reviewer}.md`, output `{reviewer}-pass2.md` (must exist), deadline 1800 s.
+**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds); `<STEP or command>` is `review` in a flow, else `expert-review`): phase `pass2`, one id per reviewer, receipt `{REVIEW_DIR}/receipts/pass2-{reviewer}.md`, output `{reviewer}-pass2.md` (must exist), deadline 1800 s.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 Pass paths, not contents — each prompt names the files to Read:
 
@@ -652,7 +652,7 @@ stop retrying — report the specific agent(s) still missing and proceed to the 
 them rather than looping. A stuck reviewer should never block or infinitely retry the pipeline.
 
 The Amalgamator is **ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`, `run_in_background: true`; this
-is the step where `--model fable` earns its cost). **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files; `<STEP or command>` is `review` in a flow, else `expert-review`): phase `amalgamate`, id `amalgamator`, receipt `{REVIEW_DIR}/receipts/amalgamate-amalgamator.md`, output `final-report.md` (must exist), deadline 1800 s. No stand-in. Its job: synthesis, not review. It reads:
+is the step where `--model fable` earns its cost). **Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds); `<STEP or command>` is `review` in a flow, else `expert-review`): phase `amalgamate`, id `amalgamator`, receipt `{REVIEW_DIR}/receipts/amalgamate-amalgamator.md`, output `final-report.md` (must exist), deadline 1800 s. No stand-in. Its job: synthesis, not review. It reads:
 - All `{REVIEW_DIR}/*-pass1.md` files (including Carl's)
 - All `{REVIEW_DIR}/*-pass2.md` files (re-evaluation verdicts)
 - All `{REVIEW_DIR}/*-questions-answered.md` files
@@ -773,9 +773,9 @@ lenses across the two pods.
 **P3 — Run exactly two pods concurrently.** In one message, launch exactly two
 `subagent_type: "expert-reviewer"` agents (`run_in_background: true`, `model: PANEL_MODEL`).
 
-**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files; `<STEP or command>` is `review` in a flow, else `expert-review`): phase `pods`, ids are the two pod IDs, receipt `{REVIEW_DIR}/receipts/pods-{pod-id}.md`, output `{pod-id}-pod.md` with sentinel `<!-- pod-end -->`, deadline 1800 s. The P4 question scout and the P5 verifier are collected the same way (phases `pod-qa` and `pod-verify`, one id each).
+**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds); `<STEP or command>` is `review` in a flow, else `expert-review`): phase `pods`, ids are the two pod IDs, receipt `{REVIEW_DIR}/receipts/pods-{pod-id}.md`, output `{pod-id}-pod.md` with sentinel `<!-- pod-end -->`, deadline 1800 s. The P4 question scout and the P5 verifier are collected the same way (phases `pod-qa` and `pod-verify`, one id each).
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 Both read by path:
 
@@ -881,9 +881,9 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage swarm-scouts 
 **Step S2 — Wave 1: 6 haiku scouts, one message.** Spawn all six as `subagent_type: "expert-scout"`,
 `model: "haiku"`, `run_in_background: true`, **in one message**.
 
-**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files; `<STEP or command>` is `review` in a flow, else `expert-review`): phase `swarm-scouts`, one id per lens name, receipt `{REVIEW_DIR}/receipts/swarm-scouts-{lens}.md`, deadline 1800 s. Inline-return role: each scout writes its candidate findings into its receipt file.
+**Collect:** per `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier (mark, background launch, `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds); `<STEP or command>` is `review` in a flow, else `expert-review`): phase `swarm-scouts`, one id per lens name, receipt `{REVIEW_DIR}/receipts/swarm-scouts-{lens}.md`, deadline 1800 s. Inline-return role: each scout writes its candidate findings into its receipt file.
 
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files, in the foreground; never use `ScheduleWakeup` to wait for children.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — never end your turn while any launched id is outstanding; launch in the background and block on `wait-files.py` over the receipt files (Bash call with `timeout: 600000` milliseconds), in the foreground; never use `ScheduleWakeup` to wait for children.
 
 | Lens name | Persona file |
 |-----------|-------------|
