@@ -1879,17 +1879,14 @@ def test_append_write_short_exit_2():
         run = Run(sb, "run-app-short-write")
         run.init()
         ev = run.evidence("a")
-        before = _al_ledger_bytes(run)
 
         # Patch os.write to return only 1 byte instead of the full write
-        original_write = os.write
         def short_write(fd, data):
             return 1
 
         with mock.patch('os.write', side_effect=short_write):
             r = _al_append(run, ["--done", "round1", "--evidence", ev])
 
-        after = _al_ledger_bytes(run)
         # Exit code should be 2
         # No APPENDED line in output
         # Error message should mention short write
