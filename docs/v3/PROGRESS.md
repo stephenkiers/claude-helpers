@@ -13,11 +13,11 @@ If this session restarts: read this file first, then continue from the first uni
 | 3 | `repoconfig.py`, `checks.py`, `gitops.py`, `provider.py` (local), doctor (init CLI lands with unit 10) | accepted | ed1c552c |
 | 4 | `heal.py` | accepted | 892ae847 |
 | 5 | `questions.py`, `voice.py`, `principles.py` | accepted | db264af0 |
-| 6 | `steps/worktree.py`, `steps/plan.py` + prompts | in progress | |
-| 7 | `steps/spec_tests.py`, `steps/implement.py`, `steps/work.py` + prompts | in progress | |
-| 8 | `steps/review.py` + prompts | in progress | |
-| 9 | `steps/fix.py`, `steps/ship.py`, `mergegate.py`, `provider.py` (github) | in progress (ship, mergegate, github first; fix after 7 and 8) | |
-| 10 | `fleet.py`, inbox, `commands/flow3.md`, `why`, `principles init`, docs | not started | |
+| 6 | `steps/worktree.py`, `steps/plan.py` + prompts | accepted | fd56a1c4 |
+| 7 | `steps/spec_tests.py`, `steps/implement.py`, `steps/work.py` + prompts | accepted | f79b6c4c |
+| 8 | `steps/review.py` + prompts | accepted | c5a0a67d |
+| 9 | `steps/fix.py`, `steps/ship.py`, `mergegate.py`, `provider.py` (github) | ship, merge gate, github accepted (c11536dd); fix in progress | |
+| 10 | `fleet.py`, inbox, `commands/flow3.md`, `why`, `principles init`, docs | in progress | |
 | 11 | End-to-end sandbox runs | not started | |
 
 ## Section 12 coverage (each row must have a test)
@@ -27,9 +27,9 @@ If this session restarts: read this file first, then continue from the first uni
 | Machinery (bad structured output) | `tests/test_flow3_heal.py`: schema and transient tests |
 | Environment (base behind, check timeout, cleanup after merge) | `tests/test_flow3_heal.py`: base-stale, environment (timeout, missing dependency), cleanup tests |
 | Work failed (fix loop, partial unit) | `tests/test_flow3_heal.py`: check-work and unit-shortfall tests |
-| Test-edit approval | pending: test-edit rule test (implement) |
+| Test-edit approval | `tests/test_flow3_implement.py`: existing-test edit judged, weakening edit reverted and asked as a risk question, approve and decline paths |
 | No reason recorded | `tests/test_flow3_heal.py` final tests; `tests/test_flow3_driver.py` stop construction |
-| Genuine (prerequisite not merged) | pending: worktree stage dependency test |
+| Genuine (prerequisite not merged) | `tests/test_flow3_worktree.py`: dependency not merged stops with class `dependency` |
 | Questions: principle / fact / detail / human | `tests/test_flow3_questions.py`: resolver order tests |
 
 ## Decisions the plan did not settle
@@ -66,6 +66,16 @@ If this session restarts: read this file first, then continue from the first uni
     ("Stage contracts") so units 6 to 9 could be built in parallel.
 15. **Send back from the merge gate** is a saved direction plus `data.sendback`; fix turns it into one
     fix unit, then review runs on the fix diff and the flow ships again.
+16. **Branch name** is `flow3/<issue>-<slug>`; the plan stage allows two question rounds before it
+    stops; review measurements run only commands on a read-only allowlist.
+17. **Spec tests that are red before the last unit** are expected (later units make them pass): the red
+    result is recorded as deferred and only the final unit runs the fixers and the judge.
+18. **The judge gets one call per unit.** `code_wrong` gets one extra fixer a tier up; `test_wrong`
+    that does not weaken is applied by a fixer limited to the failing test files; anything that weakens
+    a test goes to the human as a risk question.
+19. **A file the edit judge does not rule on counts as weakening** (fail closed).
+20. **Ship appends `Closes #N`** to the PR body; the merge lock is one file per repo with a small info
+    file beside it naming the holder.
 
 ## Spend (notional USD, real model calls)
 
