@@ -1,0 +1,36 @@
+{
+  "answers": [
+    {
+      "answer": "Raise ValueError",
+      "confidence": "high",
+      "option_id": "raise",
+      "question_id": "empty-text",
+      "reason_quote": "blank text is bad input"
+    },
+    {
+      "answer": "First in text order",
+      "confidence": "high",
+      "option_id": "first",
+      "question_id": "tie-break",
+      "reason_quote": ""
+    },
+    {
+      "answer": "Return the lower-cased word",
+      "confidence": "high",
+      "option_id": "lower",
+      "question_id": "casing",
+      "reason_quote": ""
+    }
+  ],
+  "directions": [
+    {
+      "quote": "reuse words() as it is",
+      "text": "Reuse words() as it is (do not change it) when implementing longest_word."
+    },
+    {
+      "quote": "keep the tests plain scripts with bare asserts like the existing test file, no test framework",
+      "text": "Write the tests as plain scripts with bare asserts, matching the existing test file; do not use a test framework."
+    }
+  ],
+  "unplaced": []
+}

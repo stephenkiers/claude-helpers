@@ -1,0 +1,85 @@
+{
+  "answer": {
+    "option_id": "lower",
+    "principle_id": "",
+    "question_id": "casing",
+    "reason": "",
+    "source": "human",
+    "text": "Return the lower-cased word",
+    "verbatim_path": "human/20261125T210818839662Z-reply.md"
+  },
+  "card": {
+    "answer": {
+      "option_id": "lower",
+      "principle_id": "",
+      "question_id": "casing",
+      "reason": "",
+      "source": "human",
+      "text": "Return the lower-cased word",
+      "verbatim_path": "human/20261125T210818839662Z-reply.md"
+    },
+    "before": {
+      "decisions": [],
+      "principles": []
+    },
+    "decision": "Should longest_word return the word in its original casing, or the lower-cased form that words() produces?",
+    "experts": [
+      {
+        "favours": "lower",
+        "who": "North Star Nick",
+        "why": "P-reuse says reuse words() rather than rewrite it."
+      },
+      {
+        "favours": "lower",
+        "who": "Contract Chris",
+        "why": "Acceptable if the docstring states the lower-cased return; the implementation already keeps it."
+      },
+      {
+        "favours": "lower",
+        "who": "Vera Verifier",
+        "why": "Reusing words() is the simplest path; a test pins the casing so it cannot change by accident."
+      },
+      {
+        "favours": "lower",
+        "who": "Business Beth",
+        "why": "Shipping with the existing helper is the smallest change; casing can be added if users ask."
+      }
+    ],
+    "id": "casing",
+    "kind": "behaviour",
+    "options": [
+      {
+        "consequence": "Reuses words() unchanged; the return value differs from the spelling in the input. Documented in the docstring and pinned by a test. Can be changed later, but callers relying on it would break.",
+        "id": "lower",
+        "label": "Return the lower-cased word"
+      },
+      {
+        "consequence": "Needs a way to recover the original token, either a new tokenising path or a change to words(), which is shared with word_count. Touches P-reuse; more code and tests.",
+        "id": "original",
+        "label": "Return the original casing"
+      }
+    ],
+    "recommended": "lower",
+    "reversible": true,
+    "revisit": null,
+    "risk": "",
+    "stage": "plan",
+    "status": "answered",
+    "themes": [
+      "casing",
+      "reuse"
+    ],
+    "ticket": {
+      "issue": 2,
+      "purpose": "Add a new module `src/longest.py` with `longest_word(text)` returning the longest word in `text`. Reuse the existing `words` helper from `src/textstats.py`.",
+      "stage": "plan",
+      "title": "Add longest_word"
+    },
+    "while_waiting": "This ticket is parked at plan; other tickets continue.",
+    "why": "src/textstats.py words() calls text.lower() before splitting, so longest_word('Hello') would return 'hello' if reused unchanged. The ticket says to reuse words(), but it does not say whether the caller expects the spelling from the source text."
+  },
+  "downstream": "",
+  "question_id": "casing",
+  "stage": "plan",
+  "ts": "2026-11-25T21:08:25.288404+00:00"
+}

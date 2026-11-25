@@ -1,0 +1,74 @@
+{
+  "answer": {
+    "option_id": "leave",
+    "principle_id": "",
+    "question_id": "r0-9",
+    "reason": "an empty result is not an error",
+    "source": "human",
+    "text": "Keep silent success, exit 0",
+    "verbatim_path": "human/20261125T204611108501Z-reply.md"
+  },
+  "card": {
+    "answer": {
+      "option_id": "leave",
+      "principle_id": "",
+      "question_id": "r0-9",
+      "reason": "an empty result is not an error",
+      "source": "human",
+      "text": "Keep silent success, exit 0",
+      "verbatim_path": "human/20261125T204611108501Z-reply.md"
+    },
+    "before": {
+      "decisions": [],
+      "principles": []
+    },
+    "decision": "Should an empty or whitespace-only text print a notice to stderr, or stay silent with exit 0?",
+    "experts": [
+      {
+        "favours": "fix",
+        "who": "Danielle the Designer",
+        "why": "Empty result gives silent success"
+      }
+    ],
+    "id": "r0-9",
+    "kind": "behaviour",
+    "options": [
+      {
+        "consequence": "Users see feedback that nothing matched. Scripts that parse stdout are unaffected, but stderr gains a line in this case.",
+        "id": "fix",
+        "label": "Print 'no words found in text' to stderr, keep exit 0"
+      },
+      {
+        "consequence": "Empty output is indistinguishable from a broken pipeline in the terminal. Matches the plain 'word count' output contract with no extra channel.",
+        "id": "leave",
+        "label": "Keep silent success, exit 0"
+      },
+      {
+        "consequence": "Scripts can detect the empty case, but an empty text becomes an error, which the spec does not describe as bad input.",
+        "id": "exit1",
+        "label": "Print a notice to stderr and exit 1"
+      }
+    ],
+    "recommended": "leave",
+    "reversible": true,
+    "revisit": null,
+    "risk": "",
+    "stage": "review",
+    "status": "answered",
+    "themes": [
+      "review"
+    ],
+    "ticket": {
+      "issue": 1,
+      "purpose": "Add `top_words(text, n)` to `src/textstats.py`. It returns the `n` most frequent words as `(word, count)` tuples, most frequent first. Reuse the existing `words` helper.",
+      "stage": "review",
+      "title": "Add top_words to textstats"
+    },
+    "while_waiting": "This ticket is parked at review; other tickets continue.",
+    "why": "top_words returns [] for empty or whitespace-only text, and main() then prints nothing and returns 0. The plan does not say what the CLI should show for this case, so it is a product call about user feedback rather than a defect."
+  },
+  "downstream": "",
+  "question_id": "r0-9",
+  "stage": "review",
+  "ts": "2026-11-25T20:46:21.063307+00:00"
+}

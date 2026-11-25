@@ -1,0 +1,70 @@
+{
+  "answer": {
+    "option_id": "fix",
+    "principle_id": "",
+    "question_id": "r2-2",
+    "reason": "so running the file by path works",
+    "source": "human",
+    "text": "Restore the sys.path bootstrap",
+    "verbatim_path": "human/20261125T210121240130Z-reply.md"
+  },
+  "card": {
+    "answer": {
+      "option_id": "fix",
+      "principle_id": "",
+      "question_id": "r2-2",
+      "reason": "so running the file by path works",
+      "source": "human",
+      "text": "Restore the sys.path bootstrap",
+      "verbatim_path": "human/20261125T210121240130Z-reply.md"
+    },
+    "before": {
+      "decisions": [],
+      "principles": []
+    },
+    "decision": "Should `python src/cli.py TEXT N` keep working, or is `python -m src.cli` the only supported entry point?",
+    "experts": [
+      {
+        "favours": "fix",
+        "who": "Know-It-All Nigel",
+        "why": "Direct execution `python src/cli.py` now fails with ModuleNotFoundError"
+      }
+    ],
+    "id": "r2-2",
+    "kind": "behaviour",
+    "options": [
+      {
+        "consequence": "Both invocations work. Three lines return, with the same comment as before. No caller breaks.",
+        "id": "fix",
+        "label": "Restore the sys.path bootstrap"
+      },
+      {
+        "consequence": "Cleaner file. Anyone running the old path form gets a traceback, so the break must be called out in the commit message and the docstring.",
+        "id": "leave",
+        "label": "Keep module-run only and record the break"
+      }
+    ],
+    "recommended": "fix",
+    "reversible": true,
+    "revisit": null,
+    "risk": "",
+    "stage": "review",
+    "status": "answered",
+    "themes": [
+      "entry point",
+      "breaking change"
+    ],
+    "ticket": {
+      "issue": 1,
+      "purpose": "Add `top_words(text, n)` to `src/textstats.py`. It returns the `n` most frequent words as `(word, count)` tuples, most frequent first. Reuse the existing `words` helper.",
+      "stage": "review",
+      "title": "Add top_words to textstats"
+    },
+    "while_waiting": "This ticket is parked at review; other tickets continue.",
+    "why": "The sys.path bootstrap that made the path form work was removed. Running the file by path now fails with ModuleNotFoundError before any usage message prints. Nothing in-tree uses the path form, but external users might. README changes are out of scope for this step, so the decision would only be recorded in the module docstring and commit message."
+  },
+  "downstream": "",
+  "question_id": "r2-2",
+  "stage": "review",
+  "ts": "2026-11-25T21:01:26.598478+00:00"
+}

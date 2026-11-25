@@ -1,0 +1,18 @@
+{
+  "answers": [
+    {
+      "answer": "Leave the traceback as it is",
+      "confidence": "high",
+      "option_id": "leave",
+      "question_id": "r1-3",
+      "reason_quote": "the plan already said the error propagates out of main"
+    }
+  ],
+  "directions": [
+    {
+      "quote": "Don't touch src/longest.py in this ticket.",
+      "text": "Do not modify src/longest.py in this ticket."
+    }
+  ],
+  "unplaced": []
+}

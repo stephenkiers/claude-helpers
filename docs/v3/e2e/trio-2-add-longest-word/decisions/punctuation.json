@@ -1,0 +1,80 @@
+{
+  "answer": {
+    "option_id": "keep",
+    "principle_id": "",
+    "question_id": "punctuation",
+    "reason": "",
+    "source": "human",
+    "text": "Keep punctuation as part of the word",
+    "verbatim_path": "human/20261125T210831738110Z-reply.md"
+  },
+  "card": {
+    "answer": {
+      "option_id": "keep",
+      "principle_id": "",
+      "question_id": "punctuation",
+      "reason": "",
+      "source": "human",
+      "text": "Keep punctuation as part of the word",
+      "verbatim_path": "human/20261125T210831738110Z-reply.md"
+    },
+    "before": {
+      "decisions": [],
+      "principles": []
+    },
+    "decision": "Should punctuation count toward a word's length, so that 'done.' has length 5 and beats 'hello' only when it is longer?",
+    "experts": [
+      {
+        "favours": "keep",
+        "who": "Vera Verifier",
+        "why": "Keeps one definition of 'word' shared with word_count; a test pins the behaviour."
+      },
+      {
+        "favours": "keep",
+        "who": "Business Beth",
+        "why": "Matches the existing word definition in the library; a better definition can be a separate ticket."
+      },
+      {
+        "favours": "keep",
+        "who": "Contract Chris",
+        "why": "Not a contract conflict if documented; the docstring should state that punctuation stays attached."
+      }
+    ],
+    "id": "punctuation",
+    "kind": "behaviour",
+    "options": [
+      {
+        "consequence": "Reuses words() as is, consistent with word_count. 'hello,' can beat 'hello'; the docstring must say so and a test pins it. Can be changed later with a new helper.",
+        "id": "keep",
+        "label": "Keep punctuation as part of the word"
+      },
+      {
+        "consequence": "Needs a new helper or extra logic in longest.py, which may conflict with P-reuse and changes what counts as a word. More code and tests.",
+        "id": "strip",
+        "label": "Strip punctuation before measuring"
+      }
+    ],
+    "recommended": "keep",
+    "reversible": true,
+    "revisit": null,
+    "risk": "",
+    "stage": "plan",
+    "status": "answered",
+    "themes": [
+      "punctuation",
+      "definition-of-word"
+    ],
+    "ticket": {
+      "issue": 2,
+      "purpose": "Add a new module `src/longest.py` with `longest_word(text)` returning the longest word in `text`. Reuse the existing `words` helper from `src/textstats.py`.",
+      "stage": "plan",
+      "title": "Add longest_word"
+    },
+    "while_waiting": "This ticket is parked at plan; other tickets continue.",
+    "why": "words() splits on whitespace only, so 'hello,' is 6 characters and 'a-b' is one word. Punctuation changes which word wins the length comparison and what longest_word returns (for example 'world,' rather than 'world')."
+  },
+  "downstream": "",
+  "question_id": "punctuation",
+  "stage": "plan",
+  "ts": "2026-11-25T21:08:36.004930+00:00"
+}

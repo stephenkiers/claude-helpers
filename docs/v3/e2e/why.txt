@@ -1,0 +1,80 @@
+$ python3 -m scripts.flow3 why 3 Q1 --repo trio
+Decision Q1 (stage plan, 2026-11-25T21:17:32.848191+00:00)
+
+Question: When the text argument is empty or whitespace-only, should longest_cli.main print an error to stderr and return 1, or return 0 with no output as the ticket literally says?
+Options:
+  - stderr-nonzero: Print one line to stderr, nothing to stdout, return 1
+  - silent-zero: Print nothing, return 0 (literal ticket)
+  - propagate: Let ValueError escape main (chosen)
+Chosen: propagate: Let ValueError escape main
+Decided by: principle (P-errors)
+Reason: A function given bad input raises ValueError. It never returns an empty or sentinel value to signal bad input.; P-errors says bad input raises ValueError and must never return an empty or sentinel value to signal it, which rules out silent-zero and rules out stderr-plus-return-1 as a non-raising signal; letting the ValueError from longest_word escape main is the only option that raises.
+Downstream: (none recorded)
+
+
+$ python3 -m scripts.flow3 why 2 empty-text --repo trio
+Decision empty-text (stage plan, 2026-11-25T21:08:25.286796+00:00)
+
+Question: When the text contains no words (empty or whitespace-only), should longest_word raise ValueError or return the empty string?
+Options:
+  - raise: Raise ValueError (chosen)
+  - empty: Return ''
+Chosen: raise: Raise ValueError
+Decided by: human
+Reason: blank text is bad input
+Human's words: human/20261125T210818839662Z-reply.md
+Downstream: (none recorded)
+
+
+$ python3 -m scripts.flow3 why 2 punctuation --repo fleet
+Decision punctuation (stage plan, 2026-11-25T20:48:25.529419+00:00)
+
+Question: Should punctuation count toward a word's length, so that 'world.' is 6 characters?
+Options:
+  - keep: Keep current tokenisation; punctuation counts (chosen)
+  - strip: Strip punctuation before measuring
+Chosen: keep: Keep current tokenisation; punctuation counts
+Decided by: assumed
+Reason: a detail no principle decides; the step's recommended option was taken
+Downstream: (none recorded)
+
+
+$ python3 -m scripts.flow3 why 1 probe-unknown-kind --repo fleet
+Decision probe-unknown-kind (stage plan, 2026-11-25T21:10:23.931282+00:00)
+
+Question: char_count(text, kind) gets a kind it does not know, such as 'vowels'. Should it raise ValueError or return 0?
+Options:
+  - raise: Raise ValueError (chosen)
+  - zero: Return 0
+Chosen: raise: Raise ValueError
+Decided by: principle (P-errors)
+Reason: A function given bad input raises ValueError. It never returns an empty or sentinel value to signal bad input.; P-errors says a function given bad input raises ValueError and never returns a sentinel value, and the question states an unknown kind is a caller mistake, so the raise option is selected.
+Downstream: (none recorded)
+
+
+$ python3 -m scripts.flow3 why 1 probe-words-lower --repo fleet
+Decision probe-words-lower (stage plan, 2026-11-25T21:10:23.933337+00:00)
+
+Question: Does the existing words() helper in src/textstats.py lower-case the text before splitting?
+Options:
+  - yes: Yes, it lower-cases (chosen)
+  - no: No, it keeps case
+Chosen: yes: Yes, it lower-cases
+Decided by: fact
+Reason: src/textstats.py:4-6: `def words(text):` with docstring "Lower-cased words of text." and body `return [w for w in text.lower().split() if w]`, which calls text.lower() before .split().
+Downstream: (none recorded)
+
+
+$ python3 -m scripts.flow3 why 1 probe-local-name --repo fleet
+Decision probe-local-name (stage plan, 2026-11-25T21:10:23.934490+00:00)
+
+Question: Should the loop variable in char_count be named ch or c?
+Options:
+  - ch: ch (chosen)
+  - c: c
+Chosen: ch: ch
+Decided by: assumed
+Reason: a detail no principle decides; the step's recommended option was taken
+Downstream: (none recorded)
+
+

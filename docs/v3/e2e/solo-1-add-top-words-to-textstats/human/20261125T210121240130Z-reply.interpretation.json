@@ -1,0 +1,37 @@
+{
+  "answers": [
+    {
+      "answer": "Restore the ASCII digit check before int()",
+      "confidence": "high",
+      "option_id": "fix",
+      "question_id": "r2-11",
+      "reason_quote": ""
+    },
+    {
+      "answer": "Restore the sys.path bootstrap",
+      "confidence": "high",
+      "option_id": "fix",
+      "question_id": "r2-2",
+      "reason_quote": "so running the file by path works"
+    }
+  ],
+  "directions": [
+    {
+      "quote": "put the ASCII digit check back",
+      "text": "Restore the ASCII digit check before int() so the CLI accepts only ASCII decimal digits for N."
+    },
+    {
+      "quote": "restore the sys.path bootstrap so running the file by path works",
+      "text": "Restore the sys.path bootstrap so that running the CLI file by path (python src/cli.py TEXT N) works."
+    },
+    {
+      "quote": "do not raise further behaviour questions about the CLI",
+      "text": "Do not raise further behaviour questions about the CLI."
+    },
+    {
+      "quote": "leave anything else as it is",
+      "text": "Leave everything else as it is."
+    }
+  ],
+  "unplaced": []
+}

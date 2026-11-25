@@ -19,7 +19,7 @@ If this session restarts: read this file first, then continue from the first uni
 | 9 | `steps/fix.py`, `steps/ship.py`, `mergegate.py`, `provider.py` (github) | accepted | c11536dd, 47fc91cb |
 | 10 | `fleet.py`, inbox, `commands/flow3.md`, `why`, `principles init`, docs | accepted | 47fc91cb |
 | - | Whole-flow integration test (`tests/test_flow3_integration.py`, real CLI and stages, fake binary) | accepted | 3580c2d7 |
-| 11 | End-to-end sandbox runs | in progress (see `docs/v3/e2e/`) | |
+| 11 | End-to-end sandbox runs (records and transcript in `docs/v3/e2e/`) | accepted | c6690aa8 to 5b17a79d, records in the commit after |
 
 ## Section 12 coverage (each row must have a test)
 
@@ -101,9 +101,26 @@ If this session restarts: read this file first, then continue from the first uni
     human had answered `fix`. They are now listed, the human-answered ones marked, with a pointer to
     send back. Running a fix for a human `fix` answer in the capped round would change the review loop
     the plan fixes; that question is in REPORT.
+27. **The local provider reads a PR as merged once its head is on base.** A repo's own merge command
+    pushes without telling the provider. Found by the command-merge run, which merged and then stopped.
+28. **A resumed merge stage never runs the merge again when the PR is already merged.**
+29. **A fixer that cannot finish leaves its findings open for the merge gate.** In the fix stage an
+    unfinished unit after the one escalation no longer stops the flow: the work that was done is
+    checked and kept, the verifier rules per finding, and the rest shows as open at the gate. The
+    implement stage still stops. Found by the fleet run, where the remaining work sat in protected tests.
+30. **A worker's question that names a protected path is a risk.** Whatever kind the step gave it, the
+    driver sends it to the human and no principle or default answers it. Found by the fleet run: a
+    fixer asked to lift protection for a test file, called it a detail, and its own recommendation
+    was taken as `assumed`. The path rule still reverted the edit, so nothing protected changed.
+    Only the question and its options are read, not the context, which often cites a spec test.
 
 ## Spend (notional USD, real model calls)
 
 | What | Cost |
 |---|---|
 | Unit 0 probes (14 haiku calls) | 0.01 |
+| Unit 11 sandbox flows (8 flows, 5 finished, 3 abandoned early runs) | 1.22 |
+| Unit 11 hand-fed `why` probes (3 resolver or scout calls) | under 0.01 |
+
+These are the figures the binary reports per call. The orchestrating session and the agents that
+wrote the code are not in this table.

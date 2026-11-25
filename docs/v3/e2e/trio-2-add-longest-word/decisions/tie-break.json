@@ -1,0 +1,85 @@
+{
+  "answer": {
+    "option_id": "first",
+    "principle_id": "",
+    "question_id": "tie-break",
+    "reason": "",
+    "source": "human",
+    "text": "First in text order",
+    "verbatim_path": "human/20261125T210818839662Z-reply.md"
+  },
+  "card": {
+    "answer": {
+      "option_id": "first",
+      "principle_id": "",
+      "question_id": "tie-break",
+      "reason": "",
+      "source": "human",
+      "text": "First in text order",
+      "verbatim_path": "human/20261125T210818839662Z-reply.md"
+    },
+    "before": {
+      "decisions": [],
+      "principles": []
+    },
+    "decision": "When two words tie for longest, should the first one in the text win, or the alphabetically first one?",
+    "experts": [
+      {
+        "favours": "first",
+        "who": "North Star Nick",
+        "why": "Simplest rule and matches how readers scan text."
+      },
+      {
+        "favours": "first",
+        "who": "Contract Chris",
+        "why": "Text order is the simplest promise and the one the implementation already keeps."
+      },
+      {
+        "favours": "first",
+        "who": "Vera Verifier",
+        "why": "Matches the natural reading of 'longest word in text' and needs no extra key."
+      },
+      {
+        "favours": "first",
+        "who": "Business Beth",
+        "why": "Simpler rule that matches how people read a sentence."
+      }
+    ],
+    "id": "tie-break",
+    "kind": "behaviour",
+    "options": [
+      {
+        "consequence": "Use max(..., key=len). Docstring states the text-order tie-break; a test asserts the earlier word wins. Simplest code.",
+        "id": "first",
+        "label": "First in text order"
+      },
+      {
+        "consequence": "Use a key such as (-len(w), w) over the lower-cased words. Docstring states the alphabetical tie-break; a test asserts the alphabetically earlier word wins. Slightly more code. Changing later silently alters results for tied inputs.",
+        "id": "alpha",
+        "label": "Alphabetically first"
+      }
+    ],
+    "recommended": "first",
+    "reversible": true,
+    "revisit": null,
+    "risk": "",
+    "stage": "plan",
+    "status": "answered",
+    "themes": [
+      "tie-break",
+      "behaviour"
+    ],
+    "ticket": {
+      "issue": 2,
+      "purpose": "Add a new module `src/longest.py` with `longest_word(text)` returning the longest word in `text`. Reuse the existing `words` helper from `src/textstats.py`.",
+      "stage": "plan",
+      "title": "Add longest_word"
+    },
+    "while_waiting": "This ticket is parked at plan; other tickets continue.",
+    "why": "Ticket 'Add longest_word' reserves this for the owner. max(words(text), key=len) returns the first maximal word, so text order is free. Alphabetical order needs a key such as (-len(w), w) and would compare the lower-cased words that words() returns."
+  },
+  "downstream": "",
+  "question_id": "tie-break",
+  "stage": "plan",
+  "ts": "2026-11-25T21:08:25.287763+00:00"
+}

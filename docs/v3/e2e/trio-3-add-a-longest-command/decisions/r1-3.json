@@ -1,0 +1,74 @@
+{
+  "answer": {
+    "option_id": "leave",
+    "principle_id": "",
+    "question_id": "r1-3",
+    "reason": "the plan already said the error propagates out of main",
+    "source": "human",
+    "text": "Leave the traceback as it is",
+    "verbatim_path": "human/20261125T212151933996Z-reply.md"
+  },
+  "card": {
+    "answer": {
+      "option_id": "leave",
+      "principle_id": "",
+      "question_id": "r1-3",
+      "reason": "the plan already said the error propagates out of main",
+      "source": "human",
+      "text": "Leave the traceback as it is",
+      "verbatim_path": "human/20261125T212151933996Z-reply.md"
+    },
+    "before": {
+      "decisions": [],
+      "principles": []
+    },
+    "decision": "Should the __main__ block catch ValueError and print a clean one-line message to stderr with a non-zero exit, instead of showing a traceback for usage mistakes?",
+    "experts": [
+      {
+        "favours": "fix",
+        "who": "Danielle the Designer",
+        "why": "Users read 'Traceback' as a crash; the usage hint should be the first thing they see."
+      },
+      {
+        "favours": "leave",
+        "who": "Contract Chris / plan non-goals",
+        "why": "The non-goal wording against converting ValueError to an exit code may forbid exactly this change."
+      }
+    ],
+    "id": "r1-3",
+    "kind": "behaviour",
+    "options": [
+      {
+        "consequence": "Clean usage messages for routine typos. main() still raises, so library callers and tests are unaffected. Needs a reading of the non-goal that allows handling in __main__.",
+        "id": "fix",
+        "label": "Catch ValueError in __main__, print str(exc) to stderr, exit 2"
+      },
+      {
+        "consequence": "Matches the plan's non-goal literally. Users see a Python traceback for typos, with the usage hint on its last line.",
+        "id": "leave",
+        "label": "Leave the traceback as it is"
+      }
+    ],
+    "recommended": "fix",
+    "reversible": true,
+    "revisit": null,
+    "risk": "",
+    "stage": "review",
+    "status": "answered",
+    "themes": [
+      "review"
+    ],
+    "ticket": {
+      "issue": 3,
+      "purpose": "Depends on: #2",
+      "stage": "review",
+      "title": "Add a longest command"
+    },
+    "while_waiting": "This ticket is parked at review; other tickets continue.",
+    "why": "Wrong argument count and blank text both raise ValueError, which currently escapes the __main__ block as a Python traceback. The usage hint is the last line of that traceback. The plan's non-goals include 'converting it to an exit code', which may or may not cover a handler in __main__ (the plan's own non-goal on sys.exit only permits exits in __main__). Three reviewers raised the same point (r1-1, r1-3, r1-5)."
+  },
+  "downstream": "",
+  "question_id": "r1-3",
+  "stage": "review",
+  "ts": "2026-11-25T21:21:58.500762+00:00"
+}
