@@ -639,6 +639,11 @@ Run `append` bare (no `|| true`, no `2>/dev/null`) from `TICKET_WT_PATH`, the di
 Several rows for one step are fine (one `round1` row per unit; DONE then SKIPPED). The last DONE wins and `check` judges which skips are permitted.
 A non-zero `append` exit is a stop. Report the exit code and the stderr line verbatim and do not continue to the next step. Never fall back to `printf`, `>>`, `Write` or any other way of recording the row. Exit 4 means the current directory is not the worktree where `init` ran.
 
+Before stopping on a non-zero `append` exit, record the failure telemetry with this call:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class other
+```
+
 **On a non-zero `append` exit:** outside a flow, report the exit code and stderr line and stop. Inside a flow (`FLOW_DIR` set), apply the Ask block (`~/.claude/prompts/flow-reference.md`) with options `Retry` and `Abort`. For exit 4 only, `Retry` re-runs the same `append` once from `TICKET_WT_PATH`. For exits 1, 2, 3, 5 and 6, `Retry` is not offered; the only option is `Abort`. On `Abort`, or when the Ask cannot be answered (headless and no answer), the step ends with a FAILED receipt, `Reason: implement-ledger append exit <N>: <first stderr line>`, `FAILURE_CLASS: other`. Add no new telemetry failure class.
 
 **In resume mode** (`RESUME_MODE=yes`), add `--resumed-from <RESUMED_FROM_ID> --carried <A>..<B>` to the
@@ -1084,6 +1089,7 @@ The agent stages its changes (`git add -A`, no commit); you commit them yourself
 
 **Ledger row (single-unit fallback):** once the agent's report file passes the Report-file check (Step 4c), append the `round1` row for it, citing `<SCRATCH_PATH>/round1-<unit-id>-report.md` (the file named in the Step 4b prompt). If the report is missing or empty, no `round1` row is written:
 ```bash
+cd "<TICKET_WT_PATH>"
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done round1 --evidence "<SCRATCH_PATH>/round1-<unit-id>-report.md"
 ```
 
@@ -1388,6 +1394,7 @@ missing or empty)` for use in Round 3 pass 1's input list below, and continue.
 **Ledger row (per unit, once the unit's report passes this check):** append the unit's `round1` row,
 citing its report file. A unit whose report failed the check gets no `round1` row:
 ```bash
+cd "<TICKET_WT_PATH>"
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done round1 --evidence "<SCRATCH_PATH>/round1-<unit-id>-report.md"
 ```
 
@@ -1653,10 +1660,12 @@ printf '%s\n' "<USAGE-GATE line from the round1-join seam, verbatim>" > "<SCRATC
 Then, in a separate Bash call, record the row:
 
 ```bash
+cd "<TICKET_WT_PATH>"
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done usage-check-round1-join --evidence "<SCRATCH_PATH>/usage-check-round1-join.txt"
 ```
 When `PAUSE` is not `yes`, no `usage-check-round1-join` row is appended and the `pause` step is recorded as skipped:
 ```bash
+cd "<TICKET_WT_PATH>"
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --skip pause --reason pause-not-requested
 ```
 
@@ -1736,6 +1745,7 @@ printf '%s\n' "pause: checkpoint options printed" > "<SCRATCH_PATH>/pause.txt"
 Then, in a separate Bash call, record the row:
 
 ```bash
+cd "<TICKET_WT_PATH>"
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done pause --evidence "<SCRATCH_PATH>/pause.txt"
 ```
 
@@ -1876,6 +1886,7 @@ that were built but never connected to anything).
   Then, in a separate Bash call, record the row:
 
   ```bash
+  cd "<TICKET_WT_PATH>"
   python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done integration-gate --evidence "<SCRATCH_PATH>/integration-gate.txt"
   ```
   Emit: `GATE: pass — build clean, no tamper flags`
@@ -1959,6 +1970,7 @@ printf '%s\n' "class=<mechanical|test-only|full>" > "<SCRATCH_PATH>/round-sizing
 Then, in a separate Bash call, record the row:
 
 ```bash
+cd "<TICKET_WT_PATH>"
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done round-sizing --evidence "<SCRATCH_PATH>/round-sizing.txt"
 ```
 
@@ -2211,6 +2223,7 @@ printf '%s\n' "fanout: round2, round3-pass1, duplication-sweep, doc-drift-sweep 
 Then, in a separate Bash call, record the row:
 
 ```bash
+cd "<TICKET_WT_PATH>"
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done fanout --evidence "<SCRATCH_PATH>/fanout.txt"
 ```
 
@@ -2376,6 +2389,7 @@ state from the moment it is observed, so Rounds 3 and 4 and any resume work from
    Then, in a separate Bash call, record the row:
 
    ```bash
+   cd "<TICKET_WT_PATH>"
    python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done round2-apply --evidence "<SCRATCH_PATH>/round2-apply.txt"
    ```
    `<N>` is the file count you verified above, and `<M>` is the number of entries with status `open`.
@@ -2394,6 +2408,7 @@ backstop for an unattended run).
 `SKIPPED <step-id> no-new-tests` for each of `partc-dedup`, `partc-reference-check`, `partc-mutation-a`,
 and `partc-mutation-b`, and skip the checks below:
 ```bash
+cd "<TICKET_WT_PATH>"
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --skip partc-dedup --reason no-new-tests
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --skip partc-reference-check --reason no-new-tests
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --skip partc-mutation-a --reason no-new-tests
@@ -2414,6 +2429,7 @@ python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>"
    Then, in a separate Bash call, record the row:
 
    ```bash
+   cd "<TICKET_WT_PATH>"
    python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done partc-dedup --evidence "<SCRATCH_PATH>/partc-dedup.txt"
    ```
 2. **Reference check** — each new file, or the added hunks of each existing file in `TEST_FILES` must reference at least one symbol from
@@ -2427,6 +2443,7 @@ python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>"
    Then, in a separate Bash call, record the row:
 
    ```bash
+   cd "<TICKET_WT_PATH>"
    python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done partc-reference-check --evidence "<SCRATCH_PATH>/partc-reference-check.txt"
    ```
 3. **Bounded mutation smoke (two mutations)** — pick the file in `IMPL_FILES` referenced by the most
@@ -2445,6 +2462,7 @@ python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>"
    and skip both mutations (do not attempt to stash or force-clean). Append
    `SKIPPED partc-mutation-a dirty-file` and `SKIPPED partc-mutation-b dirty-file`:
    ```bash
+   cd "<TICKET_WT_PATH>"
    python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --skip partc-mutation-a --reason dirty-file
    python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --skip partc-mutation-b --reason dirty-file
    ```
@@ -2466,6 +2484,7 @@ python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>"
    Then, in a separate Bash call, record the row:
 
    ```bash
+   cd "<TICKET_WT_PATH>"
    python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done partc-mutation-a --evidence "<SCRATCH_PATH>/partc-mutation-a.txt"
    ```
    
@@ -2496,6 +2515,7 @@ python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>"
    Then, in a separate Bash call, record the row:
 
    ```bash
+   cd "<TICKET_WT_PATH>"
    python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done partc-mutation-b --evidence "<SCRATCH_PATH>/partc-mutation-b.txt"
    ```
    
@@ -2503,6 +2523,7 @@ python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>"
    comparison/boundary operator at all, mutation (b) is not applicable for this run; skip it and
    do not flag `weak-assertion`. Append `SKIPPED partc-mutation-b no-comparison-operator`:
    ```bash
+   cd "<TICKET_WT_PATH>"
    python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --skip partc-mutation-b --reason no-comparison-operator
    ```
 
@@ -2641,6 +2662,7 @@ If the fixes are narrow, name the specific area, e.g. `test: tighten boundary as
 Once the Round 3 follow-up has reported and its report file passes the Report-file handoff check, append
 its row, citing the report file it wrote:
 ```bash
+cd "<TICKET_WT_PATH>"
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done round3-followup --evidence "<SCRATCH_PATH>/round3-followup-report.md"
 ```
 
@@ -2711,6 +2733,7 @@ cleanup.
 - **No test files added/changed across Rounds 2–3** → skip Round 4 (nothing to clean). Append
   `SKIPPED round4 no-test-files-changed`:
   ```bash
+  cd "<TICKET_WT_PATH>"
   python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --skip round4 --reason no-test-files-changed
   ```
 - **Test-only** run → Round 4 **applies** (relocating/cleaning the delivered tests is the point).
@@ -2881,6 +2904,7 @@ printf '%s\n' "deletions: <SCRATCH_PATH>/round4-deletions.md  merged: <SCRATCH_P
 Then, in a separate Bash call, record the row:
 
 ```bash
+cd "<TICKET_WT_PATH>"
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done round4 --evidence "<SCRATCH_PATH>/round4.md"
 ```
 With blocking entries present the row is still `DONE`. The Final check is where the run fails loudly (see
@@ -3051,6 +3075,7 @@ last run.
 **5. Record the result.**
 - **Pass, or opt-out:** append the `full-check` ledger row. For a pass, point it at the runner's output:
   ```bash
+  cd "<TICKET_WT_PATH>"
   python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done full-check --evidence "<SCRATCH_PATH>/full-check.json"
   ```
   For an opt-out, write a one-line scratch file and point the row at it. Read the reason with `jq` and
@@ -3063,6 +3088,7 @@ last run.
   Then, in a separate Bash call, record the row:
 
   ```bash
+  cd "<TICKET_WT_PATH>"
   python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done full-check --evidence "<SCRATCH_PATH>/full-check.txt"
   ```
 - **Key lines.** Use the outcome-table values. On a pass, `CHECK:` is the resolved command verbatim,
@@ -3275,6 +3301,7 @@ printf '%s\n' "<USAGE-GATE line from the final seam, verbatim>" > "<SCRATCH_PATH
 Then, in a separate Bash call, record the row:
 
 ```bash
+cd "<TICKET_WT_PATH>"
 python3 "$HOME/.claude/scripts/implement-ledger.py" append --run-key "<RUN_KEY>" --done usage-check-final --evidence "<SCRATCH_PATH>/usage-check-final.txt"
 ```
 and include both its `USAGE-GATE:` line and its `USAGE-GATE-SEAMS:` line verbatim. Extract the per-agent accounted/unaccounted tally
