@@ -95,6 +95,16 @@ class _Stage:
         d.setdefault("start_head", gitops.head_sha(self.wt))
         self.d = d
         self.spec_files: List[str] = [str(f) for f in ctx.flow.data("spec_tests").get("files") or []]
+        # A protected path is never a unit's to change, and never an "existing test edit": the spec
+        # tests there are already written. Without this a plan that lists one sends a worker a unit
+        # that contradicts its own protected list.
+        guarded = work.protected_paths(ctx)
+        for unit in self.plan.get("units") or []:
+            if isinstance(unit, dict):
+                unit["files"] = [f for f in unit.get("files") or [] if not gitops.match_any(str(f), guarded)]
+        self.plan["existing_test_edits"] = [
+            e for e in self.plan.get("existing_test_edits") or []
+            if isinstance(e, dict) and not gitops.match_any(str(e.get("file")), guarded)]
 
     def save(self) -> None:
         self.ctx.flow.set_data(STAGE, self.d)

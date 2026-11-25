@@ -69,7 +69,10 @@ alone. Each question has:
 - `test_spec`: the behaviour to prove, each with an `id`, the `behaviour`, and the `test_file` it
   belongs in. Write it against public interfaces only. If the change truly cannot be tested, leave it
   empty and say why in `untestable_reason`.
-- `existing_test_edits`: existing tests the plan expects to change, and why.
+  New tests go in new files: name a `test_file` that does not exist yet, and do not list it in any
+  unit's `files` (a separate author writes the tests first; units never write them).
+- `existing_test_edits`: existing tests whose current assertions the plan expects to change, and why.
+  Adding new tests is not an existing-test edit.
 
 Every acceptance criterion must be satisfied by at least one unit. Smallest change that meets the
 ticket; anything else is a non-goal.

@@ -4,6 +4,7 @@ test spec and the interface signatures only, and writes the tests. The driver co
 their paths as protected. The check is not run here: the tests are meant to be red until the units land.
 """
 
+from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional
 
 from scripts.flow3 import gitops, heal, prompts, questions, record, voice
@@ -20,20 +21,44 @@ def _plan(ctx: Ctx) -> Dict[str, Any]:
     return plan if isinstance(plan, dict) else {}
 
 
-def _test_files(plan: Dict[str, Any]) -> List[str]:
+def _in_base(ctx: Ctx, path: str) -> bool:
+    base = str(ctx.flow.data("worktree").get("base_sha") or "HEAD")
+    try:
+        gitops.git(["cat-file", "-e", "%s:%s" % (base, path)], ctx.worktree)
+        return True
+    except gitops.GitError:
+        return False
+
+
+def _target(ctx: Ctx, path: str) -> str:
+    """Where a spec test goes. Spec tests are new files: a test file the base already has is never
+    handed to the test author (that would be an unjudged edit to an existing test), so its spec tests
+    go in a sibling file instead."""
+    if not path or not _in_base(ctx, path):
+        return path
+    pure = PurePosixPath(path)
+    for tag in ("_spec", "_spec_%d" % ctx.issue):
+        sibling = str(pure.with_name(pure.stem + tag + pure.suffix))
+        if not _in_base(ctx, sibling):
+            return sibling
+    raise FlowStop("implement", "no free file name for the spec tests beside %s" % path)
+
+
+def _test_files(ctx: Ctx, plan: Dict[str, Any]) -> List[str]:
     files: List[str] = []
     for item in plan.get("test_spec") or []:
-        path = str(item.get("test_file") or "") if isinstance(item, dict) else ""
+        path = _target(ctx, str(item.get("test_file") or "") if isinstance(item, dict) else "")
         if path and path not in files:
             files.append(path)
     return files
 
 
-def _spec_text(plan: Dict[str, Any]) -> str:
+def _spec_text(ctx: Ctx, plan: Dict[str, Any]) -> str:
     rows = []
     for item in plan.get("test_spec") or []:
         if isinstance(item, dict):
-            rows.append("- %s: %s (write it in %s)" % (item.get("id"), item.get("behaviour"), item.get("test_file")))
+            rows.append("- %s: %s (write it in %s)" % (
+                item.get("id"), item.get("behaviour"), _target(ctx, str(item.get("test_file") or ""))))
     return "\n".join(rows) or "(none)"
 
 
@@ -41,7 +66,7 @@ def _prompt(ctx: Ctx, plan: Dict[str, Any], files: List[str]) -> str:
     # Spec-blind by construction: only the test spec, interfaces, how tests run, and the human's
     # directions. Never units, steps, the goal, or expert advice.
     return prompts.render(
-        "test_author", test_spec=_spec_text(plan), interfaces=work.interfaces_text(plan),
+        "test_author", test_spec=_spec_text(ctx, plan), interfaces=work.interfaces_text(plan),
         test_command=ctx.cfg.check_fast, files=work.list_text(files),
         directions=voice.directions_text(ctx.flow))
 
@@ -66,7 +91,7 @@ def run(ctx: Ctx) -> StageResult:
     if "skipped" in data:
         return StageResult("done", {})
     plan = _plan(ctx)
-    files = _test_files(plan)
+    files = _test_files(ctx, plan)
     if not plan.get("test_spec"):
         reason = str(plan.get("untestable_reason") or "").strip() or "the plan has no test spec"
         return _finish(ctx, [], None, reason, "skipped, the plan says it cannot be tested: %s" % reason)

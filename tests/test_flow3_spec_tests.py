@@ -247,5 +247,24 @@ h.test_result("on re-entry the author resumes with the answer and finishes",
               res.kind == "done" and second["resume"] == "author-1" and "Name A" in second["prompt"]
               and b.flow.data("spec_tests")["files"] == ["tests/test_a.py"], str(b.flow.data("spec_tests")))
 
+# -- the plan names a test file the base already has ---------------------------------------------
+OLD_TEST = "def test_old():\n    assert True\n"
+b = Box("s-exists", files={"tests/test_a.py": OLD_TEST}, plan=PLAN)
+b.script([{"role": "test_author", "write_files": {"tests/test_a_spec.py": TEST_BODY}, "output": DONE}])
+res = spec_tests.run(b.ctx)
+prompt = b.launches()[0]["prompt"]
+h.test_result("spec tests for an existing test file go in a new sibling file",
+              res.kind == "done" and b.flow.data("spec_tests")["files"] == ["tests/test_a_spec.py"]
+              and "tests/test_a_spec.py" in prompt, str(b.flow.data("spec_tests")))
+h.test_result("the existing test file is untouched and not protected",
+              b.read("tests/test_a.py") == OLD_TEST and b.flow.get("protected") == ["tests/test_a_spec.py"])
+
+b = Box("s-exists2", files={"tests/test_a.py": OLD_TEST}, plan=PLAN)
+b.script([{"role": "test_author", "write_files": {"tests/test_a.py": TEST_BODY}, "output": DONE}],
+         default={"output": DONE})
+stop = expect_stop(lambda: spec_tests.run(b.ctx), "protected")
+h.test_result("an author who edits the existing test file instead is reverted and stopped",
+              b.read("tests/test_a.py") == OLD_TEST, str(stop))
+
 if __name__ == "__main__":
     h.summarize_and_exit()

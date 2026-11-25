@@ -197,7 +197,11 @@ DONE = {"status": "done", "summary": "did it"}
 
 
 def work_calls(tag="1"):
-    calls = [{"role": "test_author", "write_files": {"tests/test_calc.py": SPEC_TEST + "# ticket %s\\n" % tag}, "output": DONE},
+    # The plan always names tests/test_calc.py. Once an earlier ticket has merged that file, the
+    # spec tests stage sends the author to a new sibling file instead (existing tests are not its to edit).
+    spec_file = {"2": "tests/test_calc_spec.py", "3": "tests/test_calc_spec_3.py",
+                 "4": "tests/test_calc_spec_4.py", "9": "tests/test_calc_spec.py"}.get(tag, "tests/test_calc.py")
+    calls = [{"role": "test_author", "write_files": {spec_file: SPEC_TEST + "# ticket %s\\n" % tag}, "output": DONE},
              {"role": "implementer", "label": "unit-u1", "write_files": {"src/calc.py": CALC + "# ticket %s\\n" % tag}, "output": DONE},
              {"role": "implementer", "label": "unit-u2", "write_files": {"src/cli.py": CLI + "# ticket %s\\n" % tag}, "output": DONE}]
     return calls
