@@ -16,9 +16,10 @@ If this session restarts: read this file first, then continue from the first uni
 | 6 | `steps/worktree.py`, `steps/plan.py` + prompts | accepted | fd56a1c4 |
 | 7 | `steps/spec_tests.py`, `steps/implement.py`, `steps/work.py` + prompts | accepted | f79b6c4c |
 | 8 | `steps/review.py` + prompts | accepted | c5a0a67d |
-| 9 | `steps/fix.py`, `steps/ship.py`, `mergegate.py`, `provider.py` (github) | ship, merge gate, github accepted (c11536dd); fix in progress | |
-| 10 | `fleet.py`, inbox, `commands/flow3.md`, `why`, `principles init`, docs | in progress | |
-| 11 | End-to-end sandbox runs | not started | |
+| 9 | `steps/fix.py`, `steps/ship.py`, `mergegate.py`, `provider.py` (github) | accepted | c11536dd, 47fc91cb |
+| 10 | `fleet.py`, inbox, `commands/flow3.md`, `why`, `principles init`, docs | accepted | 47fc91cb |
+| - | Whole-flow integration test (`tests/test_flow3_integration.py`, real CLI and stages, fake binary) | accepted | 3580c2d7 |
+| 11 | End-to-end sandbox runs | in progress (see `docs/v3/e2e/`) | |
 
 ## Section 12 coverage (each row must have a test)
 
@@ -76,6 +77,16 @@ If this session restarts: read this file first, then continue from the first uni
 19. **A file the edit judge does not rule on counts as weakening** (fail closed).
 20. **Ship appends `Closes #N`** to the PR body; the merge lock is one file per repo with a small info
     file beside it naming the holder.
+21. **The prompt is passed after `--`.** The real binary read a prompt that followed `--tools` as a
+    value of that option (found by the first real sandbox run; the fake binary did not care).
+22. **A red spec test is work, not environment.** A failing check whose output names a protected spec
+    file is classified `check-work` even when it looks like a missing import (the module the test
+    imports is the thing the units are about to write).
+23. **Spec tests go in new files only.** When the plan names a test file the base already has, the
+    spec tests stage sends the author to a sibling file (`<stem>_spec`), so an existing test is never
+    edited without the edit judge. Implement drops protected paths from unit file lists and from
+    `existing_test_edits`. Found by the first real run: the plan put new tests in the existing test
+    file and the implementer was told both to edit it and never to edit it.
 
 ## Spend (notional USD, real model calls)
 

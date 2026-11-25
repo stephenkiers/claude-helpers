@@ -53,7 +53,7 @@ def _clean_files(files: Any) -> List[str]:
     return out
 
 
-def candidates(ctx: Ctx) -> Tuple[int, List[Doc]]:
+def candidates(ctx: Ctx) -> Tuple[int, List[Doc], List[str]]:
     """
     The latest review round's number and its doing_it findings not yet fixed, as items:
     {id, title, detail, file, line, severity, fix, files}. `fix` and `files` come from the triage item
@@ -61,23 +61,32 @@ def candidates(ctx: Ctx) -> Tuple[int, List[Doc]]:
     """
     rounds = ctx.flow.data("review").get("rounds") or []
     if not rounds:
-        return 0, []
+        return 0, [], []
     rnd = rounds[-1]
     done = set(fixed_ids(ctx))
     triage_items = {str(i.get("finding_id")): i for i in (rnd.get("triage") or {}).get("doing_it") or []
                     if isinstance(i, dict)}
     items: List[Doc] = []
+    blocked: List[str] = []
     for f in rnd.get("findings") or []:
         fid = str(f.get("id"))
         if f.get("bucket") != "doing_it" or fid in done:
             continue
         t = triage_items.get(fid, {})
-        files = _clean_files(t.get("files")) or _clean_files([f.get("file")])
+        named = _clean_files(t.get("files")) or _clean_files([f.get("file")])
+        # A protected path (a spec test, a configured path) is never a fixer's to change. A finding
+        # that names only protected files is left open for the human instead of handing a fixer a
+        # unit that contradicts its own protected list.
+        guarded = work.protected_paths(ctx)
+        files = [x for x in named if not gitops.match_any(x, guarded)]
+        if named and not files:
+            blocked.append(fid)
+            continue
         items.append({"id": fid, "title": str(f.get("title") or ""), "detail": str(f.get("detail") or ""),
                       "file": str(f.get("file") or ""), "line": f.get("line"),
                       "severity": str(f.get("severity") or ""),
                       "fix": str(t.get("fix") or f.get("suggestion") or ""), "files": files})
-    return int(rnd.get("round", len(rounds) - 1)), items
+    return int(rnd.get("round", len(rounds) - 1)), items, blocked
 
 
 def group_units(items: List[Doc], prefix: str) -> List[Doc]:
@@ -257,7 +266,7 @@ class _Stage:
 
     def finish(self) -> StageResult:
         ctx, p = self.ctx, self.p
-        entry = {"review_round": p["review_round"], "fixed": list(p["fixed"]), "open": list(p["todo"]),
+        entry = {"review_round": p["review_round"], "fixed": list(p["fixed"]), "open": list(p["todo"]) + list(p.get("blocked") or []),
                  "head": gitops.head_sha(self.wt)}
         p["result"] = entry
         self.save()
@@ -293,15 +302,17 @@ def publish(ctx: Ctx, p: Doc) -> StageResult:
 def _fresh(ctx: Ctx) -> Doc:
     """The working state for a new run; it carries its own result when there is nothing to fix."""
     flow = ctx.flow
-    rnd, items = candidates(ctx)
+    rnd, items, blocked = candidates(ctx)
     sb = flow.data("sendback")
     notes = str(sb.get("notes") or "").strip() if sb and not sb.get("handled") else ""
     p: Doc = {"review_round": rnd, "stage_run": len(flow.data(STAGE).get("rounds") or []),
               "start_head": gitops.head_sha(ctx.worktree), "attempt": 1, "phase": "start",
               "items": {i["id"]: i for i in items}, "todo": [i["id"] for i in items], "sendback": notes,
-              "units": {}, "pending": {}, "verified": {}, "evidence": {}, "fixed": [], "log": []}
+              "units": {}, "pending": {}, "verified": {}, "evidence": {}, "fixed": [], "blocked": blocked,
+              "log": ["Left open, the finding is in a protected file a fixer may not edit: %s." % ", ".join(blocked)]
+              if blocked else []}
     if not items and not notes:
-        p["result"] = {"review_round": rnd, "fixed": [], "open": [], "head": p["start_head"]}
+        p["result"] = {"review_round": rnd, "fixed": [], "open": list(blocked), "head": p["start_head"]}
         return p
     return p
 
