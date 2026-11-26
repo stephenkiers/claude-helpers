@@ -844,8 +844,11 @@ if [ -n "$GROUPS_WITH_SELECTABLE" ]; then
   # EXCLUDED_NUMBERS="<space-separated item numbers>". Never default these from the plan; an
   # empty SELECTED_GROUPS means the human selected nothing.
   printf '%s\n' "$ASK_MSG"
-  SELECTED_GROUPS=""
-  EXCLUDED_NUMBERS=""
+  if [ -z "${REPLAN_CONFIRM-}" ]; then
+    # On first entry, initialize to empty. On re-entry (REPLAN_CONFIRM set), skip to preserve orchestrator literals
+    SELECTED_GROUPS=""
+    EXCLUDED_NUMBERS=""
+  fi
 else
   # No selectable items — nothing to remove
   echo ""
@@ -959,6 +962,9 @@ if [ "$PR_SIGNAL_STATE" = "merged" ]; then
   esac
 
   # Exclusion gate: fail closed. An unidentified ticket item counts as excluded.
+  # Normalize EXCLUDED_NUMBERS: convert commas to spaces for consistent parsing
+  EXCLUDED_NUMBERS=$(printf '%s' "$EXCLUDED_NUMBERS" | tr ',' ' ')
+  
   if [ -z "$TICKET_WORKTREE_ITEM" ]; then
     echo "ERROR: Could not identify the ticket worktree item; treating it as excluded"
     TICKET_EXCLUDED="true"
@@ -974,9 +980,10 @@ if [ "$PR_SIGNAL_STATE" = "merged" ]; then
     # PLAN_JSON is applied. On re-entry after the stale-plan relay below, the orchestrator sets
     # REPLAN_CONFIRM="true"|"false" and REPLAN_FILE="<path printed by the relay>" as literal
     # assignments; this branch runs BEFORE any apply, so the stale plan is never re-applied.
-    case "${REPLAN_CONFIRM:-}" in
+    case "${REPLAN_CONFIRM-}" in
       false)
         echo "Abort: removed nothing"
+        [ -n "${REPLAN_FILE:-}" ] && rm -f "$REPLAN_FILE"
         python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome interrupted 2>/dev/null || true
         exit 1
         ;;
@@ -984,12 +991,20 @@ if [ "$PR_SIGNAL_STATE" = "merged" ]; then
         # Never fall back to the stale PLAN_JSON: the human approved the re-planned set only
         if [ -z "${REPLAN_FILE:-}" ] || [ ! -s "$REPLAN_FILE" ]; then
           echo "ERROR: re-plan was not carried into re-entry; removed nothing"
+          [ -n "${REPLAN_FILE:-}" ] && rm -f "$REPLAN_FILE"
           python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome failure --failure-class other 2>/dev/null || true
           exit 1
         fi
         APPLY_PLAN=$(cat "$REPLAN_FILE")
         ;;
       *)
+        # Fail if REPLAN_CONFIRM is set to an invalid value; only apply PLAN_JSON on first entry (unset)
+        if [ -n "${REPLAN_CONFIRM+x}" ]; then
+          echo "ERROR: Invalid REPLAN_CONFIRM value: ${REPLAN_CONFIRM}"
+          [ -n "${REPLAN_FILE:-}" ] && rm -f "$REPLAN_FILE"
+          python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome failure --failure-class other 2>/dev/null || true
+          exit 1
+        fi
         APPLY_PLAN="$PLAN_JSON"
         ;;
     esac
@@ -1019,6 +1034,7 @@ if [ "$PR_SIGNAL_STATE" = "merged" ]; then
         if [ $FRESH_PLAN_CODE -ne 0 ]; then
           echo "ERROR: Failed to re-plan cleanup"
           printf '%s\n' "$FRESH_PLAN"
+          [ -n "${REPLAN_FILE:-}" ] && rm -f "$REPLAN_FILE"
           python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome failure --failure-class other 2>/dev/null || true
           exit 1
         fi
@@ -1066,6 +1082,7 @@ PY_DIFF
       else
         echo "ERROR: Merged-path apply failed"
         printf '%s' "$APPLY_RESULT" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup render-validation -
+        [ -n "${REPLAN_FILE:-}" ] && rm -f "$REPLAN_FILE"
         python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome failure --failure-class other 2>/dev/null || true
         exit 1
       fi
