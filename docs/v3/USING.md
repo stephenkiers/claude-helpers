@@ -22,6 +22,9 @@ and `check.base: true` in `flow.yaml` runs the fast check on the base at the sta
 check runs at the merge gate. `principles init` asks for a goal and themes and writes
 the starter principles the experts read.
 
+If the repo has a commit hook that checks formatting, set `format: <command>` in `flow.yaml`: the driver
+runs it before each commit it makes.
+
 ## One ticket
 
 ```

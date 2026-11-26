@@ -105,7 +105,7 @@ class Box:
 
     def __init__(self, name: str, files: Optional[Dict[str, str]] = None, install: bool = False,
                  timeout: int = 60, protected: Optional[List[str]] = None, soft: float = 15.0,
-                 hard: float = 40.0) -> None:
+                 hard: float = 40.0, fmt: Optional[str] = None) -> None:
         self.name = name
         self.ctl = TMP / (name + "-ctl")
         self.ctl.mkdir()
@@ -118,6 +118,8 @@ class Box:
             yml.append("install: 'sh %s/install.sh'" % self.ctl)
         if protected:
             yml.append("protected_paths: [%s]" % ", ".join(protected))
+        if fmt:
+            yml.append("format: '%s'" % fmt)
         base = {".claude/flow.yaml": "\n".join(yml) + "\n", "README.md": "hi\n"}
         base.update(files or {})
         self.origin = TMP / (name + "-origin.git")
@@ -634,6 +636,21 @@ r = heal.write_call(n1.ctx, work_spec(n1), [], [], "unit n")
 h.test_result("write_call: needs_answers is returned as-is, valid work committed",
               r.output is not None and r.output["status"] == "needs_answers" and len(n1.launches()) == 1
               and n1.log_subjects()[0] == "unit n")
+
+f1 = Box("fmt1", fmt="for f in src/*.py; do tr a-z A-Z < $f > $f.t && mv $f.t $f; done")
+f1.script([{"write_files": {"src/a.py": "lower\n"}, "output": DONE}])
+heal.write_call(f1.ctx, work_spec(f1), ["src/"], [], "unit f")
+h.test_result("commit: the repo's format command runs before the driver commits",
+              sh(["git", "show", "HEAD:src/a.py"], f1.clone) == "LOWER"
+              and gitops.changed_files(f1.clone) == []
+              and any(e["kind"] == "format" and e.get("ok") for e in f1.flow.events()), str(f1.flow.events()))
+
+f2 = Box("fmt2", fmt="exit 3")
+f2.script([{"write_files": {"src/a.py": "kept\n"}, "output": DONE}])
+heal.write_call(f2.ctx, work_spec(f2), ["src/"], [], "unit f2")
+h.test_result("commit: a failing format command is recorded and the commit still happens",
+              f2.log_subjects()[0] == "unit f2"
+              and any(e["kind"] == "format" and not e.get("ok") for e in f2.flow.events()))
 
 p1 = Box("prot1", files={"locked/secret.txt": "orig\n"}, protected=["locked/"])
 p1.script([{"write_files": {"src/a.py": "x\n", "locked/secret.txt": "hacked\n"}, "output": DONE,

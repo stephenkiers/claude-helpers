@@ -161,7 +161,7 @@ class _Stage:
         if pending:
             for p in pending:
                 self._restore(pre, p["file"])
-            gitops.commit_all(wt, "flow3 #%d: revert test edits that may weaken tests" % ctx.issue)
+            heal.commit(ctx, "flow3 #%d: revert test edits that may weaken tests" % ctx.issue)
         d["pending_edits"] = pending
         d["edits_done"] = not pending
         self.save()
@@ -210,7 +210,7 @@ class _Stage:
                     gitops.git(["checkout", ref, "--", path], wt)
                 else:
                     gitops.git(["rm", "-q", "-f", "--", path], wt, check=False)
-                gitops.commit_all(wt, "flow3 #%d: apply approved edit to %s" % (ctx.issue, path), [path])
+                heal.commit(ctx, "flow3 #%d: apply approved edit to %s" % (ctx.issue, path), [path])
             d["test_edits"].append({"file": p["file"], "verdict": "weakens", "reason": p["reason"],
                                     "applied": apply})
             record.journal(ctx.flow, "Edit to %s %s." % (p["file"], "applied after approval" if apply

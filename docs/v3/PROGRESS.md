@@ -125,6 +125,11 @@ If this session restarts: read this file first, then continue from the first uni
     now shows up as a red check after implement, and fixers are spent on it before the flow stops.
     The mid-flow checks (after implement, after each fix round) are unchanged and still need a
     cheaper `check.fast` to be cheap.
+33. **The driver formats before it commits.** Found by the first real-repo trial: the repo's commit
+    hook rejects unformatted files, a model wrote one, and the driver's commit failed as a `runner`
+    stop. `flow.yaml` takes an optional `format` command; when set, the driver runs it in the
+    worktree before every commit it makes. A failing format command is recorded as an event and the
+    commit is still tried. The driver does not bypass hooks.
 
 ## Spend (notional USD, real model calls)
 

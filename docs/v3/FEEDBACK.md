@@ -70,3 +70,16 @@ check on the base opt-in (`doctor --full`), never a condition of `run`.
 **Done (PROGRESS decision 32).** `doctor` no longer runs the checks unless asked (`--checks`), and the
 per-ticket base check is opt-in (`check.base: true`). Entries 1 and 4 are otherwise still open: the
 mid-flow checks run as before.
+
+## 5. A commit hook rejected the driver's commit (2026-11-25)
+
+The first real ticket stopped at `spec_tests` after 18 minutes: the repo's pre-commit hook checks
+formatting, the spec-test author wrote one unformatted import line, and `git commit` failed. The stop
+was classed `runner` with the hook output as the reason, which was readable but not healable.
+
+**Done (PROGRESS decision 33).** `flow.yaml` takes a `format` command that the driver runs before each
+commit. Still open: a commit that a hook rejects for another reason is a `runner` stop with no heal,
+and `init` does not detect a formatter or a hook.
+
+Up to the stop the run had: answered one architecture question from a principle, written a nine-unit
+plan with five advisers, and healed one unit shortfall by retrying on a stronger model.

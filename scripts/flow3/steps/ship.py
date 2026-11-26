@@ -96,7 +96,7 @@ def run(ctx: Ctx) -> StageResult:
     if gitops.is_behind(wt, "origin/" + base):
         synced = heal.sync_base(ctx)
 
-    committed = gitops.commit_all(wt, "Issue #%d: %s" % (ctx.issue, ctx.flow.get("title")))
+    committed = heal.commit(ctx, "Issue #%d: %s" % (ctx.issue, ctx.flow.get("title")))
     check = heal.check(ctx, "fast")
     gitops.push(wt, branch)
     head = gitops.head_sha(wt)

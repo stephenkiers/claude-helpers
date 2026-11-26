@@ -316,6 +316,22 @@ def _rule_text(paths: List[str], allowed: Sequence[str], protected: Sequence[str
             "Never edit protected paths (%s)." % (", ".join(paths), where, ", ".join(protected) or "none"))
 
 
+def commit(ctx: Ctx, message: str, paths: Optional[List[str]] = None) -> Optional[str]:
+    """
+    Commit the worktree for the driver. When the repo declares a `format` command it runs first, so a
+    commit hook that checks formatting does not reject files a model wrote. A failed format command
+    is recorded and the commit is still tried; the hook or the next check then names the problem.
+    """
+    wt = ctx.worktree
+    cmd = ctx.cfg.format_cmd
+    if cmd and not _is_clean(wt):
+        out = record.check_output_path(ctx.flow, "format", _tree(wt))
+        run = checks.run(cmd, wt, "format", ctx.cfg.check_timeout_secs, out)
+        ctx.flow.event("format", ok=run.ok, exit_code=run.exit_code, timed_out=run.timed_out,
+                       duration_secs=round(run.duration_secs, 1))
+    return gitops.commit_all(wt, message, paths)
+
+
 def write_call(ctx: Ctx, spec: CallSpec, allowed: Sequence[str], protected: Sequence[str],
                message: str) -> CallResult:
     """
@@ -353,7 +369,7 @@ def write_call(ctx: Ctx, spec: CallSpec, allowed: Sequence[str], protected: Sequ
             _heal(ctx, "protected", "reverted out-of-bounds paths and retrying once", paths=violations)
 
         if shortfall:
-            sha = gitops.commit_all(wt, message + " (partial)")
+            sha = commit(ctx, message + " (partial)")
             if shortfall_used:
                 stop = _stop(ctx, "unit-shortfall",
                              "the unit is still unfinished after a retry on %s" % result.model,
@@ -385,7 +401,7 @@ def write_call(ctx: Ctx, spec: CallSpec, allowed: Sequence[str], protected: Sequ
                 current = dataclasses.replace(current, resume_session=None, prompt=spec.prompt + "\n\n" + rule_note)
             continue
 
-        gitops.commit_all(wt, message)
+        commit(ctx, message)
         return result
 
 
@@ -599,7 +615,7 @@ def sync_base(ctx: Ctx) -> bool:
         _undo_merge(wt, pre)
         raise _stop(ctx, "base-stale", "could not resolve the conflicts in %s" % names, evidence, tried)
 
-    gitops.commit_all(wt, "Merge %s into the branch (conflicts resolved)" % base_ref)
+    commit(ctx, "Merge %s into the branch (conflicts resolved)" % base_ref)
     run = check(ctx, "fast", raise_on_fail=False)
     if run.ok:
         _heal(ctx, "base-stale", "conflicts resolved and the check is green", files=conflicted)

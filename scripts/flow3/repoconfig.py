@@ -22,7 +22,7 @@ from scripts.workflow.fsutil import atomic_write_text, read_json_object
 CONFIG_RELPATH = ".claude/flow.yaml"
 _MODELS = ("haiku", "sonnet", "opus", "fable")
 _PROVIDERS = ("github", "local")
-_TOP_KEYS = ("base", "provider", "install", "check", "merge", "protected_paths", "principles",
+_TOP_KEYS = ("base", "provider", "install", "format", "check", "merge", "protected_paths", "principles",
              "budget", "models")
 _CHECK_KEYS = ("fast", "full", "timeout_secs", "base")
 _MERGE_KEYS = ("method", "command", "pre_merge", "post_merge")
@@ -53,6 +53,7 @@ class RepoConfig:
     soft_usd: float
     hard_usd: float
     models: Dict[str, str]
+    format_cmd: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,7 @@ def parse(text: str) -> RepoConfig:
     if provider not in _PROVIDERS:
         raise ConfigError("provider: must be one of %s, got %r" % ("/".join(_PROVIDERS), provider))
     install = _string(raw, "install", "install", None)
+    format_cmd = _string(raw, "format", "format", None)
 
     chk = _mapping(raw.get("check"), "check")
     _no_unknown(chk, _CHECK_KEYS, "check.")
@@ -168,7 +170,8 @@ def parse(text: str) -> RepoConfig:
     return RepoConfig(base=base, provider=provider, install=install, check_fast=fast, check_full=full,
                       check_timeout_secs=timeout, check_base=check_base, merge_method=method, merge_command=command,
                       pre_merge=pre, post_merge=post, protected_paths=protected,
-                      principles=principles, soft_usd=soft, hard_usd=hard, models=models)
+                      principles=principles, soft_usd=soft, hard_usd=hard, models=models,
+                      format_cmd=format_cmd)
 
 
 def _config_file(repo_root: Path) -> Path:
@@ -310,6 +313,10 @@ def render(values: Dict[str, Any]) -> str:
         lines += ["# Run in a fresh worktree before checks.", "install: %s" % _q(str(values["install"]))]
     else:
         lines += ["# install: <command run in a fresh worktree before checks>"]
+    if values.get("format"):
+        lines += ["# Run before each commit the driver makes.", "format: %s" % _q(str(values["format"]))]
+    else:
+        lines += ["# format: <command that fixes formatting; run before each commit the driver makes>"]
     lines += ["", "check:"]
     if full:
         lines += ["  # fast runs mid-flow; full runs at merge and is the authority.",
