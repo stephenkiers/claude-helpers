@@ -639,40 +639,32 @@ def _install_for_blocked_fixer(ctx: Ctx, blocked: Blocked, tried: List[str], ins
     return False
 
 
+_MANIFEST_NAMES = frozenset([
+    "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    "setup.py", "setup.cfg", "pyproject.toml", "Gemfile", "Gemfile.lock",
+    "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "pom.xml",
+    "pubspec.yaml", "pubspec.lock", ".ruby-version", ".nvmrc", ".python-version",
+])
+
+
+def _is_manifest(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    return (name in _MANIFEST_NAMES or name.startswith(("requirements", "Pipfile"))
+            or name.startswith("build.gradle"))
+
+
 def _manifests_changed(ctx: Ctx) -> bool:
     """
-    F19: Check if dependency manifests or lockfiles changed between the branch and its base.
-    Common manifest files: package.json, requirements.txt, Gemfile, Cargo.toml, go.mod, etc.
-    Returns True if any manifest/lockfile differs from the base, False if they're in sync or base is not reachable.
+    F19: True when a dependency manifest or lockfile differs between the branch and its base.
+
+    Fails closed: when the diff cannot be read, it reports True so no install runs unseen.
     """
     try:
         gitops.fetch(ctx.worktree)
-        base_ref = "origin/" + ctx.cfg.base
-        # Common dependency manifest and lockfile patterns
-        manifest_patterns = [
-            "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
-            "requirements*.txt", "Pipfile*", "setup.py", "setup.cfg", "pyproject.toml",
-            "Gemfile*", "Cargo.toml", "Cargo.lock",
-            "go.mod", "go.sum",
-            "pom.xml", "build.gradle*",
-            "pubspec.yaml", "pubspec.lock",
-            ".ruby-version", ".nvmrc", ".python-version",
-        ]
-        # Check if any manifest file differs from base
-        for pattern in manifest_patterns:
-            try:
-                # Use git diff to check if the pattern matches any changed files
-                result = gitops.git(["diff", "--name-only", base_ref + "...HEAD"], ctx.worktree,
-                                     capture=True)
-                changed_files = (result or "").strip().split("\n")
-                for f in changed_files:
-                    if any(f.endswith(p.lstrip("*")) or f == p for p in [pattern]):
-                        return True
-            except (gitops.GitError, OSError):
-                continue
-        return False
+        out = gitops.git(["diff", "--name-only", "origin/" + ctx.cfg.base + "...HEAD"], ctx.worktree)
     except (gitops.GitError, OSError):
-        return False
+        return True
+    return any(_is_manifest(f) for f in out.splitlines() if f)
 
 
 def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int], None]] = None,
