@@ -167,8 +167,10 @@ def build_card(ctx: Ctx, stage: str, question: Dict[str, Any],
     }
 
 
-def unhonourable(card: Dict[str, Any]) -> List[str]:
-    """Ids of the options that ask for something the driver cannot carry out."""
+def unhonourable(card: Dict[str, Any], owner: Optional[Owner] = None) -> List[str]:
+    """Ids of the options that ask for something the driver cannot carry out. Only checked for worker questions (owner is not None)."""
+    if owner is None:
+        return []
     out: List[str] = []
     for opt in card.get("options") or []:
         if isinstance(opt, dict) and _REORGANISE.search("%s. %s" % (opt.get("label") or "", opt.get("consequence") or "")):
@@ -346,8 +348,8 @@ def _decide(ctx: Ctx, q: Dict[str, Any], text: str, by_id: Dict[str, Principle],
     if kind == "fact":
         out.answer = _fact(ctx, q)  # None only when the step gave no usable recommendation
         return out
-    if kind not in NEVER_BY_PRINCIPLE:
-        bad = unhonourable({"options": _options(q)})
+    if kind not in NEVER_BY_PRINCIPLE and owner is not None:
+        bad = unhonourable({"options": _options(q)}, owner)
         if bad:
             # A person cannot be asked to pick something the driver cannot do. An option like this
             # is the mark of a bookkeeping question, so it is settled, not shown.
@@ -359,10 +361,11 @@ def _decide(ctx: Ctx, q: Dict[str, Any], text: str, by_id: Dict[str, Principle],
     if kind not in NEVER_BY_PRINCIPLE and (by_id or (owner is not None and kind != "detail")):
         verdict = _verdict(ctx, q, text or "(this project has no written principles)")
         if verdict.get("who") == "driver":
-            out.answer = _settle(ctx, q, str(verdict.get("driver_kind") or "ownership"),
-                                 str(verdict.get("reason") or ""))
-            if out.answer is not None:
-                return out
+            driver_kind = str(verdict.get("driver_kind") or "")
+            if driver_kind in schemas.DRIVER_KINDS:
+                out.answer = _settle(ctx, q, driver_kind, str(verdict.get("reason") or ""))
+                if out.answer is not None:
+                    return out
         pid = str(verdict.get("principle_id") or "")
         principle = by_id.get(pid)
         outcome = verdict.get("outcome")

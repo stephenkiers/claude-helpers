@@ -132,6 +132,7 @@ WORK: Schema = _obj(
         "summary": _TEXT,
         # When blocked: the worker cannot finish from where it is, and more turns or a stronger model
         # would not help. `needs` is the kind of thing required; `what` names it (the command, the file).
+        # When blocked is absent: status is not "blocked", and the blocked object is not needed.
         "blocked": _obj({"reason": _TEXT, "needs": {"type": "string", "enum": list(BLOCKED_NEEDS)}, "what": _STR},
                         required=["reason", "needs"]),
         "remaining": _arr(_STR),  # what is left, when partial
