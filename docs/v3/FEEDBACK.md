@@ -107,3 +107,29 @@ marked the question a risk, but gave no risk text. The driver refused the card a
 **Done (PROGRESS decision 35).** The card is shown with a fallback risk line. Still open: the plan
 gave the unit a signature change without the caller, so the question was avoidable; the planner
 should put a changed function's callers in the same unit.
+
+## 8. A card offered an option the driver cannot carry out (2026-11-25)
+
+After the fix in entry 7 the same worker asked again, this time as an architecture card with three
+options. One was "widen this unit to include the caller's file". The driver has no way to do that:
+a unit's file list is fixed by the plan, so the edit would be reverted again whatever the human
+answered. Workers write their own options and nothing checks them against what the driver can do.
+
+The root cause is in the plan: a step of the unit said, in words, to edit the caller's file, and the
+unit's file list did not include it. Another unit owns that file. Plan validation checks that units
+do not share files; it does not check that a unit's steps stay inside its own files.
+
+**Options to weigh.**
+
+- Let an answer widen a unit's files for that one call (not protected paths), and tell workers that
+  this is the one "outside my files" option they may offer.
+- Have the plan auditor check each step's named files against the unit's file list.
+
+## 9. The fast check runs after every unit (2026-11-25)
+
+Read from the code while handling entry 8: implement runs `check.fast` after each unit, with up to
+two fixer rounds, not once after the stage. With nine units and no cheap `check.fast`, that is nine
+or more runs of the full command. In this trial they are cheap by accident: the full command stops
+at its first failing part, and the red-first spec tests fail an early part until the last units
+land. A repo whose tests fail late would pay for each run in full. This is the largest multiplier in
+entry 1's table and was missing from it.
