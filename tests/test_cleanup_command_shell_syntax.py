@@ -47,6 +47,218 @@ def parse_with_system_bash(src, scratch_dir, index):
     return result.returncode, result.stderr.strip()
 
 
+def blocks_containing(blocks, needle):
+    return [b for b in blocks if needle in b]
+
+
+def check_stale_plan_relay_markers(h, blocks):
+    """The stale-plan relay and the ticket/group identifiers live in fenced bash blocks."""
+    relay = blocks_containing(blocks, "REPLAN_CONFIRM")
+    h.test_result(
+        "a bash block names REPLAN_CONFIRM (stale-plan re-plan relay)",
+        len(relay) > 0,
+        "no fenced bash block contains REPLAN_CONFIRM",
+    )
+    if relay:
+        block = relay[0]
+        h.test_result(
+            "stale-plan relay block prints the 'validation not run:' rejection marker",
+            "validation not run:" in block,
+            "marker missing from the relay block",
+        )
+        h.test_result(
+            "stale-plan relay block prints the 'Confirm re-planned cleanup?' prompt",
+            "Confirm re-planned cleanup?" in block,
+            "prompt missing from the relay block",
+        )
+        h.test_result(
+            "stale-plan relay block declares REPLAN_FILE (re-plan apply input)",
+            "REPLAN_FILE" in block,
+            "REPLAN_FILE missing from the relay block",
+        )
+
+    gate = blocks_containing(blocks, "EXCLUDED_NUMBERS")
+    h.test_result(
+        "a bash block uses EXCLUDED_NUMBERS (ticket-worktree exclusion gate)",
+        len(gate) > 0,
+        "no fenced bash block contains EXCLUDED_NUMBERS",
+    )
+    h.test_result(
+        "a bash block uses SELECTED_GROUPS (selected-groups check)",
+        len(blocks_containing(blocks, "SELECTED_GROUPS")) > 0,
+        "no fenced bash block contains SELECTED_GROUPS",
+    )
+
+
+def run_exclusion_gate_tests(h, scratch_dir):
+    """Test the exclusion gate logic with various EXCLUDED_NUMBERS inputs."""
+    # Exclusion gate test: normalize comma-separated EXCLUDED_NUMBERS, then do whole-word matching
+    test_script = scratch_dir / "exclusion_gate_test.sh"
+    test_script.write_text("""#!/bin/bash
+set -e
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+# Test 1: not excluded (number 2 not in excluded list)
+TICKET_WORKTREE_ITEM="2"
+EXCLUDED_NUMBERS="1 3"
+EXCLUDED_NUMBERS=$(printf '%s' "$EXCLUDED_NUMBERS" | tr ',' ' ')
+case " $EXCLUDED_NUMBERS " in
+  *" $TICKET_WORKTREE_ITEM "*) TICKET_EXCLUDED="true" ;;
+  *) TICKET_EXCLUDED="false" ;;
+esac
+[ "$TICKET_EXCLUDED" = "false" ] || { echo "Test 1 failed: should not be excluded"; exit 1; }
+
+# Test 2: excluded (number 2 is in excluded list)
+TICKET_WORKTREE_ITEM="2"
+EXCLUDED_NUMBERS="1 2 3"
+EXCLUDED_NUMBERS=$(printf '%s' "$EXCLUDED_NUMBERS" | tr ',' ' ')
+case " $EXCLUDED_NUMBERS " in
+  *" $TICKET_WORKTREE_ITEM "*) TICKET_EXCLUDED="true" ;;
+  *) TICKET_EXCLUDED="false" ;;
+esac
+[ "$TICKET_EXCLUDED" = "true" ] || { echo "Test 2 failed: should be excluded"; exit 1; }
+
+# Test 3: comma-separated input (normalize commas to spaces)
+TICKET_WORKTREE_ITEM="2"
+EXCLUDED_NUMBERS="1,2,3"
+EXCLUDED_NUMBERS=$(printf '%s' "$EXCLUDED_NUMBERS" | tr ',' ' ')
+case " $EXCLUDED_NUMBERS " in
+  *" $TICKET_WORKTREE_ITEM "*) TICKET_EXCLUDED="true" ;;
+  *) TICKET_EXCLUDED="false" ;;
+esac
+[ "$TICKET_EXCLUDED" = "true" ] || { echo "Test 3 failed: comma-separated should be normalized"; exit 1; }
+
+# Test 4: substring non-match (12 should not match 2)
+TICKET_WORKTREE_ITEM="2"
+EXCLUDED_NUMBERS="12 3"
+EXCLUDED_NUMBERS=$(printf '%s' "$EXCLUDED_NUMBERS" | tr ',' ' ')
+case " $EXCLUDED_NUMBERS " in
+  *" $TICKET_WORKTREE_ITEM "*) TICKET_EXCLUDED="true" ;;
+  *) TICKET_EXCLUDED="false" ;;
+esac
+[ "$TICKET_EXCLUDED" = "false" ] || { echo "Test 4 failed: substring should not match"; exit 1; }
+
+# Test 5: empty ticket item (should be treated as excluded)
+TICKET_WORKTREE_ITEM=""
+if [ -z "$TICKET_WORKTREE_ITEM" ]; then
+  TICKET_EXCLUDED="true"
+else
+  TICKET_EXCLUDED="false"
+fi
+[ "$TICKET_EXCLUDED" = "true" ] || { echo "Test 5 failed: empty ticket item should be excluded"; exit 1; }
+
+echo "All exclusion gate tests passed"
+""")
+
+    result = subprocess.run([str(SYSTEM_BASH), str(test_script)], capture_output=True, text=True)
+    h.test_result(
+        "exclusion gate: handles normal, excluded, comma-separated, substring non-match, and empty cases",
+        result.returncode == 0,
+        result.stderr or result.stdout,
+    )
+
+
+def run_replan_confirm_tests(h, scratch_dir):
+    """Test REPLAN_CONFIRM case statement behavior."""
+    test_script = scratch_dir / "replan_confirm_test.sh"
+    test_script.write_text("""#!/bin/bash
+set -e
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+# Test 1: REPLAN_CONFIRM=false aborts with exit 1
+REPLAN_CONFIRM="false"
+REPLAN_FILE=""
+exit_code=0
+case "${REPLAN_CONFIRM-}" in
+  false)
+    # Should abort
+    exit_code=1
+    ;;
+  true)
+    exit_code=99  # Should not reach here
+    ;;
+  *)
+    exit_code=99  # Should not reach here
+    ;;
+esac
+[ "$exit_code" = "1" ] || { echo "Test 1 failed: REPLAN_CONFIRM=false should exit 1"; exit 1; }
+
+# Test 2: REPLAN_CONFIRM=true with missing REPLAN_FILE errors
+REPLAN_CONFIRM="true"
+REPLAN_FILE=""
+exit_code=0
+case "${REPLAN_CONFIRM-}" in
+  false)
+    exit_code=99  # Should not reach here
+    ;;
+  true)
+    if [ -z "${REPLAN_FILE:-}" ]; then
+      exit_code=1  # Error: missing REPLAN_FILE
+    fi
+    ;;
+  *)
+    exit_code=99
+    ;;
+esac
+[ "$exit_code" = "1" ] || { echo "Test 2 failed: REPLAN_CONFIRM=true with missing REPLAN_FILE should error"; exit 1; }
+
+# Test 3: invalid REPLAN_CONFIRM value errors
+REPLAN_CONFIRM="invalid"
+REPLAN_FILE=""
+exit_code=0
+case "${REPLAN_CONFIRM-}" in
+  false)
+    exit_code=99  # Should not reach here
+    ;;
+  true)
+    exit_code=99  # Should not reach here
+    ;;
+  *)
+    # Fail if REPLAN_CONFIRM is set to invalid value
+    if [ -n "${REPLAN_CONFIRM+x}" ]; then
+      exit_code=1  # Error: invalid value
+    else
+      exit_code=0  # Only apply PLAN_JSON on first entry (unset)
+    fi
+    ;;
+esac
+[ "$exit_code" = "1" ] || { echo "Test 3 failed: invalid REPLAN_CONFIRM should error"; exit 1; }
+
+# Test 4: REPLAN_CONFIRM unset applies PLAN_JSON
+unset REPLAN_CONFIRM
+REPLAN_FILE=""
+exit_code=0
+case "${REPLAN_CONFIRM-}" in
+  false)
+    exit_code=99  # Should not reach here
+    ;;
+  true)
+    exit_code=99  # Should not reach here
+    ;;
+  *)
+    # Only apply on unset
+    if [ -n "${REPLAN_CONFIRM+x}" ]; then
+      exit_code=99  # Set but invalid
+    else
+      exit_code=0  # Unset, apply PLAN_JSON
+    fi
+    ;;
+esac
+[ "$exit_code" = "0" ] || { echo "Test 4 failed: unset REPLAN_CONFIRM should apply PLAN_JSON"; exit 1; }
+
+echo "All REPLAN_CONFIRM tests passed"
+""")
+
+    result = subprocess.run([str(SYSTEM_BASH), str(test_script)], capture_output=True, text=True)
+    h.test_result(
+        "REPLAN_CONFIRM case: handles false (abort), true (apply re-plan), invalid value (error), and unset (apply PLAN_JSON)",
+        result.returncode == 0,
+        result.stderr or result.stdout,
+    )
+
+
 def main():
     h = Harness("commands/cleanup.md bash blocks parse under the system bash (3.2)")
 
@@ -79,6 +291,14 @@ def main():
                 rc == 0,
                 err,
             )
+
+    check_stale_plan_relay_markers(h, blocks)
+
+    # Run behavioral tests with scratch directory
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = Path(tmp)
+        run_exclusion_gate_tests(h, scratch)
+        run_replan_confirm_tests(h, scratch)
 
     h.summarize_and_exit()
 

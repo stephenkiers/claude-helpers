@@ -774,6 +774,10 @@ TEARDOWN_PLAN="$DISCOVER_JSON"
 # Extract PR signal state from discover result
 PR_SIGNAL_STATE=$(printf '%s' "$TEARDOWN_PLAN" | jq -r '.pr_signal_state // "unknown"')
 
+# Extract ticket worktree item number for exclusion gate (D1)
+# The ticket worktree item is named "Ticket worktree (...)" in the discovery output; empty fails closed below
+TICKET_WORKTREE_ITEM=$(printf '%s' "$TEARDOWN_PLAN" | jq -r '[.items[] | select(.kind == "worktree" and (.name | startswith("Ticket worktree")))][0].number // empty')
+
 # Print summary: ticket status, sizes, flags, and report-only items
 echo ""
 echo "=== Teardown Summary ==="
@@ -821,7 +825,7 @@ if [ -n "$GROUPS_WITH_SELECTABLE" ]; then
       1) ASK_MSG="$ASK_MSG
   — 1: sessions" ;;
       2) ASK_MSG="$ASK_MSG
-  — 2: worktrees and build dirs" ;;
+  — 2: worktrees" ;;
       3) ASK_MSG="$ASK_MSG
   — 3: branches" ;;
       4) ASK_MSG="$ASK_MSG
@@ -840,8 +844,11 @@ if [ -n "$GROUPS_WITH_SELECTABLE" ]; then
   # EXCLUDED_NUMBERS="<space-separated item numbers>". Never default these from the plan; an
   # empty SELECTED_GROUPS means the human selected nothing.
   printf '%s\n' "$ASK_MSG"
-  SELECTED_GROUPS=""
-  EXCLUDED_NUMBERS=""
+  if [ -z "${REPLAN_CONFIRM-}" ]; then
+    # On first entry, initialize to empty. On re-entry (REPLAN_CONFIRM set), skip to preserve orchestrator literals
+    SELECTED_GROUPS=""
+    EXCLUDED_NUMBERS=""
+  fi
 else
   # No selectable items — nothing to remove
   echo ""
@@ -946,45 +953,175 @@ echo ""
 echo "Phase 2: Removing resources..."
 
 if [ "$PR_SIGNAL_STATE" = "merged" ]; then
-  # MERGED path: use cleanup apply (with optional --confirm-dirty for per-item yes)
-  APPLY_CMD="python3 -m scripts.workflow.cli cleanup apply"
-  if [ -n "$QSA" ]; then
-    APPLY_CMD="$APPLY_CMD --queue-started-at $QSA"
-  fi
-  if [ -n "$PER_ITEM_YES" ]; then
-    APPLY_CMD="$APPLY_CMD --confirm-dirty"
-  fi
-  APPLY_CMD="$APPLY_CMD -"
+  # MERGED path: use cleanup apply with PLAN_JSON (the cleanup plan, not discovery output)
+  # Selection gate: group 2 (worktrees) selected and the ticket worktree not excluded.
+  # Whole-word matches only (a substring match would let "12" satisfy "2").
+  case " $SELECTED_GROUPS " in
+    *" 2 "*) GROUP_2_SELECTED="true" ;;
+    *) GROUP_2_SELECTED="false" ;;
+  esac
 
-  APPLY_RESULT=$(printf '%s' "$TEARDOWN_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $APPLY_CMD 2>&1)
-  APPLY_CODE=$?
-
-  if [ $APPLY_CODE -ne 0 ]; then
-    echo "ERROR: Merged-path apply failed"
-    printf '%s' "$APPLY_RESULT" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup render-validation -
-    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome failure --failure-class other 2>/dev/null || true
-    exit 1
-  fi
-
-  # Render validation result and notes
-  VALIDATION_OUTPUT=$(printf '%s' "$APPLY_RESULT" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup render-validation -)
-  printf '%s\n' "$VALIDATION_OUTPUT"
-
-  # Print non-fatal notes from apply result
-  printf '%s' "$APPLY_RESULT" | jq -r '.notes[]? | "NOTE: " + .'
-
-  # Then remove siblings and agent worktrees with --skip-ticket-worktree
-  SIBLINGS_CMD="python3 -m scripts.workflow.cli cleanup teardown - --phase remove --skip-ticket-worktree"
-  if [ -n "$SELECTED_GROUPS" ]; then
-    KINDS_ARG=$(printf '%s' "$SELECTED_GROUPS" | tr ' ' ',')
-    SIBLINGS_CMD="$SIBLINGS_CMD --kinds $KINDS_ARG"
-  fi
-  if [ -n "$EXCLUDED_NUMBERS" ]; then
-    SIBLINGS_CMD="$SIBLINGS_CMD --exclude $(printf '%s' "$EXCLUDED_NUMBERS" | tr ' ' ' ')"
+  # Exclusion gate: fail closed. An unidentified ticket item counts as excluded.
+  # Normalize EXCLUDED_NUMBERS: convert commas to spaces for consistent parsing
+  EXCLUDED_NUMBERS=$(printf '%s' "$EXCLUDED_NUMBERS" | tr ',' ' ')
+  
+  if [ -z "$TICKET_WORKTREE_ITEM" ]; then
+    echo "ERROR: Could not identify the ticket worktree item; treating it as excluded"
+    TICKET_EXCLUDED="true"
+  else
+    case " $EXCLUDED_NUMBERS " in
+      *" $TICKET_WORKTREE_ITEM "*) TICKET_EXCLUDED="true" ;;
+      *) TICKET_EXCLUDED="false" ;;
+    esac
   fi
 
-  SIBLINGS_RESULT=$(printf '%s' "$TEARDOWN_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $SIBLINGS_CMD 2>&1)
-  FINAL_RESULT="$APPLY_RESULT"  # Use apply result for disk/memory accounting (hook runs once in apply)
+  if [ "$GROUP_2_SELECTED" = "true" ] && [ "$TICKET_EXCLUDED" = "false" ]; then
+    # Choose which plan to apply. On the first entry REPLAN_CONFIRM is unset and the approved
+    # PLAN_JSON is applied. On re-entry after the stale-plan relay below, the orchestrator sets
+    # REPLAN_CONFIRM="true"|"false" and REPLAN_FILE="<path printed by the relay>" as literal
+    # assignments; this branch runs BEFORE any apply, so the stale plan is never re-applied.
+    case "${REPLAN_CONFIRM-}" in
+      false)
+        echo "Abort: removed nothing"
+        [ -n "${REPLAN_FILE:-}" ] && rm -f "$REPLAN_FILE"
+        python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome interrupted 2>/dev/null || true
+        exit 1
+        ;;
+      true)
+        # Never fall back to the stale PLAN_JSON: the human approved the re-planned set only
+        if [ -z "${REPLAN_FILE:-}" ] || [ ! -s "$REPLAN_FILE" ]; then
+          echo "ERROR: re-plan was not carried into re-entry; removed nothing"
+          [ -n "${REPLAN_FILE:-}" ] && rm -f "$REPLAN_FILE"
+          python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome failure --failure-class other 2>/dev/null || true
+          exit 1
+        fi
+        APPLY_PLAN=$(cat "$REPLAN_FILE")
+        ;;
+      *)
+        # Fail if REPLAN_CONFIRM is set to an invalid value; only apply PLAN_JSON on first entry (unset)
+        if [ -n "${REPLAN_CONFIRM+x}" ]; then
+          echo "ERROR: Invalid REPLAN_CONFIRM value: ${REPLAN_CONFIRM}"
+          [ -n "${REPLAN_FILE:-}" ] && rm -f "$REPLAN_FILE"
+          python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome failure --failure-class other 2>/dev/null || true
+          exit 1
+        fi
+        APPLY_PLAN="$PLAN_JSON"
+        ;;
+    esac
+
+    APPLY_CMD="python3 -m scripts.workflow.cli cleanup apply"
+    if [ -n "$QSA" ]; then
+      APPLY_CMD="$APPLY_CMD --queue-started-at $QSA"
+    fi
+    if [ -n "$PER_ITEM_YES" ]; then
+      APPLY_CMD="$APPLY_CMD --confirm-dirty"
+    fi
+    APPLY_CMD="$APPLY_CMD -"
+
+    APPLY_RESULT=$(printf '%s' "$APPLY_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $APPLY_CMD 2>&1)
+    APPLY_CODE=$?
+
+    if [ $APPLY_CODE -ne 0 ]; then
+      VALIDATION_REASON=$(printf '%s' "$APPLY_RESULT" | jq -r '.validation_reason // empty' 2>/dev/null)
+      if printf '%s' "$VALIDATION_REASON" | grep -q "^validation not run:" && [ -z "${REPLAN_CONFIRM:-}" ]; then
+        # Stale-plan rejection on the first apply: re-plan, show the diff, and ask before removing anything
+        echo "⚠ The cleanup plan is stale and needs re-planning"
+        echo "Freshness check: $VALIDATION_REASON"
+        echo ""
+
+        FRESH_PLAN=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup plan "$CURRENT_WORKTREE")
+        FRESH_PLAN_CODE=$?
+        if [ $FRESH_PLAN_CODE -ne 0 ]; then
+          echo "ERROR: Failed to re-plan cleanup"
+          printf '%s\n' "$FRESH_PLAN"
+          [ -n "${REPLAN_FILE:-}" ] && rm -f "$REPLAN_FILE"
+          python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome failure --failure-class other 2>/dev/null || true
+          exit 1
+        fi
+
+        # Persist the re-planned set so the re-entry can apply exactly what the human approved
+        REPLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/cleanup-replan.XXXXXX")
+        printf '%s' "$FRESH_PLAN" > "$REPLAN_FILE"
+
+        # Show what changed: every field except plan_hash. A comparison failure is shown, never swallowed.
+        echo "Changes to the removal set:"
+        if ! python3 - "$PLAN_JSON" "$FRESH_PLAN" << 'PY_DIFF'
+import json, sys
+try:
+    old_plan = json.loads(sys.argv[1])
+    new_plan = json.loads(sys.argv[2])
+except ValueError as e:
+    print(f"Error comparing plans: {e}", file=sys.stderr)
+    sys.exit(1)
+old_plan.pop("plan_hash", None)
+new_plan.pop("plan_hash", None)
+changed = False
+for key in sorted(set(old_plan) | set(new_plan)):
+    old_val = old_plan.get(key)
+    new_val = new_plan.get(key)
+    if old_val != new_val:
+        print(f"{key}: {json.dumps(old_val, sort_keys=True)} -> {json.dumps(new_val, sort_keys=True)}")
+        changed = True
+if not changed:
+    print("No change to the removal set")
+PY_DIFF
+        then
+          echo "ERROR: could not compare the old and re-planned removal sets; review the re-plan manually before confirming"
+        fi
+        echo ""
+
+        # ASK RELAY: print the message, then END this bash block with exit 0 (nothing is removed). The
+        # orchestrator applies the Ask block (header "Cleanup replan confirmation", two options:
+        # "Apply the re-planned cleanup" and "Abort (remove nothing)") and re-enters this block with
+        # the same literal assignments as before plus REPLAN_CONFIRM="true"|"false" and
+        # REPLAN_FILE="<path below>". The siblings teardown and the final result run only after the
+        # confirmed apply succeeds.
+        printf '%s\n' "REPLAN_FILE=$REPLAN_FILE"
+        printf '%s\n' "Confirm re-planned cleanup?"
+        exit 0
+      else
+        echo "ERROR: Merged-path apply failed"
+        printf '%s' "$APPLY_RESULT" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup render-validation -
+        [ -n "${REPLAN_FILE:-}" ] && rm -f "$REPLAN_FILE"
+        python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome failure --failure-class other 2>/dev/null || true
+        exit 1
+      fi
+    fi
+
+    # Apply succeeded (first entry, or the confirmed re-plan); render result and notes
+    VALIDATION_OUTPUT=$(printf '%s' "$APPLY_RESULT" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup render-validation -)
+    printf '%s\n' "$VALIDATION_OUTPUT"
+    printf '%s' "$APPLY_RESULT" | jq -r '.notes[]? | "NOTE: " + .'
+    [ -n "${REPLAN_FILE:-}" ] && rm -f "$REPLAN_FILE"
+
+    # Then remove siblings and agent worktrees with --skip-ticket-worktree
+    SIBLINGS_CMD="python3 -m scripts.workflow.cli cleanup teardown - --phase remove --skip-ticket-worktree"
+    if [ -n "$SELECTED_GROUPS" ]; then
+      KINDS_ARG=$(printf '%s' "$SELECTED_GROUPS" | tr ' ' ',')
+      SIBLINGS_CMD="$SIBLINGS_CMD --kinds $KINDS_ARG"
+    fi
+    if [ -n "$EXCLUDED_NUMBERS" ]; then
+      SIBLINGS_CMD="$SIBLINGS_CMD --exclude $(printf '%s' "$EXCLUDED_NUMBERS" | tr ' ' ' ')"
+    fi
+
+    SIBLINGS_RESULT=$(printf '%s' "$TEARDOWN_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $SIBLINGS_CMD 2>&1)
+    FINAL_RESULT="$APPLY_RESULT"  # Use apply result for disk/memory accounting (hook runs once in apply)
+  else
+    # Group 2 not selected or ticket worktree excluded: skip apply, just do siblings
+    echo "Ticket worktree not selected for removal; skipping apply phase"
+
+    SIBLINGS_CMD="python3 -m scripts.workflow.cli cleanup teardown - --phase remove --skip-ticket-worktree"
+    if [ -n "$SELECTED_GROUPS" ]; then
+      KINDS_ARG=$(printf '%s' "$SELECTED_GROUPS" | tr ' ' ',')
+      SIBLINGS_CMD="$SIBLINGS_CMD --kinds $KINDS_ARG"
+    fi
+    if [ -n "$EXCLUDED_NUMBERS" ]; then
+      SIBLINGS_CMD="$SIBLINGS_CMD --exclude $(printf '%s' "$EXCLUDED_NUMBERS" | tr ' ' ' ')"
+    fi
+
+    SIBLINGS_RESULT=$(printf '%s' "$TEARDOWN_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $SIBLINGS_CMD 2>&1)
+    FINAL_RESULT="$SIBLINGS_RESULT"
+  fi
 else
   # NOT_MERGED or UNKNOWN path: use cleanup teardown --phase remove (W7)
   TEARDOWN_CMD="python3 -m scripts.workflow.cli cleanup teardown - --phase remove"
