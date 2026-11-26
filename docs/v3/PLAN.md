@@ -136,9 +136,11 @@ Every failure is classified by `heal.py` before anything else happens:
 | `schema` | output did not match the schema | resume the same session once with the validation error | stop `runner` |
 | `environment` | missing dependency, stale install, missing tool | frozen install from the lockfile once, re-run | stop `environment` |
 | `base-stale` | branch behind base, conflicts | merge base into branch; on conflict one resolver call, then check | stop `conflict` |
-| `check-flaky` | a test fails then passes on immediate re-run | re-run once; record the flaky test name | continue |
+| `check-flaky` | a test fails then passes on immediate re-run | re-run once (skipped when `check.confirm_red: false`); record the flaky test name | continue |
+| `check-known` | the tree already has a result for this command, green or red | reuse it and journal the tree; no run | as the recorded result |
 | `check-work` | lint, type, or test failure caused by the change | fixer call with the trimmed failure (cheap model), re-check; second round on the stronger model | stop `check` |
 | `unit-shortfall` | an implementer did not finish its unit | retry once on the stronger model with the partial work kept | stop `implement` |
+| `blocked` | a worker says it cannot do this from where it is, and names what it needs | never a stronger-model retry. A file outside the unit: hand on to the unit that owns it. An environment change: the install once. A shell command or a human decision: no heal | stop `environment`, `implement` or `human`, naming the need and quoting the worker |
 | `denied` | a step needed a tool outside its allowlist | no retry | stop `permission`, naming the command |
 | `cleanup` | worktree removal or local update fails after the provider confirms the merge | retry once | finish the flow as merged, with a warning |
 | `protected` | a step changed spec-test files or files outside its unit | revert those paths, retry once with the rule restated | stop `protected` |

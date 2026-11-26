@@ -44,7 +44,7 @@ QUESTION_KINDS: Tuple[str, ...] = ("purpose", "architecture", "behaviour", "risk
 # Kinds that always go to the human unless a principle may decide them (see questions.py).
 HUMAN_KINDS: Tuple[str, ...] = ("purpose", "architecture", "behaviour", "risk")
 # Who answered a question.
-ANSWER_SOURCES: Tuple[str, ...] = ("human", "principle", "assumed", "fact")
+ANSWER_SOURCES: Tuple[str, ...] = ("human", "principle", "assumed", "fact", "driver")
 
 FLOW_STATUSES: Tuple[str, ...] = ("running", "waiting_human", "merge_gate", "stopped", "done")
 

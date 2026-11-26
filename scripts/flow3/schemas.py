@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 Schema = Dict[str, Any]
 
 _KINDS = ["purpose", "architecture", "behaviour", "risk", "detail", "fact"]
+# What a worker that cannot finish from where it is says it needs (heal.BLOCKED_NEEDS says how the driver routes each).
+BLOCKED_NEEDS = ("shell", "other_file", "environment", "human")
 
 
 def _obj(props: Dict[str, Schema], required: Optional[List[str]] = None) -> Schema:
@@ -126,8 +128,12 @@ PLAN_AUDIT: Schema = _obj(
 # A call that edits files reports what it believes it did. The driver reads git for the facts.
 WORK: Schema = _obj(
     {
-        "status": {"type": "string", "enum": ["done", "partial", "needs_answers"]},
+        "status": {"type": "string", "enum": ["done", "partial", "needs_answers", "blocked"]},
         "summary": _TEXT,
+        # When blocked: the worker cannot finish from where it is, and more turns or a stronger model
+        # would not help. `needs` is the kind of thing required; `what` names it (the command, the file).
+        "blocked": _obj({"reason": _TEXT, "needs": {"type": "string", "enum": list(BLOCKED_NEEDS)}, "what": _STR},
+                        required=["reason", "needs"]),
         "remaining": _arr(_STR),  # what is left, when partial
         "elsewhere": _arr(_STR),  # changes needed in files the worker may not edit; passed to later units
         "questions": QUESTIONS,
@@ -233,6 +239,9 @@ FACT_SCOUT: Schema = _obj(
 
 # One entry per question. "decides" answers it; "revisit" means a principle applies but this case looks
 # like its "Revisit if"; "none" means no principle decides it.
+# What a question the driver settles itself is about (questions.py, "bookkeeping").
+DRIVER_KINDS = ("ownership", "ordering", "tooling", "fact")
+
 PRINCIPLE_RESOLVER: Schema = _obj(
     {
         "results": _arr(
@@ -243,6 +252,9 @@ PRINCIPLE_RESOLVER: Schema = _obj(
                     "principle_id": _STR,
                     "option_id": _STR,
                     "reason": _STR,
+                    # Who can settle it: a person, or the driver from its own rules (questions.py).
+                    "who": {"type": "string", "enum": ["human", "driver"]},
+                    "driver_kind": {"type": "string", "enum": list(DRIVER_KINDS)},
                 },
                 required=["question_id", "outcome"],
             )

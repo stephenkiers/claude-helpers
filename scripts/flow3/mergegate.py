@@ -153,7 +153,7 @@ def _decisions(ctx: Ctx) -> List[str]:
     for doc in record.read_decisions(ctx.flow):
         ans = _d(doc.get("answer"))
         source = str(ans.get("source") or "")
-        if source not in ("assumed", "principle", "fact"):
+        if source not in ("assumed", "principle", "fact", "driver"):
             continue
         who = "principle %s" % ans.get("principle_id") if source == "principle" else source
         card = _d(doc.get("card"))

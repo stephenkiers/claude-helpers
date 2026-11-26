@@ -60,13 +60,15 @@ class Box:
     """One sandbox: bare origin, clone (also the worktree), and a control dir for check and fake claude."""
 
     def __init__(self, name: str, files: Optional[Dict[str, str]] = None,
-                 protected: Optional[List[str]] = None, plan: Optional[Dict[str, Any]] = None) -> None:
+                 protected: Optional[List[str]] = None, plan: Optional[Dict[str, Any]] = None,
+                 per_unit: bool = False) -> None:
         self.ctl = TMP / (name + "-ctl")
         self.ctl.mkdir()
         (self.ctl / "check.py").write_text(CHECK_PY)
         check = "python3 %s/check.py %s" % (self.ctl, self.ctl)
         yml = ["provider: local", "check:", "  fast: '%s'" % check, "  full: '%s'" % check,
-               "  timeout_secs: 60", "budget:", "  soft_usd: 15.0", "  hard_usd: 40.0"]
+               "  timeout_secs: 60"] + (["  per_unit: true"] if per_unit else []) + [
+               "budget:", "  soft_usd: 15.0", "  hard_usd: 40.0"]
         if protected:
             yml.append("protected_paths: [%s]" % ", ".join(protected))
         base = {".claude/flow.yaml": "\n".join(yml) + "\n", "README.md": "hi\n"}
@@ -162,10 +164,10 @@ def mkplan(two: bool = True, edits: Optional[List[Dict[str, str]]] = None) -> Di
             "untestable_reason": "", "existing_test_edits": edits or []}
 
 
-def mkbox(name: str, plan: Dict[str, Any], files: Optional[Dict[str, str]] = None) -> Box:
+def mkbox(name: str, plan: Dict[str, Any], files: Optional[Dict[str, str]] = None, per_unit: bool = False) -> Box:
     base = {"tests/test_a.py": "def test_one():\n    assert True\n"}
     base.update(files or {})
-    b = Box(name, files=base, protected=["docs/"], plan=plan)
+    b = Box(name, files=base, protected=["docs/"], plan=plan, per_unit=per_unit)
     b.flow.set("protected", list(SPEC))
     b.flow.set_data("spec_tests", {"files": list(SPEC), "commit": None, "skipped": ""})
     return b
@@ -256,7 +258,7 @@ h.test_result("the judge prompt carries the spec behaviour and the failing test 
 b = mkbox("i-testwrong", mkplan(two=False))
 b.results("fail", "fail", "fail", "fail", "pass")
 TIGHT = "def test_one():\n    assert 1 + 1 == 2\n    assert True\n"
-b.script([w("unit-u1", "src/a.py"), w("fix-r1", "src/a.py", role="fixer"), w("fix-r2", "src/a.py", role="fixer"),
+b.script([w("unit-u1", "src/a.py"), w("fix-r1", "src/a.py", "x = 3\n", role="fixer"), w("fix-r2", "src/a.py", "x = 4\n", role="fixer"),
           {"role": "judge", "output": {"verdict": "test_wrong", "reason": "typo in expectation",
                                        "edit_weakens": False, "test_edit": "fix the expectation"}},
           w("fix-test-u1", "tests/test_a.py", TIGHT, role="fixer")])
@@ -272,8 +274,8 @@ h.test_result("the test edit is recorded as keeps_or_tightens and applied",
 def weak_box(name: str) -> Box:
     bx = mkbox(name, mkplan(two=False))
     bx.results("fail", "fail", "fail", "fail", "pass", "pass")
-    bx.script([w("unit-u1", "src/a.py"), w("fix-r1", "src/a.py", role="fixer"),
-               w("fix-r2", "src/a.py", role="fixer"),
+    bx.script([w("unit-u1", "src/a.py"), w("fix-r1", "src/a.py", "x = 3\n", role="fixer"),
+               w("fix-r2", "src/a.py", "x = 4\n", role="fixer"),
                {"role": "judge", "output": {"verdict": "test_wrong", "reason": "the assertion is too strict",
                                             "edit_weakens": True, "test_edit": "drop the assertion"}},
                w("fix-test-u1", "tests/test_a.py", "def test_one():\n    pass\n", role="fixer")])
@@ -313,7 +315,7 @@ h.test_result("answering keep leaves the test alone and the still-red check stop
 # -- spec_wrong parks -------------------------------------------------------------------------
 b = mkbox("i-specwrong", mkplan(two=False))
 b.results("fail", "fail", "fail", "fail", "pass")
-b.script([w("unit-u1", "src/a.py"), w("fix-r1", "src/a.py", role="fixer"), w("fix-r2", "src/a.py", role="fixer"),
+b.script([w("unit-u1", "src/a.py"), w("fix-r1", "src/a.py", "x = 3\n", role="fixer"), w("fix-r2", "src/a.py", "x = 4\n", role="fixer"),
           {"role": "judge", "output": {"verdict": "spec_wrong", "reason": "the spec contradicts the ticket"}}])
 res = implement.run(b.ctx)
 card = card_of(b) if res.kind == "needs_human" else {}
@@ -395,6 +397,135 @@ res = implement.run(b.ctx)
 h.test_result("an existing_test_edit naming a protected file is dropped: no edit or judge call, stage completes",
               res.kind == "done" and labels(b) == ["unit-u1"] and questions.open_batch(b.flow) is None
               and b.flow.data("implement")["test_edits"] == [], str(labels(b)))
+
+# -- one check per distinct tree per command (#571) ---------------------------------------------
+
+
+def plan3() -> Dict[str, Any]:
+    plan = mkplan()
+    plan["units"].append({"id": "u3", "title": "third", "files": ["src/c.py"], "steps": ["write c"],
+                          "acceptance": ["ac1"], "after": ["u2"]})
+    return plan
+
+
+def journal(b: Box) -> str:
+    p = b.flow.path / "journal.md"
+    return p.read_text() if p.is_file() else ""
+
+
+def tree(b: Box) -> str:
+    return sh(["git", "rev-parse", "HEAD^{tree}"], b.clone)
+
+
+THREE = [w("unit-u1", "src/a.py"), w("unit-u2", "src/b.py"), w("unit-u3", "src/c.py")]
+
+b = mkbox("i-onecheck", plan3())
+b.script(list(THREE))
+res = implement.run(b.ctx)
+h.test_result("three units, one check: only the tree after the last unit is measured",
+              res.kind == "done" and labels(b) == ["unit-u1", "unit-u2", "unit-u3"] and b.runs() == 1,
+              "runs=%d" % b.runs())
+h.test_result("units before the last are done without a check of their own",
+              b.flow.data("implement")["done_units"] == ["u1", "u2", "u3"])
+run = heal.check(b.ctx, "fast")
+h.test_result("checking the finished tree again runs nothing and journals the reuse with its tree",
+              run.reused and b.runs() == 1
+              and "not re-run: tree %s already passed" % tree(b)[:12] in journal(b), journal(b)[-400:])
+
+b = mkbox("i-perunit", plan3(), per_unit=True)
+b.script(list(THREE))
+res = implement.run(b.ctx)
+h.test_result("check.per_unit: every unit is checked as it lands, once per tree",
+              res.kind == "done" and b.runs() == 3, "runs=%d" % b.runs())
+
+b = mkbox("i-onecheck-red", plan3())
+b.results("fail", "fail", "pass")
+b.script(list(THREE) + [w("fix-r1", "src/a.py", "x = 9\n", role="fixer")])
+res = implement.run(b.ctx)
+fix = [x for x in b.launches() if x["label"] == "fix-r1"]
+h.test_result("the one check's fixer may edit any unit's files, since any unit may have broken it",
+              res.kind == "done" and b.runs() == 3 and len(fix) == 1 and b.read("src/a.py") == "x = 9\n"
+              and all(f in fix[0]["prompt"] for f in ("src/a.py", "src/b.py", "src/c.py")), "runs=%d" % b.runs())
+
+b = mkbox("i-red-idle", mkplan(two=False))
+b.results("fail", "fail", "fail", "fail", "fail", "fail")
+b.script([w("unit-u1", "src/a.py"), {"role": "fixer", "label": "fix-r1", "output": DONE},
+          {"role": "fixer", "label": "fix-r2", "output": DONE},
+          {"role": "judge", "output": {"verdict": "code_wrong", "reason": "still wrong"}},
+          {"role": "fixer", "label": "fix-judged-u1", "output": DONE}])
+try:
+    implement.run(b.ctx)
+except FlowStop:
+    pass
+h.test_result("fixers that change nothing never cause the same red tree to be checked again",
+              b.runs() == 2 and journal(b).count("not re-run: tree %s already failed" % tree(b)[:12]) >= 2,
+              "runs=%d" % b.runs())
+
+# -- a worker that cannot finish from here (#572) ------------------------------------------------
+
+
+def blocked(needs: str, what: str, reason: str) -> Dict[str, Any]:
+    return {"status": "blocked", "summary": "could not", "blocked": {"reason": reason, "needs": needs, "what": what}}
+
+
+b = mkbox("i-blocked-handoff", mkplan())
+b.script([w("unit-u1", "src/a.py", output=blocked("other_file", "src/b.py", "f() must also be called from b.")),
+          w("unit-u2", "src/b.py")])
+res = implement.run(b.ctx)
+ls = b.launches()
+h.test_result("a unit blocked on a later unit's file hands it over: no retry, no card, no stop",
+              res.kind == "done" and labels(b) == ["unit-u1", "unit-u2"] and questions.open_batch(b.flow) is None,
+              str(labels(b)))
+h.test_result("the unit that owns the file is told what was needed",
+              "f() must also be called from b." in ls[1]["prompt"]
+              and b.flow.data("implement")["handoffs"] == [{"from": "u1", "text": "src/b.py: f() must also be called from b."}])
+
+b = mkbox("i-blocked-shell", mkplan(two=False))
+b.script([w("unit-u1", "src/a.py", output=blocked("shell", "npm run codegen", "The types are generated by a command."))])
+stop = expect_stop(lambda: implement.run(b.ctx), "environment")
+h.test_result("a unit that needs a command run stops naming it, quoting the worker, with one launch",
+              stop is not None and "npm run codegen" in stop.reason
+              and "The types are generated by a command." in stop.reason and labels(b) == ["unit-u1"], str(stop))
+
+b = mkbox("i-blocked-nobody", mkplan(two=False))
+b.script([w("unit-u1", "src/a.py", output=blocked("other_file", "src/zzz.py", "The bug is elsewhere."))])
+stop = expect_stop(lambda: implement.run(b.ctx), "implement")
+h.test_result("a file no later unit owns is a stop, not a handoff",
+              stop is not None and "src/zzz.py" in stop.reason and labels(b) == ["unit-u1"], str(stop))
+
+b = mkbox("i-blocked-fixer", mkplan(two=False))
+b.results("fail", "fail")
+b.script([w("unit-u1", "src/a.py"),
+          {"role": "fixer", "label": "fix-r1",
+           "output": blocked("shell", "git merge origin/main", "The branch is behind the base and I have no shell.")}])
+stop = expect_stop(lambda: implement.run(b.ctx), "environment")
+models = [x["model"] for x in b.launches() if x["role"] == "fixer"]
+h.test_result("a check fixer that says it cannot fix from here: no round 2, no judge, no stronger model",
+              stop is not None and labels(b) == ["unit-u1", "fix-r1"] and len(models) == 1
+              and "The branch is behind the base and I have no shell." in stop.reason
+              and "git merge origin/main" in stop.reason, "%s %s" % (labels(b), stop))
+
+# -- a unit's bookkeeping question never becomes a card (#570) -----------------------------------
+OWN_Q = {"id": "own1", "question": "Which unit should own the edit to src/b.py?",
+         "context": "u1 needs src/b.py changed but may only edit src/a.py.",
+         "options": [{"id": "a", "label": "Leave it to u2", "consequence": "u2 edits src/b.py later."},
+                     {"id": "b", "label": "Add src/b.py to this unit's file list", "consequence": "u1 edits both."}],
+         "recommended": "b", "kind": "architecture", "reversible": True, "risk": ""}
+b = mkbox("i-ownership", mkplan())
+b.script([w("unit-u1", "src/a.py", output={"status": "needs_answers", "summary": "asking", "questions": [OWN_Q]}),
+          w("unit-u1-answers", "src/a.py", "x = 2\n",
+            output={"status": "done", "summary": "a done", "elsewhere": ["src/b.py: call f()"]}),
+          w("unit-u2", "src/b.py")])
+res = implement.run(b.ctx)
+ls = b.launches()
+h.test_result("an ownership question from a unit is settled without a card and the flow goes on",
+              res.kind == "done" and labels(b) == ["unit-u1", "unit-u1-answers", "unit-u2"]
+              and questions.open_batch(b.flow) is None and not (b.flow.path / "questions.json").exists(),
+              str(labels(b)))
+h.test_result("the worker is told the driver's rule, not handed an option",
+              "Keep to the files you were given" in ls[1]["prompt"] and "call f()" in ls[2]["prompt"], ls[1]["prompt"][-600:])
+h.test_result("the journal says the driver settled it",
+              "the driver (not a question for a person)" in journal(b))
 
 if __name__ == "__main__":
     h.summarize_and_exit()

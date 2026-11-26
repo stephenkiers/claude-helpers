@@ -11,7 +11,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from scripts.flow3 import checks, config, gitops, record, runner, schemas
 from scripts.flow3.context import Ctx
@@ -168,6 +168,49 @@ class UnitUnfinished(FlowStop):
     """The unit-shortfall stop: the work so far is committed. `remaining` is what the worker left."""
 
     remaining: List[str] = []
+
+
+# What a blocked worker may say it needs -> (stop class, how the stop names the need).
+BLOCKED_NEEDS: Dict[str, Tuple[str, str]] = {
+    "shell": ("environment", "a shell command to be run, and it has no shell"),
+    "other_file": ("implement", "a change in a file it may not edit"),
+    "environment": ("environment", "a change to the environment (a tool, a dependency or a setting)"),
+    "human": ("human", "a decision from a person"),
+}
+
+
+class Blocked(FlowStop):
+    """
+    A worker reported that it cannot finish from where it is. This is not a shortfall: the same call
+    on a stronger model would say the same thing, so nothing is retried. Work it did inside its
+    bounds is committed. `needs` is a key of BLOCKED_NEEDS, `what` names the thing needed (may be
+    empty) and `worker_reason` is the worker's own sentence, which the stop text quotes.
+    """
+
+    needs: str = "human"
+    what: str = ""
+    worker_reason: str = ""
+
+
+def blocked_stop(ctx: Ctx, role: str, output: Dict[str, Any], evidence: Optional[str], tried: List[str]) -> Blocked:
+    """Build the stop for a worker whose status is `blocked`. Missing fields fall back to a human need."""
+    raw = output.get("blocked")
+    info: Dict[str, Any] = raw if isinstance(raw, dict) else {}
+    needs = str(info.get("needs") or "human")
+    if needs not in BLOCKED_NEEDS:
+        needs = "human"
+    what = " ".join(str(info.get("what") or "").split())
+    said = " ".join(str(info.get("reason") or output.get("summary") or "").split()) or "(it gave no reason)"
+    cls, phrase = BLOCKED_NEEDS[needs]
+    reason = "the %s cannot finish from here: it needs %s%s. It said: \"%s\"" % (
+        role, phrase, " (%s)" % what if what else "", said)
+    stop = Blocked(cls, reason, evidence=evidence, tried=tried)
+    stop.needs, stop.what, stop.worker_reason = needs, what, said
+    ctx.flow.event("heal", cls="blocked", action="no retry: the worker is blocked", role=role, needs=needs,
+                   what=what, reason=said)
+    record.journal(ctx.flow, "A %s reported it is blocked and was not retried on a stronger model. It needs %s%s. "
+                             "It said: \"%s\"" % (role, phrase, " (%s)" % what if what else "", said))
+    return stop
 
 
 def _stop(ctx: Ctx, failure_cls: str, reason: str, evidence: Optional[str], tried: List[str]) -> FlowStop:
@@ -338,6 +381,7 @@ def write_call(ctx: Ctx, spec: CallSpec, allowed: Sequence[str], protected: Sequ
     """
     A healed call that edits files in the worktree. Out-of-bounds changes are reverted and retried once
     with the rule restated; a shortfall keeps the partial work and retries once on the stronger model.
+    A worker that reports `blocked` is not retried: its in-bounds work is committed and `Blocked` is raised.
     """
     wt = ctx.worktree
     current = spec
@@ -368,6 +412,12 @@ def write_call(ctx: Ctx, spec: CallSpec, allowed: Sequence[str], protected: Sequ
             reverted = list(violations)
             rule_note = _rule_text(violations, allowed, protected)
             _heal(ctx, "protected", "reverted out-of-bounds paths and retrying once", paths=violations)
+
+        if isinstance(result.output, dict) and result.output.get("status") == "blocked" and not shortfall:
+            # Not a shortfall: keep what it did inside its bounds and say what it needs. No retry.
+            sha = commit(ctx, message + " (partial)")
+            raise blocked_stop(ctx, spec.role, result.output, evidence,
+                               ["kept the work it did (%s)" % (sha or "nothing to commit")])
 
         if shortfall:
             sha = commit(ctx, message + " (partial)")
@@ -474,83 +524,141 @@ def _stop_check(ctx: Ctx, cls: str, run: CheckRun, reason: str, tried: List[str]
     return _stop(ctx, cls, "%s (%s)" % (reason, run.command), run.output_path, tried)
 
 
+def _measure(ctx: Ctx, mode: str, command: str) -> CheckRun:
+    """
+    The result of `command` on the current tree: a recorded one when the worktree is clean and this
+    tree already has a result (pass or fail), else a fresh run. Every reuse is journalled with the tree.
+    """
+    wt = ctx.worktree
+    tree = _tree(wt)
+    if tree and _is_clean(wt):
+        if checks.passed_before(ctx.repo, tree, command):
+            ctx.flow.event("check_reused", mode=mode, tree=tree, ok=True)
+            record.journal(ctx.flow, "Check (%s) not re-run: tree %s already passed `%s`." % (mode, tree[:12], command))
+            return CheckRun(ok=True, command=command, mode=mode, exit_code=0, timed_out=False,
+                            duration_secs=0.0, tree=tree, output_path="", trimmed="", reused=True)
+        red = checks.red_before(ctx.flow.path, tree, command)
+        if red is not None:
+            ctx.flow.event("check_reused", mode=mode, tree=tree, ok=False)
+            record.journal(ctx.flow, "Check (%s) not re-run: tree %s already failed `%s`; the recorded "
+                                     "result is used." % (mode, tree[:12], command))
+            return checks.reused_red(red, mode)
+    return _run_check(ctx, mode, command)
+
+
+def _record_red(ctx: Ctx, run: CheckRun) -> None:
+    # Like a pass, a red is only true of HEAD's tree when the worktree is clean and has not moved.
+    if not run.reused and not run.timed_out and run.tree and _is_clean(ctx.worktree) \
+            and run.tree == _tree(ctx.worktree):
+        checks.record_red(ctx.flow.path, run)
+
+
 def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int], None]] = None,
           raise_on_fail: bool = True) -> CheckRun:
     """
-    Run the repo's check and heal what the table allows: reuse a recorded pass, install a missing
-    dependency once, re-run a timeout once, re-run a failure once (flaky), then two fixer rounds.
+    Run the repo's check and heal what the table allows: reuse a recorded result for this tree (pass
+    or fail), install a missing dependency once, re-run a timeout once, re-run a failure once (flaky,
+    unless `check.confirm_red` is off), then two fixer rounds. A fixer that reports it is blocked
+    ends the rounds: see `Blocked`.
     """
     command = ctx.cfg.check_fast if mode == "fast" else ctx.cfg.check_full
     wt = ctx.worktree
-    tree = _tree(wt)
-    if tree and _is_clean(wt) and checks.passed_before(ctx.repo, tree, command):
-        ctx.flow.event("check_reused", mode=mode, tree=tree)
-        return CheckRun(ok=True, command=command, mode=mode, exit_code=0, timed_out=False,
-                        duration_secs=0.0, tree=tree, output_path="", trimmed="", reused=True)
-
     tried: List[str] = []
-    run = _run_check(ctx, mode, command)
+    installed = False
+    run = _measure(ctx, mode, command)
     if run.ok:
-        return _passed(ctx, run)
+        return run if run.reused else _passed(ctx, run)
 
-    failure = classify_check(run, None)
-    if failure.cls == "environment" and failure.detail.get("kind") == "missing-dependency" \
-            and _names_spec_test(ctx, run) and not _external_missing(ctx, run):
-        # A spec test that cannot import code a later unit has yet to write is red work, not a missing tool.
-        failure = Failure("check-work", "a spec test fails", evidence=run.output_path,
-                          detail={"tests": _failing_tests(_read_output(run))})
-    if failure.cls == "environment":
-        kind = failure.detail.get("kind")
-        if kind == "timeout":
-            tried.append("re-ran the check once after the timeout")
-            _heal(ctx, "environment", "re-running the check once after a timeout", mode=mode)
+    current = run
+    if run.reused:
+        tried.append("used the failing result already recorded for this tree")
+    else:
+        failure = classify_check(run, None)
+        if failure.cls == "environment" and failure.detail.get("kind") == "missing-dependency" \
+                and _names_spec_test(ctx, run) and not _external_missing(ctx, run):
+            # A spec test that cannot import code a later unit has yet to write is red work, not a missing tool.
+            failure = Failure("check-work", "a spec test fails", evidence=run.output_path,
+                              detail={"tests": _failing_tests(_read_output(run))})
+        if failure.cls == "environment":
+            kind = failure.detail.get("kind")
+            if kind == "timeout":
+                tried.append("re-ran the check once after the timeout")
+                _heal(ctx, "environment", "re-running the check once after a timeout", mode=mode)
+                run = _run_check(ctx, mode, command)
+                if run.ok:
+                    return _passed(ctx, run)
+                raise _stop_check(ctx, "environment", run, "the check timed out again", tried)
+            if not ctx.cfg.install:
+                missing = _external_missing(ctx, run)
+                raise _stop_check(ctx, "environment", run,
+                                  "the check needs a dependency%s and no install command is configured"
+                                  % (" (%s is not installed)" % ", ".join(missing) if missing else ""), tried)
+            irun = _install(ctx, tried)
+            installed = True
+            if not irun.ok:
+                raise _stop_check(ctx, "environment", irun, "the install command failed", tried)
             run = _run_check(ctx, mode, command)
             if run.ok:
                 return _passed(ctx, run)
-            raise _stop_check(ctx, "environment", run, "the check timed out again", tried)
-        if not ctx.cfg.install:
-            missing = _external_missing(ctx, run)
-            raise _stop_check(ctx, "environment", run,
-                              "the check needs a dependency%s and no install command is configured"
-                              % (" (%s is not installed)" % ", ".join(missing) if missing else ""), tried)
-        install = ctx.cfg.install
-        ipath = record.check_output_path(ctx.flow, "install", _tree(wt))
-        _heal(ctx, "environment", "running the install command once", install=install)
-        irun = checks.run(install, wt, "install", ctx.cfg.check_timeout_secs, ipath)
-        tried.append("ran `%s` (exit %d)" % (install, irun.exit_code))
-        if not irun.ok:
-            raise _stop_check(ctx, "environment", irun, "the install command failed", tried)
-        run = _run_check(ctx, mode, command)
-        if run.ok:
-            return _passed(ctx, run)
-        tried.append("re-ran the check after the install")
-        if classify_check(run, None).cls == "environment":
-            raise _stop_check(ctx, "environment", run, "the check still fails the same way after install", tried)
+            tried.append("re-ran the check after the install")
+            if classify_check(run, None).cls == "environment":
+                raise _stop_check(ctx, "environment", run, "the check still fails the same way after install", tried)
 
-    # A branch that fell behind the base can fail for that reason alone (some repos' checks refuse a
-    # stale branch outright). Bring the base in once before spending re-runs or fixer calls on it.
-    if _is_clean(wt) and _behind_base(ctx) and sync_base(ctx):
-        tried.append("merged the base into the branch")
-    rerun = _run_check(ctx, mode, command)
-    if rerun.ok:
-        found = classify_check(run, rerun)
-        _heal(ctx, "check-flaky", "re-ran once and it passed", mode=mode, tests=found.detail.get("tests", []))
-        return _passed(ctx, rerun)
+        # A branch that fell behind the base can fail for that reason alone (some repos' checks refuse a
+        # stale branch outright). Bring the base in once before spending re-runs or fixer calls on it.
+        synced = bool(_is_clean(wt) and _behind_base(ctx) and sync_base(ctx))
+        if synced:
+            tried.append("merged the base into the branch")
+        current = run
+        if synced or ctx.cfg.check_confirm_red:
+            rerun = _run_check(ctx, mode, command)
+            if rerun.ok:
+                found = classify_check(run, rerun)
+                _heal(ctx, "check-flaky", "re-ran once and it passed", mode=mode, tests=found.detail.get("tests", []))
+                return _passed(ctx, rerun)
+            current = rerun
+            tried.append("re-ran the check once; it failed again")
+        _record_red(ctx, current)
 
-    current = rerun
-    tried.append("re-ran the check once; it failed again")
     if fixer is not None:
         for rnd in (1, 2):
             _heal(ctx, "check-work", "fixer round %d" % rnd, mode=mode, round=rnd)
-            fixer(current, rnd)
+            try:
+                fixer(current, rnd)
+            except Blocked as blocked:
+                if blocked.needs != "environment" or not ctx.cfg.install or installed:
+                    raise
+                installed = True
+                # The one heal the table allows for an environment need: the install command, once.
+                irun = _install(ctx, tried)
+                if not irun.ok:
+                    raise
+                current = _run_check(ctx, mode, command)
+                if current.ok:
+                    _heal(ctx, "environment", "check green after the install a blocked fixer asked for", mode=mode)
+                    return _passed(ctx, current)
+                raise
             tried.append("fixer round %d" % rnd)
-            current = _run_check(ctx, mode, command)
+            current = _measure(ctx, mode, command)
             if current.ok:
                 _heal(ctx, "check-work", "check green after fixer round %d" % rnd, mode=mode, round=rnd)
-                return _passed(ctx, current)
+                return current if current.reused else _passed(ctx, current)
+            _record_red(ctx, current)
     if raise_on_fail:
         raise _stop_check(ctx, "check-work", current, "the %s check still fails" % mode, tried)
     return current
+
+
+def _install(ctx: Ctx, tried: List[str]) -> CheckRun:
+    """Run the install command once. It changes the environment, so this flow's recorded reds are dropped."""
+    wt = ctx.worktree
+    install = ctx.cfg.install or ""
+    ipath = record.check_output_path(ctx.flow, "install", _tree(wt))
+    _heal(ctx, "environment", "running the install command once", install=install)
+    irun = checks.run(install, wt, "install", ctx.cfg.check_timeout_secs, ipath)
+    tried.append("ran `%s` (exit %d)" % (install, irun.exit_code))
+    checks.clear_reds(ctx.flow.path)
+    return irun
 
 
 # ---------------------------------------------------------------------------------------------

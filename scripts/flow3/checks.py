@@ -122,3 +122,55 @@ def record_pass(repo: str, tree: str, command: str) -> None:
         data: Dict[str, Any] = read_json_object(path) or {}
         data[_key(tree, command)] = {"tree": tree, "command": command, "ts": time.time()}
         atomic_write_text(path, json.dumps(data, indent=1, sort_keys=True) + "\n")
+
+
+# -- red results, kept per flow ----------------------------------------------------------------
+#
+# A pass is true of a tree for every flow in the repo. A red is kept per flow and dropped when a
+# human resumes a stopped flow or a heal changes the environment, because a red can come from the
+# machine and not from the tree.
+
+def reds_path(flow_path: Path) -> Path:
+    return flow_path / "check-reds.json"
+
+
+def red_before(flow_path: Path, tree: str, command: str) -> Optional[Dict[str, Any]]:
+    """The recorded failing result of this command on this exact tree in this flow, or None."""
+    if not tree:
+        return None
+    row = (read_json_object(reds_path(flow_path)) or {}).get(_key(tree, command))
+    return row if isinstance(row, dict) else None
+
+
+def record_red(flow_path: Path, run: CheckRun) -> None:
+    """Record a failing run keyed by its tree and command. The caller holds the flow's run lock."""
+    if not run.tree:
+        return
+    path = reds_path(flow_path)
+    data: Dict[str, Any] = read_json_object(path) or {}
+    data[_key(run.tree, run.command)] = {"tree": run.tree, "command": run.command, "mode": run.mode,
+                                         "exit_code": run.exit_code, "output_path": run.output_path,
+                                         "ts": time.time()}
+    atomic_write_text(path, json.dumps(data, indent=1, sort_keys=True) + "\n")
+
+
+def clear_reds(flow_path: Path) -> None:
+    """Forget this flow's recorded reds (the environment may have changed)."""
+    try:
+        reds_path(flow_path).unlink()
+    except OSError:
+        pass
+
+
+def reused_red(row: Mapping[str, Any], mode: str) -> CheckRun:
+    """A CheckRun rebuilt from a recorded red, marked reused."""
+    out_path = str(row.get("output_path") or "")
+    output = ""
+    if out_path:
+        try:
+            output = Path(out_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            output = ""
+    return CheckRun(ok=False, command=str(row.get("command") or ""), mode=mode,
+                    exit_code=int(row.get("exit_code") or 1), timed_out=False, duration_secs=0.0,
+                    tree=str(row.get("tree") or ""), output_path=out_path, trimmed=trim(output), reused=True)

@@ -480,4 +480,115 @@ except RuntimeError:
     raised = True
 h.test_result("a reply with no open batch is refused after being saved", raised and len(list((ctx.flow.path / "human").glob("*-reply.md"))) == 1)
 
+# ---- only a question a person alone can answer becomes a card (#570) ---------------------------
+
+OWNER = {"unit": "u3", "files": ["src/mod.py"], "other_files": ["src/other.py"], "unit_ids": ["u1", "u3", "u7"]}
+OWNERSHIP_OPTIONS = [
+    {"id": "a", "label": "Leave src/other.py to its owner", "consequence": "u7 makes the edit later."},
+    {"id": "b", "label": "Add src/other.py to this unit's file list", "consequence": "u3 edits both files now."}]
+
+
+def driver_verdict(qid, driver_kind, reason="it is about how the work is split"):
+    return {"results": [{"question_id": qid, "outcome": "none", "principle_id": "", "option_id": "",
+                         "reason": reason, "who": "driver", "driver_kind": driver_kind}]}
+
+
+# An ownership question from a unit's worker: the resolver says it is the driver's, so no card.
+ctx = make_ctx(with_principles=False)
+script([{"role": "resolver", "label": "o1", "output": driver_verdict("o1", "ownership")}])
+auto, human = questions.resolve(ctx, "implement", [q("o1", "architecture")], owner=OWNER)
+a = auto.get("o1")
+h.test_result("ownership question from a unit is settled by the driver without a card",
+              a is not None and a.source == "driver" and a.option_id == "" and "elsewhere" in a.text
+              and human == [] and questions.open_batch(ctx.flow) is None
+              and not (ctx.flow.path / "questions.json").exists(), repr(auto))
+h.test_result("the settlement is journalled and recorded as the driver's",
+              "the driver (not a question for a person)" in (ctx.flow.path / "journal.md").read_text()
+              and decision_rows(ctx)[0]["source"] == "driver")
+h.test_result("the resolver was asked who should answer, with no principles to go on",
+              len(invocations("resolver")) == 1 and "no written principles" in invocations("resolver")[0]["prompt"])
+
+# An option the driver cannot honour marks a bookkeeping question: settled with no model call at all.
+ctx = make_ctx(with_principles=False)
+script([])
+auto, human = questions.resolve(ctx, "implement", [q("o2", "architecture", options=OWNERSHIP_OPTIONS)], owner=OWNER)
+h.test_result("a question offering an option the driver cannot carry out is settled, not shown",
+              auto["o2"].source == "driver" and "Option b" in auto["o2"].reason and human == []
+              and invocations() == [] and questions.open_batch(ctx.flow) is None, repr(auto))
+
+# Ordering and tooling get their own rule; a checkable fact goes to the scout.
+ctx = make_ctx(with_principles=False)
+script([{"role": "resolver", "label": "o3", "output": driver_verdict("o3", "tooling")},
+        {"role": "resolver", "label": "o4", "output": driver_verdict("o4", "fact")},
+        {"role": "fact_scout", "label": "o4", "output": {"answers": [
+            {"question_id": "o4", "found": True, "option_id": "b", "answer": "B", "evidence": "README.md line 1"}]}}])
+auto, human = questions.resolve(ctx, "implement", [q("o3", "behaviour"), q("o4", "behaviour")], owner=OWNER)
+h.test_result("a tooling question gets the tooling rule; a checkable fact goes to the scout",
+              auto["o3"].source == "driver" and "cannot run commands" in auto["o3"].text
+              and auto["o4"].source == "fact" and auto["o4"].option_id == "b" and human == [], repr(auto))
+
+# A real product question from a unit still reaches the person, with driver words explained.
+ctx = make_ctx(with_principles=False)
+script([{"role": "resolver", "label": "o5", "output": verdict("o5", "none")}])
+auto, human = questions.resolve(ctx, "implement", [
+    q("o5", "behaviour", question="Should unit u7 keep the old error text?")], owner=OWNER)
+md = (ctx.flow.path / "questions.md").read_text()
+h.test_result("a human question from a unit is still a card", auto == {} and [c["id"] for c in human] == ["o5"])
+h.test_result("a card that uses the word unit says what a unit is",
+              human[0]["glossary"].startswith(questions.GLOSSARY) and "**Terms:**" in md and "one slice of this ticket" in md,
+              human[0].get("glossary", ""))
+
+# Without an owner nothing changes: a plan question with no principles makes no resolver call.
+ctx = make_ctx(with_principles=False)
+script([])
+auto, human = questions.resolve(ctx, "plan", [q("o6", "architecture")])
+h.test_result("no owner and no principles: no resolver call, the card has no glossary",
+              invocations() == [] and [c["id"] for c in human] == ["o6"] and human[0]["glossary"] == "")
+
+# A detail from a unit is not worth a model call: it is assumed as before.
+ctx = make_ctx(with_principles=False)
+script([])
+auto, human = questions.resolve(ctx, "implement", [q("o7", "detail", rec="b")], owner=OWNER)
+h.test_result("a detail from a unit is assumed with no resolver call",
+              auto["o7"].source == "assumed" and auto["o7"].option_id == "b" and invocations() == [])
+
+# A risk card is never settled by the driver. One with an option the driver cannot carry out is
+# rejected before it reaches the inbox.
+RISK = "The spec test for mod would no longer be protected."
+h.test_result("unhonourable names the options that ask to change how the work is split",
+              questions.unhonourable({"options": OWNERSHIP_OPTIONS}) == ["b"]
+              and questions.unhonourable({"options": [
+                  {"id": "x", "label": "Run the migration by hand", "consequence": "You run it manually."},
+                  {"id": "y", "label": "Reorder the units", "consequence": "u7 goes first."},
+                  {"id": "z", "label": "Keep the old name", "consequence": "Callers are unchanged."}]}) == ["x", "y"]
+              and questions.unhonourable({"options": q("n")["options"]}) == [])
+ctx = make_ctx(with_principles=False)
+script([])
+stop = None
+try:
+    questions.resolve(ctx, "implement", [q("k1", "risk", risk=RISK, options=OWNERSHIP_OPTIONS)], owner=OWNER)
+except FlowStop as exc:
+    stop = exc
+h.test_result("a card with an option the driver cannot honour is rejected before the inbox",
+              stop is not None and stop.cls == "runner" and "an option the driver cannot carry out (b)" in stop.reason
+              and questions.open_batch(ctx.flow) is None and not (ctx.flow.path / "questions.json").exists()
+              and invocations("resolver") == [], str(stop))
+
+# ... unless the step that asked can restate it with options the driver can carry out.
+ctx = make_ctx(with_principles=False)
+script([])
+asked = []
+
+
+def restate(incomplete):
+    asked.extend(incomplete)
+    return [q("k2", "risk", risk=RISK)]
+
+
+auto, human = questions.resolve(ctx, "implement", [q("k2", "risk", risk=RISK, options=OWNERSHIP_OPTIONS)],
+                                repair=restate, owner=OWNER)
+h.test_result("the asking step gets one chance to restate the card with options that can be carried out",
+              len(asked) == 1 and "cannot carry out" in asked[0]["missing"][0]
+              and [c["id"] for c in human] == ["k2"] and questions.unhonourable(human[0]) == [])
+
 h.summarize_and_exit()

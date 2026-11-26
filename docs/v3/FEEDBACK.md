@@ -182,6 +182,9 @@ Still open:
 - A fixer that says "this is not fixable from here" is treated as a unit that ran out of room, and is
   retried on a stronger model. It needs its own outcome.
 
+**Done (PROGRESS decisions 38 to 40).** A tree is measured once per command, the check runs once per
+stage, and "cannot fix from here" is its own outcome that is never retried on a stronger model.
+
 ## 13. The ticket was merged by other work while the flow was running (2026-11-25)
 
 The trial re-implemented a ticket whose earlier implementation was still open as a pull request. That

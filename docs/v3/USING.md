@@ -27,6 +27,13 @@ and `check.base: true` in `flow.yaml` runs the fast check on the base at the sta
 check runs at the merge gate. `principles init` asks for a goal and themes and writes
 the starter principles the experts read.
 
+The fast check runs once after the last unit of implement and once after the fixes, not after every unit;
+`check.per_unit: true` in `flow.yaml` brings the per-unit run back, which is only worth it when the fast check
+is cheap. A check is never run twice on the same tree: a result, green or red, is reused, and the journal says
+which tree it was keyed on. The one exception is a fresh red, which is run once more before a fixer is paid
+for, to catch a flaky test; `check.confirm_red: false` turns that off. Resuming a stopped flow forgets its red
+results, so whatever you changed by hand is measured again.
+
 If the repo has a commit hook that checks formatting, set `format: <command>` in `flow.yaml`: the driver
 runs it before each commit it makes. If the hook also validates code (typecheck, tests), set `commit_hooks: false`: spec
 tests are written before the implementation and cannot pass such a hook. Only the driver's commits skip it.
@@ -51,7 +58,10 @@ When more than one repo has the same issue number, add `--repo <name>`.
 
 ## Answering
 
-Questions arrive as cards with options. Answer with `reply`, reading stdin:
+Questions arrive as cards with options. Only a question a person alone can answer becomes a card: one about
+the driver's own bookkeeping (which unit edits a file, the order of units, a command a worker cannot run, a
+fact that can be looked up) is settled by the driver and written to the journal. Every option on a card is
+one the driver can carry out, and a card that names a unit says what that unit is under **Terms**. Answer with `reply`, reading stdin:
 
 ```
 python3 -m scripts.flow3 reply <<'EOF'
