@@ -951,6 +951,31 @@ def _append_driver_log(flow_dir: Path, record: Dict[str, object]) -> None:
         handle.write(line + "\n")
 
 
+def count_driver_events(flow: Path, event: str, step: Optional[Step] = None) -> int:
+    """
+    Count the driver-log records whose `event` equals the argument, optionally only those of one step. A missing log
+    counts 0, and a line that does not parse is skipped. Derived on read: no counter is persisted (telemetry only).
+    """
+    # Test-only today: slice 2 (ADR-0026) adds the runtime reader.
+    try:
+        lines = (flow / DRIVER_LOG_FILE).read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        # OSError covers a missing log and permission errors (FileNotFoundError is an OSError); UnicodeDecodeError is a ValueError
+        return 0
+    count = 0
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or record.get("event") != event:
+            continue
+        if step is not None and record.get("step") != step:
+            continue
+        count += 1
+    return count
+
+
 class LockedFlow:
     """
     Capability for one mutating invocation. Only mutating() constructs it, while it holds the flow lock.

@@ -58,6 +58,8 @@ StopCode = Literal[
     "existing-test-edit",
     "planned-change-breaks-test",
     "zero-unit-plan-incomplete",
+    "subagent-gone-no-receipt",
+    "notification-unattributed",
 ]
 STOP_CODES: Tuple[StopCode, ...] = get_args(StopCode)
 _STOP_BY_NAME: Dict[str, StopCode] = {code: code for code in STOP_CODES}
@@ -114,7 +116,12 @@ class WaitTimeout:
 
 @dataclass(frozen=True)
 class Notification:
-    """The step agent's subagent is gone (session D4: this satisfies the rerun gate at once)."""
+    """
+    The step agent's subagent handed back (session D4). nonce is the spawn nonce the notification names, or None when
+    the caller gave none; loop.py attributes it to the live attempt (attributed, foreign or missing).
+    """
+
+    nonce: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -157,13 +164,18 @@ if set(_EVENT_BY_LABEL) != set(AFTER_EVENTS):
     raise RuntimeError("_EVENT_BY_LABEL keys do not match model.AFTER_EVENTS")
 
 
-def event_from_label(label: Optional[str]) -> Event:
-    """Map the logged `--after` label to an Event. No label is Reentry; an unknown label is UnknownEvent."""
+def event_from_label(label: Optional[str], nonce: Optional[str] = None) -> Event:
+    """
+    Map the logged `--after` label to an Event. No label is Reentry; an unknown label is UnknownEvent. The nonce is
+    carried only by a notification event; any other label ignores it.
+    """
     parsed = parse_after(label)
     if parsed == "none":
         return Reentry()
     if parsed == "unrecognized":
         return UnknownEvent(label=label if label is not None else "")
+    if parsed == "notification":
+        return Notification(nonce=nonce)
     return _EVENT_BY_LABEL[parsed]
 
 
@@ -310,7 +322,7 @@ GateFact = Union[GateAdvance, GateAsk, GateStop, GateMerge, GateDone]
 
 
 # Facts gathered at the edge. The receipt fact is the outcome of loop.py's receipt settling, under the lock.
-ReceiptFact = Literal["none", "gate-hold", "failed", "rerun", "malformed-cap"]
+ReceiptFact = Literal["none", "gate-hold", "failed", "rerun", "malformed-cap", "gone", "unattributed"]
 QuestionFact = Literal["none", "awaiting", "answered"]
 
 
@@ -320,18 +332,24 @@ class Facts:
     nonce: str  # fresh for this call; used only if the call opens a new spawn
     # none: nothing to act on (absent, in progress, stale); gate-hold: a malformed receipt is held by the D4 gate;
     # failed: the pending attempt landed a FAILED receipt; rerun: malformed rerun already recorded, spawn next attempt;
-    # malformed-cap: the D5 cap refuses another rerun
+    # malformed-cap: the D5 cap refuses another rerun; gone: the attributed notification found no landed receipt, so the
+    # subagent is gone; unattributed: a nonce-less notification found no landed receipt, so the driver cannot tell whose
+    # agent ended (fail closed)
     receipt: ReceiptFact
     question: QuestionFact
     headless: bool  # PARK instead of ASK
     gate: Optional[GateFact] = None  # the gate outcome for this call, or None when no gate stage applies
     # a FAILED receipt whose Reason names one of the six test-path codes: (code, detail); None otherwise
     failed_stop: Optional[Tuple[StopCode, str]] = None
+    # the worktree residue summary for a gone fact (a pure read); set if and only if receipt is "gone"
+    gone_residue: Optional[str] = None
 
     def __post_init__(self) -> None:
         """A failed_stop exists only for a FAILED receipt. Any other pairing is a wiring defect in loop.py, never a STOP."""
         if self.failed_stop is not None and self.receipt != "failed":
             raise RuntimeError(f"Facts.failed_stop is set but receipt is {self.receipt!r}, not 'failed'")
+        if (self.gone_residue is not None) != (self.receipt == "gone"):
+            raise RuntimeError(f"Facts.gone_residue must be set exactly when receipt is 'gone', not {self.receipt!r}")
 
 
 def _live(pending: Optional[PendingSpawn]) -> Optional[LiveRecord]:
@@ -514,6 +532,28 @@ def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Dir
         if facts.failed_stop is not None:
             return _stop(state, facts, facts.failed_stop[0], facts.failed_stop[1])
         return _stop(state, facts, "step-failed", f"step {state.step} landed a FAILED receipt")
+    if facts.receipt == "gone":
+        # The attributed notification found no landed receipt: the subagent is gone. A clearable STOP; no Retry is spent.
+        gone_pending = state.pending_spawn
+        gone_step = state.step if gone_pending is None else gone_pending.step
+        gone_attempt = state.attempts.get(gone_step, 0) if gone_pending is None else gone_pending.attempt
+        detail = (
+            f"step {gone_step} attempt {gone_attempt} handed back with no landed receipt; "
+            f"worktree: {facts.gone_residue}; clear it with {driver.clear_live_command(facts.flow)}"
+        )
+        return _stop(state, facts, "subagent-gone-no-receipt", detail)
+    if facts.receipt == "unattributed":
+        # A nonce-less notification with no landed receipt: the driver cannot tell whose agent ended, so it fails closed.
+        unattributed_pending = state.pending_spawn
+        unattributed_step = state.step if unattributed_pending is None else unattributed_pending.step
+        unattributed_attempt = (
+            state.attempts.get(unattributed_step, 0) if unattributed_pending is None else unattributed_pending.attempt
+        )
+        detail = (
+            f"step {unattributed_step} attempt {unattributed_attempt} got a notification with no nonce and has no landed "
+            f"receipt; the driver cannot tell whose agent ended, so confirm the agent is not still running first; clear it with {driver.clear_live_command(facts.flow)}"
+        )
+        return _stop(state, facts, "notification-unattributed", detail)
     if facts.receipt == "rerun":
         # D5: the malformed rerun is already recorded; the dispatch below opens the next attempt once no record is live.
         pass
@@ -522,6 +562,9 @@ def transition(state: V2State, event: Event, facts: Facts) -> Tuple[V2State, Dir
         pass
     elif facts.receipt == "none":
         pass
+    elif facts.receipt in ("gone", "unattributed"):
+        # Both return a STOP above; reaching here is a wiring defect.
+        raise RuntimeError(f"receipt fact {facts.receipt!r} reached the dispatch after its STOP")
     else:
         assert_never(facts.receipt)
 

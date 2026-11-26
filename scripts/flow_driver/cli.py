@@ -131,7 +131,11 @@ def _cmd_start(args: argparse.Namespace) -> int:
 def _cmd_next(args: argparse.Namespace) -> int:
     """next: one mutating loop step. Single-caller invariant: the orchestrator runs one next at a time."""
     flow = _v2_flow(args)
-    return _run_loop(lambda: run_next(flow, args.after), stream="stdout")
+    if args.nonce is not None and args.after != "notification":
+        return _usage_error("usage: --nonce is accepted only together with --after notification")
+    if args.nonce is not None and not (isinstance(args.nonce, str) and len(args.nonce) == 8 and all(c in "0123456789abcdef" for c in args.nonce)):
+        return _usage_error("usage: --nonce must be 8 lowercase hex characters")
+    return _run_loop(lambda: run_next(flow, args.after, nonce=args.nonce), stream="stdout")
 
 
 def _cmd_recover(args: argparse.Namespace) -> int:
@@ -341,14 +345,14 @@ def _cmd_status(args: argparse.Namespace) -> int:
         try:
             v1_state_text = (resolved_path / "state.json").read_text(encoding="utf-8")
             state_obj = json.loads(v1_state_text)
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError):
             state_obj = None
     elif isinstance(flow_view.owned, SkeletonForeign):
         owner_str = "skeleton"
         try:
             skeleton_state_text = (resolved_path / "state.json").read_text(encoding="utf-8")
             state_obj = json.loads(skeleton_state_text)
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError):
             state_obj = None
     elif isinstance(flow_view.owned, InvalidState):
         owner_str = "invalid"
@@ -459,7 +463,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     nxt = sub.add_parser("next", help="decide the next directive and print one NEXT line")
     nxt.add_argument("--flow", required=True, help="absolute flow dir")
-    nxt.add_argument("--after", help="the event label that led here (logged only)")
+    nxt.add_argument("--after", help="the event label that led here (logged; `notification` is attributed by --nonce)")
+    nxt.add_argument("--nonce", help="with --after notification: the spawn nonce the notification names (hex)")
 
     ans = sub.add_parser("answer", help="write the human's answer for the parked attempt")
     ans.add_argument("--flow", required=True, help="absolute flow dir")
