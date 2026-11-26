@@ -621,12 +621,14 @@ def live_in(
         # blocked cleanup from inside the worktree. Exclude descendants of the caller's own claude process
         # when that claude has its cwd inside path. Walk caller_pids upward (ordered from caller upward
         # as caller_chain returns it) to find the contiguous run where cwd is inside path, then find the
-        # HIGHEST pid in that run with comm basename 'claude'. If found, exclude all its descendants;
-        # if not found, exclude no descendants beyond caller_pids themselves (conservative: shared ancestors
-        # like tmux/terminal/launchd won't become the exclusion root). A chain that never touches path
-        # (cleanup run from main) extends nothing, and another session's processes still count.
+        # last (furthest from caller) claude process in the in-path run with comm basename 'claude'. If found,
+        # exclude all its descendants; if not found, exclude no descendants beyond caller_pids themselves
+        # (conservative: shared ancestors like tmux/terminal/launchd won't become the exclusion root). A chain
+        # that never touches path (cleanup run from main) extends nothing, and another session's processes still count.
         excluded = set(caller_pids)
         claude_root: Optional[int] = None
+        # Build pid→ProcRow map once to avoid O(M * N) lookups in the loop
+        pid_map: Dict[int, ProcRow] = {p.pid: p for p in all_procs}
         for cpid in caller_pids:
             ccwd = cwd_map.get(cpid)
             try:
@@ -636,11 +638,9 @@ def live_in(
             if not inside:
                 break
             # Check if this process is named 'claude'
-            for pr in all_procs:
-                if pr.pid == cpid:
-                    if os.path.basename(pr.comm) == 'claude':
-                        claude_root = cpid
-                    break
+            pr = pid_map.get(cpid)
+            if pr is not None and os.path.basename(pr.comm) == 'claude':
+                claude_root = cpid
         if claude_root is not None:
             kids: Dict[int, List[int]] = {}
             for pr in all_procs:
