@@ -134,6 +134,8 @@ at its first failing part, and the red-first spec tests fail an early part until
 land. A repo whose tests fail late would pay for each run in full. This is the largest multiplier in
 entry 1's table and was missing from it.
 
+**Done (#570).** The check runs once per stage, not once per unit. See PROGRESS decision 38.
+
 ## 10. A card that was not a human's question (2026-11-25, from the human)
 
 The card in entry 8 reached the human, who called it weird and asked whether it was built for humans.
@@ -152,6 +154,8 @@ whether the question is one only a human can answer.
 - Add a resolver outcome for questions about the flow's own bookkeeping (units, file lists, ordering):
   the driver takes the option that keeps the plan as written.
 - Cards never use the words "unit" or a unit id; they describe the work in the ticket's terms.
+
+**Done (#571).** The resolver settles driver bookkeeping questions without showing them. See PROGRESS decision 36 (the driver settles ownership questions) and PROGRESS section 6 (the driver is a resolver step).
 
 ## 11. Answering the card in entry 8 still stopped the flow (2026-11-25)
 

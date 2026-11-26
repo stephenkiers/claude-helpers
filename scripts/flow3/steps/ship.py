@@ -123,7 +123,7 @@ def run(ctx: Ctx) -> StageResult:
         ("Did", "\n".join([
             "- Base merged in first: %s." % ("yes" if synced else "not needed"),
             "- Committed leftovers: %s." % (committed[:12] if committed else "nothing to commit"),
-            "- Fast check: passed%s." % (" (reused a recorded pass)" if check.reused else ""),
+            "- Fast check: passed%s." % (" (reused a recorded pass)" if check.reused and check.ok else ""),
             "- Pushed `%s` (a normal push)." % branch,
             "- Pull request #%d %s (%s): %s" % (pr.number, "reused" if reused else "opened", source, pr.url),
         ])),

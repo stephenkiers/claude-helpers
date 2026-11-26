@@ -59,7 +59,8 @@ class RepoConfig:
     models: Dict[str, str]
     format_cmd: Optional[str] = None
     commit_hooks: bool = True
-    # Run the fast check after every unit (off: once after the last unit of implement, and once per fix attempt).
+    # per_unit: true runs the fast check after every unit of a stage; per_unit: false (default) runs it once
+    # after all units. A tree that already has a result for a command is reused and never re-measured.
     check_per_unit: bool = False
     # Re-run a failing check once to rule out a flaky test before a fixer is called.
     check_confirm_red: bool = True
@@ -370,10 +371,10 @@ def render(values: Dict[str, Any]) -> str:
     lines += ["", "check:"]
     if full:
         lines += ["  # fast runs mid-flow (once after the last unit of implement, once per fix attempt, and",
-                  "  # before ship); full runs at merge and is the authority. A tree that already has a",
-                  "  # result for a command, pass or fail, is never measured again.",
+                  "  # before ship); full runs at merge and is the authority.",
+                  "  # per_unit: true runs the fast check after every unit; per_unit: false (default) runs it",
+                  "  # once after all units. A tree that already has a result for a command is reused.",
                   "  # base: true also runs fast on the untouched base at the start of each ticket.",
-                  "  # per_unit: true runs fast after every unit (only worth it when fast is cheap).",
                   "  # confirm_red: false sends a failing check straight to a fixer, with no re-run first.",
                   "  fast: %s" % _q(str(fast)), "  full: %s" % _q(str(full))]
         for key in ("base", "per_unit"):
@@ -482,8 +483,8 @@ def doctor(repo_root: Path, run_checks: bool = False) -> DoctorReport:
         lines.append("note check.fast is the same command as check.full, so every mid-flow check costs a "
                      "full one. Set a cheaper check.fast if the full check is slow.")
         if cfg.check_per_unit:
-            lines.append("note check.per_unit is on with that one command: the full check runs after every "
-                         "unit. Turn check.per_unit off unless the check is quick.")
+            lines.append("note check.per_unit is on with that one command: the check runs after every unit. "
+                         "Turn check.per_unit off unless the check is quick.")
         if cfg.check_confirm_red:
             lines.append("note a failing mid-flow check is re-run once before a fixer is called. Set "
                          "check.confirm_red: false to skip that re-run if the check is slow.")

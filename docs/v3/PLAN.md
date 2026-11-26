@@ -172,11 +172,13 @@ Steps do not ask the human. They return `questions[]` in their output, each with
 The resolver handles each question in this order and records every outcome:
 
 1. **Fact:** a scout call checks it and answers. A fact is never asked.
-2. **Principle:** one call reads the principles files and the question. If a principle clearly
+2. **Driver:** some questions are the driver's own bookkeeping (which unit owns a file, what runs first,
+   a tool a worker lacks). The driver settles these by its rules and never shows them.
+3. **Principle:** one call reads the principles files and the question. If a principle clearly
    decides it, the answer is that principle's, cited by id. The call must also be able to say
    "no principle decides this" and "a principle applies but this case looks like its `revisitIf`".
-3. **Detail with no principle:** the step's recommended option is taken and recorded as `assumed`.
-4. **Everything else (`purpose`, `architecture`, `behaviour`, `risk`, or a `revisitIf` hit):** goes
+4. **Detail with no principle:** the step's recommended option is taken and recorded as `assumed`.
+5. **Everything else (`purpose`, `architecture`, `behaviour`, `risk`, or a `revisitIf` hit):** goes
    to the human. `risk` questions lead with the risk.
 
 A principle may answer an `architecture` or `behaviour` question only when it decides it directly.
@@ -249,7 +251,7 @@ interview (goal first), seeded with the themes in section 12.
 ### Learning
 
 Every resolved question is appended to `~/.claude/flow3/<repo>/decisions.jsonl`: the question, kind,
-theme tags, options, the answer, who answered (`human`, `principle:<id>`, `assumed`, `fact`), the
+theme tags, options, the answer, who answered (`human`, `principle:<id>`, `assumed`, `fact`, `driver`), the
 reason, and a pointer to the verbatim source. This log is what "what we decided before" on a question
 card is drawn from, by theme match, and it is the answer to "what did I decide, and why".
 

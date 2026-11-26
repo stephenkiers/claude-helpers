@@ -139,7 +139,13 @@ def red_before(flow_path: Path, tree: str, command: str) -> Optional[Dict[str, A
     if not tree:
         return None
     row = (read_json_object(reds_path(flow_path)) or {}).get(_key(tree, command))
-    return row if isinstance(row, dict) else None
+    if not isinstance(row, dict):
+        return None
+    # If the output file is recorded but unreadable, treat the red as absent and run the check fresh.
+    out_path = str(row.get("output_path") or "")
+    if out_path and not Path(out_path).exists():
+        return None
+    return row
 
 
 def record_red(flow_path: Path, run: CheckRun) -> None:

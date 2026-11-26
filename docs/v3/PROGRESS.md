@@ -152,7 +152,7 @@ If this session restarts: read this file first, then continue from the first uni
     trial (FEEDBACK entry 12). Before the flaky re-run and the fixer rounds, the driver fetches, and if
     the base has moved it merges it in with the existing base-stale heal, then re-runs the check.
 38. **A tree is measured once per command, red or green (#571).** Green results were already cached
-    across flows. Red results are now recorded per flow (`reds.json` in the flow directory) and reused:
+    across flows. Red results are now recorded per flow (`check-reds.json` in the flow directory) and reused:
     the journal line names the mode, the command and the tree, and a `check_reused` event carries the
     full tree. Reds are per flow, never shared, because a red can come from that worktree's
     environment. They are forgotten when the install heal runs and when a stopped flow is resumed,
