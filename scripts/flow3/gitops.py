@@ -140,8 +140,10 @@ def changed_files(cwd: Path) -> List[str]:
     return sorted(files)
 
 
-def commit_all(cwd: Path, message: str, paths: Optional[List[str]] = None) -> Optional[str]:
-    """Stage everything (or only paths) and commit. Returns the new sha, or None when nothing changed."""
+def commit_all(cwd: Path, message: str, paths: Optional[List[str]] = None,
+               hooks: bool = True) -> Optional[str]:
+    """Stage everything (or only paths) and commit. Returns the new sha, or None when nothing changed.
+    With hooks false the commit skips the repo's commit hooks."""
     if paths is None:
         git(["add", "-A"], cwd)
     elif paths:
@@ -150,7 +152,7 @@ def commit_all(cwd: Path, message: str, paths: Optional[List[str]] = None) -> Op
         return None
     if _git_rc(["diff", "--cached", "--quiet"], cwd)[0] == 0:
         return None
-    git(_identity_args(cwd) + ["commit", "-q", "-m", message], cwd)
+    git(_identity_args(cwd) + ["commit", "-q"] + ([] if hooks else ["--no-verify"]) + ["-m", message], cwd)
     return head_sha(cwd)
 
 

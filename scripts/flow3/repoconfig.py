@@ -22,7 +22,7 @@ from scripts.workflow.fsutil import atomic_write_text, read_json_object
 CONFIG_RELPATH = ".claude/flow.yaml"
 _MODELS = ("haiku", "sonnet", "opus", "fable")
 _PROVIDERS = ("github", "local")
-_TOP_KEYS = ("base", "provider", "install", "format", "check", "merge", "protected_paths", "principles",
+_TOP_KEYS = ("base", "provider", "install", "format", "commit_hooks", "check", "merge", "protected_paths", "principles",
              "budget", "models")
 _CHECK_KEYS = ("fast", "full", "timeout_secs", "base")
 _MERGE_KEYS = ("method", "command", "pre_merge", "post_merge")
@@ -54,6 +54,7 @@ class RepoConfig:
     hard_usd: float
     models: Dict[str, str]
     format_cmd: Optional[str] = None
+    commit_hooks: bool = True
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,9 @@ def parse(text: str) -> RepoConfig:
         raise ConfigError("provider: must be one of %s, got %r" % ("/".join(_PROVIDERS), provider))
     install = _string(raw, "install", "install", None)
     format_cmd = _string(raw, "format", "format", None)
+    commit_hooks: Any = raw.get("commit_hooks", True)
+    if not isinstance(commit_hooks, bool):
+        raise ConfigError("commit_hooks: expected true or false")
 
     chk = _mapping(raw.get("check"), "check")
     _no_unknown(chk, _CHECK_KEYS, "check.")
@@ -171,7 +175,7 @@ def parse(text: str) -> RepoConfig:
                       check_timeout_secs=timeout, check_base=check_base, merge_method=method, merge_command=command,
                       pre_merge=pre, post_merge=post, protected_paths=protected,
                       principles=principles, soft_usd=soft, hard_usd=hard, models=models,
-                      format_cmd=format_cmd)
+                      format_cmd=format_cmd, commit_hooks=commit_hooks)
 
 
 def _config_file(repo_root: Path) -> Path:
@@ -317,6 +321,11 @@ def render(values: Dict[str, Any]) -> str:
         lines += ["# Run before each commit the driver makes.", "format: %s" % _q(str(values["format"]))]
     else:
         lines += ["# format: <command that fixes formatting; run before each commit the driver makes>"]
+    if values.get("commit_hooks") is False:
+        lines += ["# The driver's own commits on the flow branch skip the repo's commit hooks.",
+                  "commit_hooks: false"]
+    else:
+        lines += ["# commit_hooks: false   (the driver's commits skip commit hooks; its checks still gate)"]
     lines += ["", "check:"]
     if full:
         lines += ["  # fast runs mid-flow; full runs at merge and is the authority.",

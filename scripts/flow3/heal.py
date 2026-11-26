@@ -321,6 +321,7 @@ def commit(ctx: Ctx, message: str, paths: Optional[List[str]] = None) -> Optiona
     Commit the worktree for the driver. When the repo declares a `format` command it runs first, so a
     commit hook that checks formatting does not reject files a model wrote. A failed format command
     is recorded and the commit is still tried; the hook or the next check then names the problem.
+    A repo that sets `commit_hooks: false` has the driver's commits skip its commit hooks.
     """
     wt = ctx.worktree
     cmd = ctx.cfg.format_cmd
@@ -329,7 +330,7 @@ def commit(ctx: Ctx, message: str, paths: Optional[List[str]] = None) -> Optiona
         run = checks.run(cmd, wt, "format", ctx.cfg.check_timeout_secs, out)
         ctx.flow.event("format", ok=run.ok, exit_code=run.exit_code, timed_out=run.timed_out,
                        duration_secs=round(run.duration_secs, 1))
-    return gitops.commit_all(wt, message, paths)
+    return gitops.commit_all(wt, message, paths, hooks=ctx.cfg.commit_hooks)
 
 
 def write_call(ctx: Ctx, spec: CallSpec, allowed: Sequence[str], protected: Sequence[str],

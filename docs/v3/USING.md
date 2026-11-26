@@ -23,7 +23,8 @@ check runs at the merge gate. `principles init` asks for a goal and themes and w
 the starter principles the experts read.
 
 If the repo has a commit hook that checks formatting, set `format: <command>` in `flow.yaml`: the driver
-runs it before each commit it makes.
+runs it before each commit it makes. If the hook also validates code (typecheck, tests), set `commit_hooks: false`: spec
+tests are written before the implementation and cannot pass such a hook. Only the driver's commits skip it.
 
 ## One ticket
 

@@ -105,7 +105,7 @@ class Box:
 
     def __init__(self, name: str, files: Optional[Dict[str, str]] = None, install: bool = False,
                  timeout: int = 60, protected: Optional[List[str]] = None, soft: float = 15.0,
-                 hard: float = 40.0, fmt: Optional[str] = None) -> None:
+                 hard: float = 40.0, fmt: Optional[str] = None, hooks: bool = True) -> None:
         self.name = name
         self.ctl = TMP / (name + "-ctl")
         self.ctl.mkdir()
@@ -120,6 +120,8 @@ class Box:
             yml.append("protected_paths: [%s]" % ", ".join(protected))
         if fmt:
             yml.append("format: '%s'" % fmt)
+        if not hooks:
+            yml.append("commit_hooks: false")
         base = {".claude/flow.yaml": "\n".join(yml) + "\n", "README.md": "hi\n"}
         base.update(files or {})
         self.origin = TMP / (name + "-origin.git")
@@ -651,6 +653,30 @@ heal.write_call(f2.ctx, work_spec(f2), ["src/"], [], "unit f2")
 h.test_result("commit: a failing format command is recorded and the commit still happens",
               f2.log_subjects()[0] == "unit f2"
               and any(e["kind"] == "format" and not e.get("ok") for e in f2.flow.events()))
+
+def reject_hook(box: Box) -> None:
+    hook = box.clone / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\necho hook says no >&2\nexit 1\n")
+    hook.chmod(0o755)
+
+
+k1 = Box("hook1")
+reject_hook(k1)
+k1.script([{"write_files": {"src/a.py": "x\n"}, "output": DONE}])
+try:
+    heal.write_call(k1.ctx, work_spec(k1), ["src/"], [], "unit k1")
+    rejected = False
+except gitops.GitError as exc:
+    rejected = "hook says no" in str(exc)
+h.test_result("commit: by default a rejecting commit hook is honoured", rejected)
+
+k2 = Box("hook2", hooks=False)
+reject_hook(k2)
+k2.script([{"write_files": {"src/a.py": "x\n"}, "output": DONE}])
+heal.write_call(k2.ctx, work_spec(k2), ["src/"], [], "unit k2")
+h.test_result("commit: commit_hooks false skips the repo's commit hook",
+              k2.log_subjects()[0] == "unit k2" and gitops.changed_files(k2.clone) == [])
 
 p1 = Box("prot1", files={"locked/secret.txt": "orig\n"}, protected=["locked/"])
 p1.script([{"write_files": {"src/a.py": "x\n", "locked/secret.txt": "hacked\n"}, "output": DONE,

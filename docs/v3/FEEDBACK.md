@@ -83,3 +83,16 @@ and `init` does not detect a formatter or a hook.
 
 Up to the stop the run had: answered one architecture question from a principle, written a nine-unit
 plan with five advisers, and healed one unit shortfall by retrying on a stronger model.
+
+## 6. Red-first spec tests cannot pass a validating commit hook (2026-11-25)
+
+After the format fix the same commit failed again: the hook also typechecks, and spec tests written
+before the implementation reference fields and exports that do not exist yet. This is structural for
+any repo whose commit hook validates code, not a one-off.
+
+The human's answer: the hook is not needed for flow commits, since the flow handles that.
+
+**Done (PROGRESS decision 34).** `commit_hooks: false` in `flow.yaml`. Not built: holding the spec
+tests outside the worktree until implement finishes, which would keep hooks on at the cost of one
+hook run per driver commit. Also seen: a resume after a failed commit pays for a fresh test-author
+call instead of committing the work already staged.

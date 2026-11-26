@@ -129,7 +129,13 @@ If this session restarts: read this file first, then continue from the first uni
     hook rejects unformatted files, a model wrote one, and the driver's commit failed as a `runner`
     stop. `flow.yaml` takes an optional `format` command; when set, the driver runs it in the
     worktree before every commit it makes. A failing format command is recorded as an event and the
-    commit is still tried. The driver does not bypass hooks.
+    commit is still tried.
+34. **A repo can have the driver's commits skip its commit hooks.** Decided with the human during the
+    same trial. Spec tests are written before the implementation, so they are red and often do not
+    typecheck; a commit hook that typechecks rejects them by design. `commit_hooks: false` in
+    `flow.yaml` (default `true`) makes the driver commit with `--no-verify`. Only the driver's own
+    commits on the flow branch are affected; the checks after implement and fix and the full check at
+    the merge gate still decide. The human's reasoning: the flow already handles what the hook checks.
 
 ## Spend (notional USD, real model calls)
 

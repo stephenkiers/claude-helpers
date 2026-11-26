@@ -104,6 +104,7 @@ h.test_result("unknown nested key (merge)", raises("check: {full: x}\nmerge: {ho
 h.test_result("unknown nested key (budget)", raises("check: {full: x}\nbudget: {max: 1}\n", "budget.max"))
 h.test_result("wrong type: base", raises("base: [a]\ncheck: {full: x}\n", "base"))
 h.test_result("wrong type: timeout", raises("check: {full: x, timeout_secs: soon}\n", "check.timeout_secs"))
+h.test_result("wrong type: commit_hooks", raises("check: {full: x}\ncommit_hooks: never\n", "commit_hooks"))
 h.test_result("wrong type: format", raises("check: {full: x}\nformat: [a]\n", "format"))
 h.test_result("wrong type: check.base", raises("check: {full: x, base: sometimes}\n", "check.base"))
 h.test_result("wrong type: timeout bool", raises("check: {full: x, timeout_secs: true}\n", "check.timeout_secs"))
