@@ -498,12 +498,11 @@ b.results("fail", "fail")
 b.script([w("unit-u1", "src/a.py"),
           {"role": "fixer", "label": "fix-r1",
            "output": blocked("shell", "git merge origin/main", "The branch is behind the base and I have no shell.")}])
-stop = expect_stop(lambda: implement.run(b.ctx), "environment")
+res = implement.run(b.ctx)
 models = [x["model"] for x in b.launches() if x["role"] == "fixer"]
-h.test_result("a check fixer that says it cannot fix from here: no round 2, no judge, no stronger model",
-              stop is not None and labels(b) == ["unit-u1", "fix-r1"] and len(models) == 1
-              and "The branch is behind the base and I have no shell." in stop.reason
-              and "git merge origin/main" in stop.reason, "%s %s" % (labels(b), stop))
+h.test_result("a check fixer that says it cannot fix from here: no stop, no round 2, no judge, no stronger model",
+              res.kind == "done" and labels(b) == ["unit-u1", "fix-r1"] and len(models) == 1,
+              "%s %s" % (labels(b), res))
 
 # -- a unit's bookkeeping question never becomes a card (#570) -----------------------------------
 OWN_Q = {"id": "own1", "question": "Which unit should own the edit to src/b.py?",

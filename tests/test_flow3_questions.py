@@ -556,12 +556,13 @@ h.test_result("a detail from a unit is assumed with no resolver call",
 # rejected before it reaches the inbox.
 RISK = "The spec test for mod would no longer be protected."
 h.test_result("unhonourable names the options that ask to change how the work is split",
-              questions.unhonourable({"options": OWNERSHIP_OPTIONS}) == ["b"]
+              questions.unhonourable({"options": OWNERSHIP_OPTIONS}, OWNER) == ["b"]
               and questions.unhonourable({"options": [
                   {"id": "x", "label": "Run the migration by hand", "consequence": "You run it manually."},
                   {"id": "y", "label": "Reorder the units", "consequence": "u7 goes first."},
-                  {"id": "z", "label": "Keep the old name", "consequence": "Callers are unchanged."}]}) == ["x", "y"]
-              and questions.unhonourable({"options": q("n")["options"]}) == [])
+                  {"id": "z", "label": "Keep the old name", "consequence": "Callers are unchanged."}]}, OWNER) == ["x", "y"]
+              and questions.unhonourable({"options": q("n")["options"]}, OWNER) == []
+              and questions.unhonourable({"options": OWNERSHIP_OPTIONS}) == [])  # no owner: never checked
 ctx = make_ctx(with_principles=False)
 script([])
 stop = None
