@@ -82,7 +82,7 @@ Out (not built; may come later):
 scripts/flow3/
   __main__.py      entry: python3 -m scripts.flow3 <subcommand>
   cli.py           init | doctor | run | fleet | inbox | answer | say | resume | status | merge | principles
-  repoconfig.py    read and validate the repo's .claude/flow.yaml (section 9)
+  repoconfig.py    read and validate the repo's flow.yaml (section 9)
   fleet.py         launch and supervise several flows; the inbox (section 10)
   record.py        the audit record: step records, journal, decision records (section 8)
   voice.py         interpret a free-text or dictated reply into answers and directions (section 6)
@@ -224,7 +224,8 @@ step that starts; a running step is not interrupted.
 
 Two files, both plain markdown, read whole by the models that need them:
 
-- Project: `docs/principles.md` in the target repo (committed; path configurable).
+- Project: `docs/principles.md` in the target repo (committed; path configurable), or, when the repo has
+  none, `~/.claude/claude-helpers/<owner>.<name>.principles.md`.
 - Personal: `~/.claude/principles.md`.
 
 Project wins on conflict. Format:
@@ -401,7 +402,10 @@ never re-checked. No step waits on a human unless it is one of the three stop re
 ## 9. Each repo declares its own process
 
 Repos differ: how dependencies install, what the fast and full checks are, how a merge is done and
-what must run before and after it. v3 reads one committed file per repo, `.claude/flow.yaml`:
+what must run before and after it. v3 reads one file per repo. It looks outside the repo first, at
+`~/.claude/claude-helpers/<owner>.<name>.flow.yaml`, then at a committed `.claude/flow.yaml`; the outside
+file wins whole, so a repo you do not own needs nothing checked in or ignored. `flow3 init` writes the
+outside file unless `--in-repo` is passed:
 
 ```yaml
 base: main

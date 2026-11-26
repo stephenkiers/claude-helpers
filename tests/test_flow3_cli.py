@@ -86,7 +86,14 @@ h = Harness("Flow v3 cli")
 bare = make_repo("bare", with_config=False)
 rc, out, err = call(["init", "--repo-root", str(bare)])
 h.test_result("init without a detectable check still writes, loudly, exit 0",
-              rc == 0 and (bare / ".claude/flow.yaml").exists() and "check.full" in out, out + err)
+              rc == 0 and repoconfig.external_config_file(bare).exists() and "check.full" in out, out + err)
+h.test_result("init writes outside the repo by default, leaving the checkout untouched",
+              not (bare / ".claude").exists() and sh(["git", "status", "--porcelain"], bare) == "", out)
+inrepo = make_repo("inrepo", with_config=False)
+rc, out, err = call(["init", "--repo-root", str(inrepo), "--in-repo", "--set", "check.full=true"])
+h.test_result("init --in-repo writes .claude/flow.yaml in the repo",
+              rc == 0 and (inrepo / ".claude/flow.yaml").exists()
+              and not repoconfig.external_config_file(inrepo).exists(), out + err)
 rc, out, err = call(["init", "--repo-root", str(bare)])
 h.test_result("init refuses to overwrite", rc == 1 and "--force" in err, err)
 rc, out, err = call(["init", "--repo-root", str(bare), "--force", "--set", "check.full=true",
@@ -236,13 +243,28 @@ h.test_result("overrule marks the decision and adds a direction",
 
 # ---- principles ---------------------------------------------------------------------------------------
 rc, out, err = call(["principles", "init", "--repo-root", str(proj), "--themes", "docs-follow-code,P-fail-closed"])
-text = (proj / "docs/principles.md").read_text() if (proj / "docs/principles.md").exists() else ""
+ext_principles = repoconfig.external_principles_file(proj)
+text = ext_principles.read_text() if ext_principles.exists() else ""
+h.test_result("principles init writes outside the repo by default", not (proj / "docs/principles.md").exists())
 goal, plist = principles.parse(text, "project")
 h.test_result("principles init writes the chosen seeds and a placeholder goal",
               rc == 0 and [p.id for p in plist] == ["P-docs-follow-code", "P-fail-closed"] and "Edit the Goal" in out,
               out + err + text)
+class _Ctx:
+    repo_root = proj
+    cfg = repoconfig.load(proj)
+
+
+h.test_result("a flow reads the principles file kept outside the repo",
+              [p.id for p in principles.load_for(_Ctx)[1]][:2] == ["P-docs-follow-code", "P-fail-closed"])
 rc, out, err = call(["principles", "init", "--repo-root", str(proj)])
 h.test_result("principles init never overwrites", rc == 1 and "never overwritten" in err, err)
+rc, out, err = call(["principles", "init", "--repo-root", str(inrepo), "--in-repo", "--themes", "P-fail-closed"])
+h.test_result("principles init --in-repo writes the repo's own file",
+              rc == 0 and (inrepo / "docs/principles.md").exists(), out + err)
+rc, out, err = call(["principles", "init", "--repo-root", str(inrepo)])
+h.test_result("principles init refuses an outside file the repo's own would shadow",
+              rc == 1 and "wins over" in err, err)
 rc, out, err = call(["principles", "suggest", "--repo", REPO])
 h.test_result("principles suggest works with little history", rc == 0, out + err)
 rc, out, err = call(["principles", "init", "--repo-root", str(bare), "--themes", "bogus"])

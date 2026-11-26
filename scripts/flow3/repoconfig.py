@@ -1,6 +1,10 @@
 """
-A repo's own Flow v3 process: `.claude/flow.yaml` (PLAN.md section 9), plus init-time detection and the
+A repo's own Flow v3 process: its flow.yaml (PLAN.md section 9), plus init-time detection and the
 doctor that proves the file works against the untouched base before any ticket runs.
+
+The file is looked up outside the repo first, at `<config home>/<owner>.<name>.flow.yaml`
+(~/.claude/claude-helpers by default), then at `<repo_root>/.claude/flow.yaml`. The outside file wins
+whole: the two are never merged. So a repo needs nothing checked in or ignored to run a flow.
 """
 
 import hashlib
@@ -16,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml  # type: ignore[import-untyped]
 
 from scripts.flow3 import checks, config, gitops
-from scripts.flow3.paths import repo_dir
+from scripts.flow3.paths import config_home, repo_dir
 from scripts.workflow.fsutil import atomic_write_text, read_json_object
 
 CONFIG_RELPATH = ".claude/flow.yaml"
@@ -178,23 +182,36 @@ def parse(text: str) -> RepoConfig:
                       format_cmd=format_cmd, commit_hooks=commit_hooks)
 
 
-def _config_file(repo_root: Path) -> Path:
-    return repo_root / CONFIG_RELPATH
+def external_config_file(repo_root: Path) -> Path:
+    """The repo's flow.yaml outside the repo: <config home>/<owner>.<name>.flow.yaml."""
+    return config_home() / ("%s.flow.yaml" % repo_key(repo_root))
+
+
+def external_principles_file(repo_root: Path) -> Path:
+    """The repo's principles file outside the repo: <config home>/<owner>.<name>.principles.md."""
+    return config_home() / ("%s.principles.md" % repo_key(repo_root))
+
+
+def config_file(repo_root: Path) -> Path:
+    """The flow.yaml in force: the one outside the repo when it exists, else <repo_root>/.claude/flow.yaml."""
+    external = external_config_file(repo_root)
+    return external if external.is_file() else repo_root / CONFIG_RELPATH
 
 
 def load(repo_root: Path) -> RepoConfig:
-    """Read <repo_root>/.claude/flow.yaml. Raises ConfigError when it is missing or invalid."""
-    path = _config_file(repo_root)
+    """Read the flow.yaml in force (see config_file). Raises ConfigError when it is missing or invalid."""
+    path = config_file(repo_root)
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        raise ConfigError("%s not found (run `flow3 init`)" % CONFIG_RELPATH)
+        raise ConfigError("no flow.yaml at %s or %s (run `flow3 init`)"
+                          % (external_config_file(repo_root), CONFIG_RELPATH))
     return parse(text)
 
 
 def config_hash(repo_root: Path) -> str:
-    """sha256 of the flow.yaml bytes."""
-    return hashlib.sha256(_config_file(repo_root).read_bytes()).hexdigest()
+    """sha256 of the bytes of the flow.yaml in force."""
+    return hashlib.sha256(config_file(repo_root).read_bytes()).hexdigest()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -228,6 +245,18 @@ def repo_name(repo_root: Path) -> str:
             return name
     name = _safe_component(repo_root.resolve().name)
     return name or "repo"
+
+
+def repo_key(repo_root: Path) -> str:
+    """
+    The repo's name for config kept outside the repo: `<owner>.<name>` from the origin URL, so two
+    repos with the same name under different owners do not share a file. Falls back to repo_name.
+    """
+    name = repo_name(repo_root)
+    url = _git_out(repo_root, ["remote", "get-url", "origin"]).strip().rstrip("/")
+    parts = [p for p in re.split(r"[/:\\]", url) if p]
+    owner = _safe_component(parts[-2]) if len(parts) >= 2 else ""
+    return "%s.%s" % (owner, name) if owner else name
 
 
 def _recipes(text: str) -> List[str]:
@@ -379,7 +408,7 @@ def doctor(repo_root: Path, run_checks: bool = False) -> DoctorReport:
         cfg = load(repo_root)
     except ConfigError as exc:
         return DoctorReport(False, ("FAIL config: %s" % exc,))
-    lines.append("ok   config: %s parsed" % CONFIG_RELPATH)
+    lines.append("ok   config: %s parsed" % config_file(repo_root))
 
     ref = ""
     for candidate in ("origin/" + cfg.base, cfg.base):

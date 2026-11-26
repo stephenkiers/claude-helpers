@@ -1,7 +1,7 @@
 """
 Defaults for Flow v3: which model each role runs on and the per-call limits (PLAN.md section 7).
 
-A repo overrides models in `.claude/flow.yaml` under `models:` (role -> model). The key "*" replaces
+A repo overrides models in its flow.yaml under `models:` (role -> model). The key "*" replaces
 every role's model at once, which is how a sandbox run is kept cheap.
 """
 

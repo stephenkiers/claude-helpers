@@ -203,6 +203,42 @@ h.test_result("doctor_passed flips false when flow.yaml changes", not repoconfig
 repoconfig.doctor(green)
 h.test_result("doctor_passed true again after re-running doctor", repoconfig.doctor_passed(green))
 
+# the flow.yaml kept outside the repo
+h.test_result("repo_key is owner.name from the origin URL", repoconfig.repo_key(nothing) == "acme.other-thing",
+              repoconfig.repo_key(nothing))
+noremote = TMP / "noremote"
+noremote.mkdir()
+sh(["git", "init", "-q", str(noremote)], TMP)
+h.test_result("repo_key falls back to the directory name without a remote",
+              repoconfig.repo_key(noremote) == "noremote", repoconfig.repo_key(noremote))
+ext = repoconfig.external_config_file(green)
+h.test_result("the outside file sits beside the state root, named for the repo",
+              ext.parent == Path(os.environ["FLOW3_HOME"]).parent / "claude-helpers"
+              and ext.name == repoconfig.repo_key(green) + ".flow.yaml", str(ext))
+h.test_result("without an outside file the repo's own flow.yaml is in force",
+              repoconfig.config_file(green) == green / ".claude" / "flow.yaml")
+ext.parent.mkdir(parents=True, exist_ok=True)
+ext.write_text('provider: local\ncheck:\n  full: "echo outside"\n')
+h.test_result("an outside flow.yaml wins whole over the repo's own",
+              repoconfig.config_file(green) == ext and repoconfig.load(green).check_full == "echo outside"
+              and not repoconfig.load(green).install)
+h.test_result("doctor_passed flips false when an outside flow.yaml appears", not repoconfig.doctor_passed(green))
+rep = repoconfig.doctor(green)
+h.test_result("doctor names the outside file it parsed", rep.ok and str(ext) in rep.lines[0], str(rep.lines))
+ext.write_text('provider: local\ncheck:\n  full: "echo outside again"\n')
+h.test_result("doctor_passed flips false when the outside flow.yaml changes", not repoconfig.doctor_passed(green))
+ext.unlink()
+only = TMP / "only-outside"
+only.mkdir()
+sh(["git", "init", "-q", "-b", "main", str(only)], TMP)
+repoconfig.external_config_file(only).write_text('provider: local\ncheck:\n  full: "true"\n')
+h.test_result("a repo with no .claude directory loads from the outside file alone",
+              repoconfig.load(only).check_full == "true" and not (only / ".claude").exists())
+os.environ["FLOW3_CONFIG_HOME"] = str(TMP / "elsewhere")
+h.test_result("FLOW3_CONFIG_HOME moves the outside files",
+              repoconfig.external_config_file(only).parent == TMP / "elsewhere")
+del os.environ["FLOW3_CONFIG_HOME"]
+
 red, _ = make_repo("red", {"ok.txt": "yes\n"})
 write_cfg(red, "echo the suite is broken; exit 1")
 rep = repoconfig.doctor(red)

@@ -12,6 +12,15 @@ def flow_home() -> Path:
     return root
 
 
+def config_home() -> Path:
+    """
+    Where per-repo config kept outside the repo lives: $FLOW3_CONFIG_HOME, else `claude-helpers` beside
+    the state root (so ~/.claude/claude-helpers by default). Not created here: reading must not make it.
+    """
+    raw = os.environ.get("FLOW3_CONFIG_HOME")
+    return Path(raw) if raw else flow_home().parent / "claude-helpers"
+
+
 def repo_dir(repo: str) -> Path:
     """The per-repo state directory, created on demand."""
     if not repo or "/" in repo or repo in (".", ".."):

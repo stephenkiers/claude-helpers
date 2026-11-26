@@ -21,6 +21,7 @@ Conventions for every module:
 ```python
 def flow_home() -> Path
 def repo_dir(repo: str) -> Path                      # flow_home()/<repo>, created
+def config_home() -> Path                            # $FLOW3_CONFIG_HOME, else flow_home().parent/"claude-helpers"
 def slugify(title: str, max_len: int = 40) -> str
 
 class FlowDir:
@@ -160,7 +161,7 @@ def after_merge(ctx: Ctx, what: str, fn: Callable[[], None]) -> Optional[str]   
 class Ctx:
     flow: FlowDir
     cfg: RepoConfig
-    repo_root: Path           # the main checkout, where .claude/flow.yaml lives
+    repo_root: Path           # the main checkout
     provider: Provider
     @property
     def worktree(self) -> Path      # from state.json
@@ -184,8 +185,12 @@ class RepoConfig:
     protected_paths: Tuple[str, ...]; principles: str
     soft_usd: float; hard_usd: float; models: Dict[str, str]
 def parse(text: str) -> RepoConfig                 # raises ConfigError naming the bad key
-def load(repo_root: Path) -> RepoConfig            # reads <repo_root>/.claude/flow.yaml
+def config_file(repo_root: Path) -> Path           # the flow.yaml in force: outside the repo, else .claude/flow.yaml
+def external_config_file(repo_root: Path) -> Path      # config_home()/<owner>.<name>.flow.yaml
+def external_principles_file(repo_root: Path) -> Path  # config_home()/<owner>.<name>.principles.md
+def load(repo_root: Path) -> RepoConfig            # reads config_file(repo_root)
 def repo_name(repo_root: Path) -> str
+def repo_key(repo_root: Path) -> str               # <owner>.<name> from the origin URL, else repo_name
 def detect(repo_root: Path) -> Dict[str, Any]      # what init can work out on its own
 def render(values: Dict[str, Any]) -> str          # the flow.yaml text
 def config_hash(repo_root: Path) -> str

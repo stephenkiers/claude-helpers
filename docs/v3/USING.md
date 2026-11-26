@@ -15,7 +15,12 @@ python3 -m scripts.flow3 doctor --repo-root <project>
 python3 -m scripts.flow3 principles init --repo-root <project>
 ```
 
-`init` writes the repo config (`--set KEY=VALUE` overrides a field, `--force` rewrites). `doctor` proves the
+Nothing has to be checked into the project or added to its `.gitignore`. `init` writes the repo config to
+`~/.claude/claude-helpers/<owner>.<name>.flow.yaml` (`--set KEY=VALUE` overrides a field, `--force` rewrites,
+`--in-repo` writes `.claude/flow.yaml` in the project instead, for a config you want to share). When both
+exist, the file outside the repo wins whole; the two are never merged. `principles init` writes
+`~/.claude/claude-helpers/<owner>.<name>.principles.md` the same way (`--in-repo` writes the path `principles:`
+names, and a principles file in the repo wins). `$FLOW3_CONFIG_HOME` moves the directory. `doctor` proves the
 config parses and the install works in a fresh checkout of the base; `run` refuses until it has passed. It
 does not run the checks: the base is assumed green. `doctor --checks` also runs them on the untouched base,
 and `check.base: true` in `flow.yaml` runs the fast check on the base at the start of every ticket. The full

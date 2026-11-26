@@ -122,8 +122,14 @@ def load(project_file: Optional[Path], personal_file: Optional[Path]) -> Tuple[s
 
 
 def load_for(ctx: Any) -> Tuple[str, List[Principle]]:
-    """The principles that apply to a flow: the repo's file and the personal one."""
+    """
+    The principles that apply to a flow: the repo's file and the personal one. The repo's file is the
+    one in the repo when it exists, else the one kept outside it (repoconfig.external_principles_file).
+    """
+    from scripts.flow3 import repoconfig
     project = Path(ctx.repo_root) / ctx.cfg.principles
+    if not project.is_file():
+        project = repoconfig.external_principles_file(Path(ctx.repo_root))
     personal = Path.home() / ".claude" / "principles.md"
     return load(project, personal)
 

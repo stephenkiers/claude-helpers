@@ -55,8 +55,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="flow3", description="Flow v3: one ticket from issue to merged PR.")
     sub = parser.add_subparsers(dest="command", parser_class=_Parser)
 
-    p = sub.add_parser("init", help="write .claude/flow.yaml from what is detected")
+    p = sub.add_parser("init", help="write the repo's flow.yaml from what is detected (outside the repo)")
     p.add_argument("--repo-root", default=".")
+    p.add_argument("--in-repo", action="store_true", help="write .claude/flow.yaml in the repo instead")
     p.add_argument("--force", action="store_true", help="overwrite an existing flow.yaml")
     p.add_argument("--set", dest="sets", action="append", default=[], metavar="KEY=VALUE",
                    help="override a detected value, e.g. check.full='just check' (repeatable)")
@@ -67,8 +68,9 @@ def _parser() -> argparse.ArgumentParser:
 
     pr = sub.add_parser("principles", help="starter principles file; candidate principles")
     psub = pr.add_subparsers(dest="pcommand", parser_class=_Parser)
-    p = psub.add_parser("init", help="write a starter principles file")
+    p = psub.add_parser("init", help="write a starter principles file (outside the repo)")
     p.add_argument("--repo-root", default=".")
+    p.add_argument("--in-repo", action="store_true", help="write the principles file in the repo instead")
     p.add_argument("--goal", default="")
     p.add_argument("--themes", default="", help="comma-separated seed theme ids (default: all)")
     p.add_argument("--yes", action="store_true", help="do not ask which seed themes to keep")
@@ -258,9 +260,10 @@ def _apply_set(values: Dict[str, Any], item: str) -> None:
 
 def cmd_init(args: Any) -> int:
     root = _root(args)
-    target = root / repoconfig.CONFIG_RELPATH
+    in_repo = bool(getattr(args, "in_repo", False))
+    target = root / repoconfig.CONFIG_RELPATH if in_repo else repoconfig.external_config_file(root)
     if target.exists() and not args.force:
-        raise CliError("%s already exists; pass --force to overwrite it" % repoconfig.CONFIG_RELPATH)
+        raise CliError("%s already exists; pass --force to overwrite it" % target)
     values = repoconfig.detect(root)
     detected = json.dumps(values, sort_keys=True)
     for item in args.sets:
@@ -280,6 +283,10 @@ def cmd_init(args: Any) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
     print("Wrote %s" % target)
+    if in_repo and repoconfig.config_file(root) != target:
+        print("NOTE: %s exists and wins over the file just written." % repoconfig.config_file(root))
+    elif not in_repo and (root / repoconfig.CONFIG_RELPATH).is_file():
+        print("NOTE: this file now wins over the repo's own %s." % repoconfig.CONFIG_RELPATH)
     print("Detected: %s" % detected)
     if missing:
         print("NOTE: no check command was found or given, so `check.full` is a comment. Set it "
@@ -336,9 +343,12 @@ def cmd_principles(args: Any) -> int:
         rel = repoconfig.load(root).principles
     except ConfigError:
         rel = repoconfig.DEFAULT_PRINCIPLES
-    target = root / rel
+    in_repo = bool(getattr(args, "in_repo", False))
+    target = root / rel if in_repo else repoconfig.external_principles_file(root)
     if target.exists():
-        raise CliError("%s already exists; it is never overwritten" % rel)
+        raise CliError("%s already exists; it is never overwritten" % target)
+    if not in_repo and (root / rel).is_file():
+        raise CliError("the repo already has %s, which wins over a file outside the repo; edit that one" % rel)
     goal = args.goal.strip()
     note = ""
     if not goal:
