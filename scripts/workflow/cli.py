@@ -182,7 +182,7 @@ def main() -> None:
     cleanup_discover_parser.add_argument("target", help="Target worktree path")
     cleanup_discover_parser.add_argument(
         "--no-sizes", action="store_true",
-        help="Skip sizing of build directories"
+        help="Unused (kept for backward compatibility; discovery no longer lists build directories)"
     )
     cleanup_discover_parser.add_argument(
         "--in-flow", action="store_true",

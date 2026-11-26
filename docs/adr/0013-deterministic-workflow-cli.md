@@ -445,3 +445,20 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 
 **Consequences:** A fail-closed removal contract with one delete guard, one process check, and atomic trash collection ensures a half-deleted state is not reachable. `apply_cleanup` gains the teardown-only entry alongside its existing merged path, keeping its pull-and-full-check gate only for the merged path (Decision 7). The plan's `in_flow` field gates SIGKILL and remote deletion inside flows. No removal ever spans a process check that failed with UNKNOWN.
 
+### Amendment 15.1: Retire build_dir as a discoverable and actionable kind (2026-11-26)
+
+**Problem:** Amendment 15's `discover_ticket` scanned build directories across all siblings in the worktree parent, alongside separate worktree items. The teardown ask presented build dirs as a selectable group: "2 — worktrees and build dirs". A cleanup of one ticket mistakenly listed and deleted `node_modules`, `target`, `dist`, `.next` and `build` from 14 unrelated sibling worktrees. The core issue: a build dir is not independently selectable or tearable; it is wholly owned by its owner worktree and must be removed only as part of that worktree's cleanup. The machine-wide `cleanup stale --sizes` path is not affected; only single-ticket cleanup and Amendment 15's discoverable build-dir items.
+
+**Decision:** Retire `build_dir` as a discoverable and actionable kind. Build directories are removed only as part of their owner worktree's removal:
+- **In the MERGED path**: `cleanup apply` removes the ticket worktree through `cleanup.remove_worktree`, which calls `guarded_rmtree` on the whole tree (including its build dirs).
+- **In the teardown-only path (NOT_MERGED):** `git worktree remove` with retry via `guarded_rmtree` does the same.
+
+Specifically:
+- `discover_ticket` stops emitting `build_dir` items. The sibling-scanning loop is deleted; `no_sizes` is kept as a no-op for backward compatibility.
+- `render_ask` changes group 2's label from "worktrees and build dirs" to "worktrees".
+- `apply_teardown`'s `build_dir` branch refuses every item into `skipped`, never attempts deletion. It names the symlink target when the path is a symlink, e.g. "Refused build directory /path: symlink to /other; build dirs are removed only with their owner worktree".
+- The `/cleanup` MERGED path feeds `cleanup apply` the `cleanup plan` output (not discovery). On a freshness-check rejection, it re-plans, shows the diff, asks again, and never applies an unseen plan (Ruling A1 in #567).
+- `teardown_guard`'s `KIND_BUILD_DIR` branch remains in place but has no caller in teardown; it is dead code left for the sake of Decision 1's unified delete guard.
+
+**Consequences:** The one delete guard (Amendment 15) now protects only worktrees (the owner), not separate build-dir items. The sibling scan and duplicate listing are gone. A build dir is deleted if and only if its owner worktree is successfully removed. `apply_teardown` refuses every `build_dir` item, including items from plans built before this change, so legacy and forged plans cannot delete anything through the retired kind. Worktree removal uses the existing `guarded_rmtree` path (teardown guard + atomic trash), so a symlinked build dir is unlinked, not followed. The `/cleanup` doc pipeline now feeds `cleanup apply` the cleanup plan (the sanctioned remove-set), not discovery output, and handles a stale plan by re-planning and re-asking before applying, enforcing that the human never approves an unseen removal set.
+

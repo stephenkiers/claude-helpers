@@ -213,7 +213,6 @@ PS_TIMEOUT_SECS = 10
 LSOF_TIMEOUT_SECS = 10
 GH_PR_LIST_TIMEOUT_SECS = 30
 PS_SIGNAL_TIMEOUT_SECS = 5
-BUILD_DIR_REMOVAL_TIMEOUT_SECS = 30
 
 
 @dataclass
@@ -301,13 +300,13 @@ def discover_ticket(
         pr_signal_runner: Injectable subprocess runner for pr_merged_by_head
         ps_runner: Injectable subprocess runner for procs functions
         lsof_runner: Injectable subprocess runner for procs functions
-        no_sizes: Skip sizing build directories
+        no_sizes: Unused (kept for backward compatibility)
         get_idle_threshold: Injectable function to get sessionIdleMinutes preference
         tty_atime: Injectable function to get tty activity time
         check_fleet: If True, discover fleet supervisors for this repo
 
     Returns:
-        TeardownPlan with numbered items
+        TeardownPlan with numbered items (does not include build directories)
     """
     target_path = Path(target_worktree).resolve()
     plan = TeardownPlan(in_flow=in_flow)
@@ -435,15 +434,6 @@ def discover_ticket(
 
     # 2. Discover worktrees (ticket, haiku-*, agent-*)
     if parent_path:
-        # List actual directories
-        actual_dirs = set()
-        try:
-            for entry in parent_path.iterdir():
-                if entry.is_dir():
-                    actual_dirs.add(entry.resolve())
-        except OSError:
-            pass
-
         # Check for agent worktrees
         agent_dir = Path.home() / ".claude" / "worktrees"
         agent_worktrees = set()
@@ -554,43 +544,6 @@ def discover_ticket(
                     pass
         except Exception:
             pass
-
-    # Build directories in worktrees
-    if not no_sizes and parent_path:
-        for wt_path in [target_path] + list(actual_dirs):
-            try:
-                for allowed_name in ["target", "node_modules", "dist", ".next", "build"]:
-                    build_dir = wt_path / allowed_name if isinstance(wt_path, Path) else Path(wt_path) / allowed_name
-                    if build_dir.exists() and build_dir.is_dir():
-                        try:
-                            result = subprocess.run(
-                                ["du", "-sh", str(build_dir)],
-                                capture_output=True,
-                                text=True,
-                                timeout=5
-                            )
-                            if result.returncode == 0:
-                                size_str = result.stdout.split()[0]
-                            else:
-                                size_str = "unknown (timed out)"
-                        except subprocess.TimeoutExpired:
-                            size_str = "unknown (timed out)"
-                        except Exception:
-                            size_str = "unknown"
-
-                        item = TeardownItem(
-                            number=item_number,
-                            kind="build_dir",
-                            group=2,
-                            name=f"Build dir {allowed_name} ({size_str})",
-                            path=str(build_dir),
-                            selectable=True,
-                            status="ok"
-                        )
-                        plan.items.append(item)
-                        item_number += 1
-            except Exception:
-                pass
 
     # 3. Discover branches
     try:
@@ -780,7 +733,7 @@ def render_ask(plan: TeardownPlan) -> List[str]:
         plan: TeardownPlan to render
 
     Returns:
-        List of option strings like "1 — sessions", "2 — worktrees and build dirs", etc.
+        List of option strings like "1 — sessions", "2 — worktrees", etc.
     """
     # Determine which groups have selectable items
     groups_with_selectable = set()
@@ -791,7 +744,7 @@ def render_ask(plan: TeardownPlan) -> List[str]:
     options = []
     group_names = {
         1: "sessions",
-        2: "worktrees and build dirs",
+        2: "worktrees",
         3: "branches",
         4: "flow, caches and tmux"
     }
@@ -1125,27 +1078,18 @@ def apply_teardown(
                     plan.warnings.append(f"Unexpected error removing {item.name}: {e}")
 
             elif item.kind == "build_dir":
-                # F10: Implement build_dir removal
-                if item.path and item.selectable:
+                # Build dirs are removed only as part of their owner worktree's removal.
+                # Refuse every build_dir item, including from legacy plans.
+                if not item.path or not item.path.strip():
+                    skipped.append("Refused build directory (no path): build dirs are removed only with their owner worktree")
+                elif os.path.islink(item.path):
                     try:
-                        rm_result = subprocess.run(
-                            ["rm", "-rf", item.path],
-                            capture_output=True,
-                            text=True,
-                            timeout=BUILD_DIR_REMOVAL_TIMEOUT_SECS
-                        )
-                        if rm_result.returncode == 0:
-                            done.append(f"Removed build directory {item.path}")
-                        else:
-                            skipped.append(f"Could not remove build directory {item.path}: {rm_result.stderr}")
-                    except subprocess.TimeoutExpired:
-                        # F22: Specific exception handling
-                        skipped.append(f"Build directory removal timed out: {item.path}")
-                        plan.warnings.append(f"Build directory removal timed out: {item.path}")
-                    except Exception as e:
-                        # F22: Specific exception handling
-                        failed.append(f"Error removing build directory {item.path}: {e}")
-                        plan.warnings.append(f"Error removing build directory {item.path}: {e}")
+                        target = os.readlink(item.path)
+                        skipped.append(f"Refused build directory {item.path}: symlink to {target}; build dirs are removed only with their owner worktree")
+                    except OSError:
+                        skipped.append(f"Refused build directory {item.path}: symlink to unreadable; build dirs are removed only with their owner worktree")
+                else:
+                    skipped.append(f"Refused build directory {item.path}: build dirs are removed only with their owner worktree")
 
             elif item.kind == "branch":
                 # F10, DECISION 3: Branch deletion uses -d (not -D) unless MERGED, gate on worktree removal
