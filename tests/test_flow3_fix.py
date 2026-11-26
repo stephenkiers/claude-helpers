@@ -419,7 +419,12 @@ b2.script([w("unit-a1-1", "src/a.py"),
            {"role": "fixer", "label": "fix-r1",
             "output": {"status": "blocked", "summary": "cannot fix",
                        "blocked": {"reason": "Need a tool", "needs": "environment", "what": "npm"}}},
-           verdicts(("r0-1", False))])  # Finding stays open after blocked fixer
+           verdicts(("r0-1", False)),  # Finding stays open after blocked fixer
+           w("unit-a2-1", "src/a.py"),
+           {"role": "fixer", "label": "fix-r1",
+            "output": {"status": "blocked", "summary": "cannot fix",
+                       "blocked": {"reason": "Need a tool", "needs": "environment", "what": "npm"}}},
+           verdicts(("r0-1", False))])
 res2 = fix.run(b2.ctx)
 # When fixer is blocked, the check still runs but stays red, finding remains open
 h.test_result("F9: check_attempt branch 2 - fixer blocked, check still attempted",

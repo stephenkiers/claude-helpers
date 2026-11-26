@@ -886,36 +886,27 @@ h.test_result("cleanup: success first time is None with no retry",
 # F12: reused_red_base_moved - verify sync_base happens when base moves with tree unchanged
 # =============================================================================================
 
-rb1 = Box("reused_red_base_moved")
-rb1.results("fail", "pass")
-# First check: fail, record the red with current base
-red_run = heal.check(rb1.ctx, "fast", raise_on_fail=False)
-tree_at_first_check = gitops.tree_id(rb1.clone)
-base_at_first_check = gitops.head_sha(rb1.clone)
-
-# Move the base forward (simulate base moving forward while tree is unchanged)
-# by pulling from origin after updating the origin
-origin_path = Path(str(rb1.clone).replace(Path(str(rb1.clone)).name, Path(str(rb1.clone)).name + "-origin.git"))
-# Update the origin to have a new commit on main
-sh(["git", "config", "receive.denyCurrentBranch", "ignore"], origin_path)
-sh(["git", "commit", "--allow-empty", "-m", "base moved"], rb1.clone)
-sh(["git", "push", "origin", "main"], rb1.clone)
-# Now fetch the new base in the clone
-sh(["git", "pull", "origin", "main"], rb1.clone)
-base_after_move = gitops.head_sha(rb1.clone)
-
-# The tree should still be the same, but the base has moved
-tree_after_move = gitops.tree_id(rb1.clone)
-base_moved = base_at_first_check != base_after_move
-tree_unchanged = tree_at_first_check == tree_after_move
-
-# Now run check again with a fixer - it should NOT reuse the red from the old base
-# because the base has moved. It should run sync_base first.
-run_with_fixer = heal.check(rb1.ctx, "fast", fixer=lambda r, n: edit(rb1, "fix\n"), raise_on_fail=False)
-
-h.test_result("reused_red_base_moved: base moved, tree unchanged, fixer runs (not reused)",
-              base_moved and tree_unchanged and not run_with_fixer.reused and rb1.runs() >= 3,
-              f"runs={rb1.runs()}, tree_unchanged={tree_unchanged}, reused={run_with_fixer.reused}")
+rb1 = Box("reused_red_base_moved", files={"shared.txt": "base\n"})
+sh(["git", "checkout", "-q", "-b", "flow/x"], rb1.clone)
+(rb1.clone / "mine.txt").write_text("m\n")
+sh(["git", "add", "-A"], rb1.clone)
+sh(["git", "commit", "-q", "-m", "own work"], rb1.clone)
+rb1.script([])
+rb1.results("fail", "fail", "pass")
+heal.check(rb1.ctx, "fast", raise_on_fail=False)  # records the red against this tree (base not yet moved)
+other1 = TMP / "reused_red_base_moved-other2"
+sh(["git", "clone", "-q", str(rb1.origin), str(other1)], TMP)
+sh(["git", "config", "user.name", "o"], other1)
+sh(["git", "config", "user.email", "o@example.invalid"], other1)
+(other1 / "theirs.txt").write_text("t\n")
+sh(["git", "add", "-A"], other1)
+sh(["git", "commit", "-q", "-m", "base moved"], other1)
+sh(["git", "push", "-q", "origin", "main"], other1)  # base moves; the branch's tree is unchanged
+fixer_calls: List[int] = []
+run_moved = heal.check(rb1.ctx, "fast", fixer=lambda r, n: fixer_calls.append(n), raise_on_fail=False)
+h.test_result("reused_red_base_moved: the base is merged in before a reused red reaches a fixer",
+              run_moved.ok and (rb1.clone / "theirs.txt").exists() and not fixer_calls,
+              "ok=%s theirs=%s fixer=%s" % (run_moved.ok, (rb1.clone / "theirs.txt").exists(), fixer_calls))
 
 # =============================================================================================
 # F14: Blocked-needs vocabulary equality test
@@ -930,23 +921,15 @@ h.test_result("F14: heal.BLOCKED_NEEDS keys match schemas.BLOCKED_NEEDS",
 # =============================================================================================
 
 rb2 = Box("reused_red_unreadable_output")
-rb2.results("fail")
-# Record a red
-red_run = heal.check(rb2.ctx, "fast", raise_on_fail=False)
-runs_after_first = rb2.runs()
-
-# Corrupt the recorded red output file to make it unreadable
-red_path = rb2.flow.path / "checks" / "check-reds.json"
-if red_path.exists():
-    # Write invalid JSON to make it unreadable
-    red_path.write_text("{invalid json")
-
-# Now run check again - it should NOT reuse the corrupted red, should run fresh
+rb2.results("fail", "fail")
+red_first = heal.check(rb2.ctx, "fast", raise_on_fail=False)  # records a red with an output file
+Path(red_first.output_path).unlink()  # the recorded output can no longer be read
 rb2.results("pass")
-run_after_corrupt = heal.check(rb2.ctx, "fast")
+rb2_fixer: List[int] = []
+run_after_unreadable = heal.check(rb2.ctx, "fast", fixer=lambda r, n: rb2_fixer.append(n), raise_on_fail=False)
 h.test_result("F13: unreadable red output is treated as absent, check runs fresh",
-              run_after_corrupt.ok and rb2.runs() > runs_after_first,
-              f"runs before: {runs_after_first}, runs after: {rb2.runs()}, ok: {run_after_corrupt.ok}")
+              run_after_unreadable.ok and not run_after_unreadable.reused and not rb2_fixer,
+              "ok=%s reused=%s fixer=%s" % (run_after_unreadable.ok, run_after_unreadable.reused, rb2_fixer))
 
 # =============================================================================================
 # No stop without a reason
