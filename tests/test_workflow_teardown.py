@@ -820,6 +820,31 @@ def main():
     h.test_result("liveness probes: live_in parses no-tty output (LIVE: a non-caller pid's cwd is inside)",
                   live == _procs.LIVE, live)
 
+    # Caller-subtree exclusion: a helper child of the caller's claude (e.g. caffeinate) whose cwd is the
+    # worktree is part of the caller's own session, not another one. Chain (caller upward): 40 python,
+    # 30 claude, 20 zsh (all cwd inside), 10 tmux (cwd outside). 31 = caffeinate under claude 30.
+    # 99 = another session's claude, with its own child 98, both cwd inside, under tmux 10.
+    root = "/nonexistent-liveness-root"
+    def _ps(rows):
+        return "".join(f"  {p}   {pp}  501  2048 Mon Nov 24 10:00:00 2026 {c}\n" for p, pp, c in rows)
+    def _lsof(cwds):
+        return "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n" + "".join(
+            f"x {p} u cwd DIR 1,4 640 2 {d}\n" for p, d in cwds)
+    def _live(rows, cwds):
+        def _run(argv, timeout):
+            return _ps(rows) if argv[0] == "ps" else _lsof(cwds)
+        return _procs.live_in(root, [40, 30, 20, 10], runner=_run)
+    base_rows = [(10, 1, "tmux"), (20, 10, "zsh"), (30, 20, "claude"), (40, 30, "python3"), (31, 30, "caffeinate")]
+    base_cwds = [(10, "/"), (20, root), (30, root), (40, root), (31, root)]
+    h.test_result("caller subtree: caffeinate child of the caller's claude is not LIVE",
+                  _live(base_rows, base_cwds) == _procs.NOT_LIVE)
+    h.test_result("caller subtree: another session under the shared tmux root is still LIVE",
+                  _live(base_rows + [(99, 10, "claude"), (98, 99, "zsh")], base_cwds + [(99, root), (98, root)]) == _procs.LIVE)
+    h.test_result("caller subtree: run stops at the first chain member outside the path (no exclusion of tmux subtree)",
+                  _live(base_rows + [(97, 10, "vim")], base_cwds + [(97, root + "/sub")]) == _procs.LIVE)
+    h.test_result("caller subtree: caller not inside the path (run from main) extends nothing",
+                  _live(base_rows, [(10, "/"), (20, "/"), (30, "/"), (40, "/"), (31, root)]) == _procs.LIVE)
+
     h.summarize_and_exit()
 
 

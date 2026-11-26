@@ -607,9 +607,42 @@ def live_in(
         )
         cwd_map = parse_lsof_cwd(lsof_output)
 
-        # Check if any process (other than caller chain) has cwd in path
+        # The caller's own subtree is not "another session". Claude Code starts helpers of its own
+        # (e.g. `caffeinate -i -t 300`, tool shells, background jobs) whose cwd is the worktree; they are
+        # children of a caller-chain process, not ancestors, so the plain chain check counted them LIVE and
+        # blocked cleanup from inside the worktree. Exclude descendants of the top of the contiguous run of
+        # caller-chain processes (walking up from the caller) that themselves have their cwd inside path.
+        # caller_pids is ordered from the caller upward (as caller_chain returns it). A chain that never
+        # touches path (cleanup run from main) extends nothing, and another session's processes are never
+        # under that run, so they still count.
+        excluded = set(caller_pids)
+        run_top: Optional[int] = None
+        for cpid in caller_pids:
+            ccwd = cwd_map.get(cpid)
+            try:
+                inside = ccwd is not None and paths.is_within(ccwd, path)
+            except ValueError:
+                inside = False
+            if not inside:
+                break
+            run_top = cpid
+        if run_top is not None:
+            kids: Dict[int, List[int]] = {}
+            for pr in all_procs:
+                kids.setdefault(pr.ppid, []).append(pr.pid)
+            seen = {run_top}
+            stack = [run_top]
+            while stack:
+                cur = stack.pop()
+                for kid in kids.get(cur, []):
+                    if kid not in seen:
+                        seen.add(kid)
+                        excluded.add(kid)
+                        stack.append(kid)
+
+        # Check if any process (other than caller chain and its subtree) has cwd in path
         for proc in all_procs:
-            if proc.pid in caller_pids:
+            if proc.pid in excluded:
                 continue
             cwd = cwd_map.get(proc.pid)
             if cwd:
