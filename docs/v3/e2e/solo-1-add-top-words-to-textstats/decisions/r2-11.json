@@ -1,0 +1,70 @@
+{
+  "answer": {
+    "option_id": "fix",
+    "principle_id": "",
+    "question_id": "r2-11",
+    "reason": "",
+    "source": "human",
+    "text": "Restore the ASCII digit check before int()",
+    "verbatim_path": "human/20261125T210121240130Z-reply.md"
+  },
+  "card": {
+    "answer": {
+      "option_id": "fix",
+      "principle_id": "",
+      "question_id": "r2-11",
+      "reason": "",
+      "source": "human",
+      "text": "Restore the ASCII digit check before int()",
+      "verbatim_path": "human/20261125T210121240130Z-reply.md"
+    },
+    "before": {
+      "decisions": [],
+      "principles": []
+    },
+    "decision": "Should the CLI keep accepting ' 3', '+3', '1_0' and non-ASCII digits for N, or go back to accepting only ASCII decimal digits?",
+    "experts": [
+      {
+        "favours": "fix",
+        "who": "Business Beth",
+        "why": "Input acceptance widened without a stated spec change"
+      }
+    ],
+    "id": "r2-11",
+    "kind": "behaviour",
+    "options": [
+      {
+        "consequence": "Input contract matches the old CLI and the spec wording 'positive integer in decimal form'. Small change in src/cli.py. Anyone relying on '+3' or '1_0' would see exit 2 again.",
+        "id": "fix",
+        "label": "Restore the ASCII digit check before int()"
+      },
+      {
+        "consequence": "Users get the wider grammar. Both docstrings must state it, and tests should pin it later. '1_0' being read as 10 stays a surprise for most users.",
+        "id": "leave",
+        "label": "Keep int() and document the accepted forms"
+      }
+    ],
+    "recommended": "fix",
+    "reversible": true,
+    "revisit": null,
+    "risk": "",
+    "stage": "review",
+    "status": "answered",
+    "themes": [
+      "input contract",
+      "scope drift"
+    ],
+    "ticket": {
+      "issue": 1,
+      "purpose": "Add `top_words(text, n)` to `src/textstats.py`. It returns the `n` most frequent words as `(word, count)` tuples, most frequent first. Reuse the existing `words` helper.",
+      "stage": "review",
+      "title": "Add top_words to textstats"
+    },
+    "while_waiting": "This ticket is parked at review; other tickets continue.",
+    "why": "The old code guarded N with re.fullmatch(r'[0-9]+') before int(). The new code calls int() directly, so whitespace, a leading '+', underscores ('1_0' parses as 10) and Unicode digits are now accepted. Nothing in the plan or the tests asks for this widening, and the docstring documents it only as a side effect."
+  },
+  "downstream": "",
+  "question_id": "r2-11",
+  "stage": "review",
+  "ts": "2026-11-25T21:01:26.595214+00:00"
+}

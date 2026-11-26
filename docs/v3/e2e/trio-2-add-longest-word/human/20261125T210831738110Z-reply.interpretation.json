@@ -1,0 +1,18 @@
+{
+  "answers": [
+    {
+      "answer": "Keep punctuation as part of the word",
+      "confidence": "high",
+      "option_id": "keep",
+      "question_id": "punctuation",
+      "reason_quote": ""
+    }
+  ],
+  "directions": [
+    {
+      "quote": "keep whatever words() gives",
+      "text": "Keep whatever words() returns, without changing its punctuation handling."
+    }
+  ],
+  "unplaced": []
+}

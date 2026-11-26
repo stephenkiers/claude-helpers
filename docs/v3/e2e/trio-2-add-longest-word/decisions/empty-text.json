@@ -1,0 +1,85 @@
+{
+  "answer": {
+    "option_id": "raise",
+    "principle_id": "",
+    "question_id": "empty-text",
+    "reason": "blank text is bad input",
+    "source": "human",
+    "text": "Raise ValueError",
+    "verbatim_path": "human/20261125T210818839662Z-reply.md"
+  },
+  "card": {
+    "answer": {
+      "option_id": "raise",
+      "principle_id": "",
+      "question_id": "empty-text",
+      "reason": "blank text is bad input",
+      "source": "human",
+      "text": "Raise ValueError",
+      "verbatim_path": "human/20261125T210818839662Z-reply.md"
+    },
+    "before": {
+      "decisions": [],
+      "principles": []
+    },
+    "decision": "When the text contains no words (empty or whitespace-only), should longest_word raise ValueError or return the empty string?",
+    "experts": [
+      {
+        "favours": "raise",
+        "who": "North Star Nick",
+        "why": "P-errors is the documented principle and the ticket leaves the choice open."
+      },
+      {
+        "favours": "raise",
+        "who": "Contract Chris",
+        "why": "Bad input should fail loudly at the call site; a sentinel hides the case."
+      },
+      {
+        "favours": "raise",
+        "who": "Vera Verifier",
+        "why": "A blank input is bad input under P-errors; pytest.raises pins it precisely."
+      },
+      {
+        "favours": "raise",
+        "who": "Business Beth",
+        "why": "Callers find the mistake early, and P-errors matches this."
+      }
+    ],
+    "id": "empty-text",
+    "kind": "behaviour",
+    "options": [
+      {
+        "consequence": "Blank input fails at the call site; callers must guard. A test asserts the raise. Can be changed later, but every caller is affected by a switch.",
+        "id": "raise",
+        "label": "Raise ValueError"
+      },
+      {
+        "consequence": "Blank input returns '' as a valid answer; the docstring must say so. Callers cannot tell 'no words' from a real empty result without checking. Breaks the spirit of P-errors unless the owner decides no-words is not bad input.",
+        "id": "empty",
+        "label": "Return ''"
+      }
+    ],
+    "recommended": "raise",
+    "reversible": true,
+    "revisit": null,
+    "risk": "",
+    "stage": "plan",
+    "status": "answered",
+    "themes": [
+      "errors",
+      "empty-input"
+    ],
+    "ticket": {
+      "issue": 2,
+      "purpose": "Add a new module `src/longest.py` with `longest_word(text)` returning the longest word in `text`. Reuse the existing `words` helper from `src/textstats.py`.",
+      "stage": "plan",
+      "title": "Add longest_word"
+    },
+    "while_waiting": "This ticket is parked at plan; other tickets continue.",
+    "why": "Ticket 'Add longest_word' reserves this for the owner. src/textstats.py words() returns [] for blank text, so longest_word must branch explicitly. P-errors says bad input raises ValueError and never returns a sentinel."
+  },
+  "downstream": "",
+  "question_id": "empty-text",
+  "stage": "plan",
+  "ts": "2026-11-25T21:08:25.286796+00:00"
+}

@@ -1,0 +1,14 @@
+{
+  "answers": [
+    {
+      "answer": "Remove the sys.path insert; document `python -m src.cli TEXT N` as the run command.",
+      "confidence": "high",
+      "option_id": "fix",
+      "question_id": "r1-12",
+      "reason_quote": ""
+    }
+  ],
+  "directions": [],
+  "fast_path": true,
+  "unplaced": []
+}

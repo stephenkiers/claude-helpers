@@ -40,7 +40,7 @@ TESTS_DIR = Path(__file__).resolve().parent
 REAL_USER_BASE = os.environ.get("PYTHONUSERBASE") or site.getuserbase()
 
 # Wall-clock-bounded suites (timing asserts, or waits on real child processes); run alone after the pool.
-SERIAL_ONLY = frozenset({"test_flow_guard_fail_closed.py", "test_fleet.py"})
+SERIAL_ONLY = frozenset({"test_flow_guard_fail_closed.py", "test_fleet.py", "test_flow3_fleet.py", "test_flow3_integration.py"})
 
 # A suite that runs longer than this is killed and counted as a failure (exit 124).
 SUITE_TIMEOUT_SECS = 900

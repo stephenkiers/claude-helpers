@@ -1,0 +1,64 @@
+{
+  "answer": {
+    "option_id": "a",
+    "principle_id": "",
+    "question_id": "r1-2-test-location",
+    "reason": "a detail no principle decides; the step's recommended option was taken",
+    "source": "assumed",
+    "text": "Lift the protection for this one test and let me add it to tests/test_longest_cli.py",
+    "verbatim_path": ""
+  },
+  "card": {
+    "answer": null,
+    "before": {
+      "decisions": [],
+      "principles": []
+    },
+    "decision": "The pinning test for r1-2 has to live in tests/test_longest_cli.py, which is protected. How should it be covered?",
+    "experts": [
+      {
+        "favours": "a",
+        "who": "fix step",
+        "why": "The finding asks for a CLI-level test that main([1]) raises ValueError. The docstring at src/longest_cli.py:19-21 and 25-26 already documents this. The only file that can hold the test is tests/test_longest_cli.py, and the protected-paths rule forbids editing it. I did not add the test."
+      }
+    ],
+    "id": "r1-2-test-location",
+    "kind": "detail",
+    "options": [
+      {
+        "consequence": "The finding is fully closed and the behaviour is pinned at the CLI level.",
+        "id": "a",
+        "label": "Lift the protection for this one test and let me add it to tests/test_longest_cli.py"
+      },
+      {
+        "consequence": "The finding is closed without touching the protected file. It adds a new test file, which may be outside this ticket's scope.",
+        "id": "b",
+        "label": "Put the test in a new file such as tests/test_longest_cli_argv.py"
+      },
+      {
+        "consequence": "The documented behaviour stays unverified at the CLI level, so the finding stays partly open.",
+        "id": "c",
+        "label": "Accept the docstring as the fix and close r1-2 without a CLI-level test"
+      }
+    ],
+    "recommended": "a",
+    "reversible": true,
+    "revisit": null,
+    "risk": "",
+    "stage": "fix",
+    "status": "open",
+    "themes": [],
+    "ticket": {
+      "issue": 3,
+      "purpose": "Depends on: #2",
+      "stage": "fix",
+      "title": "Add a longest command"
+    },
+    "while_waiting": "This ticket is parked at fix; other tickets continue.",
+    "why": "The finding asks for a CLI-level test that main([1]) raises ValueError. The docstring at src/longest_cli.py:19-21 and 25-26 already documents this. The only file that can hold the test is tests/test_longest_cli.py, and the protected-paths rule forbids editing it. I did not add the test."
+  },
+  "downstream": "",
+  "question_id": "r1-2-test-location",
+  "stage": "fix",
+  "ts": "2026-11-25T21:28:01.293903+00:00"
+}

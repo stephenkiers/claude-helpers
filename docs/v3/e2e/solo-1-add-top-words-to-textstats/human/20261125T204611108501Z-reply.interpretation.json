@@ -1,0 +1,18 @@
+{
+  "answers": [
+    {
+      "answer": "Keep silent success, exit 0",
+      "confidence": "high",
+      "option_id": "leave",
+      "question_id": "r0-9",
+      "reason_quote": "an empty result is not an error"
+    }
+  ],
+  "directions": [
+    {
+      "quote": "from here on, do not add any new files beyond what the plan names",
+      "text": "Do not add any new files beyond what the plan names."
+    }
+  ],
+  "unplaced": []
+}

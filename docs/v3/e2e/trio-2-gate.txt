@@ -1,0 +1,42 @@
+MERGE GATE  #2  Add longest_word
+Pull request: local://trio/pr/2
+
+What changed
+  - Implement longest_word in src/longest.py
+  src/longest.py        | 21 +++++++++++++++++++++
+   tests/test_longest.py | 45 +++++++++++++++++++++++++++++++++++++++++++++
+   2 files changed, 66 insertions(+)
+
+Check
+  fast check passed on tree efaa6adf9755
+
+Findings
+  Fixed: r0-2 (Return type str is unchecked because words() is untyped), r1-4 (Per-element type check guards a case words() does not produce), r1-8 (Element check is unreachable and adds an undocumented TypeError path)
+  Open (9), not fixed:
+  - r0-5 (Unexplained '# registered: yes' comment)
+  - r2-1 (Runtime element check removed; return type now relies on an unenforced contract in words())
+  - r2-2 (Element type of words() is no longer checked at runtime, so a violation breaks the str return contract silently)
+  - r2-3 (Runtime element check removed at the words() boundary; contract now relies on an unannotated function)
+  - r2-5 (Element-type guarantee now rests on an unstated dependency on textstats.words())
+  - r2-6 (Comment asserts words() guarantee without pointing to where it is enforced)
+  - r2-7 (Runtime element check removed; list[str] contract now rests on an unenforced invariant in words())
+  - r2-8 (Removed runtime element check leaves longest_word's str return contract resting on an undocumented guarantee of words())
+  - r2-9 (Removed element guard leaves the str contract resting on an unannotated dependency)
+  8 of these came from the last review round the flow allows, so no fix was run for them. Send back with notes to have them fixed.
+
+Deferred, with reasons
+  (nothing recorded)
+
+Measurements not run
+  (nothing recorded)
+
+Existing tests edited without asking you
+  (nothing recorded)
+
+Decisions made without you (assumed, by principle, or by a checked fact)
+  (nothing recorded)
+
+Cost: 0.13 USD    Elapsed: 0h 14m
+
+Choose one:  merge  |  send back with notes  |  stop
+

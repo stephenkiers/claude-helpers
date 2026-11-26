@@ -1,0 +1,82 @@
+{
+  "answer": {
+    "option_id": "fix",
+    "principle_id": "",
+    "question_id": "r1-12",
+    "reason": "",
+    "source": "human",
+    "text": "Remove the sys.path insert; document `python -m src.cli TEXT N` as the run command.",
+    "verbatim_path": "human/20261125T205000085505Z-reply.md"
+  },
+  "card": {
+    "answer": {
+      "option_id": "fix",
+      "principle_id": "",
+      "question_id": "r1-12",
+      "reason": "",
+      "source": "human",
+      "text": "Remove the sys.path insert; document `python -m src.cli TEXT N` as the run command.",
+      "verbatim_path": "human/20261125T205000085505Z-reply.md"
+    },
+    "before": {
+      "decisions": [
+        {
+          "answer_text": "Keep silent success, exit 0",
+          "date": "2026-11-25",
+          "issue": 1,
+          "reason": "an empty result is not an error",
+          "source": "human"
+        }
+      ],
+      "principles": []
+    },
+    "decision": "Should `python src/cli.py TEXT N` remain a supported way to run the CLI, given that the sys.path insert at import time exists only for it?",
+    "experts": [
+      {
+        "favours": "fix",
+        "who": "Penny Pincher",
+        "why": "sys.path mutation at import time to support one invocation style"
+      }
+    ],
+    "id": "r1-12",
+    "kind": "architecture",
+    "options": [
+      {
+        "consequence": "Importing src.cli has no side effects and the noqa goes away. Anyone running `python src/cli.py` must switch to the -m form.",
+        "id": "fix",
+        "label": "Remove the sys.path insert; document `python -m src.cli TEXT N` as the run command."
+      },
+      {
+        "consequence": "`python src/cli.py` keeps working. Every importer of src.cli keeps the global path change, and the pattern is more likely to be copied.",
+        "id": "leave",
+        "label": "Keep the sys.path insert as it is."
+      },
+      {
+        "consequence": "Imports are side-effect free, but the E402 workaround stays because the import of src.textstats still follows the insert in the file.",
+        "id": "guard",
+        "label": "Keep direct-script support but move the insert under `if __name__ == \"__main__\":`."
+      }
+    ],
+    "recommended": "fix",
+    "reversible": true,
+    "revisit": null,
+    "risk": "",
+    "stage": "review",
+    "status": "answered",
+    "themes": [
+      "review"
+    ],
+    "ticket": {
+      "issue": 1,
+      "purpose": "Add `top_words(text, n)` to `src/textstats.py`. It returns the `n` most frequent words as `(word, count)` tuples, most frequent first. Reuse the existing `words` helper.",
+      "stage": "review",
+      "title": "Add top_words to textstats"
+    },
+    "while_waiting": "This ticket is parked at review; other tickets continue.",
+    "why": "src/cli.py inserts the repo root into sys.path at module import, so every importer of src.cli gets a changed import path and the file needs a noqa: E402. Running `python -m src.cli TEXT N` from the repo root needs no path change. The same import-time pattern may be copied in the tests, which the plan requires to keep their sys.path bootstrap."
+  },
+  "downstream": "",
+  "question_id": "r1-12",
+  "stage": "review",
+  "ts": "2026-11-25T20:50:00.109948+00:00"
+}

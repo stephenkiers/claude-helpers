@@ -1,0 +1,64 @@
+MERGE GATE  #3  Add a longest command
+Pull request: local://trio/pr/3
+
+What changed
+  - Implement longest_cli.main
+  src/longest_cli.py        | 40 ++++++++++++++++++++++++++++
+   tests/test_longest_cli.py | 66 +++++++++++++++++++++++++++++++++++++++++++++++
+   2 files changed, 106 insertions(+)
+
+Check
+  fast check passed (recorded pass reused) on tree 2157c3eea12b
+
+Findings
+  Fixed: r0-1 (Contract is duplicated in module and function docstrings), r0-3 (CLI contract is written twice and can drift), r0-11 (Contract is written twice and can drift), r0-15 (Wrong-count error gives no usage example), r0-16 (Running the file directly fails to import the package), r0-19 (argv type precondition is undocumented and unchecked), r0-20 (Contract text is duplicated between module and main() docstrings), r0-21 (Direct script invocation fails with ModuleNotFoundError), r1-4 (Argv type precondition has no stated consequence and main's docstring omits Raises), r1-6 (Error message wording differs from the module contract)
+  Open (23), not fixed:
+  - r0-2 (Claim 'registered: yes' is unverified in the repo)
+  - r0-4 (Unexplained '# registered: yes' marker)
+  - r0-6 (T8 claims a check.py verification that does not exist, so the success signal is misleading)
+  - r0-7 (T8 points to a check.py that is not in the change)
+  - r0-8 (Checks are module-level asserts, not test functions)
+  - r0-9 (sys.path hack is undocumented)
+  - r0-10 ('# registered: yes' comment is unexplained)
+  - r0-12 (Bare asserts make the whole suite vacuous under python -O)
+  - r0-13 (T8 comment overstates what the script run verifies; module defines no test functions)
+  - r0-17 (Test suite relies on bare assert statements, so it passes vacuously under python -O)
+  - r0-22 (T8 references a check.py that is not part of this change)
+  - r1-2 ('Not supported' for non-str argv is unexplained and untested)
+  - r2-1 (main() documents, rather than enforces, the argv type check)
+  - r2-2 (main() signature and docstring disagree about accepted argv types)
+  - r2-3 (Docstring codifies a str/tuple argv pass-through that contradicts P-errors)
+  - r2-4 (Unexplained change to user-facing usage error wording)
+  - r2-6 (Docstring misdescribes str and tuple argv handling)
+  - r2-9 (Docstring documents accidental str/tuple behaviour as supported)
+  - r2-10 (Undocumented TypeError for non-sized argv)
+  - r2-11 (Precondition contradicts the accepted-input note)
+  - r2-12 (Raises section omits the 'no words' ValueError)
+  - r2-13 (Docstring turns an unvalidated str argv into documented behaviour)
+  - r2-14 (Raises block narrower than actual no-word behavior)
+  11 of these came from the last review round the flow allows, so no fix was run for them. Send back with notes to have them fixed.
+
+Deferred, with reasons
+  - r0-5 (Bad input shows a Python traceback to the user): The plan's non-goals rule out catching ValueError in the entry point or turning it into an exit code, and this finding asks for exactly that. If the team wants friendly CLI errors, that is a change to the plan first, then a new ticket.
+  - r0-14 (Bad input produces a raw Python traceback instead of a helpful message): Same as r0-5: asks for a try/except in the __main__ block that converts ValueError to an exit code, which the plan lists as a non-goal. Revisit only if the plan changes.
+  - r0-18 (Documented failure mode is a raw traceback at the CLI boundary): Same as r0-5 and r0-14: a stderr handler and exit status 2 in __main__ conflicts with the non-goal on converting ValueError to an exit code. Revisit with the plan.
+  - r1-1 (Usage hint reaches the user only as a Python traceback): Same traceback issue as r1-3. Its outcome follows the r1-3 decision, so it is not handled separately.
+  - r1-5 (New usage hint only reaches the user inside an unhandled traceback): Same traceback issue as r1-3. Its outcome follows the r1-3 decision, so it is not handled separately.
+  - r1-3 (Usage errors surface as a raw Python traceback): you answered: Leave the traceback as it is
+  - r2-8 (Usage hint is only visible inside a raw traceback): The plan lists 'catching ValueError ... or converting it to an exit code' as a non-goal, so a try/except in the __main__ block that exits with status 2 is out of scope for this ticket. A follow-up ticket can handle a clean stderr message for the CLI if the traceback is a real problem for users.
+
+Measurements not run
+  - r2-7: `grep -rn 'registered' --include='*' . | grep -v '^./.git/'`
+
+Existing tests edited without asking you
+  (nothing recorded)
+
+Decisions made without you (assumed, by principle, or by a checked fact)
+  - [Q1] When the text argument is empty or whitespace-only, should longest_cli.main print an error to stderr and return 1, or return 0 with no output as the ticket literally says? -> Let ValueError escape main (principle P-errors). Reason: A function given bad input raises ValueError. It never returns an empty or sentinel value to signal bad input.; P-errors says bad input raises ValueError and must never return an empty or sentinel value to signal it, which rules out silent-zero and rules out stderr-plus-return-1 as a non-raising signal; letting the ValueError from longest_word escape main is the only option that raises.
+  - [r1-2-test-location] The pinning test for r1-2 has to live in tests/test_longest_cli.py, which is protected. How should it be covered? -> Lift the protection for this one test and let me add it to tests/test_longest_cli.py (assumed). Reason: a detail no principle decides; the step's recommended option was taken
+  To overrule one: choose "send back with notes" and name its id in the notes.
+
+Cost: 0.37 USD    Elapsed: 0h 13m
+
+Choose one:  merge  |  send back with notes  |  stop
+

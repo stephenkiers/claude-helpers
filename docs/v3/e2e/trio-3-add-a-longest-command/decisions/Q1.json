@@ -1,0 +1,85 @@
+{
+  "answer": {
+    "option_id": "propagate",
+    "principle_id": "P-errors",
+    "question_id": "Q1",
+    "reason": "A function given bad input raises ValueError. It never returns an empty or sentinel value to signal bad input.; P-errors says bad input raises ValueError and must never return an empty or sentinel value to signal it, which rules out silent-zero and rules out stderr-plus-return-1 as a non-raising signal; letting the ValueError from longest_word escape main is the only option that raises.",
+    "source": "principle",
+    "text": "Let ValueError escape main",
+    "verbatim_path": ""
+  },
+  "card": {
+    "answer": null,
+    "before": {
+      "decisions": [],
+      "principles": [
+        {
+          "id": "P-errors",
+          "statement": "A function given bad input raises ValueError. It never returns an empty or sentinel value to signal bad input.",
+          "title": "Bad input raises"
+        }
+      ]
+    },
+    "decision": "When the text argument is empty or whitespace-only, should longest_cli.main print an error to stderr and return 1, or return 0 with no output as the ticket literally says?",
+    "experts": [
+      {
+        "favours": "stderr-nonzero",
+        "who": "North Star Nick",
+        "why": "longest_word declares no-words input an error; P-errors and P-quiet's 'stderr is for errors only' point to a stderr message with non-zero exit."
+      },
+      {
+        "favours": "stderr-nonzero",
+        "who": "Contract Chris",
+        "why": "Blank input is bad input under P-errors; P-quiet covers valid input with an empty result, not a missing word."
+      },
+      {
+        "favours": "nonzero",
+        "who": "Danielle the Designer",
+        "why": "Users need to know what went wrong and how to fix it; silence gives no recovery path."
+      },
+      {
+        "favours": "stderr-nonzero",
+        "who": "Ariadne",
+        "why": "Every error path needs a defined outcome: nonzero return, empty stdout, and a clear stderr message."
+      }
+    ],
+    "id": "Q1",
+    "kind": "behaviour",
+    "options": [
+      {
+        "consequence": "Scripts can detect blank input as a failure. Departs from the ticket's literal 'returns 0' on this path only. Tests T4 and T5 assert return 1. Reversible by changing one return value and the tests.",
+        "id": "stderr-nonzero",
+        "label": "Print one line to stderr, nothing to stdout, return 1"
+      },
+      {
+        "consequence": "Matches the ticket and P-quiet's 'empty result is silent' reading. A blank upstream value looks identical to a successful run with no output, which P-errors warns against. Reversible; tests T4 and T5 change to assert 0 and empty stderr.",
+        "id": "silent-zero",
+        "label": "Print nothing, return 0 (literal ticket)"
+      },
+      {
+        "consequence": "Consistent with the argument-count case (raise). Shell callers get a Python traceback and exit 1, with no clean message. Reversible.",
+        "id": "propagate",
+        "label": "Let ValueError escape main"
+      }
+    ],
+    "recommended": "stderr-nonzero",
+    "reversible": true,
+    "revisit": null,
+    "risk": "With silent-zero, a pipeline fed a blank value continues with empty output and the failure is not visible to the caller.",
+    "stage": "plan",
+    "status": "open",
+    "themes": [],
+    "ticket": {
+      "issue": 3,
+      "purpose": "Depends on: #2",
+      "stage": "plan",
+      "title": "Add a longest command"
+    },
+    "while_waiting": "This ticket is parked at plan; other tickets continue.",
+    "why": "The ticket says main 'prints the longest word ... and returns 0', which only describes the success path. src/longest.py longest_word raises ValueError for text with no words (lines 18-19). P-errors says bad input raises. P-quiet says an empty result prints nothing and succeeds, and stderr is for errors only. Wrong argument count already raises ValueError under the plan, so blank input would be the only bad-input case that returns a code rather than raising. The plan must state which rule applies and why."
+  },
+  "downstream": "",
+  "question_id": "Q1",
+  "stage": "plan",
+  "ts": "2026-11-25T21:17:32.848191+00:00"
+}
