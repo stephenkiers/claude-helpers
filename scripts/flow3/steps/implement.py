@@ -59,13 +59,27 @@ def _acceptance_text(plan: Dict[str, Any], unit: Dict[str, Any]) -> str:
     return "\n".join(rows) or "(none)"
 
 
-def _unit_prompt(ctx: Ctx, plan: Dict[str, Any], unit: Dict[str, Any]) -> str:
+def _handoffs_text(handoffs: List[Dict[str, Any]], uid: str) -> str:
+    """Changes earlier units could not make because the file was not theirs, for a later unit's prompt."""
+    rows = [h for h in handoffs if str(h.get("from")) != uid and str(h.get("text") or "").strip()]
+    if not rows:
+        return ""
+    lines = ["## Left for you by earlier units", "",
+             "Earlier units needed these changes in files they could not edit. Make each one that falls in "
+             "your files; ignore the rest.", ""]
+    lines += ["- From %s: %s" % (h["from"], str(h["text"]).strip()) for h in rows]
+    return "\n".join(lines)
+
+
+def _unit_prompt(ctx: Ctx, plan: Dict[str, Any], unit: Dict[str, Any],
+                 handoffs: Optional[List[Dict[str, Any]]] = None) -> str:
     return prompts.render(
         "implementer", unit_id=str(unit["id"]), title=str(unit.get("title") or ""),
         files=work.list_text(unit["files"]),
         steps="\n".join("%d. %s" % (n, s) for n, s in enumerate(unit.get("steps") or [], 1)) or "(none)",
         acceptance=_acceptance_text(plan, unit), interfaces=work.interfaces_text(plan),
-        protected=work.list_text(work.protected_paths(ctx)), directions=voice.directions_text(ctx.flow))
+        protected=work.list_text(work.protected_paths(ctx)), directions=voice.directions_text(ctx.flow),
+        handoffs=_handoffs_text(handoffs or [], str(unit["id"])))
 
 
 def _heal_count(ctx: Ctx) -> int:
@@ -241,7 +255,7 @@ class _Stage:
         uid = str(unit["id"])
         u = d["units"].setdefault(uid, {"asked": 0})
         pend = d["pending"]
-        prompt = _unit_prompt(ctx, self.plan, unit)
+        prompt = _unit_prompt(ctx, self.plan, unit, d.get("handoffs"))
         message = "flow3 #%d unit %s: %s" % (ctx.issue, uid, unit.get("title"))
         run: Optional[CheckRun]
         if pend.get("kind") == "judge" and pend.get("unit") == uid:
@@ -277,7 +291,21 @@ class _Stage:
         if run is None:
             run = work.check_unit(ctx, unit["files"], raise_on_fail=False, use_fixer=final)
         u["summary"] = str((result.output or {}).get("summary") or "")
+        self._note_handoffs(uid, result.output)
         return self._settle(unit, final, run)
+
+    def _note_handoffs(self, uid: str, output: Any) -> None:
+        """Keep what a unit left for the owner of another file; later units see it in their prompt."""
+        rows = [str(t).strip() for t in ((output or {}).get("elsewhere") or []) if str(t).strip()]
+        if not rows:
+            return
+        kept = self.d.setdefault("handoffs", [])
+        for text in rows:
+            if {"from": uid, "text": text} not in kept:
+                kept.append({"from": uid, "text": text})
+        self.save()
+        record.journal(self.ctx.flow, "Unit %s left %d change(s) for the unit that owns the file: %s"
+                       % (uid, len(rows), "; ".join(rows)))
 
     def _spec_files_in(self, run: CheckRun) -> List[str]:
         text = work.read_text(run.output_path, run.trimmed) + "\n" + run.trimmed

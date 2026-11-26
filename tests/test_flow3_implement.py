@@ -207,6 +207,21 @@ res = implement.run(b.ctx)
 h.test_result("re-entry skips a unit that is already done", res.kind == "done" and labels(b) == ["unit-u2"],
               str(labels(b)))
 
+# -- a change that belongs to another unit's file ------------------------------------------------
+b = mkbox("i-elsewhere", mkplan())
+b.script([w("unit-u1", "src/a.py", output={"status": "done", "summary": "a done",
+                                           "elsewhere": ["src/b.py: pass the new argument to f()"]}),
+          w("unit-u2", "src/b.py")])
+res = implement.run(b.ctx)
+ls = b.launches()
+h.test_result("a unit that leaves a change for another file's owner is done, with no card and no retry",
+              res.kind == "done" and labels(b) == ["unit-u1", "unit-u2"], str(labels(b)))
+h.test_result("the later unit's prompt carries what the earlier unit left",
+              "Left for you by earlier units" in ls[1]["prompt"] and "pass the new argument to f()" in ls[1]["prompt"]
+              and "Left for you by earlier units" not in ls[0]["prompt"])
+h.test_result("the handoff is kept in the stage record",
+              b.flow.data("implement").get("handoffs") == [{"from": "u1", "text": "src/b.py: pass the new argument to f()"}])
+
 # -- partial unit escalation --------------------------------------------------------------------
 b = mkbox("i-partial", mkplan(two=False))
 b.script([w("unit-u1", "src/a.py", output={"status": "partial", "summary": "half"}),

@@ -152,3 +152,16 @@ whether the question is one only a human can answer.
 - Add a resolver outcome for questions about the flow's own bookkeeping (units, file lists, ordering):
   the driver takes the option that keeps the plan as written.
 - Cards never use the words "unit" or a unit id; they describe the work in the ticket's terms.
+
+## 11. Answering the card in entry 8 still stopped the flow (2026-11-25)
+
+The answer was "the unit that owns the file makes the change". The worker obeyed, reported the unit
+`partial` because that change was still outstanding, was retried on a stronger model, said the same
+thing, and the flow stopped as an unfinished unit. Two paid calls to learn nothing. The worker had no
+way to say "my part is done; this other part belongs to someone else".
+
+The same worker also listed, as unfinished, a plan step that told it to run `git` commands. Workers
+have no shell. The plan asked a unit for something no unit can do.
+
+**Done (PROGRESS decision 36).** Workers hand such changes on through `elsewhere`. Still open: the
+planner writing steps that need a shell, and steps that name files outside the unit.

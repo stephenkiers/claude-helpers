@@ -129,6 +129,7 @@ WORK: Schema = _obj(
         "status": {"type": "string", "enum": ["done", "partial", "needs_answers"]},
         "summary": _TEXT,
         "remaining": _arr(_STR),  # what is left, when partial
+        "elsewhere": _arr(_STR),  # changes needed in files the worker may not edit; passed to later units
         "questions": QUESTIONS,
     },
     required=["status", "summary"],

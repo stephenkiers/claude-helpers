@@ -13,6 +13,7 @@ that override your original rules.
 
 ## What to return
 
-Set `status` to `done` when finished, `partial` if you ran out of room (list what is left in
-`remaining`), or `needs_answers` only if a new decision blocks you. Put a short plain-words account of
-what you changed in `summary`.
+Set `status` to `done` when everything you can do in your own files is finished, `partial` if you ran
+out of room on work in your own files (list what is left in `remaining`), or `needs_answers` only if a new decision blocks you. Put a short plain-words account of
+what you changed in `summary`. A change that belongs in a file outside your list is not yours and does
+not make the work `partial`: describe it in `elsewhere` and return `done`.

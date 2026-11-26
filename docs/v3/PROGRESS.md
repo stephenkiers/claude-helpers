@@ -142,6 +142,12 @@ If this session restarts: read this file first, then continue from the first uni
     the card carries a stated fallback ("the step that asked did not say what would no longer be
     protected") plus the step's own reason, and reaches the human. A card missing anything else still
     stops.
+36. **A change that belongs in another unit's file is handed on, not asked about.** Found by the first
+    real-repo trial (FEEDBACK entries 8, 10, 11). A worker that needs a change in a file outside its
+    unit describes it in a new `elsewhere` field and returns `done`; the driver keeps it, journals it,
+    and puts it in every later unit's prompt. It is no longer a question for the human and no longer
+    makes the unit `partial`. Not built: turning a reverted out-of-unit edit into a handoff
+    automatically, and a check that every handoff was picked up.
 
 ## Spend (notional USD, real model calls)
 
