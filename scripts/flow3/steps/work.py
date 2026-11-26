@@ -102,8 +102,10 @@ def run_unit_checked(ctx: Ctx, unit: Dict[str, Any], role: str, prompt: str, mes
                      check: bool = True) -> Tuple[CallResult, Optional[CheckRun]]:
     """
     One write call restricted to the unit's files, then the check. Returns the worker's result and the
-    CheckRun, which is None when the worker asked questions (no check is run until the stage has the
-    answers; see the module docstring) or when `check` is false (the stage checks once, later).
+    CheckRun. The CheckRun is None in two cases with different meanings:
+    - Worker asked questions: no check is run until the stage has the answers (see module docstring).
+    - check=False: the stage checks once after all units, not per unit.
+    When a unit needs no check at all, use run_unit directly instead of this function.
     With raise_on_fail false a red check is returned, not raised.
     """
     files = [str(f) for f in unit["files"]]
@@ -124,6 +126,28 @@ def run_unit(ctx: Ctx, unit: Dict[str, Any], role: str, prompt: str, message: st
     use run_unit_checked to get the red CheckRun.
     """
     return run_unit_checked(ctx, unit, role, prompt, message, fixer_allowed, raise_on_fail)[0]
+
+
+def guard_blocked(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Tuple[Optional[Any], Optional["heal.Blocked"]]:
+    """
+    Call a function that may raise heal.Blocked and return either the result or the caught exception.
+
+    The function's normal return value is returned as the first tuple element. If heal.Blocked is raised,
+    None is returned as the first element, and the exception is returned as the second element. Otherwise,
+    the second element is None.
+
+    This centralizes Blocked handling in one place: workers and check fixers that raise Blocked are routed
+    through a single handler instead of being caught in multiple places (answered-card resume, check fixer
+    paths, etc.). Use it like:
+
+        result, blocked = guard_blocked(work.resume_worker, ctx, ...)
+        if blocked:
+            return self._blocked(unit, blocked)  # or similar handler
+    """
+    try:
+        return fn(*args, **kwargs), None
+    except heal.Blocked as exc:
+        return None, exc
 
 
 def resume_worker(ctx: Ctx, role: str, session_id: Optional[str], original_prompt: str, answers_text: str,

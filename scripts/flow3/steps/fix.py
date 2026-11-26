@@ -20,7 +20,7 @@ finished unit or a finished verify.
 """
 
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from scripts.flow3 import gitops, heal, prompts, questions, record, schemas, voice
 from scripts.flow3.context import Ctx
@@ -220,9 +220,12 @@ class _Stage:
         pend = p["pending"]
         if pend.get("unit") == uid:
             answers = questions.take_answers(ctx, STAGE)
-            result = work.resume_worker(ctx, "fixer", pend.get("session"), prompt,
-                                        questions.answers_for_prompt(answers), unit["files"], message,
-                                        "unit-%s-answers" % uid)
+            result, blocked = work.guard_blocked(
+                work.resume_worker, ctx, "fixer", pend.get("session"), prompt,
+                questions.answers_for_prompt(answers), unit["files"], message, "unit-%s-answers" % uid)
+            if blocked:
+                raise blocked
+            result = cast(CallResult, result)
             p["pending"] = {}
         else:
             u["base"] = gitops.head_sha(self.wt)
@@ -235,17 +238,24 @@ class _Stage:
                                tried=["answered %d rounds of questions" % (u["asked"] - 1)])
             qs = [q for q in (result.output or {}).get("questions") or [] if isinstance(q, dict)]
             auto, cards = questions.resolve(ctx, STAGE, qs, owner={
-                "unit": uid, "files": [str(f) for f in unit["files"]], "other_files": [], "unit_ids": [uid]})
+                "unit": uid, "files": [str(f) for f in unit["files"]], "unit_ids": [uid]})
             if cards:
                 p["pending"] = {"unit": uid, "session": result.session_id}
                 p["phase"] = "waiting_unit"
                 self.save()
                 return None
-            result = work.resume_worker(ctx, "fixer", result.session_id, prompt,
-                                        questions.answers_for_prompt(auto), unit["files"], message,
-                                        "unit-%s-answers" % uid)
+            result_new, blocked = work.guard_blocked(
+                work.resume_worker, ctx, "fixer", result.session_id, prompt,
+                questions.answers_for_prompt(auto), unit["files"], message, "unit-%s-answers" % uid)
+            if blocked:
+                raise blocked
+            result = cast(CallResult, result_new)
         if ctx.cfg.check_per_unit:
-            work.check_unit(ctx, unit["files"])
+            try:
+                work.check_unit(ctx, unit["files"])
+            except heal.Blocked:
+                # A blocked fixer is not retried: leave the check red for the merge gate.
+                pass
         return result
 
     def check_attempt(self, units: List[Doc]) -> None:
@@ -260,7 +270,11 @@ class _Stage:
                 allowed = []
                 break
             allowed += [str(f) for f in unit["files"] if str(f) not in allowed]
-        work.check_unit(self.ctx, allowed)
+        try:
+            work.check_unit(self.ctx, allowed)
+        except heal.Blocked:
+            # A blocked fixer is not retried: leave the check red for the merge gate.
+            pass
         p["checked"].append(attempt)
         self.save()
 
