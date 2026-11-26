@@ -1053,7 +1053,7 @@ PY_DIFF
         # User aborted the re-plan
         echo "Abort: removed nothing"
         python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome interrupted 2>/dev/null || true
-        exit 0
+        exit 1
       elif [ "$REPLAN_CONFIRM" = "true" ]; then
         # User confirmed: run apply again on the fresh plan
         APPLY_CMD="python3 -m scripts.workflow.cli cleanup apply"
