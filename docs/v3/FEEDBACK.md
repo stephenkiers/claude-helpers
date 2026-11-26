@@ -133,3 +133,22 @@ or more runs of the full command. In this trial they are cheap by accident: the 
 at its first failing part, and the red-first spec tests fail an early part until the last units
 land. A repo whose tests fail late would pay for each run in full. This is the largest multiplier in
 entry 1's table and was missing from it.
+
+## 10. A card that was not a human's question (2026-11-25, from the human)
+
+The card in entry 8 reached the human, who called it weird and asked whether it was built for humans.
+It was not. Nothing about the product or the design differed between its options; the only question
+was which worker would type the same two lines. It was phrased in the driver's own terms ("unit 1",
+"widen this unit"), terms the human never chose and has no reason to know, and it was labelled an
+architecture decision.
+
+The resolver asks whether a principle, a fact or a past decision answers a question. It never asks
+whether the question is one only a human can answer.
+
+**Options to weigh.**
+
+- Settle "a file I need belongs to another unit" in the driver: leave the edit to the owning unit,
+  note it in the journal, no card.
+- Add a resolver outcome for questions about the flow's own bookkeeping (units, file lists, ordering):
+  the driver takes the option that keeps the plan as written.
+- Cards never use the words "unit" or a unit id; they describe the work in the ticket's terms.
