@@ -36,6 +36,7 @@ _FAILED_TEST_LINES = (
     re.compile(r"^\s*not ok \d+\s*-?\s*(\S.*?)\s*$"),
 )
 _MAX_NAMES = 10
+_BLOCKED_TEXT_CAP = 300
 
 
 class Shortfall(Exception):
@@ -171,12 +172,19 @@ class UnitUnfinished(FlowStop):
 
 
 # What a blocked worker may say it needs -> (stop class, how the stop names the need).
+# F14: Derived from schemas.BLOCKED_NEEDS with import-time check to prevent drift.
 BLOCKED_NEEDS: Dict[str, Tuple[str, str]] = {
     "shell": ("environment", "a shell command to be run, and it has no shell"),
     "other_file": ("implement", "a change in a file it may not edit"),
     "environment": ("environment", "a change to the environment (a tool, a dependency or a setting)"),
     "human": ("human", "a decision from a person"),
 }
+
+# F14: Import-time check that BLOCKED_NEEDS keys match schemas.BLOCKED_NEEDS
+assert set(BLOCKED_NEEDS.keys()) == set(schemas.BLOCKED_NEEDS), (
+    "BLOCKED_NEEDS keys %s do not match schemas.BLOCKED_NEEDS %s; they must stay in sync"
+    % (sorted(BLOCKED_NEEDS.keys()), sorted(schemas.BLOCKED_NEEDS))
+)
 
 
 class Blocked(FlowStop):
@@ -199,17 +207,29 @@ def blocked_stop(ctx: Ctx, role: str, output: Dict[str, Any], evidence: Optional
     needs = str(info.get("needs") or "human")
     if needs not in BLOCKED_NEEDS:
         needs = "human"
-    what = " ".join(str(info.get("what") or "").split())
-    said = " ".join(str(info.get("reason") or output.get("summary") or "").split()) or "(it gave no reason)"
+
+    # F18: Compute formatted strings once and cap their length
+    def _cap_text(text: str) -> str:
+        if len(text) > _BLOCKED_TEXT_CAP:
+            return text[:_BLOCKED_TEXT_CAP] + "…"
+        return text
+
+    what = _cap_text(" ".join(str(info.get("what") or "").split()))
+    said = _cap_text(" ".join(str(info.get("reason") or output.get("summary") or "").split()) or "(it gave no reason)")
     cls, phrase = BLOCKED_NEEDS[needs]
-    reason = "the %s cannot finish from here: it needs %s%s. It said: \"%s\"" % (
-        role, phrase, " (%s)" % what if what else "", said)
+
+    # Construct the message once
+    what_phrase = " (%s)" % what if what else ""
+    full_reason = "the %s cannot finish from here: it needs %s%s. It said: \"%s\"" % (
+        role, phrase, what_phrase, said)
+    reason = _cap_text(full_reason)
+
     stop = Blocked(cls, reason, evidence=evidence, tried=tried)
     stop.needs, stop.what, stop.worker_reason = needs, what, said
     ctx.flow.event("heal", cls="blocked", action="no retry: the worker is blocked", role=role, needs=needs,
                    what=what, reason=said)
     record.journal(ctx.flow, "A %s reported it is blocked and was not retried on a stronger model. It needs %s%s. "
-                             "It said: \"%s\"" % (role, phrase, " (%s)" % what if what else "", said))
+                             "It said: \"%s\"" % (role, phrase, what_phrase, said))
     return stop
 
 
@@ -553,6 +573,108 @@ def _record_red(ctx: Ctx, run: CheckRun) -> None:
         checks.record_red(ctx.flow.path, run)
 
 
+def _heal_environment(ctx: Ctx, run: CheckRun, mode: str, command: str, tried: List[str]) -> Tuple[CheckRun, bool]:
+    """
+    F6: Heal an environment failure: re-run after timeout, or run install command once if dependency
+    is missing and no external modules are involved. Returns (result, install_was_called) tuple, or raises
+    FlowStop if healing is not applicable or fails. install_was_called is True if _install was invoked.
+    """
+    failure = classify_check(run, None)
+    if failure.cls == "environment" and failure.detail.get("kind") == "missing-dependency" \
+            and _names_spec_test(ctx, run) and not _external_missing(ctx, run):
+        # A spec test that cannot import code a later unit has yet to write is red work, not a missing tool.
+        failure = Failure("check-work", "a spec test fails", evidence=run.output_path,
+                          detail={"tests": _failing_tests(_read_output(run))})
+    if failure.cls != "environment":
+        return run, False
+
+    kind = failure.detail.get("kind")
+    if kind == "timeout":
+        tried.append("re-ran the check once after the timeout")
+        _heal(ctx, "environment", "re-running the check once after a timeout", mode=mode)
+        new_run = _run_check(ctx, mode, command)
+        if new_run.ok:
+            return new_run, False
+        raise _stop_check(ctx, "environment", new_run, "the check timed out again", tried)
+
+    if not ctx.cfg.install:
+        missing = _external_missing(ctx, run)
+        raise _stop_check(ctx, "environment", run,
+                          "the check needs a dependency%s and no install command is configured"
+                          % (" (%s is not installed)" % ", ".join(missing) if missing else ""), tried)
+
+    irun = _install(ctx, tried)
+    if not irun.ok:
+        raise _stop_check(ctx, "environment", irun, "the install command failed", tried)
+    new_run = _run_check(ctx, mode, command)
+    if new_run.ok:
+        return new_run, True
+    tried.append("re-ran the check after the install")
+    if classify_check(new_run, None).cls == "environment":
+        raise _stop_check(ctx, "environment", new_run, "the check still fails the same way after install", tried)
+    return new_run, True
+
+
+def _install_for_blocked_fixer(ctx: Ctx, blocked: Blocked, tried: List[str], installed: bool) -> bool:
+    """
+    F6, F19: When a fixer reports environment need, attempt install once if not already done and if
+    dependency manifests have not changed against the base. Returns True if install succeeded and
+    check is now green, False to continue normal error handling or raise Blocked unchanged. F19: check
+    manifests/lockfiles against base before installing; if they changed, do not install.
+    """
+    if blocked.needs != "environment" or not ctx.cfg.install or installed:
+        return False
+
+    # F19: Check if manifests/lockfiles changed against base; if so, don't install
+    if _manifests_changed(ctx):
+        return False
+
+    irun = _install(ctx, tried)
+    if not irun.ok:
+        return False
+    current = _run_check(ctx, "fast", ctx.cfg.check_fast)
+    if current.ok:
+        _heal(ctx, "environment", "check green after the install a blocked fixer asked for", mode="fast")
+        return True
+    return False
+
+
+def _manifests_changed(ctx: Ctx) -> bool:
+    """
+    F19: Check if dependency manifests or lockfiles changed between the branch and its base.
+    Common manifest files: package.json, requirements.txt, Gemfile, Cargo.toml, go.mod, etc.
+    Returns True if any manifest/lockfile differs from the base, False if they're in sync or base is not reachable.
+    """
+    try:
+        gitops.fetch(ctx.worktree)
+        base_ref = "origin/" + ctx.cfg.base
+        # Common dependency manifest and lockfile patterns
+        manifest_patterns = [
+            "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+            "requirements*.txt", "Pipfile*", "setup.py", "setup.cfg", "pyproject.toml",
+            "Gemfile*", "Cargo.toml", "Cargo.lock",
+            "go.mod", "go.sum",
+            "pom.xml", "build.gradle*",
+            "pubspec.yaml", "pubspec.lock",
+            ".ruby-version", ".nvmrc", ".python-version",
+        ]
+        # Check if any manifest file differs from base
+        for pattern in manifest_patterns:
+            try:
+                # Use git diff to check if the pattern matches any changed files
+                result = gitops.git(["diff", "--name-only", base_ref + "...HEAD"], ctx.worktree,
+                                     capture=True)
+                changed_files = (result or "").strip().split("\n")
+                for f in changed_files:
+                    if any(f.endswith(p.lstrip("*")) or f == p for p in [pattern]):
+                        return True
+            except (gitops.GitError, OSError):
+                continue
+        return False
+    except (gitops.GitError, OSError):
+        return False
+
+
 def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int], None]] = None,
           raise_on_fail: bool = True) -> CheckRun:
     """
@@ -560,6 +682,18 @@ def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int]
     or fail), install a missing dependency once, re-run a timeout once, re-run a failure once (flaky,
     unless `check.confirm_red` is off), then two fixer rounds. A fixer that reports it is blocked
     ends the rounds: see `Blocked`.
+
+    Raises:
+        Blocked: When a fixer's worker reports it cannot finish from where it is. Recorded check
+            failure results (reds) for this tree are cleared if an environment install was run;
+            otherwise they remain valid for reuse. No further fixer rounds are attempted when
+            Blocked is raised.
+        FlowStop: When an unrecoverable check failure occurs (timeout, missing dependency with no
+            install command, unresolved conflicts in a base merge, or check still failing after
+            all healing attempts).
+
+    Precondition: The worktree must be in a clean or committable state; Git operations and check
+        execution require a valid repository and tree. The base branch reference must be fetchable.
     """
     command = ctx.cfg.check_fast if mode == "fast" else ctx.cfg.check_full
     wt = ctx.worktree
@@ -573,43 +707,15 @@ def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int]
     if run.reused:
         tried.append("used the failing result already recorded for this tree")
     else:
-        failure = classify_check(run, None)
-        if failure.cls == "environment" and failure.detail.get("kind") == "missing-dependency" \
-                and _names_spec_test(ctx, run) and not _external_missing(ctx, run):
-            # A spec test that cannot import code a later unit has yet to write is red work, not a missing tool.
-            failure = Failure("check-work", "a spec test fails", evidence=run.output_path,
-                              detail={"tests": _failing_tests(_read_output(run))})
-        if failure.cls == "environment":
-            kind = failure.detail.get("kind")
-            if kind == "timeout":
-                tried.append("re-ran the check once after the timeout")
-                _heal(ctx, "environment", "re-running the check once after a timeout", mode=mode)
-                run = _run_check(ctx, mode, command)
-                if run.ok:
-                    return _passed(ctx, run)
-                raise _stop_check(ctx, "environment", run, "the check timed out again", tried)
-            if not ctx.cfg.install:
-                missing = _external_missing(ctx, run)
-                raise _stop_check(ctx, "environment", run,
-                                  "the check needs a dependency%s and no install command is configured"
-                                  % (" (%s is not installed)" % ", ".join(missing) if missing else ""), tried)
-            irun = _install(ctx, tried)
-            installed = True
-            if not irun.ok:
-                raise _stop_check(ctx, "environment", irun, "the install command failed", tried)
-            run = _run_check(ctx, mode, command)
-            if run.ok:
-                return _passed(ctx, run)
-            tried.append("re-ran the check after the install")
-            if classify_check(run, None).cls == "environment":
-                raise _stop_check(ctx, "environment", run, "the check still fails the same way after install", tried)
+        # F6: Use helper to handle environment failures
+        current, install_called = _heal_environment(ctx, run, mode, command, tried)
+        installed = install_called  # Track whether install was actually called
 
         # A branch that fell behind the base can fail for that reason alone (some repos' checks refuse a
         # stale branch outright). Bring the base in once before spending re-runs or fixer calls on it.
         synced = bool(_is_clean(wt) and _behind_base(ctx) and sync_base(ctx))
         if synced:
             tried.append("merged the base into the branch")
-        current = run
         if synced or ctx.cfg.check_confirm_red:
             rerun = _run_check(ctx, mode, command)
             if rerun.ok:
@@ -626,17 +732,9 @@ def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int]
             try:
                 fixer(current, rnd)
             except Blocked as blocked:
-                if blocked.needs != "environment" or not ctx.cfg.install or installed:
-                    raise
-                installed = True
-                # The one heal the table allows for an environment need: the install command, once.
-                irun = _install(ctx, tried)
-                if not irun.ok:
-                    raise
-                current = _run_check(ctx, mode, command)
-                if current.ok:
-                    _heal(ctx, "environment", "check green after the install a blocked fixer asked for", mode=mode)
-                    return _passed(ctx, current)
+                # F6, F19: Use helper to handle blocked fixer's environment need
+                if _install_for_blocked_fixer(ctx, blocked, tried, installed):
+                    return _passed(ctx, _measure(ctx, mode, command))
                 raise
             tried.append("fixer round %d" % rnd)
             current = _measure(ctx, mode, command)
