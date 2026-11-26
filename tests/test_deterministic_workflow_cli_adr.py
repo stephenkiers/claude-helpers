@@ -25,7 +25,7 @@ ADR_0013 = REPO_ROOT / "docs" / "adr" / "0013-deterministic-workflow-cli.md"
 
 AMENDMENT_15_RE = re.compile(r"Amendment 15(?![.\d])")
 AMENDMENT_15_1_RE = re.compile(r"Amendment 15\.1(?!\d)")
-HEADER_LIKE_RE = re.compile(r"^\s*(#+|\*\*|-)[^\n]*$", re.MULTILINE)
+HEADER_LIKE_RE = re.compile(r"^[ \t]*#+[^\n]*$", re.MULTILINE)
 
 
 def header_lines_with(text, pattern):
@@ -37,12 +37,14 @@ def header_lines_with(text, pattern):
     return hits
 
 
-def section_after(text, start, max_chars=4000):
-    """Text from start up to the next top-level markdown heading, capped at max_chars."""
-    rest = text[start + 1:]
-    nxt = re.search(r"^## ", rest, re.MULTILINE)
-    end = start + 1 + (nxt.start() if nxt else len(rest))
-    return text[start:min(end, start + max_chars)]
+def section_after(text, start):
+    """Text from start up to the next amendment heading or top-level heading."""
+    first_nl = text.find("\n", start)
+    body_start = first_nl + 1 if first_nl != -1 else len(text)
+    rest = text[body_start:]
+    nxt = re.search(r"^#{2,3} ", rest, re.MULTILINE)
+    end = body_start + (nxt.start() if nxt else len(rest))
+    return text[start:end]
 
 
 def main():
