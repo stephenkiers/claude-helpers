@@ -306,11 +306,12 @@ class _Stage:
         """
         if not final and not self.ctx.cfg.check_per_unit:
             return self._green(unit)
-        try:
-            run = work.check_unit(self.ctx, self._fix_files(unit, final), raise_on_fail=False, use_fixer=final)
-        except heal.Blocked:
-            # A blocked fixer is not retried: leave the check red for the merge gate and proceed.
-            run = work.check_unit(self.ctx, self._fix_files(unit, final), raise_on_fail=False, use_fixer=False)
+        run, blocked = work.check_unit_or_blocked(self.ctx, self._fix_files(unit, final), raise_on_fail=False,
+                                                  use_fixer=final)
+        if blocked is not None:
+            # A blocked fixer is not retried: the red stays for the merge gate and no judge is called.
+            self.d["check_blocked"] = True
+            return self._green(unit)
         return self._settle(unit, final, run)
 
     def _fix_files(self, unit: Dict[str, Any], final: bool) -> List[str]:
@@ -380,8 +381,8 @@ class _Stage:
             if failing:  # tests for the units still to come are red by design
                 d["units"][uid]["deferred_red"] = failing
                 return self._green(unit)
-            run = work.check_unit(ctx, self._fix_files(unit, final), raise_on_fail=False, use_fixer=True)
-            if run.ok:
+            run, blocked = work.check_unit_or_blocked(ctx, self._fix_files(unit, final), raise_on_fail=False)
+            if blocked is not None or run.ok:
                 return self._green(unit)
             failing = self._spec_files_in(run)
         if not failing or uid in d["judged"]:
@@ -422,11 +423,10 @@ class _Stage:
             protected = work.protected_paths(ctx)
             fspec = work.worker_spec(ctx, "fixer", work.fixer_prompt(ctx, task, allowed, protected),
                                      "fix-judged-%s" % uid, model=model)
-            try:
-                heal.write_call(ctx, fspec, allowed, protected, "flow3 #%d: fix code the judge found wrong" % ctx.issue)
-            except heal.Blocked:
-                # A blocked fixer is not retried: leave the check red for the merge gate.
-                pass
+            _, blocked = work.guard_blocked(heal.write_call, ctx, fspec, allowed, protected,
+                                            "flow3 #%d: fix code the judge found wrong" % ctx.issue)
+            if blocked is not None:
+                return self._green(unit)  # a blocked fixer is not retried: the red stays for the merge gate
             return self._recheck(unit)
         if verdict == "test_wrong" and not weakens:
             self._edit_tests(row, approved=False)
@@ -476,14 +476,12 @@ class _Stage:
         protected = [p for p in work.protected_paths(ctx) if p not in files]
         spec = work.worker_spec(ctx, "fixer", work.fixer_prompt(ctx, task, files, protected),
                                 "fix-test-%s" % row["unit"])
-        try:
-            heal.write_call(ctx, spec, files, protected, "flow3 #%d: correct the spec test the judge found wrong" % ctx.issue)
-        except heal.Blocked:
-            # A blocked fixer is not retried: leave the edit unapplied for the merge gate.
-            pass
+        _, blocked = work.guard_blocked(heal.write_call, ctx, spec, files, protected,
+                                        "flow3 #%d: correct the spec test the judge found wrong" % ctx.issue)
         verdict = "keeps_or_tightens" if (not row["edit_weakens"] and row["verdict"] == "test_wrong") else "weakens"
         for f in files:
-            self.d["test_edits"].append({"file": f, "verdict": verdict, "reason": row["reason"], "applied": True})
+            self.d["test_edits"].append({"file": f, "verdict": verdict, "reason": row["reason"],
+                                        "applied": blocked is None})
 
     def _recheck(self, unit: Dict[str, Any]) -> bool:
         heal.check(self.ctx, "fast", fixer=None, raise_on_fail=True)
@@ -511,7 +509,12 @@ class _Stage:
         for u in ordered_units(self.plan):
             allowed += [str(f) for f in u["files"] if str(f) not in allowed]
         # A recorded pass for an unchanged tree is reused, so this only runs when something changed.
-        heal.check(ctx, "fast", fixer=work.check_fixer(ctx, allowed), raise_on_fail=True)
+        if d.get("check_blocked"):
+            # A check fixer already said it cannot fix this from here: do not launch another, and leave
+            # the red check for the merge gate.
+            work.check_unit_or_blocked(ctx, allowed, raise_on_fail=False, use_fixer=False)
+        else:
+            work.check_unit_or_blocked(ctx, allowed)
         d["phase"] = "done"
         self.save()
         sections: List[Tuple[str, str]] = []

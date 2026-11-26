@@ -251,11 +251,7 @@ class _Stage:
                 raise blocked
             result = cast(CallResult, result_new)
         if ctx.cfg.check_per_unit:
-            try:
-                work.check_unit(ctx, unit["files"])
-            except heal.Blocked:
-                # A blocked fixer is not retried: leave the check red for the merge gate.
-                pass
+            work.check_unit_or_blocked(ctx, unit["files"])  # a blocked fixer leaves the red for the merge gate
         return result
 
     def check_attempt(self, units: List[Doc]) -> None:
@@ -270,11 +266,7 @@ class _Stage:
                 allowed = []
                 break
             allowed += [str(f) for f in unit["files"] if str(f) not in allowed]
-        try:
-            work.check_unit(self.ctx, allowed)
-        except heal.Blocked:
-            # A blocked fixer is not retried: leave the check red for the merge gate.
-            pass
+        work.check_unit_or_blocked(self.ctx, allowed)  # a blocked fixer leaves the red for the merge gate
         p["checked"].append(attempt)
         self.save()
 

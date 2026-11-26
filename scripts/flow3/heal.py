@@ -558,11 +558,12 @@ def _measure(ctx: Ctx, mode: str, command: str) -> CheckRun:
             return CheckRun(ok=True, command=command, mode=mode, exit_code=0, timed_out=False,
                             duration_secs=0.0, tree=tree, output_path="", trimmed="", reused=True)
         red = checks.red_before(ctx.flow.path, tree, command)
-        if red is not None:
+        reused = checks.reused_red(red, mode) if red is not None else None
+        if reused is not None:
             ctx.flow.event("check_reused", mode=mode, tree=tree, ok=False)
             record.journal(ctx.flow, "Check (%s) not re-run: tree %s already failed `%s`; the recorded "
                                      "result is used." % (mode, tree[:12], command))
-            return checks.reused_red(red, mode)
+            return reused
     return _run_check(ctx, mode, command)
 
 
@@ -615,28 +616,29 @@ def _heal_environment(ctx: Ctx, run: CheckRun, mode: str, command: str, tried: L
     return new_run, True
 
 
-def _install_for_blocked_fixer(ctx: Ctx, blocked: Blocked, tried: List[str], installed: bool) -> bool:
+def _install_for_blocked_fixer(ctx: Ctx, blocked: Blocked, tried: List[str],
+                               installed: bool) -> Optional[CheckRun]:
     """
     F6, F19: When a fixer reports environment need, attempt install once if not already done and if
     dependency manifests have not changed against the base. Returns True if install succeeded and
-    check is now green, False to continue normal error handling or raise Blocked unchanged. F19: check
+    check is now green (the passing run is returned), None to raise Blocked unchanged. F19: check
     manifests/lockfiles against base before installing; if they changed, do not install.
     """
     if blocked.needs != "environment" or not ctx.cfg.install or installed:
-        return False
+        return None
 
     # F19: Check if manifests/lockfiles changed against base; if so, don't install
     if _manifests_changed(ctx):
-        return False
+        return None
 
     irun = _install(ctx, tried)
     if not irun.ok:
-        return False
+        return None
     current = _run_check(ctx, "fast", ctx.cfg.check_fast)
     if current.ok:
         _heal(ctx, "environment", "check green after the install a blocked fixer asked for", mode="fast")
-        return True
-    return False
+        return current
+    return None
 
 
 _MANIFEST_NAMES = frozenset([
@@ -697,11 +699,23 @@ def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int]
 
     current = run
     if run.reused:
-        tried.append("used the failing result already recorded for this tree")
+        # F12: the red is keyed by tree, and the base can move with the tree unchanged. A stale branch
+        # can fail for that reason alone, so sync the base before spending fixer rounds on a reused red.
+        if _is_clean(wt) and _behind_base(ctx) and sync_base(ctx):
+            tried.append("merged the base into the branch")
+            rerun = _run_check(ctx, mode, command)
+            if rerun.ok:
+                return _passed(ctx, rerun)
+            current = rerun
+            _record_red(ctx, current)
+        else:
+            tried.append("used the failing result already recorded for this tree")
     else:
         # F6: Use helper to handle environment failures
         current, install_called = _heal_environment(ctx, run, mode, command, tried)
         installed = install_called  # Track whether install was actually called
+        if current.ok:
+            return current if current.reused else _passed(ctx, current)
 
         # A branch that fell behind the base can fail for that reason alone (some repos' checks refuse a
         # stale branch outright). Bring the base in once before spending re-runs or fixer calls on it.
@@ -725,8 +739,9 @@ def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int]
                 fixer(current, rnd)
             except Blocked as blocked:
                 # F6, F19: Use helper to handle blocked fixer's environment need
-                if _install_for_blocked_fixer(ctx, blocked, tried, installed):
-                    return _passed(ctx, _measure(ctx, mode, command))
+                healed = _install_for_blocked_fixer(ctx, blocked, tried, installed)
+                if healed is not None:
+                    return _passed(ctx, healed)
                 raise
             tried.append("fixer round %d" % rnd)
             current = _measure(ctx, mode, command)

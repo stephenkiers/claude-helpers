@@ -200,8 +200,8 @@ def _filled(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def card_missing(card: Dict[str, Any]) -> List[str]:
-    """Names of the parts a card lacks. An empty list means it may be shown."""
+def card_missing(card: Dict[str, Any], owner: Optional[Owner] = None) -> List[str]:
+    """Names of the parts a card lacks. An empty list means it may be shown. `owner` is set for a worker's question."""
     missing: List[str] = []
     ticket = card.get("ticket")
     if not (isinstance(ticket, dict) and _filled(ticket.get("title")) and _filled(ticket.get("purpose"))
@@ -233,7 +233,7 @@ def card_missing(card: Dict[str, Any]) -> List[str]:
         missing.append("while_waiting")
     if card.get("kind") == "risk" and not _filled(card.get("risk")):
         missing.append("risk")
-    bad = unhonourable(card)
+    bad = unhonourable(card, owner)
     if bad:
         missing.append("an option the driver cannot carry out (%s)" % ", ".join(bad))
     return missing
@@ -462,26 +462,26 @@ def resolve(ctx: Ctx, stage: str, questions: List[Dict[str, Any]], repair: Optio
 
     waiting = [o for o in outcomes if o.answer is None]
     cards = {str(o.question["id"]): card_of(o) for o in waiting}
-    incomplete = [{"id": cid, "missing": card_missing(c)} for cid, c in cards.items() if card_missing(c)]
+    incomplete = [{"id": cid, "missing": card_missing(c, owner)} for cid, c in cards.items() if card_missing(c, owner)]
     if incomplete and repair is not None:
         replacements = {str(r.get("id")): r for r in repair(incomplete) if isinstance(r, dict)}
         for o in waiting:
             cid = str(o.question["id"])
-            if cid in replacements and card_missing(cards[cid]):
+            if cid in replacements and card_missing(cards[cid], owner):
                 o.question = replacements[cid]
                 cards[cid] = card_of(o)
-        incomplete = [{"id": cid, "missing": card_missing(c)} for cid, c in cards.items() if card_missing(c)]
+        incomplete = [{"id": cid, "missing": card_missing(c, owner)} for cid, c in cards.items() if card_missing(c, owner)]
     if incomplete:
         # A risk question whose author left out the risk text is still shown: the human can judge it
         # from the decision and the reason, and a stop here would cost more than the gap.
         for o in waiting:
             cid = str(o.question["id"])
-            if card_missing(cards[cid]) == ["risk"]:
+            if card_missing(cards[cid], owner) == ["risk"]:
                 o.question = dict(o.question)
                 o.question["risk"] = ("The step that asked did not say what would no longer be protected. "
                                       "Its reason: %s" % str(o.question.get("context") or "(none given)"))
                 cards[cid] = card_of(o)
-        incomplete = [{"id": cid, "missing": card_missing(c)} for cid, c in cards.items() if card_missing(c)]
+        incomplete = [{"id": cid, "missing": card_missing(c, owner)} for cid, c in cards.items() if card_missing(c, owner)]
     if incomplete:
         first = incomplete[0]
         raise FlowStop("runner", "question card %s is missing: %s" % (first["id"], ", ".join(first["missing"])),

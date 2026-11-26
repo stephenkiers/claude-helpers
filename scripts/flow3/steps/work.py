@@ -11,7 +11,7 @@ a card is open, and resume the worker with `resume_worker`. After the answers ar
 """
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, cast
 
 from scripts.flow3 import config, heal, prompts, schemas, voice
 from scripts.flow3.context import Ctx
@@ -94,6 +94,20 @@ def check_unit(ctx: Ctx, fixer_allowed: Sequence[str], raise_on_fail: bool = Tru
     """Run the fast check for a unit with the two fixer rounds (or none when `use_fixer` is false)."""
     fixer = check_fixer(ctx, fixer_allowed) if use_fixer else None
     return heal.check(ctx, "fast", fixer=fixer, raise_on_fail=raise_on_fail)
+
+
+def check_unit_or_blocked(ctx: Ctx, fixer_allowed: Sequence[str], raise_on_fail: bool = True,
+                          use_fixer: bool = True) -> Tuple[CheckRun, Optional["heal.Blocked"]]:
+    """
+    check_unit with a blocked check fixer handled in one place. A fixer that reports it cannot finish
+    from here is not retried: the red check is returned as it stands (never raised) for the merge gate,
+    together with the Blocked that ended the fixing, so a caller can skip further work on it.
+    """
+    run, blocked = guard_blocked(check_unit, ctx, fixer_allowed, raise_on_fail=raise_on_fail,
+                                 use_fixer=use_fixer)
+    if blocked is not None:
+        run = heal.check(ctx, "fast", fixer=None, raise_on_fail=False)
+    return cast(CheckRun, run), blocked
 
 
 def run_unit_checked(ctx: Ctx, unit: Dict[str, Any], role: str, prompt: str, message: str,

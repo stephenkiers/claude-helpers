@@ -168,15 +168,18 @@ def clear_reds(flow_path: Path) -> None:
         pass
 
 
-def reused_red(row: Mapping[str, Any], mode: str) -> CheckRun:
-    """A CheckRun rebuilt from a recorded red, marked reused."""
+def reused_red(row: Mapping[str, Any], mode: str) -> Optional[CheckRun]:
+    """
+    A CheckRun rebuilt from a recorded red, marked reused, or None when its output cannot be read: a
+    red with no output would send a fixer in blind, so the caller runs the check fresh instead.
+    """
     out_path = str(row.get("output_path") or "")
-    output = ""
-    if out_path:
-        try:
-            output = Path(out_path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            output = ""
+    if not out_path:
+        return None
+    try:
+        output = Path(out_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
     return CheckRun(ok=False, command=str(row.get("command") or ""), mode=mode,
                     exit_code=int(row.get("exit_code") or 1), timed_out=False, duration_secs=0.0,
                     tree=str(row.get("tree") or ""), output_path=out_path, trimmed=trim(output), reused=True)
