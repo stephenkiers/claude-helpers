@@ -165,3 +165,19 @@ have no shell. The plan asked a unit for something no unit can do.
 
 **Done (PROGRESS decision 36).** Workers hand such changes on through `elsewhere`. Still open: the
 planner writing steps that need a shell, and steps that name files outside the unit.
+
+## 12. The base moved during the run and the check refused the branch (2026-11-25)
+
+The repo's check starts by refusing a branch that is behind the base. The base gained two commits
+during the trial. The driver read the refusal as a failure in the unit's work: it ran the same check
+four times on the same tree, then paid for two fixer calls. Both fixers said, correctly, that the fix
+was a rebase and that they had no shell. The second "I cannot do this" stopped the flow as an
+unfinished unit.
+
+**Done (PROGRESS decision 37).** A red check on a branch behind the base merges the base first.
+
+Still open:
+
+- The same failing check ran four times on one tree before anything changed. Entry 9 undercounted.
+- A fixer that says "this is not fixable from here" is treated as a unit that ran out of room, and is
+  retried on a stronger model. It needs its own outcome.

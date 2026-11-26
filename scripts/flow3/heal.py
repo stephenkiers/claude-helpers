@@ -527,6 +527,10 @@ def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int]
         if classify_check(run, None).cls == "environment":
             raise _stop_check(ctx, "environment", run, "the check still fails the same way after install", tried)
 
+    # A branch that fell behind the base can fail for that reason alone (some repos' checks refuse a
+    # stale branch outright). Bring the base in once before spending re-runs or fixer calls on it.
+    if _is_clean(wt) and _behind_base(ctx) and sync_base(ctx):
+        tried.append("merged the base into the branch")
     rerun = _run_check(ctx, mode, command)
     if rerun.ok:
         found = classify_check(run, rerun)
@@ -572,6 +576,15 @@ def _undo_merge(wt: Path, pre: str) -> None:
     except gitops.GitError:
         pass
     gitops.git(["reset", "--hard", pre], wt)
+
+
+def _behind_base(ctx: Ctx) -> bool:
+    """True when the base has commits the branch lacks. Fetches; a fetch failure counts as not behind."""
+    try:
+        gitops.fetch(ctx.worktree)
+        return gitops.is_behind(ctx.worktree, "origin/" + ctx.cfg.base)
+    except gitops.GitError:
+        return False
 
 
 def sync_base(ctx: Ctx) -> bool:

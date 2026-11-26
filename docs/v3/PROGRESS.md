@@ -148,6 +148,9 @@ If this session restarts: read this file first, then continue from the first uni
     and puts it in every later unit's prompt. It is no longer a question for the human and no longer
     makes the unit `partial`. Not built: turning a reverted out-of-unit edit into a handoff
     automatically, and a check that every handoff was picked up.
+37. **A red check on a branch behind the base merges the base first.** Found by the first real-repo
+    trial (FEEDBACK entry 12). Before the flaky re-run and the fixer rounds, the driver fetches, and if
+    the base has moved it merges it in with the existing base-stale heal, then re-runs the check.
 
 ## Spend (notional USD, real model calls)
 

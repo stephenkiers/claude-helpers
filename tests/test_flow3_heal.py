@@ -561,6 +561,14 @@ h.test_result("base-stale: behind and clean merges, True, no model call",
               heal.sync_base(s1.ctx) is True and (s1.clone / "theirs.txt").exists()
               and len(s1.launches()) == 0 and len(s1.heals("base-stale")) == 1)
 
+s1c = behind_box("sb1c", {"mine.txt": "m\n"}, {"theirs.txt": "t\n"})
+s1c.script([])
+s1c.results("fail", "pass")
+run = heal.check(s1c.ctx, "fast")
+h.test_result("base-stale: a red check on a branch behind the base merges the base before any fixer",
+              run.ok and (s1c.clone / "theirs.txt").exists() and s1c.runs() == 2
+              and len(s1c.launches()) == 0 and len(s1c.heals("base-stale")) == 1)
+
 s2 = behind_box("sb2", {"shared.txt": "mine\n"}, {"shared.txt": "theirs\n"})
 s2.script([{"role": "conflict_resolver", "write_files": {"shared.txt": "mine and theirs\n"}, "output": DONE}])
 ok = heal.sync_base(s2.ctx)
