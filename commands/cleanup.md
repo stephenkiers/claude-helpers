@@ -990,7 +990,7 @@ if [ "$PR_SIGNAL_STATE" = "merged" ]; then
 
         # Show what changed: compare key fields between approved plan and fresh plan
         echo "Changes to the removal set:"
-        python3 << 'PY_DIFF'
+        python3 - "$PLAN_JSON" "$FRESH_PLAN" << 'PY_DIFF' || true
 import json, sys
 try:
     old_plan = json.loads(sys.argv[1])
@@ -1019,7 +1019,6 @@ except Exception as e:
     print(f"Error comparing plans: {e}", file=sys.stderr)
     sys.exit(1)
 PY_DIFF
- "$(printf '%s' "$PLAN_JSON")" "$(printf '%s' "$FRESH_PLAN")" || true
         echo ""
 
         # ASK RELAY: Print message, then set variables to empty. The orchestrator applies the Ask block
@@ -1040,8 +1039,11 @@ PY_DIFF
     # Re-entry contract (after ASK RELAY): on re-entry, these variables must be re-established:
     # SELECTED_GROUPS, EXCLUDED_NUMBERS, PER_ITEM_YES, QSA, FRESH_PLAN, TEARDOWN_PLAN, REPLAN_CONFIRM
     # If FRESH_PLAN or TEARDOWN_PLAN are empty at re-entry, re-read from the same source:
-    if [ -z "$FRESH_PLAN" ]; then
-      FRESH_PLAN="$PLAN_JSON"
+    if [ "$ASKED_FOR_REPLAN" = "1" ] && [ -z "$FRESH_PLAN" ]; then
+      # Never fall back to the stale PLAN_JSON: the human approved the re-planned set only
+      echo "ERROR: re-plan was not carried into re-entry; removed nothing"
+      python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage discover-and-teardown --outcome failure --failure-class other 2>/dev/null || true
+      exit 1
     fi
     if [ -z "$TEARDOWN_PLAN" ]; then
       TEARDOWN_PLAN="$DISCOVER_JSON"
