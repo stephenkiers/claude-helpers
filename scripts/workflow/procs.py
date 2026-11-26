@@ -572,6 +572,14 @@ def live_in(
     """
     Tri-state answer to "does any process other than the caller chain have its cwd inside path?".
 
+    The caller chain is always excluded. Additionally, all descendants of the caller's own claude
+    process are excluded when that claude process has its cwd inside path; this includes both helper
+    processes (caffeinate, tool shells, etc.) and other background processes started by the caller's
+    session. Other sessions, shared ancestors (tmux, terminal, launchd), and their other children
+    are never excluded and will return LIVE if their cwd is in path. If no claude process appears
+    in the contiguous in-path run of the caller chain, only the caller_pids themselves are excluded
+    and no descendant exclusion applies.
+
     Args:
         path: Directory path to check
         caller_pids: List of pids in the caller chain, or Unknown if chain walk failed
@@ -610,13 +618,15 @@ def live_in(
         # The caller's own subtree is not "another session". Claude Code starts helpers of its own
         # (e.g. `caffeinate -i -t 300`, tool shells, background jobs) whose cwd is the worktree; they are
         # children of a caller-chain process, not ancestors, so the plain chain check counted them LIVE and
-        # blocked cleanup from inside the worktree. Exclude descendants of the top of the contiguous run of
-        # caller-chain processes (walking up from the caller) that themselves have their cwd inside path.
-        # caller_pids is ordered from the caller upward (as caller_chain returns it). A chain that never
-        # touches path (cleanup run from main) extends nothing, and another session's processes are never
-        # under that run, so they still count.
+        # blocked cleanup from inside the worktree. Exclude descendants of the caller's own claude process
+        # when that claude has its cwd inside path. Walk caller_pids upward (ordered from caller upward
+        # as caller_chain returns it) to find the contiguous run where cwd is inside path, then find the
+        # HIGHEST pid in that run with comm basename 'claude'. If found, exclude all its descendants;
+        # if not found, exclude no descendants beyond caller_pids themselves (conservative: shared ancestors
+        # like tmux/terminal/launchd won't become the exclusion root). A chain that never touches path
+        # (cleanup run from main) extends nothing, and another session's processes still count.
         excluded = set(caller_pids)
-        run_top: Optional[int] = None
+        claude_root: Optional[int] = None
         for cpid in caller_pids:
             ccwd = cwd_map.get(cpid)
             try:
@@ -625,13 +635,18 @@ def live_in(
                 inside = False
             if not inside:
                 break
-            run_top = cpid
-        if run_top is not None:
+            # Check if this process is named 'claude'
+            for pr in all_procs:
+                if pr.pid == cpid:
+                    if os.path.basename(pr.comm) == 'claude':
+                        claude_root = cpid
+                    break
+        if claude_root is not None:
             kids: Dict[int, List[int]] = {}
             for pr in all_procs:
                 kids.setdefault(pr.ppid, []).append(pr.pid)
-            seen = {run_top}
-            stack = [run_top]
+            seen = {claude_root}
+            stack = [claude_root]
             while stack:
                 cur = stack.pop()
                 for kid in kids.get(cur, []):
