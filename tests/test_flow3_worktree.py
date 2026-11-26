@@ -37,7 +37,7 @@ def sh(args, cwd):
 _COUNTER = [100]
 
 
-def make_ctx(check="true", install=None, body="The body.\n", extra_issues=None):
+def make_ctx(check="true", install=None, body="The body.\n", extra_issues=None, base_check=True):
     """A sandbox repo (bare origin + clone) with a local-provider issue, a flow and its Ctx."""
     _COUNTER[0] += 1
     issue = _COUNTER[0]
@@ -51,7 +51,7 @@ def make_ctx(check="true", install=None, body="The body.\n", extra_issues=None):
     lines = ["provider: local"]
     if install:
         lines.append("install: '%s'" % install)
-    lines.append("check: {full: '%s'}" % check)
+    lines.append("check: {full: '%s'%s}" % (check, ", base: true" if base_check else ""))
     (clone / ".claude" / "flow.yaml").write_text("\n".join(lines) + "\n")
     (clone / "README.md").write_text("hi\n")
     sh(["git", "add", "-A"], clone)
@@ -157,5 +157,17 @@ h.test_result("the red-base stop carries the check output and what was tried",
               exc is not None and bool(exc.evidence) and bool(exc.tried))
 h.test_result("a red base made no model call", invocations() == [])
 h.test_result("a red base records no pass", ctx.flow.data("worktree").get("base_check") != "passed")
+
+# ---- the base is assumed green unless check.base is set ---------------------------------------
+if LOG.exists():
+    LOG.unlink()
+ctx, _ = make_ctx(check="exit 1", base_check=False)
+res = worktree.run(ctx)
+h.test_result("without check.base a red base is not checked and the stage is done",
+              res.kind == "done" and ctx.flow.data("worktree").get("base_check") == "skipped", repr(res))
+h.test_result("a skipped base check is still a finished stage on re-entry", worktree.run(ctx).kind == "done")
+h.test_result("the step record says the base was not checked",
+              "not run" in (ctx.flow.path / "steps").joinpath(
+                  sorted(p.name for p in (ctx.flow.path / "steps").iterdir() if "worktree" in p.name)[0]).read_text())
 
 h.summarize_and_exit()

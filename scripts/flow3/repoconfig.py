@@ -24,7 +24,7 @@ _MODELS = ("haiku", "sonnet", "opus", "fable")
 _PROVIDERS = ("github", "local")
 _TOP_KEYS = ("base", "provider", "install", "check", "merge", "protected_paths", "principles",
              "budget", "models")
-_CHECK_KEYS = ("fast", "full", "timeout_secs")
+_CHECK_KEYS = ("fast", "full", "timeout_secs", "base")
 _MERGE_KEYS = ("method", "command", "pre_merge", "post_merge")
 _BUDGET_KEYS = ("soft_usd", "hard_usd")
 DEFAULT_PRINCIPLES = "docs/principles.md"
@@ -43,6 +43,7 @@ class RepoConfig:
     check_fast: str
     check_full: str
     check_timeout_secs: int
+    check_base: bool
     merge_method: str
     merge_command: Optional[str]
     pre_merge: Tuple[str, ...]
@@ -130,6 +131,10 @@ def parse(text: str) -> RepoConfig:
     if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
         raise ConfigError("check.timeout_secs: expected a positive integer")
 
+    check_base: Any = chk.get("base", False)
+    if not isinstance(check_base, bool):
+        raise ConfigError("check.base: expected true or false")
+
     mrg = _mapping(raw.get("merge"), "merge")
     _no_unknown(mrg, _MERGE_KEYS, "merge.")
     method = _string(mrg, "method", "merge.method", "squash") or "squash"
@@ -161,7 +166,7 @@ def parse(text: str) -> RepoConfig:
         models[role] = model
 
     return RepoConfig(base=base, provider=provider, install=install, check_fast=fast, check_full=full,
-                      check_timeout_secs=timeout, merge_method=method, merge_command=command,
+                      check_timeout_secs=timeout, check_base=check_base, merge_method=method, merge_command=command,
                       pre_merge=pre, post_merge=post, protected_paths=protected,
                       principles=principles, soft_usd=soft, hard_usd=hard, models=models)
 
@@ -294,7 +299,7 @@ def render(values: Dict[str, Any]) -> str:
     fast = chk.get("fast") or full
     lines = [
         "# Flow v3: how this repo is built, checked, and merged. Committed; read by `flow3`.",
-        "# Run `flow3 doctor` after editing: it proves these commands work on a clean base.",
+        "# Run `flow3 doctor` after editing: it proves the config and install work on a clean base.",
         "",
         "# The branch tickets start from and merge into.",
         "base: %s" % _q(str(values.get("base") or "main")),
@@ -308,6 +313,7 @@ def render(values: Dict[str, Any]) -> str:
     lines += ["", "check:"]
     if full:
         lines += ["  # fast runs mid-flow; full runs at merge and is the authority.",
+                  "  # base: true also runs fast on the untouched base at the start of each ticket.",
                   "  fast: %s" % _q(str(fast)), "  full: %s" % _q(str(full))]
     else:
         lines += ["  # full: <command that exits 0 only when the repo is green>   (required)"]
@@ -344,10 +350,13 @@ def _last_line(text: str) -> str:
     return rows[-1][:200] if rows else ""
 
 
-def doctor(repo_root: Path) -> DoctorReport:
+def doctor(repo_root: Path, run_checks: bool = False) -> DoctorReport:
     """
     Prove the repo's flow.yaml works: load it, find the base, make a throwaway worktree of the base,
-    run install (if any) and both checks there, remove the worktree. A pass records doctor.json.
+    run install (if any) there, remove the worktree. A pass records doctor.json.
+
+    The base is assumed green: the checks run on it only when `run_checks` is set (`doctor --checks`),
+    because a full check can cost many minutes and the merge gate is where it is the authority.
     """
     lines: List[str] = []
     try:
@@ -380,9 +389,10 @@ def doctor(repo_root: Path) -> DoctorReport:
         steps: List[Tuple[str, str, str]] = []
         if cfg.install:
             steps.append(("install", cfg.install, "install"))
-        if cfg.check_fast != cfg.check_full:
-            steps.append(("fast", cfg.check_fast, "fast check"))
-        steps.append(("full", cfg.check_full, "full check"))
+        if run_checks:
+            if cfg.check_fast != cfg.check_full:
+                steps.append(("fast", cfg.check_fast, "fast check"))
+            steps.append(("full", cfg.check_full, "full check"))
         for mode, command, label in steps:
             res = checks.run(command, wt, mode, cfg.check_timeout_secs, tmp / "logs" / (mode + ".log"))
             if res.ok:
@@ -400,6 +410,11 @@ def doctor(repo_root: Path) -> DoctorReport:
         except gitops.GitError:
             pass
         shutil.rmtree(str(tmp), ignore_errors=True)
+    if ok and not run_checks:
+        lines.append("skip checks: the base is assumed green (run `doctor --checks` to prove it)")
+    if ok and cfg.check_fast == cfg.check_full:
+        lines.append("note check.fast is the same command as check.full, so every mid-flow check costs a "
+                     "full one. Set a cheaper check.fast if the full check is slow.")
     if ok and cfg.merge_method == "command":
         # Dry run of the merge procedure as far as is safe: the command's program must exist.
         program = (cfg.merge_command or "").split()[0] if (cfg.merge_command or "").split() else ""

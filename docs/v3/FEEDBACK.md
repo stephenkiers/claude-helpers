@@ -66,3 +66,7 @@ cost of one stopped flow.
 
 **Option.** Keep `doctor` as a cheap required preflight (the first four steps) and make the full
 check on the base opt-in (`doctor --full`), never a condition of `run`.
+
+**Done (PROGRESS decision 32).** `doctor` no longer runs the checks unless asked (`--checks`), and the
+per-ticket base check is opt-in (`check.base: true`). Entries 1 and 4 are otherwise still open: the
+mid-flow checks run as before.

@@ -60,8 +60,10 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="overwrite an existing flow.yaml")
     p.add_argument("--set", dest="sets", action="append", default=[], metavar="KEY=VALUE",
                    help="override a detected value, e.g. check.full='just check' (repeatable)")
-    p = sub.add_parser("doctor", help="prove flow.yaml works on a clean base")
+    p = sub.add_parser("doctor", help="prove flow.yaml and the install work on a clean base")
     p.add_argument("--repo-root", default=".")
+    p.add_argument("--checks", action="store_true",
+                   help="also run the checks on the untouched base (slow; the base is assumed green otherwise)")
 
     pr = sub.add_parser("principles", help="starter principles file; candidate principles")
     psub = pr.add_subparsers(dest="pcommand", parser_class=_Parser)
@@ -289,7 +291,7 @@ def cmd_init(args: Any) -> int:
 
 
 def cmd_doctor(args: Any) -> int:
-    report = repoconfig.doctor(_root(args))
+    report = repoconfig.doctor(_root(args), run_checks=bool(getattr(args, "checks", False)))
     for line in report.lines:
         print(line)
     print("Doctor %s." % ("passed: `%s run <issue>` is allowed" % DRIVER if report.ok else "FAILED"))

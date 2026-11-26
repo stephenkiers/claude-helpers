@@ -104,6 +104,7 @@ h.test_result("unknown nested key (merge)", raises("check: {full: x}\nmerge: {ho
 h.test_result("unknown nested key (budget)", raises("check: {full: x}\nbudget: {max: 1}\n", "budget.max"))
 h.test_result("wrong type: base", raises("base: [a]\ncheck: {full: x}\n", "base"))
 h.test_result("wrong type: timeout", raises("check: {full: x, timeout_secs: soon}\n", "check.timeout_secs"))
+h.test_result("wrong type: check.base", raises("check: {full: x, base: sometimes}\n", "check.base"))
 h.test_result("wrong type: timeout bool", raises("check: {full: x, timeout_secs: true}\n", "check.timeout_secs"))
 h.test_result("wrong type: protected_paths", raises("check: {full: x}\nprotected_paths: a\n", "protected_paths"))
 h.test_result("wrong type: check not a mapping", raises("check: just check\n", "check"))
@@ -184,7 +185,11 @@ write_cfg(green, "test -f ok.txt && echo green", 'install: "echo installing"\n')
 rep = repoconfig.doctor(green)
 h.test_result("doctor passes on a green repo", rep.ok, "\n".join(rep.lines))
 h.test_result("doctor reports each step", any("install" in x for x in rep.lines)
-              and any("full check" in x for x in rep.lines) and any("base" in x for x in rep.lines), str(rep.lines))
+              and any("skip checks" in x for x in rep.lines) and any("base" in x for x in rep.lines), str(rep.lines))
+h.test_result("doctor warns when fast and full are the same command",
+              any(x.startswith("note check.fast") for x in rep.lines), str(rep.lines))
+h.test_result("check.base defaults to false and parses true",
+              repoconfig.load(green).check_base is False)
 name = repoconfig.repo_name(green)
 doc_json = Path(os.environ["FLOW3_HOME"]) / name / "doctor.json"
 h.test_result("doctor writes doctor.json", doc_json.exists()
@@ -199,7 +204,12 @@ h.test_result("doctor_passed true again after re-running doctor", repoconfig.doc
 red, _ = make_repo("red", {"ok.txt": "yes\n"})
 write_cfg(red, "echo the suite is broken; exit 1")
 rep = repoconfig.doctor(red)
-h.test_result("doctor FAILS on a red full check", not rep.ok
+h.test_result("doctor does not run the checks by default: a red base passes",
+              rep.ok and any(x.startswith("skip checks") for x in rep.lines) and not any("full check:" in x for x in rep.lines),
+              "\n".join(rep.lines))
+(Path(os.environ["FLOW3_HOME"]) / repoconfig.repo_name(red) / "doctor.json").unlink()
+rep = repoconfig.doctor(red, run_checks=True)
+h.test_result("doctor --checks FAILS on a red full check", not rep.ok
               and any(x.startswith("FAIL") and "full check" in x and "exited 1" in x for x in rep.lines),
               "\n".join(rep.lines))
 h.test_result("failed doctor says what the check printed", any("suite is broken" in x for x in rep.lines))
@@ -224,7 +234,7 @@ sh(["sed", "-i.bak", "s/^check:/check:\\n  timeout_secs: 1/", str(slow / ".claud
 sh(["git", "add", "-A"], slow)
 sh(["git", "commit", "-q", "-m", "t"], slow)
 sh(["git", "push", "-q", "origin", "main"], slow)
-rep = repoconfig.doctor(slow)
-h.test_result("doctor fails on a timed-out check", not rep.ok and any("timed out" in x for x in rep.lines), "\n".join(rep.lines))
+rep = repoconfig.doctor(slow, run_checks=True)
+h.test_result("doctor --checks fails on a timed-out check", not rep.ok and any("timed out" in x for x in rep.lines), "\n".join(rep.lines))
 
 h.summarize_and_exit()

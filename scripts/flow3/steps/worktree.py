@@ -1,10 +1,10 @@
 """
-The worktree stage (PLAN.md section 7.1): nothing here costs model money until the base is proven green.
+The worktree stage (PLAN.md section 7.1).
 
 Order: dependencies named in the issue are merged, the ticket worktree and branch are cut from the
-fetched base, the frozen install runs, and the repo's fast check runs once on the untouched base. A
-red base is a stop before any model is spent, because the flow could not tell its own failures from
-inherited ones.
+fetched base, and the install runs. The base is assumed green (FEEDBACK.md entry 1). A repo that sets
+`check.base: true` also runs its fast check once on the untouched base, and a red base is then a
+stop before any model is spent.
 """
 
 from typing import Any, Dict, List
@@ -36,7 +36,7 @@ def _check_dependencies(ctx: Ctx) -> List[int]:
 def run(ctx: Ctx) -> StageResult:
     """Prepare the ticket worktree. Safe to re-enter: a finished stage returns at once."""
     done = ctx.flow.data("worktree")
-    if done.get("base_check") == "passed" and ctx.flow.get("worktree"):
+    if done.get("base_check") in ("passed", "skipped") and ctx.flow.get("worktree"):
         return StageResult("done", {})
 
     deps = _check_dependencies(ctx)
@@ -68,14 +68,20 @@ def run(ctx: Ctx) -> StageResult:
                            evidence=run.output_path, tried=["ran `%s` (exit %d)" % (ctx.cfg.install, run.exit_code)])
         installed = True
 
-    check = heal.check(ctx, "fast", fixer=None, raise_on_fail=False)
-    if not check.ok:
-        raise FlowStop("base-red", "%s fails its own check before any change" % base,
-                       evidence=check.output_path or None,
-                       tried=["ran `%s` on the untouched base" % check.command]
-                       + (["ran the install command first"] if installed else []))
+    # The base is assumed green. Only a repo that sets `check.base: true` pays for a check here.
+    base_line = "- Check on the untouched base: not run (the base is assumed green)."
+    if ctx.cfg.check_base:
+        check = heal.check(ctx, "fast", fixer=None, raise_on_fail=False)
+        if not check.ok:
+            raise FlowStop("base-red", "%s fails its own check before any change" % base,
+                           evidence=check.output_path or None,
+                           tried=["ran `%s` on the untouched base" % check.command]
+                           + (["ran the install command first"] if installed else []))
+        base_line = "- Fast check on the untouched base: passed%s." % (
+            " (reused a recorded pass)" if check.reused else "")
 
-    value: Dict[str, Any] = {"base_sha": base_sha, "installed": installed, "base_check": "passed"}
+    value: Dict[str, Any] = {"base_sha": base_sha, "installed": installed,
+                             "base_check": "passed" if ctx.cfg.check_base else "skipped"}
     ctx.flow.set_data("worktree", value)
     sections = [
         ("Given", "Issue #%d: %s" % (ctx.issue, ctx.flow.get("title"))),
@@ -83,9 +89,10 @@ def run(ctx: Ctx) -> StageResult:
             "- Dependencies: %s" % (", ".join("#%d (merged)" % d for d in deps) if deps else "none"),
             "- Fetched origin and created branch `%s` at `%s` from `%s` (%s)." % (branch, path, base_ref, base_sha[:12]),
             "- Install: %s." % ("ran `%s`" % ctx.cfg.install if installed else "none configured"),
-            "- Fast check on the untouched base: passed%s." % (" (reused a recorded pass)" if check.reused else ""),
+            base_line,
         ])),
     ]
     record.write_step_record(ctx.flow, "worktree", sections)
-    record.journal(ctx.flow, "Worktree ready at %s on branch %s; the base passes its own check." % (path, branch))
+    record.journal(ctx.flow, "Worktree ready at %s on branch %s; %s." % (
+        path, branch, "the base passes its own check" if ctx.cfg.check_base else "the base was not checked"))
     return StageResult("done", {})

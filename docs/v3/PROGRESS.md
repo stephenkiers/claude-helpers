@@ -118,6 +118,13 @@ If this session restarts: read this file first, then continue from the first uni
     the fix stage's per-finding verifier and the check still run; the flow then ships with no further
     review. Other findings from that round stay open at the gate. A send-back is unchanged. Covered
     by tests, not yet by a real run. Protected test findings stay as they are (REPORT question 2).
+32. **The base is assumed green.** Decided by the human during the first real-repo trial
+    (FEEDBACK entries 1 and 4). `doctor` proves the config and the install in a fresh checkout and no
+    longer runs the checks; `doctor --checks` does. The worktree step no longer checks the untouched
+    base unless `flow.yaml` sets `check.base: true`. Cost of the change: a base that is already red
+    now shows up as a red check after implement, and fixers are spent on it before the flow stops.
+    The mid-flow checks (after implement, after each fix round) are unchanged and still need a
+    cheaper `check.fast` to be cheap.
 
 ## Spend (notional USD, real model calls)
 

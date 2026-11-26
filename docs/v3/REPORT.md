@@ -51,7 +51,7 @@ summary in `docs/v3/e2e/TRANSCRIPT.md`):
 | Free-text reply covering two questions and one direction | Done: one reply answered three questions and set two directions |
 | All three merged one at a time | Done |
 | `merge.method: command` merges correctly | Done, after two fixes (decisions 27, 28) |
-| `doctor` rejects a red full check | Done: `e2e/doctor-red.txt` |
+| `doctor` rejects a red full check | Done: `e2e/doctor-red.txt`. Since changed: this now needs `doctor --checks` (PROGRESS decision 32) |
 | `why` for human, principle, assumed, fact | Done, with `fact` and `assumed` from outside the merged flows (below) |
 
 Verified by tests with the fake binary (27 test files, about 7,300 lines, all in `just check`):

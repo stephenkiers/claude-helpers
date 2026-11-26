@@ -336,7 +336,7 @@ h.test_result("C: a red fast check after the last unit is healed by the fixer an
 rc, out, err = call(["merge", "3", "--repo", REPO, "--stop", "done with this one", "--wait"])
 h.test_result("C: a human stop at the gate exits 2", rc == 2 and status_of(REPO, 3) == "stopped", out + err)
 
-red, red_origin, RED_REPO = make_sandbox("redproj")
+red, red_origin, RED_REPO = make_sandbox("redproj", yaml_extra="  base: true\n")
 rc, out, err = call(["doctor", "--repo-root", str(red)])
 h.test_result("C: doctor passes on a green base", rc == 0, out + err)
 # the base goes red after doctor passed (someone merged a broken change)

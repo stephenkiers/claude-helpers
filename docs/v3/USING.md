@@ -15,8 +15,11 @@ python3 -m scripts.flow3 doctor --repo-root <project>
 python3 -m scripts.flow3 principles init --repo-root <project>
 ```
 
-`init` writes the repo config (`--set KEY=VALUE` overrides a field, `--force` rewrites). `doctor` checks the
-tools and config; `run` refuses until it has passed. `principles init` asks for a goal and themes and writes
+`init` writes the repo config (`--set KEY=VALUE` overrides a field, `--force` rewrites). `doctor` proves the
+config parses and the install works in a fresh checkout of the base; `run` refuses until it has passed. It
+does not run the checks: the base is assumed green. `doctor --checks` also runs them on the untouched base,
+and `check.base: true` in `flow.yaml` runs the fast check on the base at the start of every ticket. The full
+check runs at the merge gate. `principles init` asks for a goal and themes and writes
 the starter principles the experts read.
 
 ## One ticket
