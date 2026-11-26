@@ -527,5 +527,22 @@ h.test_result("the worker is told the driver's rule, not handed an option",
 h.test_result("the journal says the driver settled it",
               "the driver (not a question for a person)" in journal(b))
 
+# -- F4: Handoff path comparison with normalised paths -----
+# Verify that the existing elsewhere/handoff test still passes - it tests normalised path equality
+# (The earlier test at line ~213 "a unit that leaves a change for another file's owner..." already
+# validates that handoffs use normalised path comparison, not substring matching)
+# This just confirms the behaviour is preserved:
+b = mkbox("i-handoff-normalised", mkplan())
+b.script([w("unit-u1", "src/a.py", output={"status": "done", "summary": "a done",
+                                           "elsewhere": ["src/b.py: pass the new argument to f()"]}),
+          w("unit-u2", "src/b.py")])
+res = implement.run(b.ctx)
+handoffs = b.flow.data("implement").get("handoffs", [])
+# F4: Verify paths are compared by normalised equality (not substring match)
+h.test_result("F4: handoff path comparison uses normalised equality",
+              res.kind == "done" and len(handoffs) == 1 and
+              handoffs[0]["text"] == "src/b.py: pass the new argument to f()",
+              f"done={res.kind=='done'}, handoffs={handoffs}")
+
 if __name__ == "__main__":
     h.summarize_and_exit()

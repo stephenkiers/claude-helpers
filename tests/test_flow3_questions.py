@@ -23,7 +23,7 @@ os.environ["FLOW3_FAKE_LOG"] = str(LOG)
 
 from _test_harness import Harness  # noqa: E402
 
-from scripts.flow3 import context, principles, questions, record, repoconfig, voice  # noqa: E402
+from scripts.flow3 import context, principles, questions, record, repoconfig, schemas, voice  # noqa: E402
 from scripts.flow3.state import FlowDir  # noqa: E402
 from scripts.flow3.types import FlowStop  # noqa: E402
 
@@ -590,5 +590,41 @@ auto, human = questions.resolve(ctx, "implement", [q("k2", "risk", risk=RISK, op
 h.test_result("the asking step gets one chance to restate the card with options that can be carried out",
               len(asked) == 1 and "cannot carry out" in asked[0]["missing"][0]
               and [c["id"] for c in human] == ["k2"] and questions.unhonourable(human[0]) == [])
+
+# ---- F2, F3, F5: Driver settlement requires owner gate and valid driver_kind ----
+
+# F2: Driver answer should NOT apply to plan questions without an owner
+ctx_plan_no_owner = make_ctx(with_principles=False)
+script([{"role": "resolver", "label": "plan_q", "output": driver_verdict("plan_q", "ownership")}])
+auto, human = questions.resolve(ctx_plan_no_owner, "plan", [q("plan_q", "architecture")], owner=None)
+h.test_result("F2: driver verdict on plan question without owner does not settle (goes to human)",
+              auto == {} and [c["id"] for c in human] == ["plan_q"],
+              f"auto={auto}, human_ids={[c['id'] for c in human]}")
+
+# F5: Missing driver_kind should fail closed to 'human' (no settlement)
+ctx_no_kind = make_ctx(with_principles=False)
+script([{"role": "resolver", "label": "no_kind", "output": {"results": [
+    {"question_id": "no_kind", "outcome": "none", "principle_id": "", "option_id": "",
+     "reason": "test missing kind", "who": "driver"}  # Missing driver_kind
+]}}])
+auto, human = questions.resolve(ctx_no_kind, "implement", [q("no_kind", "architecture")], owner=OWNER)
+h.test_result("F5: missing driver_kind defaults to human (not settled by driver)",
+              auto == {} and [c["id"] for c in human] == ["no_kind"],
+              f"auto={auto}, human_ids={[c['id'] for c in human]}")
+
+# F5: Driver kinds must match vocabulary
+h.test_result("F5: driver_kind vocabulary matches DRIVER_KINDS",
+              all(kind in schemas.DRIVER_KINDS for kind in ["ownership", "ordering", "tooling", "fact"]),
+              f"DRIVER_KINDS: {schemas.DRIVER_KINDS}")
+
+# F3: _REORGANISE vocabulary - ownership questions should use driver's vocabulary, not product words
+ctx_vocab = make_ctx(with_principles=False)
+script([{"role": "resolver", "label": "own_vocab", "output": driver_verdict("own_vocab", "ownership")}])
+auto, human = questions.resolve(ctx_vocab, "implement", [q("own_vocab", "architecture")], owner=OWNER)
+# When driver settles an ownership question, it should be settled, not passed to human
+settled = auto.get("own_vocab") is not None and auto["own_vocab"].source == "driver"
+h.test_result("F3: ownership questions settled by driver are not marked for human review",
+              settled and human == [],
+              f"settled={settled}, human={human}")
 
 h.summarize_and_exit()

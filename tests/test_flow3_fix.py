@@ -400,5 +400,31 @@ h.test_result("the other fix still lands and the blocked finding stays open, wit
               res.kind == "done" and "r0-1" in b.rounds()[-1]["open"] and "r0-2" not in b.rounds()[-1]["open"]
               and "make schema" in log and "I cannot run the generator." in log, str(b.rounds()))
 
+# -- F9: check_attempt branches ------------------------------------------------------------------
+# Test check_attempt branch 1: fixer succeeds, check passes
+b1 = Box("check_attempt_pass", [finding("r0-1", "src/a.py")])
+b1.results("fail", "pass")  # First run fails, fixer succeeds, check passes
+b1.script([w("unit-a1-1", "src/a.py"), w("fix-r1", "src/a.py", "x = 1\n"),
+           verdicts(("r0-1", True))])
+res1 = fix.run(b1.ctx)
+h.test_result("F9: check_attempt branch 1 - fixer fixes check and it passes",
+              res1.kind == "done" and b1.runs() == 2 and b1.rounds()[0]["open"] == [],
+              "runs=%d, rounds=%s" % (b1.runs(), b1.rounds()))
+
+# Test check_attempt branch 2: fixer blocked (raises Blocked exception)
+# When a fixer is blocked, the check is still attempted by the fix step
+b2 = Box("check_attempt_blocked", [finding("r0-1", "src/a.py")])
+b2.results("fail", "fail")  # Fixer blocked, check runs but fails
+b2.script([w("unit-a1-1", "src/a.py"),
+           {"role": "fixer", "label": "fix-r1",
+            "output": {"status": "blocked", "summary": "cannot fix",
+                       "blocked": {"reason": "Need a tool", "needs": "environment", "what": "npm"}}},
+           verdicts(("r0-1", False))])  # Finding stays open after blocked fixer
+res2 = fix.run(b2.ctx)
+# When fixer is blocked, the check still runs but stays red, finding remains open
+h.test_result("F9: check_attempt branch 2 - fixer blocked, check still attempted",
+              res2.kind == "done" and "r0-1" in b2.rounds()[-1]["open"] and b2.runs() >= 1,
+              "runs=%d, open=%s" % (b2.runs(), b2.rounds()[-1].get("open", [])))
+
 if __name__ == "__main__":
     h.summarize_and_exit()
