@@ -47,6 +47,49 @@ def parse_with_system_bash(src, scratch_dir, index):
     return result.returncode, result.stderr.strip()
 
 
+def blocks_containing(blocks, needle):
+    return [b for b in blocks if needle in b]
+
+
+def check_stale_plan_relay_markers(h, blocks):
+    """The stale-plan relay and the ticket/group identifiers live in fenced bash blocks."""
+    relay = blocks_containing(blocks, "REPLAN_CONFIRM")
+    h.test_result(
+        "a bash block names REPLAN_CONFIRM (stale-plan re-plan relay)",
+        len(relay) > 0,
+        "no fenced bash block contains REPLAN_CONFIRM",
+    )
+    if relay:
+        block = relay[0]
+        h.test_result(
+            "stale-plan relay block prints the 'validation not run:' rejection marker",
+            "validation not run:" in block,
+            "marker missing from the relay block",
+        )
+        h.test_result(
+            "stale-plan relay block prints the 'Confirm re-planned cleanup?' prompt",
+            "Confirm re-planned cleanup?" in block,
+            "prompt missing from the relay block",
+        )
+        h.test_result(
+            "stale-plan relay block declares REPLAN_FILE (re-plan apply input)",
+            "REPLAN_FILE" in block,
+            "REPLAN_FILE missing from the relay block",
+        )
+
+    gate = blocks_containing(blocks, "EXCLUDED_NUMBERS")
+    h.test_result(
+        "a bash block uses EXCLUDED_NUMBERS (ticket-worktree exclusion gate)",
+        len(gate) > 0,
+        "no fenced bash block contains EXCLUDED_NUMBERS",
+    )
+    h.test_result(
+        "a bash block uses SELECTED_GROUPS (selected-groups check)",
+        len(blocks_containing(blocks, "SELECTED_GROUPS")) > 0,
+        "no fenced bash block contains SELECTED_GROUPS",
+    )
+
+
 def main():
     h = Harness("commands/cleanup.md bash blocks parse under the system bash (3.2)")
 
@@ -79,6 +122,8 @@ def main():
                 rc == 0,
                 err,
             )
+
+    check_stale_plan_relay_markers(h, blocks)
 
     h.summarize_and_exit()
 
