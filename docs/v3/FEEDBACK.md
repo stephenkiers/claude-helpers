@@ -181,3 +181,17 @@ Still open:
 - The same failing check ran four times on one tree before anything changed. Entry 9 undercounted.
 - A fixer that says "this is not fixable from here" is treated as a unit that ran out of room, and is
   retried on a stronger model. It needs its own outcome.
+
+## 13. The ticket was merged by other work while the flow was running (2026-11-25)
+
+The trial re-implemented a ticket whose earlier implementation was still open as a pull request. That
+pull request merged into the base during the run. The driver brought the base in (decision 37), hit
+conflicts in most of the files it had written, made one resolver call, saw the check fail, undid the
+merge and stopped as `conflict`. That is the designed behaviour and it left the branch clean.
+
+What it did not do: notice that the base now contains the ticket's own change. A stop that said "the
+base already has a commit for this issue" would have saved the resolver call and told the human what
+actually happened. The driver could look for the issue number in the commits it is about to merge.
+
+Trial totals at this stop: 1h21m, 29 model calls, $8.69, one of nine units finished. Most of the
+elapsed time and seven of the stops were driver defects (entries 5 to 12), not the ticket.
