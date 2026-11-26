@@ -505,6 +505,11 @@ def _drive_to_fix(base: Path) -> Tuple[Path, Path, Dict[str, str], Dict[str, Any
 
 def _next(home: Path, flow: Path, env: Dict[str, str], after: Any = None) -> Tuple[str, Path]:
     args = ["next", "--flow", str(flow)] + (["--after", after] if after else [])
+    if after == "notification":
+        # A notification must name the spawn it belongs to (#533 fail-closed attribution).
+        live = pending_of(flow)
+        if live and live.get("nonce"):
+            args += ["--nonce", live["nonce"]]
     code, out, err = run_cli(home, *args, extra_env=env)
     expect(code == 0, f"next --after {after} exited {code}: {err}")
     return next_line(out)
