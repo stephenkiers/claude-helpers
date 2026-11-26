@@ -50,3 +50,19 @@ Cost: one wasted `doctor` run.
 
 While `doctor` runs a long check it prints nothing, and its output shows only the last error line on
 failure. A human watching cannot tell a slow check from a hung one.
+
+## 4. Is `doctor` required at all? (2026-11-25, from the human)
+
+**Feedback.** The human is not sure `doctor` should be a requirement before `run`.
+
+**What it does.** Five steps: tools present, config parses, base fetches, install works in a
+throwaway checkout, full check passes there. `run` and `fleet start` refuse until all five passed
+for the current `flow.yaml`.
+
+**Assessment.** The first four cost seconds and each prevents a stop a few minutes into a paid run.
+The fifth is the expensive one and is the same base-green proof as entry 1. On the first real repo
+it did catch a real setup gap, but a ticket's first check would have caught the same gap, at the
+cost of one stopped flow.
+
+**Option.** Keep `doctor` as a cheap required preflight (the first four steps) and make the full
+check on the base opt-in (`doctor --full`), never a condition of `run`.
