@@ -845,6 +845,23 @@ def main():
     h.test_result("caller subtree: caller not inside the path (run from main) extends nothing",
                   _live(base_rows, [(10, "/"), (20, "/"), (30, "/"), (40, "/"), (31, root)]) == _procs.LIVE)
 
+    # Finding 1: shared ancestor with cwd inside path and second session beneath it
+    # Plan specifies: "A shared ancestor (e.g. comm `tmux`) whose cwd is INSIDE the path,
+    # above the caller's claude, with a second session beneath it → result is LIVE"
+    # This differs from the existing test at line 841: here tmux cwd is inside root, not outside ("/")
+    h.test_result("caller subtree: shared ancestor (tmux) with cwd inside path, second session beneath it is LIVE",
+                  _live(base_rows + [(99, 10, "claude"), (98, 99, "zsh")],
+                        [(10, root + "/tmux-cwd"), (20, root), (30, root), (40, root), (31, root), (99, root), (98, root)]) == _procs.LIVE)
+
+    # Finding 2: non-helper descendant of caller's claude with cwd inside path
+    # Plan specifies: "A non-helper descendant (e.g. comm `node` dev server / watcher)
+    # under the caller's own claude with cwd inside the path: result is NOT_LIVE (documented intended behavior)"
+    # Intended behavior: descendants of the caller's own claude process are excluded, whatever they are
+    rows_with_node = [(10, 1, "tmux"), (20, 10, "zsh"), (30, 20, "claude"), (40, 30, "python3"), (31, 30, "caffeinate"), (32, 30, "node")]
+    cwds_with_node = [(10, "/"), (20, root), (30, root), (40, root), (31, root), (32, root)]
+    h.test_result("caller subtree: non-helper descendant (node) under caller's claude is NOT_LIVE (excluded as part of caller session)",
+                  _live(rows_with_node, cwds_with_node) == _procs.NOT_LIVE)
+
     h.summarize_and_exit()
 
 
