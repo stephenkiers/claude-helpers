@@ -428,7 +428,7 @@ b2.script([w("unit-a1-1", "src/a.py"),
 res2 = fix.run(b2.ctx)
 # When fixer is blocked, the check still runs but stays red, finding remains open
 h.test_result("F9: check_attempt branch 2 - fixer blocked, check still attempted",
-              res2.kind == "done" and "r0-1" in b2.rounds()[-1]["open"] and b2.runs() >= 1,
+              res2.kind == "done" and "r0-1" in b2.rounds()[-1]["open"] and b2.runs() == 2,
               "runs=%d, open=%s" % (b2.runs(), b2.rounds()[-1].get("open", [])))
 
 if __name__ == "__main__":
