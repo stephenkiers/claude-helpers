@@ -372,6 +372,17 @@ def resolve(ctx: Ctx, stage: str, questions: List[Dict[str, Any]],
                 cards[cid] = card_of(o)
         incomplete = [{"id": cid, "missing": card_missing(c)} for cid, c in cards.items() if card_missing(c)]
     if incomplete:
+        # A risk question whose author left out the risk text is still shown: the human can judge it
+        # from the decision and the reason, and a stop here would cost more than the gap.
+        for o in waiting:
+            cid = str(o.question["id"])
+            if card_missing(cards[cid]) == ["risk"]:
+                o.question = dict(o.question)
+                o.question["risk"] = ("The step that asked did not say what would no longer be protected. "
+                                      "Its reason: %s" % str(o.question.get("context") or "(none given)"))
+                cards[cid] = card_of(o)
+        incomplete = [{"id": cid, "missing": card_missing(c)} for cid, c in cards.items() if card_missing(c)]
+    if incomplete:
         first = incomplete[0]
         raise FlowStop("runner", "question card %s is missing: %s" % (first["id"], ", ".join(first["missing"])),
                        evidence="; ".join("%s: %s" % (i["id"], ", ".join(i["missing"])) for i in incomplete))

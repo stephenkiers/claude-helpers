@@ -136,6 +136,12 @@ If this session restarts: read this file first, then continue from the first uni
     `flow.yaml` (default `true`) makes the driver commit with `--no-verify`. Only the driver's own
     commits on the flow branch are affected; the checks after implement and fix and the full check at
     the merge gate still decide. The human's reasoning: the flow already handles what the hook checks.
+35. **A risk question without risk text is shown, not refused.** Found by the first real-repo trial: an
+    implementer asked permission to edit a file outside its unit, marked the question a risk, and left
+    the risk text empty. The driver stopped the flow as a `runner` failure with no way to answer. Now
+    the card carries a stated fallback ("the step that asked did not say what would no longer be
+    protected") plus the step's own reason, and reaches the human. A card missing anything else still
+    stops.
 
 ## Spend (notional USD, real model calls)
 

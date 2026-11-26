@@ -323,6 +323,18 @@ except FlowStop as exc:
 h.test_result("an incomplete card without repair is the same stop", stopped is not None and stopped.cls == "runner"
               and "question card w3 is missing" in stopped.reason)
 
+# a risk question whose author left out the risk text still reaches the human, with a stated fallback.
+ctx = make_ctx()
+stopped = None
+human = []
+try:
+    auto, human = questions.resolve(ctx, "implement", [q("nr1", "risk")])
+except FlowStop as exc:
+    stopped = exc
+h.test_result("a risk question without risk text becomes a card, not a stop",
+              stopped is None and [c["id"] for c in human] == ["nr1"] and questions.card_missing(human[0]) == []
+              and "did not say" in human[0]["risk"] and "While editing src/mod.py" in human[0]["risk"])
+
 # markdown: a risk card leads with the risk; prior decisions on a shared theme show date and reason, nothing pre-selected.
 ctx = make_ctx()
 principles.append_decision(ctx.repo, {"ts": "2026-02-03T10:00:00+00:00", "flow": "9-old", "issue": 9, "stage": "plan", "id": "old1",

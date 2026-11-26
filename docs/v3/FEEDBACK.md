@@ -96,3 +96,14 @@ The human's answer: the hook is not needed for flow commits, since the flow hand
 tests outside the worktree until implement finishes, which would keep hooks on at the cost of one
 hook run per driver commit. Also seen: a resume after a failed commit pays for a fresh test-author
 call instead of committing the work already staged.
+
+## 7. A question the driver could not show stopped the flow (2026-11-25)
+
+At implement, 47 minutes in, an implementer needed a one-line change in a file outside its unit (a
+caller that had to pass a new argument, or the crate would not compile). It asked, correctly, and
+marked the question a risk, but gave no risk text. The driver refused the card and stopped as
+`runner`. The human had a question to answer and no way to answer it.
+
+**Done (PROGRESS decision 35).** The card is shown with a fallback risk line. Still open: the plan
+gave the unit a signature change without the caller, so the question was avoidable; the planner
+should put a changed function's callers in the same unit.
