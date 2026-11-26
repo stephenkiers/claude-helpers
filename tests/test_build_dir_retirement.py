@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Spec-blind test suite for build_dir retirement (Plan #567).
+Test suite for build_dir retirement (Plan #567).
 
 Tests are written from the plan's Tests section, without reading the implementation.
 Each test verifies a specific behavior as described in the plan.
@@ -315,7 +315,7 @@ def run_refusal_tests(h):
 
 
 def main():
-    h = Harness("BUILD_DIR RETIREMENT TEST SUITE (SPEC-BLIND)")
+    h = Harness("BUILD_DIR RETIREMENT TEST SUITE")
 
     # Test 1: Discover lists no build dirs
     print("[Test 1] Discover lists no build dirs")
