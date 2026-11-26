@@ -443,15 +443,16 @@ The mapping between the detector and `commands/shipit.md`'s lockfile table is pi
 - **Flow state preservation:** The teardown path applies `apply_cleanup`'s removal steps but never writes flow state. `in_flow` field in the plan signals whether the ticket is mid-flow; inside a flow, SIGKILL and remote deletion stay human-run (via `/cleanup` with `--stale` for read-only classification, or manual hand-off to `/heal-flow`). W2 sets the boundary: `in_flow: true` blocks SIGKILL and remote branch deletion, enforced in the plan's allow-list (no code suppression). Q1 C notes that this ticket writes no flow state; #357 is the future writer.
 - **Citation:** ADR-0023 §3 ("Flow directories are never deleted by the command") is unchanged: `/cleanup` removes the work worktree and its descendants, never the flow directory.
 
-**Consequences:** A fail-closed removal contract with one delete guard, one process check, and atomic trash collection ensures a half-deleted state is not reachable. `apply_cleanup` gains the teardown-only entry alongside its existing merged path, keeping its pull-and-full-check gate only for the merged path (Decision 7). The plan's `in_flow` field gates SIGKILL and remote deletion inside flows. No removal ever spans a process check that failed with UNKNOWN.
+**Consequences:** A fail-closed removal contract with one delete guard, one process check, and atomic trash collection ensures a half-deleted state is not reachable. `apply_cleanup` gains the teardown-only entry alongside its existing merged path, keeping its pull-and-full-check gate only for the merged path (Decision 7). The plan's `in_flow` field gates SIGKILL and remote deletion inside flows. No removal ever spans a process check that failed with UNKNOWN. Build-dir handling is qualified by Amendment 15.1.
 
-### Amendment 15.1: Retire build_dir as a discoverable and actionable kind (2026-11-26)
+### Amendment 15.1: Retire build_dir as a discoverable and actionable kind (2026-11-26, #567)
 
 **Problem:** Amendment 15's `discover_ticket` scanned build directories across all siblings in the worktree parent, alongside separate worktree items. The teardown ask presented build dirs as a selectable group: "2 — worktrees and build dirs". A cleanup of one ticket mistakenly listed and deleted `node_modules`, `target`, `dist`, `.next` and `build` from 14 unrelated sibling worktrees. The core issue: a build dir is not independently selectable or tearable; it is wholly owned by its owner worktree and must be removed only as part of that worktree's cleanup. The machine-wide `cleanup stale --sizes` path is not affected; only single-ticket cleanup and Amendment 15's discoverable build-dir items.
 
 **Decision:** Retire `build_dir` as a discoverable and actionable kind. Build directories are removed only as part of their owner worktree's removal:
 - **In the MERGED path**: `cleanup apply` removes the ticket worktree through `cleanup.remove_worktree`, which calls `guarded_rmtree` on the whole tree (including its build dirs).
 - **In the teardown-only path (NOT_MERGED):** `git worktree remove` with retry via `guarded_rmtree` does the same.
+- **Narrower scoping considered and rejected:** Keeping build-dir reclaim only for the ticket worktree (while retiring sibling build-dir removal) was considered. It was rejected because #567's scope boundary is to never list or delete any other worktree's build dir under any circumstances, even siblings of the kept ticket worktree.
 
 Specifically:
 - `discover_ticket` stops emitting `build_dir` items. The sibling-scanning loop is deleted; `no_sizes` is kept as a no-op for backward compatibility.
