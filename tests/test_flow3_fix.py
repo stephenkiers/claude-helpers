@@ -331,6 +331,19 @@ h.test_result("a protected-only finding beside a normal one: the normal one is f
 vp = [x for x in b.launches() if x["label"] == "fix-verify-1"][0]["prompt"]
 h.test_result("the verify call does not see the blocked finding", "r0-1" not in vp)
 
+# After the last review round only the findings the human answered `fix` are fixed; a send-back takes all.
+b = Box("capped", [finding("r0-1", "src/a.py"), finding("r0-2", "src/b.py")])
+rd = b.flow.data("review")
+rd["rounds"][0]["last_round"] = True
+rd["rounds"][0]["answers"] = {"r0-2": {"option_id": "fix", "source": "human", "text": "fix it"},
+                              "r0-1": {"option_id": "fix", "source": "assumed", "text": "fix"}}
+b.flow.set_data("review", rd)
+h.test_result("last round: only the human-answered fix is a candidate",
+              [i["id"] for i in fix.candidates(b.ctx)[1]] == ["r0-2"], str(fix.candidates(b.ctx)))
+b.flow.set_data("sendback", {"notes": "do them all", "handled": False})
+h.test_result("last round with a send-back: every doing_it finding is a candidate",
+              [i["id"] for i in fix.candidates(b.ctx)[1]] == ["r0-1", "r0-2"], str(fix.candidates(b.ctx)))
+
 mixed = finding("r0-1", "src/a.py")
 b = Box("prot-mixed", [mixed])
 b.flow.set("protected", ["tests/spec_test.py"])

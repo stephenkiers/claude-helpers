@@ -11,7 +11,8 @@ run against GitHub or a real repository, and every sandbox run used `haiku`.
   answering in free text; one reply covering several questions and directions; a principle answering
   a question; an injected check failure healed; a stale base healed; send back from the merge gate;
   `doctor` refusing a red check; `why` for each decision source.
-- **Two questions for you** are at the top of this report. Neither blocks trying it.
+- **The two questions this report asked are answered** (next section); the first changed the code
+  after the sandbox runs.
 - **The weak spot is review and fix quality on `haiku`:** findings are not de-duplicated, and fix and
   review can undo each other. Expect long "open findings" lists at the merge gate until that is tuned.
 - **Eight driver defects were found by the real runs and fixed** (PROGRESS decisions 21 to 30). Expect
@@ -24,19 +25,16 @@ run against GitHub or a real repository, and every sandbox run used `haiku`.
 
 Start with `docs/v3/USING.md`, then the "First things to try" list below.
 
-## Questions for you
+## Questions, answered
 
-1. **Should a `fix` answer given in the last allowed review round run a fix?** The plan caps the
-   review loop, so findings from the last round get no fix round. When you answer `fix` to a card
-   from that round, nothing runs: the finding shows at the merge gate as open, marked as yours, with
-   a pointer to send back. In the single-ticket run I had to send back to get two such fixes done.
-   Running one more fix round for human-answered findings would change the loop the plan fixes, so I
-   left it. I recommend allowing it: you asked for the fix, and the send-back costs a second gate.
-2. **Should a finding in a protected test file be fixable with your approval?** Today such a finding
-   is never sent to a fixer; it stays open at the gate (decision 24). In the fleet run this left
-   several open findings on ticket #3 that only a human edit could close. An approval card per
-   protected file would close them inside the flow, at the cost of more cards. I recommend leaving it
-   as it is until a real ticket shows how often it comes up.
+Both were answered on 2026-11-25, after the build.
+
+1. **A `fix` answer given in the last allowed review round now runs a fix.** One more fix run
+   handles only the findings you answered `fix`, then the flow ships with no further review
+   (PROGRESS decision 31). Other findings from that round still show as open at the gate. This is
+   covered by tests with the fake binary, not by a real run.
+2. **A finding in a protected test file stays open at the gate** (decision 24). No change. Revisit
+   when a real ticket shows how often it comes up.
 
 ## What works
 
@@ -123,7 +121,6 @@ Seen and not fixed:
 ## What was cut
 
 - **Rebase onto `main`**: the branch is 4 commits behind. Not done, to leave the history as built.
-- **Running a fix for human `fix` answers in the capped round** (question 1).
 - **Doctor's merge dry run** for `method: command` only checks that the program exists; it never
   runs the command.
 - **De-duplication of review findings** beyond what the review prompts ask for.

@@ -84,8 +84,8 @@ def _named(ids: List[Any], titles: Dict[str, str]) -> str:
 def _findings(ctx: Ctx) -> List[str]:
     """
     Fixed and open findings. Open is every *doing it* finding no fix round fixed, from every review round:
-    that includes the last allowed round, whose fixes are never run, and a finding the human answered
-    `fix` there. Those are marked, because the human was told the answer was recorded.
+    that includes the last allowed round, where only the fixes the human asked for are run. A finding
+    the human answered `fix` that is still open is marked, because the human was told it was recorded.
     """
     titles = _finding_titles(ctx)
     rounds = [r for r in ctx.flow.data("fix").get("rounds") or [] if isinstance(r, dict)]

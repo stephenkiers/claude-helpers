@@ -327,6 +327,24 @@ h.test_result("last allowed round: fix_needed false, doing_it stays open",
               res.info == {"fix_needed": False} and last["last_round"] is True
               and [i["finding_id"] for i in last["triage"]["doing_it"]] == ["r2-1"]
               and [f["id"] for f in op] == ["r2-1"] and op[0]["reason"] == "not fixed", str(res) + str(op))
+box = Box()
+c0 = box.commit("src/a.py", "a = 1\n")
+c1 = box.commit("src/a.py", "a = 2\n")
+box.flow.set_data("review", {"rounds": [dict(stub, round=0, **{"from": box.base, "to": c0}),
+                                        dict(stub, round=1, **{"from": c0, "to": c1})]})
+box.commit("src/a.py", "a = 3\n")
+script(scouts({"Uncle Bob": [{"note": "n"}]}) + [reviewer("Uncle Bob", [finding("late ask", "medium")]),
+        verdicts({"r2-1": "confirmed"}), triage(needs_you=[question("r2-1")])])
+res = review.run(box.ctx)
+questions.apply_reply(box.ctx, "r2-1: fix")
+res = review.run(box.ctx)
+h.test_result("last allowed round: a human `fix` answer asks for one more fix run",
+              res.kind == "done" and res.info == {"fix_needed": False, "human_fix": True}, str(res))
+
+h.test_result("human_fix_ids reads only human `fix` answers",
+              review.human_fix_ids({"answers": {"a": {"option_id": "fix", "source": "human"},
+                                                "b": {"option_id": "leave", "source": "human"},
+                                                "c": {"option_id": "fix", "source": "principle"}}}) == ["a"])
 h.test_result("last allowed round: triage is told it is the last round", "last review round" in invocations("triage")[0]["prompt"])
 
 # ---- needs_you: park, re-entry without redoing anything ---------------------------------------

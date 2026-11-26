@@ -30,7 +30,7 @@ python3 -m scripts.flow3 merge 1 --repo solo --merge
   third reply into two answers and two standing directions (`human/` holds the reply, its
   interpretation, and one file per direction).
 - The two `fix` answers given in the last allowed review round were not run until the send-back
-  (see REPORT, question 1). The send-back ran one fix unit, a review of the fix diff, and shipped again.
+  (changed since: see REPORT, question 1). The send-back ran one fix unit, a review of the fix diff, and shipped again.
 - Result: `done`, $0.28, 122 calls. Sandbox `main`:
 
 ```

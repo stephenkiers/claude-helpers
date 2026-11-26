@@ -60,12 +60,18 @@ def step(state: FlowState, event: Event, resume_command: str) -> Tuple[FlowState
         if state.status != "running":
             raise _bad(state, event)
         stage = state.stage
+        if stage == "fix" and state.sendbacks == 0 and state.review_round >= MAX_REVIEW_ROUNDS:
+            # The one fix run after the last review round (fixes the human asked for) is not reviewed again.
+            return _run(state, "ship")
         if stage in _NEXT:
             return _run(state, _NEXT[stage])
         if stage == "review":
             rounds = state.review_round + 1
             fix_needed = bool(event.info.get("fix_needed"))
             if fix_needed and state.sendbacks == 0 and rounds < MAX_REVIEW_ROUNDS:
+                return _run(state, "fix", review_round=rounds)
+            if state.sendbacks == 0 and bool(event.info.get("human_fix")):
+                # Past the cap, only the fixes the human asked for are run, once.
                 return _run(state, "fix", review_round=rounds)
             return _run(state, "ship", review_round=rounds)
         if stage == "ship":

@@ -62,6 +62,14 @@ check("review done, no info -> ship", S("review"), done("review"), "ship", "runn
 check("review 2 -> fix", S("review", review_round=1), done("review", fix_needed=True), "fix", "running", "run_stage", review_round=2)
 check("review cap: third review ships", S("review", review_round=MAX_REVIEW_ROUNDS - 1), done("review", fix_needed=True),
       "ship", "running", "run_stage", review_round=MAX_REVIEW_ROUNDS)
+check("review cap with a human fix answer -> one more fix", S("review", review_round=MAX_REVIEW_ROUNDS - 1),
+      done("review", fix_needed=False, human_fix=True), "fix", "running", "run_stage", review_round=MAX_REVIEW_ROUNDS)
+check("the fix after the cap ships without another review", S("fix", review_round=MAX_REVIEW_ROUNDS), done("fix"),
+      "ship", "running", "run_stage", review_round=MAX_REVIEW_ROUNDS)
+check("a send-back fix after the cap is still reviewed", S("fix", review_round=MAX_REVIEW_ROUNDS, sendbacks=1), done("fix"),
+      "review", "running", "run_stage")
+check("human_fix is ignored after a send-back", S("review", review_round=MAX_REVIEW_ROUNDS, sendbacks=1),
+      done("review", fix_needed=False, human_fix=True), "ship", "running", "run_stage")
 check("sendbacks>0 review ships", S("review", sendbacks=1), done("review", fix_needed=True), "ship", "running", "run_stage")
 check("ship done -> merge_gate", S("ship"), done("ship"), "merge_gate", "merge_gate", "merge_gate")
 gate = S("merge_gate", "merge_gate", review_round=2)

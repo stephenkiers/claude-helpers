@@ -100,7 +100,7 @@ If this session restarts: read this file first, then continue from the first uni
     the last allowed review round (whose fixes never run) showed as "Open: none", including two the
     human had answered `fix`. They are now listed, the human-answered ones marked, with a pointer to
     send back. Running a fix for a human `fix` answer in the capped round would change the review loop
-    the plan fixes; that question is in REPORT.
+    the plan fixes; that question was in REPORT and is settled by decision 31.
 27. **The local provider reads a PR as merged once its head is on base.** A repo's own merge command
     pushes without telling the provider. Found by the command-merge run, which merged and then stopped.
 28. **A resumed merge stage never runs the merge again when the PR is already merged.**
@@ -113,6 +113,11 @@ If this session restarts: read this file first, then continue from the first uni
     fixer asked to lift protection for a test file, called it a detail, and its own recommendation
     was taken as `assumed`. The path rule still reverted the edit, so nothing protected changed.
     Only the question and its options are read, not the context, which often cites a spec test.
+31. **A `fix` you ask for in the last allowed review round is run.** Decided by the human after the
+    build (REPORT question 1). One more fix run handles only the findings the human answered `fix`;
+    the fix stage's per-finding verifier and the check still run; the flow then ships with no further
+    review. Other findings from that round stay open at the gate. A send-back is unchanged. Covered
+    by tests, not yet by a real run. Protected test findings stay as they are (REPORT question 2).
 
 ## Spend (notional USD, real model calls)
 

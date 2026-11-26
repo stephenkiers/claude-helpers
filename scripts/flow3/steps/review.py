@@ -155,6 +155,13 @@ def _save(flow: FlowDir, current: Optional[Doc], phase: str) -> None:
     flow.set_data(STAGE, data)
 
 
+def human_fix_ids(rnd: Doc) -> List[str]:
+    """Findings of a review round the human answered `fix`."""
+    answers = rnd.get("answers") or {}
+    return [str(k) for k, a in answers.items()
+            if isinstance(a, dict) and a.get("source") == "human" and a.get("option_id") == "fix"]
+
+
 def _unhandled_sendback(flow: FlowDir) -> bool:
     sb = flow.data("sendback")
     return bool(sb) and bool(str(sb.get("notes") or "").strip()) and not sb.get("handled")
@@ -443,8 +450,8 @@ def _sections(rnd: Doc, lens_count: int, promoted: List[str], last: bool) -> Lis
         out.append(("Round %d: %s" % (rnd["round"], b.replace("_", " ")), text))
     if last and triage.get("doing_it"):
         out.append(("Round %d: left open" % rnd["round"],
-                    "This was the last review round allowed; the doing-it items above will not be fixed "
-                    "automatically and are listed as open."))
+                    "This was the last review round allowed; of the doing-it items above only those you "
+                    "answered `fix` are fixed. The rest are listed as open."))
     out.append(("Round %d: gut check" % rnd["round"], str(rnd.get("gut_check") or "none")))
     ms = rnd["measurements"]
     out.append(("Round %d: measurements" % rnd["round"], "\n".join(
@@ -483,8 +490,11 @@ def _finish(ctx: Ctx, cur: Doc, lens_count: int, last: bool) -> StageResult:
                              rnd["round"], len(findings), len([f for f in findings if f.get("status") != "refuted"]),
                              doing, len(triage.get("needs_you") or []), len(triage.get("needs_measurement") or []),
                              len(triage.get("deferred") or []),
-                             "; last round allowed, so fixes are not run" if last and doing else ""))
-    return StageResult("done", {"fix_needed": bool((doing and not last) or _unhandled_sendback(flow))})
+                             "; last round allowed, so only the fixes you asked for are run" if last and doing else ""))
+    info: Doc = {"fix_needed": bool((doing and not last) or _unhandled_sendback(flow))}
+    if last and human_fix_ids(rnd):
+        info["human_fix"] = True
+    return StageResult("done", info)
 
 
 def _empty_round(ctx: Ctx, cur: Doc) -> StageResult:

@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from scripts.flow3 import gitops, heal, prompts, questions, record, schemas, voice
 from scripts.flow3.context import Ctx
+from scripts.flow3.steps import review as review_stage
 from scripts.flow3.steps import work
 from scripts.flow3.types import CallResult, CallSpec, FlowStop, StageResult
 
@@ -68,9 +69,15 @@ def candidates(ctx: Ctx) -> Tuple[int, List[Doc], List[str]]:
                     if isinstance(i, dict)}
     items: List[Doc] = []
     blocked: List[str] = []
+    # After the last review round only the fixes the human asked for are run (a send-back takes all).
+    sb = ctx.flow.data("sendback")
+    sent_back = bool(sb) and not sb.get("handled")
+    only = set(review_stage.human_fix_ids(rnd)) if rnd.get("last_round") and not sent_back else None
     for f in rnd.get("findings") or []:
         fid = str(f.get("id"))
         if f.get("bucket") != "doing_it" or fid in done:
+            continue
+        if only is not None and fid not in only:
             continue
         t = triage_items.get(fid, {})
         named = _clean_files(t.get("files")) or _clean_files([f.get("file")])
