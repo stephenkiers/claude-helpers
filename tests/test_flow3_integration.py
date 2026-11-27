@@ -165,6 +165,17 @@ def status_of(repo, issue):
     return fl.flow_state().status if fl else None
 
 
+def describe(repo, issue):
+    """Status plus, for a stopped flow, why it stopped, so a flaky failure names its cause."""
+    fl = flow_of(repo, issue)
+    if not fl:
+        return "no flow"
+    st = fl.flow_state()
+    if st.stop:
+        return "%s (stop %s at %s: %s)" % (st.status, st.stop.cls, st.stop.stage, st.stop.reason)
+    return "%s at %s" % (st.status, st.stage)
+
+
 def good_plan():
     return {
         "goal": "Add a calculator",
@@ -420,10 +431,11 @@ h.test_result("F: fleet status shows 9 waiting behind 8", rc == 0 and "waiting" 
 rc, out, err = call(["merge", "8", "--repo", FREPO, "--merge", "--wait"])
 h.test_result("F: merging 8 completes it", rc == 0 and status_of(FREPO, 8) == "done", out + err)
 h.test_result("F: the supervisor then starts 9, which reaches its gate",
-              wait_for(lambda: status_of(FREPO, 9) == "merge_gate"), str(status_of(FREPO, 9)))
+              wait_for(lambda: status_of(FREPO, 9) == "merge_gate"), describe(FREPO, 9))
 rc, out, err = call(["merge", "9", "--repo", FREPO, "--merge", "--wait"])
 h.test_result("F: both tickets merged into origin", rc == 0 and status_of(FREPO, 9) == "done"
-              and "# ticket 9" in origin_file(forigin, "src/calc.py"), out + err + origin_file(forigin, "src/calc.py"))
+              and "# ticket 9" in origin_file(forigin, "src/calc.py"),
+              describe(FREPO, 9) + out + err + origin_file(forigin, "src/calc.py"))
 rc, out, err = call(["fleet", "status", fid] if fid else ["fleet", "status"])
 h.test_result("F: fleet status shows both done", rc == 0 and out.count("done") >= 2, out)
 h.test_result("F: the supervisor exits once nothing is left to move",
