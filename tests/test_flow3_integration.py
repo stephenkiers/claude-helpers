@@ -408,13 +408,25 @@ rc, out, err = call(["doctor", "--repo-root", str(fproj)])
 h.test_result("F: doctor passes", rc == 0, out + err)
 
 
-def wait_for(cond, secs=60.0):
+def wait_for(cond, secs=60.0, give_up=None):
+    """Poll cond until it holds. give_up, if given, ends the wait early (a flow that has stopped will never get there)."""
     end = time.time() + secs
     while time.time() < end:
         if cond():
             return True
+        if give_up is not None and give_up():
+            return False
         time.sleep(0.3)
     return False
+
+
+def has_stopped(repo, issue):
+    return status_of(repo, issue) in ("stopped", "failed")
+
+
+# A whole ticket run (worktree, three model calls, checks) shares the machine with whatever else is running,
+# so the gate waits get a generous budget; a flow that really stopped still fails at once, naming its cause.
+GATE_WAIT_SECS = 240.0
 
 
 script(plan_calls() + work_calls("8") + review_finding_calls("8") + plan_calls() + work_calls("9") + review_finding_calls("9"))
@@ -424,18 +436,20 @@ fid = [w for w in out.replace(",", " ").split() if w[:2] == "20" and "-" in w]
 fid = fid[0] if fid else ""
 FLEET_IDS.append(fid)
 h.test_result("F: ticket 8 reaches its merge gate while 9 waits",
-              wait_for(lambda: status_of(FREPO, 8) == "merge_gate") and flow_of(FREPO, 9) is None,
-              str(status_of(FREPO, 8)) + out)
+              wait_for(lambda: status_of(FREPO, 8) == "merge_gate", GATE_WAIT_SECS,
+                       give_up=lambda: has_stopped(FREPO, 8)) and flow_of(FREPO, 9) is None,
+              describe(FREPO, 8) + " | " + out)
 rc, out, err = call(["fleet", "status", fid] if fid else ["fleet", "status"])
 h.test_result("F: fleet status shows 9 waiting behind 8", rc == 0 and "waiting" in out and "#8" in out, out + err)
 rc, out, err = call(["merge", "8", "--repo", FREPO, "--merge", "--wait"])
 h.test_result("F: merging 8 completes it", rc == 0 and status_of(FREPO, 8) == "done", out + err)
 h.test_result("F: the supervisor then starts 9, which reaches its gate",
-              wait_for(lambda: status_of(FREPO, 9) == "merge_gate"), describe(FREPO, 9))
+              wait_for(lambda: status_of(FREPO, 9) == "merge_gate", GATE_WAIT_SECS,
+                       give_up=lambda: has_stopped(FREPO, 9)), describe(FREPO, 9))
 rc, out, err = call(["merge", "9", "--repo", FREPO, "--merge", "--wait"])
 h.test_result("F: both tickets merged into origin", rc == 0 and status_of(FREPO, 9) == "done"
               and "# ticket 9" in origin_file(forigin, "src/calc.py"),
-              describe(FREPO, 9) + out + err + origin_file(forigin, "src/calc.py"))
+              " | ".join([describe(FREPO, 9), out, err, origin_file(forigin, "src/calc.py")]))
 rc, out, err = call(["fleet", "status", fid] if fid else ["fleet", "status"])
 h.test_result("F: fleet status shows both done", rc == 0 and out.count("done") >= 2, out)
 h.test_result("F: the supervisor exits once nothing is left to move",
