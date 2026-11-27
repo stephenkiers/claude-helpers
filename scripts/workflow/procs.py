@@ -572,6 +572,14 @@ def live_in(
     """
     Tri-state answer to "does any process other than the caller chain have its cwd inside path?".
 
+    The caller chain is always excluded. Additionally, all descendants of the caller's own claude
+    process are excluded when that claude process has its cwd inside path; this includes both helper
+    processes (caffeinate, tool shells, etc.) and other background processes started by the caller's
+    session. Other sessions, shared ancestors (tmux, terminal, launchd), and their other children
+    are never excluded and will return LIVE if their cwd is in path. If no claude process appears
+    in the contiguous in-path run of the caller chain, only the caller_pids themselves are excluded
+    and no descendant exclusion applies.
+
     Args:
         path: Directory path to check
         caller_pids: List of pids in the caller chain, or Unknown if chain walk failed
@@ -607,9 +615,49 @@ def live_in(
         )
         cwd_map = parse_lsof_cwd(lsof_output)
 
-        # Check if any process (other than caller chain) has cwd in path
+        # The caller's own subtree is not "another session". Claude Code starts helpers of its own
+        # (e.g. `caffeinate -i -t 300`, tool shells, background jobs) whose cwd is the worktree; they are
+        # children of a caller-chain process, not ancestors, so the plain chain check counted them LIVE and
+        # blocked cleanup from inside the worktree. Exclude descendants of the caller's own claude process
+        # when that claude has its cwd inside path. Walk caller_pids upward (ordered from caller upward
+        # as caller_chain returns it) to find the contiguous run where cwd is inside path, then find the
+        # last (furthest from caller) claude process in the in-path run with comm basename 'claude'. If found,
+        # exclude all its descendants; if not found, exclude no descendants beyond caller_pids themselves
+        # (conservative: shared ancestors like tmux/terminal/launchd won't become the exclusion root). A chain
+        # that never touches path (cleanup run from main) extends nothing, and another session's processes still count.
+        excluded = set(caller_pids)
+        claude_root: Optional[int] = None
+        # Build pid→ProcRow map once to avoid O(M * N) lookups in the loop
+        pid_map: Dict[int, ProcRow] = {p.pid: p for p in all_procs}
+        for cpid in caller_pids:
+            ccwd = cwd_map.get(cpid)
+            try:
+                inside = ccwd is not None and paths.is_within(ccwd, path)
+            except ValueError:
+                inside = False
+            if not inside:
+                break
+            # Check if this process is named 'claude'
+            pr = pid_map.get(cpid)
+            if pr is not None and os.path.basename(pr.comm) == 'claude':
+                claude_root = cpid
+        if claude_root is not None:
+            kids: Dict[int, List[int]] = {}
+            for pr in all_procs:
+                kids.setdefault(pr.ppid, []).append(pr.pid)
+            seen = {claude_root}
+            stack = [claude_root]
+            while stack:
+                cur = stack.pop()
+                for kid in kids.get(cur, []):
+                    if kid not in seen:
+                        seen.add(kid)
+                        excluded.add(kid)
+                        stack.append(kid)
+
+        # Check if any process (other than caller chain and its subtree) has cwd in path
         for proc in all_procs:
-            if proc.pid in caller_pids:
+            if proc.pid in excluded:
                 continue
             cwd = cwd_map.get(proc.pid)
             if cwd:
