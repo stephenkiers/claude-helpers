@@ -18,6 +18,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from unittest import mock
+import contextlib
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
@@ -43,6 +44,13 @@ if __name__ == "__main__":
     # apply_cleanup's dirty/unpushed probes run real git; these suites use non-git fake worktrees.
     mock.patch.object(_cleanup, "worktree_dirty_state", lambda wt: (_cleanup.CLEAN, "")).start()
     mock.patch.object(_cleanup, "unpushed_state", lambda tip, merged=None, repo=None: (_cleanup.PUSHED, "")).start()
+    # apply_cleanup takes a non-blocking flock on the real repo's git-common-dir; a concurrent
+    # cleanup or test run in any worktree would make it fail. Locking has its own suites.
+    @contextlib.contextmanager
+    def _no_validation_lock(main_worktree):
+        yield None
+
+    mock.patch("workflow.validation.validation_lock", _no_validation_lock).start()
 
     try:
         h = Harness("MERGE LOCK FIXES TEST SUITE")
