@@ -6,8 +6,10 @@ send-back notes from the merge gate. Findings that share a file are fixed togeth
 with no file is a unit of its own with no file limit (protected paths still hold). Send-back notes become
 one more unit with no file limit, because a human's free-text note rarely names files reliably.
 
-Each unit is one `fixer` write call through work.run_unit_checked (the fast check is healed by the
-fixer rounds in work.check_fixer). Then ONE read-only `fix_verify` call rules on every finding. Findings
+Each unit is one `fixer` write call through work.run_unit_checked. The fast check runs once per attempt,
+after that attempt's last unit (healed by the fixer rounds in work.check_fixer), or after every unit when
+the repo sets `check.per_unit`. A fixer that reports it is blocked is not retried: its finding is left
+open for the merge gate with the fixer's own reason. Then ONE read-only `fix_verify` call rules on every finding. Findings
 it does not call addressed get one more round (units rebuilt from just those, then one more verify). A
 finding still unaddressed is left out of `fixed`, which is what review.open_findings reads to list it at
 the merge gate.
@@ -18,7 +20,7 @@ finished unit or a finished verify.
 """
 
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from scripts.flow3 import gitops, heal, prompts, questions, record, schemas, voice
 from scripts.flow3.context import Ctx
@@ -181,9 +183,19 @@ class _Stage:
             self.log("Fix %s was left unfinished after a retry on a stronger model. Left: %s" % (uid, left))
             ctx.flow.event("heal", cls="unit-shortfall", action="fix left open for the merge gate", unit=uid)
             p["pending"] = {}
-            work.check_unit(ctx, unit["files"])
+            if ctx.cfg.check_per_unit:
+                work.check_unit(ctx, unit["files"])
             u["unfinished"] = True
             summary = "unfinished: " + left
+        except heal.Blocked as stop:
+            # The fixer said what it needs and that it cannot get it. Nothing is retried; the
+            # finding stays open and the merge gate shows the fixer's reason.
+            self.log("Fix %s was not finished: %s" % (uid, stop.reason))
+            ctx.flow.event("heal", cls="blocked", action="fix left open for the merge gate", unit=uid,
+                           needs=stop.needs)
+            p["pending"] = {}
+            u["unfinished"] = True
+            summary = "blocked: " + stop.reason
         else:
             if result is None:
                 return True
@@ -208,35 +220,55 @@ class _Stage:
         pend = p["pending"]
         if pend.get("unit") == uid:
             answers = questions.take_answers(ctx, STAGE)
-            result = work.resume_worker(ctx, "fixer", pend.get("session"), prompt,
-                                        questions.answers_for_prompt(answers), unit["files"], message,
-                                        "unit-%s-answers" % uid)
+            result, blocked = work.guard_blocked(
+                work.resume_worker, ctx, "fixer", pend.get("session"), prompt,
+                questions.answers_for_prompt(answers), unit["files"], message, "unit-%s-answers" % uid)
+            if blocked:
+                raise blocked
+            result = cast(CallResult, result)
             p["pending"] = {}
-            run_check = True
         else:
             u["base"] = gitops.head_sha(self.wt)
             self.save()
-            result, run = work.run_unit_checked(ctx, unit, "fixer", prompt, message)
-            run_check = run is None
+            result = work.run_unit_checked(ctx, unit, "fixer", prompt, message, check=False)[0]
         while work.needs_answers(result):
             u["asked"] += 1
             if u["asked"] > MAX_QUESTION_ROUNDS:
                 raise FlowStop("implement", "the fix for %s kept asking questions instead of finishing" % uid,
                                tried=["answered %d rounds of questions" % (u["asked"] - 1)])
             qs = [q for q in (result.output or {}).get("questions") or [] if isinstance(q, dict)]
-            auto, cards = questions.resolve(ctx, STAGE, qs)
+            auto, cards = questions.resolve(ctx, STAGE, qs, owner={
+                "unit": uid, "files": [str(f) for f in unit["files"]], "unit_ids": [uid]})
             if cards:
                 p["pending"] = {"unit": uid, "session": result.session_id}
                 p["phase"] = "waiting_unit"
                 self.save()
                 return None
-            result = work.resume_worker(ctx, "fixer", result.session_id, prompt,
-                                        questions.answers_for_prompt(auto), unit["files"], message,
-                                        "unit-%s-answers" % uid)
-            run_check = True
-        if run_check:
-            work.check_unit(ctx, unit["files"])
+            result_new, blocked = work.guard_blocked(
+                work.resume_worker, ctx, "fixer", result.session_id, prompt,
+                questions.answers_for_prompt(auto), unit["files"], message, "unit-%s-answers" % uid)
+            if blocked:
+                raise blocked
+            result = cast(CallResult, result_new)
+        if ctx.cfg.check_per_unit:
+            work.check_unit_or_blocked(ctx, unit["files"])  # a blocked fixer leaves the red for the merge gate
         return result
+
+    def check_attempt(self, units: List[Doc]) -> None:
+        """The one fast check for an attempt's units. A fixer for it may edit any of their files."""
+        p = self.p
+        attempt = str(p["attempt"])
+        if self.ctx.cfg.check_per_unit or not units or attempt in p.setdefault("checked", []):
+            return
+        allowed: List[str] = []
+        for unit in units:
+            if not unit["files"]:  # a unit with no file limit: the fixer has none either
+                allowed = []
+                break
+            allowed += [str(f) for f in unit["files"] if str(f) not in allowed]
+        work.check_unit_or_blocked(self.ctx, allowed)  # a blocked fixer leaves the red for the merge gate
+        p["checked"].append(attempt)
+        self.save()
 
     # -- verify -----------------------------------------------------------------------------
 
@@ -264,11 +296,13 @@ class _Stage:
     def run(self) -> StageResult:
         p = self.p
         while True:
-            for unit in self.units():
+            units = self.units()
+            for unit in units:
                 if p["units"].get(str(unit["id"]), {}).get("done"):
                     continue
                 if self.run_unit(unit):
                     return StageResult("needs_human", {})
+            self.check_attempt(units)
             attempt = str(p["attempt"])
             if p["todo"]:
                 if attempt not in p["verified"]:

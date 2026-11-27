@@ -12,12 +12,12 @@ card is open and picks up from the saved phase when the answers arrive.
 """
 
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from scripts.flow3 import config, gitops, heal, prompts, questions, record, schemas, voice
 from scripts.flow3.context import Ctx
 from scripts.flow3.steps import work
-from scripts.flow3.types import Answer, CallSpec, CheckRun, FlowStop, StageResult
+from scripts.flow3.types import Answer, CallResult, CallSpec, CheckRun, FlowStop, StageResult
 
 STAGE = "implement"
 MAX_QUESTION_ROUNDS = 3
@@ -257,42 +257,102 @@ class _Stage:
         pend = d["pending"]
         prompt = _unit_prompt(ctx, self.plan, unit, d.get("handoffs"))
         message = "flow3 #%d unit %s: %s" % (ctx.issue, uid, unit.get("title"))
-        run: Optional[CheckRun]
         if pend.get("kind") == "judge" and pend.get("unit") == uid:
             return self._after_judge_answers(unit)
         if pend.get("kind") == "worker" and pend.get("unit") == uid:
             answers = questions.take_answers(ctx, STAGE)
-            result = work.resume_worker(ctx, "implementer", pend.get("session"), prompt,
-                                        questions.answers_for_prompt(answers), unit["files"], message,
-                                        "unit-%s-answers" % uid)
+            result, blocked = work.guard_blocked(
+                work.resume_worker, ctx, "implementer", pend.get("session"), prompt,
+                questions.answers_for_prompt(answers), unit["files"], message, "unit-%s-answers" % uid)
+            if blocked:
+                return self._blocked(unit, blocked)
+            result = cast(CallResult, result)
             d["pending"] = {}
-            run = None
         else:
             u["base"] = gitops.head_sha(self.wt)
             u["heals_before"] = _heal_count(ctx)
             d["phase"] = "units"
             self.save()
-            result, run = work.run_unit_checked(ctx, unit, "implementer", prompt, message,
-                                                raise_on_fail=False, use_fixer=final)
+            try:
+                result = work.run_unit_checked(ctx, unit, "implementer", prompt, message, check=False)[0]
+            except heal.Blocked as stop:
+                return self._blocked(unit, stop)
         while work.needs_answers(result):
             u["asked"] += 1
             if u["asked"] > MAX_QUESTION_ROUNDS:
                 raise FlowStop("implement", "unit %s kept asking questions instead of finishing" % uid,
                                tried=["answered %d rounds of questions" % (u["asked"] - 1)])
             qs = [q for q in (result.output or {}).get("questions") or [] if isinstance(q, dict)]
-            auto, cards = questions.resolve(ctx, STAGE, qs)
+            auto, cards = questions.resolve(ctx, STAGE, qs, owner=self._owner(unit))
             if cards:
                 d["pending"] = {"kind": "worker", "unit": uid, "session": result.session_id}
                 self.park("waiting_unit")
                 return True
-            result = work.resume_worker(ctx, "implementer", result.session_id, prompt,
-                                        questions.answers_for_prompt(auto), unit["files"], message,
-                                        "unit-%s-answers" % uid)
-        if run is None:
-            run = work.check_unit(ctx, unit["files"], raise_on_fail=False, use_fixer=final)
+            result_new, blocked = work.guard_blocked(
+                work.resume_worker, ctx, "implementer", result.session_id, prompt,
+                questions.answers_for_prompt(auto), unit["files"], message, "unit-%s-answers" % uid)
+            if blocked:
+                return self._blocked(unit, blocked)
+            result = cast(CallResult, result_new)
         u["summary"] = str((result.output or {}).get("summary") or "")
         self._note_handoffs(uid, result.output)
+        return self._check_after(unit, final)
+
+    def _check_after(self, unit: Dict[str, Any], final: bool) -> bool:
+        """
+        The check after a unit. By default only the last unit is checked: the units before it are
+        marked done unmeasured, and one check (with fixers allowed in every unit's files) covers the
+        stage. With `check.per_unit` every unit is checked as it lands.
+        """
+        if not final and not self.ctx.cfg.check_per_unit:
+            return self._green(unit)
+        run, blocked = work.check_unit_or_blocked(self.ctx, self._fix_files(unit, final), raise_on_fail=False,
+                                                  use_fixer=final)
+        if blocked is not None:
+            # A blocked fixer is not retried: the red stays for the merge gate and no judge is called.
+            self.d["check_blocked"] = True
+            return self._green(unit)
         return self._settle(unit, final, run)
+
+    def _fix_files(self, unit: Dict[str, Any], final: bool) -> List[str]:
+        """Files a check fixer may edit: the unit's, or every unit's when one check covers the stage."""
+        if not final or self.ctx.cfg.check_per_unit:
+            return [str(f) for f in unit["files"]]
+        out: List[str] = []
+        for other in ordered_units(self.plan):
+            out += [str(f) for f in other["files"] if str(f) not in out]
+        return out
+
+    def _owner(self, unit: Dict[str, Any]) -> Dict[str, Any]:
+        """What questions.resolve needs to settle bookkeeping questions from this unit without a card."""
+        uid = str(unit["id"])
+        return {"unit": uid, "files": [str(f) for f in unit["files"]],
+                "unit_ids": [str(x["id"]) for x in ordered_units(self.plan)]}
+
+    def _blocked(self, unit: Dict[str, Any], stop: "heal.Blocked") -> bool:
+        """
+        Route a blocked unit. A file another unit still has to work on is a handoff: that unit sees
+        the need in its prompt and this one is finished. Anything else is the stop the worker described.
+        """
+        import os
+        uid = str(unit["id"])
+        if stop.needs != "other_file" or not stop.what:
+            raise stop
+        later: List[str] = []
+        seen = False
+        for other in ordered_units(self.plan):
+            if seen and str(other["id"]) not in self.d["done_units"]:
+                later += [str(f) for f in other["files"]]
+            seen = seen or str(other["id"]) == uid
+        # Normalize paths for equality comparison, not substring matching
+        needed_norm = os.path.normpath(stop.what)
+        if not any(f and os.path.normpath(f) == needed_norm for f in later):
+            raise stop
+        self.d["units"][uid]["summary"] = "blocked: " + stop.worker_reason
+        self._note_handoffs(uid, {"elsewhere": ["%s: %s" % (stop.what, stop.worker_reason)]})
+        self.ctx.flow.event("heal", cls="blocked", action="handed to the unit that owns the file", unit=uid,
+                            what=stop.what)
+        return self._green(unit)
 
     def _note_handoffs(self, uid: str, output: Any) -> None:
         """Keep what a unit left for the owner of another file; later units see it in their prompt."""
@@ -321,8 +381,8 @@ class _Stage:
             if failing:  # tests for the units still to come are red by design
                 d["units"][uid]["deferred_red"] = failing
                 return self._green(unit)
-            run = work.check_unit(ctx, unit["files"], raise_on_fail=False, use_fixer=True)
-            if run.ok:
+            run, blocked = work.check_unit_or_blocked(ctx, self._fix_files(unit, final), raise_on_fail=False)
+            if blocked is not None or run.ok:
                 return self._green(unit)
             failing = self._spec_files_in(run)
         if not failing or uid in d["judged"]:
@@ -359,11 +419,14 @@ class _Stage:
             task = ("The behaviour tests %s still fail after earlier fixes. A judge found the tests are right "
                     "and the code is wrong: %s\n\nCheck output (trimmed):\n%s"
                     % (", ".join(failing), row["reason"], run.trimmed or "(none)"))
-            allowed = [str(f) for f in unit["files"]]
+            allowed = self._fix_files(unit, final=True)
             protected = work.protected_paths(ctx)
             fspec = work.worker_spec(ctx, "fixer", work.fixer_prompt(ctx, task, allowed, protected),
                                      "fix-judged-%s" % uid, model=model)
-            heal.write_call(ctx, fspec, allowed, protected, "flow3 #%d: fix code the judge found wrong" % ctx.issue)
+            _, blocked = work.guard_blocked(heal.write_call, ctx, fspec, allowed, protected,
+                                            "flow3 #%d: fix code the judge found wrong" % ctx.issue)
+            if blocked is not None:
+                return self._green(unit)  # a blocked fixer is not retried: the red stays for the merge gate
             return self._recheck(unit)
         if verdict == "test_wrong" and not weakens:
             self._edit_tests(row, approved=False)
@@ -413,10 +476,12 @@ class _Stage:
         protected = [p for p in work.protected_paths(ctx) if p not in files]
         spec = work.worker_spec(ctx, "fixer", work.fixer_prompt(ctx, task, files, protected),
                                 "fix-test-%s" % row["unit"])
-        heal.write_call(ctx, spec, files, protected, "flow3 #%d: correct the spec test the judge found wrong" % ctx.issue)
+        _, blocked = work.guard_blocked(heal.write_call, ctx, spec, files, protected,
+                                        "flow3 #%d: correct the spec test the judge found wrong" % ctx.issue)
         verdict = "keeps_or_tightens" if (not row["edit_weakens"] and row["verdict"] == "test_wrong") else "weakens"
         for f in files:
-            self.d["test_edits"].append({"file": f, "verdict": verdict, "reason": row["reason"], "applied": True})
+            self.d["test_edits"].append({"file": f, "verdict": verdict, "reason": row["reason"],
+                                        "applied": blocked is None})
 
     def _recheck(self, unit: Dict[str, Any]) -> bool:
         heal.check(self.ctx, "fast", fixer=None, raise_on_fail=True)
@@ -444,7 +509,12 @@ class _Stage:
         for u in ordered_units(self.plan):
             allowed += [str(f) for f in u["files"] if str(f) not in allowed]
         # A recorded pass for an unchanged tree is reused, so this only runs when something changed.
-        heal.check(ctx, "fast", fixer=work.check_fixer(ctx, allowed), raise_on_fail=True)
+        if d.get("check_blocked"):
+            # A check fixer already said it cannot fix this from here: do not launch another, and leave
+            # the red check for the merge gate.
+            work.check_unit_or_blocked(ctx, allowed, raise_on_fail=False, use_fixer=False)
+        else:
+            work.check_unit_or_blocked(ctx, allowed)
         d["phase"] = "done"
         self.save()
         sections: List[Tuple[str, str]] = []

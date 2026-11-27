@@ -78,7 +78,7 @@ def run(ctx: Ctx) -> StageResult:
                            tried=["ran `%s` on the untouched base" % check.command]
                            + (["ran the install command first"] if installed else []))
         base_line = "- Fast check on the untouched base: passed%s." % (
-            " (reused a recorded pass)" if check.reused else "")
+            " (reused a recorded pass)" if check.reused and check.ok else "")
 
     value: Dict[str, Any] = {"base_sha": base_sha, "installed": installed,
                              "base_check": "passed" if ctx.cfg.check_base else "skipped"}

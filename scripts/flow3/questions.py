@@ -5,9 +5,12 @@ Steps do not ask the human. They return questions, and `resolve` decides who ans
 
 1. a fact is checked by a scout and never asked;
 2. a risk or purpose question always goes to the human, and no principle may answer it;
-3. otherwise one resolver call asks whether a principle decides it directly;
+3. otherwise one resolver call asks whether a principle decides it directly, and whether it is the
+   driver's own bookkeeping (which unit owns a file, what runs first, a tool a worker lacks): those
+   are settled by the driver's rules and never shown;
 4. a detail with no deciding principle takes the step's recommendation, recorded as assumed;
-5. everything else goes to the human on a self-contained card.
+5. everything else goes to the human on a self-contained card, and only if every option on it is
+   one the driver can carry out.
 
 Every outcome is recorded: a decision file, a row in the repo's decision log, and a journal line.
 """
@@ -34,6 +37,36 @@ NEVER_BY_PRINCIPLE = ("risk", "purpose")
 FACT_TOOLS = ("Read", "Grep", "Glob")
 
 Repair = Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]
+
+# Who asked: {"unit", "files", "other_files", "unit_ids"} for a question from a worker on one unit.
+Owner = Dict[str, Any]
+
+# What the driver does for each kind of bookkeeping question. The text is what the worker is told.
+DRIVER_RULES: Dict[str, str] = {
+    "ownership": ("Keep to the files you were given. Describe any change needed in another file under "
+                  "`elsewhere`; the part of the plan that owns that file makes it."),
+    "ordering": ("The order of the work is fixed by the plan. Finish your own part now and describe "
+                 "anything a later part must do under `elsewhere`."),
+    "tooling": ("You cannot run commands and nobody will run one for you mid-task. Finish what you can "
+                "with the tools you have; the driver runs the checks itself afterwards. If the work "
+                "cannot be done without it, return `blocked` and say what is needed."),
+}
+
+# An option that asks the driver to change how the work is organised. It has no way to do that
+# mid-flow: a unit's file list and the order of units are fixed when the plan is accepted.
+_UNIT_WORD = r"(?:units?|file lists?|allowed files|ownership|scope of (?:this|the) unit)"
+# Any character that does not end a sentence. A dot inside a file name (src/a.py) does not end one.
+_IN = r"(?:[^.;]|\.(?=\S))"
+_REORGANISE = re.compile(
+    r"\b(?:widen|expand|extend|enlarge|broaden|reassign|re-assign|transfer|re-?order|swap)\b{IN}{{0,80}}\b{U}\b"
+    r"|\b(?:add|move|give|hand)\b{IN}{{0,80}}\b(?:to|into)\b{IN}{{0,30}}\b{U}\b"
+    r"|\b(?:let|allow)\b{IN}{{0,40}}\b(?:this|the) unit\b{IN}{{0,40}}\b(?:edit|change|touch|modify|own)\b"
+    r"|\brun\b{IN}{{0,60}}\b(?:by hand|manually|for (?:me|the worker|this unit))\b"
+    .format(IN=_IN, U=_UNIT_WORD), re.IGNORECASE)
+_UNIT_REF = re.compile(r"\bunits?\s+[A-Za-z]{0,3}-?\d+[a-z]?\b|\b(?:this|another|a later|an earlier|the next) unit\b",
+                       re.IGNORECASE)
+GLOSSARY = ("A \"unit\" is one slice of this ticket's plan. Each unit has a fixed list of files and "
+            "the units run one after another.")
 
 
 # -- model calls -----------------------------------------------------------------------------
@@ -134,12 +167,41 @@ def build_card(ctx: Ctx, stage: str, question: Dict[str, Any],
     }
 
 
+def unhonourable(card: Dict[str, Any], owner: Optional[Owner] = None) -> List[str]:
+    """Ids of the options that ask for something the driver cannot carry out. Only checked for worker questions (owner is not None)."""
+    if owner is None:
+        return []
+    out: List[str] = []
+    for opt in card.get("options") or []:
+        if isinstance(opt, dict) and _REORGANISE.search("%s. %s" % (opt.get("label") or "", opt.get("consequence") or "")):
+            out.append(str(opt.get("id") or ""))
+    return out
+
+
+def _glossary(card: Dict[str, Any], owner: Optional[Owner]) -> str:
+    """Plain words for any driver vocabulary the card uses, or "" when it uses none."""
+    parts = [str(card.get("decision") or ""), str(card.get("why") or ""), str(card.get("risk") or "")]
+    for opt in card.get("options") or []:
+        if isinstance(opt, dict):
+            parts += [str(opt.get("label") or ""), str(opt.get("consequence") or "")]
+    text = " ".join(parts)
+    ids = [str(i) for i in (owner or {}).get("unit_ids") or []]
+    named = [i for i in ids if re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(i), text)]
+    if not named and not _UNIT_REF.search(text):
+        return ""
+    out = GLOSSARY
+    if owner and owner.get("unit"):
+        out += " This question came from unit %s, which may edit: %s." % (
+            owner["unit"], ", ".join(str(f) for f in owner.get("files") or []) or "(no files listed)")
+    return out
+
+
 def _filled(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def card_missing(card: Dict[str, Any]) -> List[str]:
-    """Names of the parts a card lacks. An empty list means it may be shown."""
+def card_missing(card: Dict[str, Any], owner: Optional[Owner] = None) -> List[str]:
+    """Names of the parts a card lacks. An empty list means it may be shown. `owner` is set for a worker's question."""
     missing: List[str] = []
     ticket = card.get("ticket")
     if not (isinstance(ticket, dict) and _filled(ticket.get("title")) and _filled(ticket.get("purpose"))
@@ -171,6 +233,9 @@ def card_missing(card: Dict[str, Any]) -> List[str]:
         missing.append("while_waiting")
     if card.get("kind") == "risk" and not _filled(card.get("risk")):
         missing.append("risk")
+    bad = unhonourable(card, owner)
+    if bad:
+        missing.append("an option the driver cannot carry out (%s)" % ", ".join(bad))
     return missing
 
 
@@ -256,7 +321,21 @@ def _protected_named(ctx: Ctx, q: Dict[str, Any]) -> List[str]:
     return named
 
 
-def _decide(ctx: Ctx, q: Dict[str, Any], text: str, by_id: Dict[str, Principle]) -> _Outcome:
+def _settle(ctx: Ctx, q: Dict[str, Any], driver_kind: str, why: str) -> Optional[Answer]:
+    """
+    The driver's own answer to a bookkeeping question. A fact goes to the scout. Anything else gets
+    the driver's standing rule; no option is picked, because the options were written by a worker
+    that did not know the rule.
+    """
+    if driver_kind == "fact":
+        return _fact(ctx, q)
+    rule = DRIVER_RULES.get(driver_kind) or DRIVER_RULES["ownership"]
+    return Answer(str(q["id"]), "", rule, "driver",
+                  reason="%s question, settled by the driver's rule without a card. %s" % (driver_kind or "ownership", why))
+
+
+def _decide(ctx: Ctx, q: Dict[str, Any], text: str, by_id: Dict[str, Principle],
+            owner: Optional[Owner] = None) -> _Outcome:
     out = _Outcome(question=q)
     kind = str(q.get("kind") or "")
     named = [] if kind in NEVER_BY_PRINCIPLE else _protected_named(ctx, q)
@@ -269,8 +348,24 @@ def _decide(ctx: Ctx, q: Dict[str, Any], text: str, by_id: Dict[str, Principle])
     if kind == "fact":
         out.answer = _fact(ctx, q)  # None only when the step gave no usable recommendation
         return out
-    if kind not in NEVER_BY_PRINCIPLE and by_id:
-        verdict = _verdict(ctx, q, text)
+    if kind not in NEVER_BY_PRINCIPLE and owner is not None:
+        bad = unhonourable({"options": _options(q)}, owner)
+        if bad:
+            # A person cannot be asked to pick something the driver cannot do. An option like this
+            # is the mark of a bookkeeping question, so it is settled, not shown.
+            out.answer = _settle(ctx, q, "ownership", "Option %s asks to change how the work is split, "
+                                 "which cannot be done mid-flow." % ", ".join(bad))
+            return out
+    # The resolver is asked when a principle might decide it, or when a worker on a unit asked
+    # something that would otherwise become a card (its question may be bookkeeping).
+    if kind not in NEVER_BY_PRINCIPLE and (by_id or (owner is not None and kind != "detail")):
+        verdict = _verdict(ctx, q, text or "(this project has no written principles)")
+        if verdict.get("who") == "driver":
+            driver_kind = str(verdict.get("driver_kind") or "")
+            if driver_kind in schemas.DRIVER_KINDS:
+                out.answer = _settle(ctx, q, driver_kind, str(verdict.get("reason") or ""))
+                if out.answer is not None:
+                    return out
         pid = str(verdict.get("principle_id") or "")
         principle = by_id.get(pid)
         outcome = verdict.get("outcome")
@@ -311,6 +406,8 @@ def _record(ctx: Ctx, stage: str, card: Dict[str, Any], answer: Answer) -> None:
 def _by_who(answer: Answer) -> str:
     if answer.source == "principle":
         return "principle %s" % answer.principle_id
+    if answer.source == "driver":
+        return "the driver (not a question for a person)"
     return answer.source
 
 
@@ -342,11 +439,12 @@ def open_batch(flow: FlowDir) -> Optional[Dict[str, Any]]:
     return None
 
 
-def resolve(ctx: Ctx, stage: str, questions: List[Dict[str, Any]],
-            repair: Optional[Repair] = None) -> Tuple[Dict[str, Answer], List[Dict[str, Any]]]:
+def resolve(ctx: Ctx, stage: str, questions: List[Dict[str, Any]], repair: Optional[Repair] = None,
+            owner: Optional[Owner] = None) -> Tuple[Dict[str, Answer], List[Dict[str, Any]]]:
     """
     Resolve a step's questions. Returns the answers reached without the human and the cards that need
-    the human; when there are cards, questions.json and questions.md are already written.
+    the human; when there are cards, questions.json and questions.md are already written. `owner`
+    says which unit's worker asked, so bookkeeping questions can be told from real ones.
     """
     if not questions:
         return {}, []
@@ -354,34 +452,36 @@ def resolve(ctx: Ctx, stage: str, questions: List[Dict[str, Any]],
     text = principles.as_text(goal, plist)
     by_id = {p.id: p for p in plist}
     with ThreadPoolExecutor(max_workers=max(1, min(MAX_PARALLEL, len(questions)))) as pool:
-        outcomes = list(pool.map(lambda q: _decide(ctx, q, text, by_id), questions))
+        outcomes = list(pool.map(lambda q: _decide(ctx, q, text, by_id, owner), questions))
     purpose = _purpose(ctx)
 
     def card_of(o: _Outcome) -> Dict[str, Any]:
-        return build_card(ctx, stage, o.question, o.bearing, o.revisit, purpose)
+        card = build_card(ctx, stage, o.question, o.bearing, o.revisit, purpose)
+        card["glossary"] = _glossary(card, owner)
+        return card
 
     waiting = [o for o in outcomes if o.answer is None]
     cards = {str(o.question["id"]): card_of(o) for o in waiting}
-    incomplete = [{"id": cid, "missing": card_missing(c)} for cid, c in cards.items() if card_missing(c)]
+    incomplete = [{"id": cid, "missing": card_missing(c, owner)} for cid, c in cards.items() if card_missing(c, owner)]
     if incomplete and repair is not None:
         replacements = {str(r.get("id")): r for r in repair(incomplete) if isinstance(r, dict)}
         for o in waiting:
             cid = str(o.question["id"])
-            if cid in replacements and card_missing(cards[cid]):
+            if cid in replacements and card_missing(cards[cid], owner):
                 o.question = replacements[cid]
                 cards[cid] = card_of(o)
-        incomplete = [{"id": cid, "missing": card_missing(c)} for cid, c in cards.items() if card_missing(c)]
+        incomplete = [{"id": cid, "missing": card_missing(c, owner)} for cid, c in cards.items() if card_missing(c, owner)]
     if incomplete:
         # A risk question whose author left out the risk text is still shown: the human can judge it
         # from the decision and the reason, and a stop here would cost more than the gap.
         for o in waiting:
             cid = str(o.question["id"])
-            if card_missing(cards[cid]) == ["risk"]:
+            if card_missing(cards[cid], owner) == ["risk"]:
                 o.question = dict(o.question)
                 o.question["risk"] = ("The step that asked did not say what would no longer be protected. "
                                       "Its reason: %s" % str(o.question.get("context") or "(none given)"))
                 cards[cid] = card_of(o)
-        incomplete = [{"id": cid, "missing": card_missing(c)} for cid, c in cards.items() if card_missing(c)]
+        incomplete = [{"id": cid, "missing": card_missing(c, owner)} for cid, c in cards.items() if card_missing(c, owner)]
     if incomplete:
         first = incomplete[0]
         raise FlowStop("runner", "question card %s is missing: %s" % (first["id"], ", ".join(first["missing"])),
@@ -419,6 +519,8 @@ def _render_card(card: Dict[str, Any]) -> List[str]:
                                                      ticket.get("purpose", ""), ticket.get("stage", "")), ""]
     lines += ["**Decision:** %s" % card.get("decision", ""), ""]
     lines += ["**Why it has come up:** %s" % card.get("why", ""), ""]
+    if card.get("glossary"):
+        lines += ["**Terms:** %s" % card["glossary"], ""]
     lines += ["**What changes under each option:**"]
     for opt in card.get("options") or []:
         lines.append("- `%s` %s: %s" % (opt.get("id"), opt.get("label"), opt.get("consequence")))

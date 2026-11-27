@@ -28,7 +28,7 @@ _MODELS = ("haiku", "sonnet", "opus", "fable")
 _PROVIDERS = ("github", "local")
 _TOP_KEYS = ("base", "provider", "install", "format", "commit_hooks", "check", "merge", "protected_paths", "principles",
              "budget", "models")
-_CHECK_KEYS = ("fast", "full", "timeout_secs", "base")
+_CHECK_KEYS = ("fast", "full", "timeout_secs", "base", "per_unit", "confirm_red")
 _MERGE_KEYS = ("method", "command", "pre_merge", "post_merge")
 _BUDGET_KEYS = ("soft_usd", "hard_usd")
 DEFAULT_PRINCIPLES = "docs/principles.md"
@@ -59,6 +59,11 @@ class RepoConfig:
     models: Dict[str, str]
     format_cmd: Optional[str] = None
     commit_hooks: bool = True
+    # per_unit: true runs the fast check after every unit of a stage; per_unit: false (default) runs it once
+    # after all units. A tree that already has a result for a command is reused and never re-measured.
+    check_per_unit: bool = False
+    # Re-run a failing check once to rule out a flaky test before a fixer is called.
+    check_confirm_red: bool = True
 
 
 @dataclass(frozen=True)
@@ -145,6 +150,13 @@ def parse(text: str) -> RepoConfig:
     if not isinstance(check_base, bool):
         raise ConfigError("check.base: expected true or false")
 
+    per_unit: Any = chk.get("per_unit", False)
+    if not isinstance(per_unit, bool):
+        raise ConfigError("check.per_unit: expected true or false")
+    confirm_red: Any = chk.get("confirm_red", True)
+    if not isinstance(confirm_red, bool):
+        raise ConfigError("check.confirm_red: expected true or false")
+
     mrg = _mapping(raw.get("merge"), "merge")
     _no_unknown(mrg, _MERGE_KEYS, "merge.")
     method = _string(mrg, "method", "merge.method", "squash") or "squash"
@@ -179,7 +191,8 @@ def parse(text: str) -> RepoConfig:
                       check_timeout_secs=timeout, check_base=check_base, merge_method=method, merge_command=command,
                       pre_merge=pre, post_merge=post, protected_paths=protected,
                       principles=principles, soft_usd=soft, hard_usd=hard, models=models,
-                      format_cmd=format_cmd, commit_hooks=commit_hooks)
+                      format_cmd=format_cmd, commit_hooks=commit_hooks,
+                      check_per_unit=per_unit, check_confirm_red=confirm_red)
 
 
 def external_config_file(repo_root: Path) -> Path:
@@ -357,9 +370,18 @@ def render(values: Dict[str, Any]) -> str:
         lines += ["# commit_hooks: false   (the driver's commits skip commit hooks; its checks still gate)"]
     lines += ["", "check:"]
     if full:
-        lines += ["  # fast runs mid-flow; full runs at merge and is the authority.",
+        lines += ["  # fast runs mid-flow (once after the last unit of implement, once per fix attempt, and",
+                  "  # before ship); full runs at merge and is the authority.",
+                  "  # per_unit: true runs the fast check after every unit; per_unit: false (default) runs it",
+                  "  # once after all units. A tree that already has a result for a command is reused.",
                   "  # base: true also runs fast on the untouched base at the start of each ticket.",
+                  "  # confirm_red: false sends a failing check straight to a fixer, with no re-run first.",
                   "  fast: %s" % _q(str(fast)), "  full: %s" % _q(str(full))]
+        for key in ("base", "per_unit"):
+            if chk.get(key) is True:
+                lines += ["  %s: true" % key]
+        if chk.get("confirm_red") is False:
+            lines += ["  confirm_red: false"]
     else:
         lines += ["  # full: <command that exits 0 only when the repo is green>   (required)"]
     lines += ["  timeout_secs: %d" % int(chk.get("timeout_secs") or DEFAULT_TIMEOUT_SECS), "", "merge:",
@@ -460,6 +482,12 @@ def doctor(repo_root: Path, run_checks: bool = False) -> DoctorReport:
     if ok and cfg.check_fast == cfg.check_full:
         lines.append("note check.fast is the same command as check.full, so every mid-flow check costs a "
                      "full one. Set a cheaper check.fast if the full check is slow.")
+        if cfg.check_per_unit:
+            lines.append("note check.per_unit is on with that one command: the check runs after every unit. "
+                         "Turn check.per_unit off unless the check is quick.")
+        if cfg.check_confirm_red:
+            lines.append("note a failing mid-flow check is re-run once before a fixer is called. Set "
+                         "check.confirm_red: false to skip that re-run if the check is slow.")
     if ok and cfg.merge_method == "command":
         # Dry run of the merge procedure as far as is safe: the command's program must exist.
         program = (cfg.merge_command or "").split()[0] if (cfg.merge_command or "").split() else ""

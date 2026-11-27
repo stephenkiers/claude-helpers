@@ -2,7 +2,8 @@
 Shared machinery for stages that have a model edit files (implement now, fix later).
 
 The split of duties for a worker's questions: `run_unit` and `run_unit_checked` make ONE write call and
-(unless the worker asked questions) run the check. They never swallow a `needs_answers` result. The
+(unless the worker asked questions, or the stage passed `check=False` because it checks once after its
+last unit) run the check. They never swallow a `needs_answers` result. The
 returned CallResult still carries it, the check is not run (the tree is mid-unit), and the calling
 stage owns what happens next: resolve the questions through `questions.resolve`, park for the human if
 a card is open, and resume the worker with `resume_worker`. After the answers are in, the stage calls
@@ -10,7 +11,7 @@ a card is open, and resume the worker with `resume_worker`. After the answers ar
 """
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, cast
 
 from scripts.flow3 import config, heal, prompts, schemas, voice
 from scripts.flow3.context import Ctx
@@ -95,19 +96,36 @@ def check_unit(ctx: Ctx, fixer_allowed: Sequence[str], raise_on_fail: bool = Tru
     return heal.check(ctx, "fast", fixer=fixer, raise_on_fail=raise_on_fail)
 
 
+def check_unit_or_blocked(ctx: Ctx, fixer_allowed: Sequence[str], raise_on_fail: bool = True,
+                          use_fixer: bool = True) -> Tuple[CheckRun, Optional["heal.Blocked"]]:
+    """
+    check_unit with a blocked check fixer handled in one place. A fixer that reports it cannot finish
+    from here is not retried: the red check is returned as it stands (never raised) for the merge gate,
+    together with the Blocked that ended the fixing, so a caller can skip further work on it.
+    """
+    run, blocked = guard_blocked(check_unit, ctx, fixer_allowed, raise_on_fail=raise_on_fail,
+                                 use_fixer=use_fixer)
+    if blocked is not None:
+        run = heal.check(ctx, "fast", fixer=None, raise_on_fail=False)
+    return cast(CheckRun, run), blocked
+
+
 def run_unit_checked(ctx: Ctx, unit: Dict[str, Any], role: str, prompt: str, message: str,
                      fixer_allowed: Optional[Sequence[str]] = None, raise_on_fail: bool = True,
-                     use_fixer: bool = True,
-                     resume_session: Optional[str] = None) -> Tuple[CallResult, Optional[CheckRun]]:
+                     use_fixer: bool = True, resume_session: Optional[str] = None,
+                     check: bool = True) -> Tuple[CallResult, Optional[CheckRun]]:
     """
     One write call restricted to the unit's files, then the check. Returns the worker's result and the
-    CheckRun, which is None when the worker asked questions (no check is run until the stage has the
-    answers; see the module docstring). With raise_on_fail false a red check is returned, not raised.
+    CheckRun. The CheckRun is None in two cases with different meanings:
+    - Worker asked questions: no check is run until the stage has the answers (see module docstring).
+    - check=False: the stage checks once after all units, not per unit.
+    When a unit needs no check at all, use run_unit directly instead of this function.
+    With raise_on_fail false a red check is returned, not raised.
     """
     files = [str(f) for f in unit["files"]]
     spec = worker_spec(ctx, role, prompt, "unit-%s" % unit.get("id"), resume_session=resume_session)
     result = heal.write_call(ctx, spec, files, protected_paths(ctx), message)
-    if needs_answers(result):
+    if needs_answers(result) or not check:
         return result, None
     run = check_unit(ctx, fixer_allowed or files, raise_on_fail=raise_on_fail, use_fixer=use_fixer)
     return result, run
@@ -122,6 +140,28 @@ def run_unit(ctx: Ctx, unit: Dict[str, Any], role: str, prompt: str, message: st
     use run_unit_checked to get the red CheckRun.
     """
     return run_unit_checked(ctx, unit, role, prompt, message, fixer_allowed, raise_on_fail)[0]
+
+
+def guard_blocked(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Tuple[Optional[Any], Optional["heal.Blocked"]]:
+    """
+    Call a function that may raise heal.Blocked and return either the result or the caught exception.
+
+    The function's normal return value is returned as the first tuple element. If heal.Blocked is raised,
+    None is returned as the first element, and the exception is returned as the second element. Otherwise,
+    the second element is None.
+
+    This centralizes Blocked handling in one place: workers and check fixers that raise Blocked are routed
+    through a single handler instead of being caught in multiple places (answered-card resume, check fixer
+    paths, etc.). Use it like:
+
+        result, blocked = guard_blocked(work.resume_worker, ctx, ...)
+        if blocked:
+            return self._blocked(unit, blocked)  # or similar handler
+    """
+    try:
+        return fn(*args, **kwargs), None
+    except heal.Blocked as exc:
+        return None, exc
 
 
 def resume_worker(ctx: Ctx, role: str, session_id: Optional[str], original_prompt: str, answers_text: str,

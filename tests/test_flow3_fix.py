@@ -35,6 +35,8 @@ _counter = {"n": 0}
 CHECK_PY = '''
 import sys
 d = sys.argv[1]
+with open(d + "/runs", "a") as fh:
+    fh.write("x\\n")
 lines = []
 try:
     lines = [x for x in open(d + "/results").read().split("\\n") if x]
@@ -100,6 +102,10 @@ class Box:
 
     def results(self, *lines: str) -> None:
         (self.ctl / "results").write_text("\n".join(lines) + "\n")
+
+    def runs(self) -> int:
+        p = self.ctl / "runs"
+        return len(p.read_text().split()) if p.exists() else 0
 
     def script(self, calls: List[Dict[str, Any]]) -> None:
         _counter["n"] += 1
@@ -358,6 +364,72 @@ h.test_result("a mixed finding keeps only its unprotected file in the fixer's al
               al)
 h.test_result("the protected file still appears under protected paths",
               "tests/spec_test.py" in b.launches()[0]["prompt"].split("## Protected paths")[1])
+
+# -- one check per attempt, not one per fix unit (#571) ------------------------------------------
+b = Box("onecheck", [finding("r0-1", "src/a.py"), finding("r0-2", "src/b.py"), finding("r0-3", "src/c.py")])
+b.script([w("unit-a1-1", "src/a.py"), w("unit-a1-2", "src/b.py"), w("unit-a1-3", "src/c.py"),
+          verdicts(("r0-1", True), ("r0-2", True), ("r0-3", True))])
+res = fix.run(b.ctx)
+h.test_result("three fix units, one check, run after the last of them",
+              res.kind == "done" and b.runs() == 1 and b.rounds()[0]["open"] == [], "runs=%d" % b.runs())
+
+b = Box("onecheck-red", [finding("r0-1", "src/a.py"), finding("r0-2", "src/b.py")])
+b.results("fail", "fail", "pass")
+b.script([w("unit-a1-1", "src/a.py"), w("unit-a1-2", "src/b.py"), w("fix-r1", "src/a.py", "x = 7\n"),
+          verdicts(("r0-1", True), ("r0-2", True))])
+res = fix.run(b.ctx)
+fr = [x for x in b.launches() if x["label"] == "fix-r1"]
+h.test_result("a red check after the fixes gets a fixer that may edit any of the fixed files",
+              res.kind == "done" and b.runs() == 3 and len(fr) == 1
+              and "src/a.py" in allowed_of(fr[0]["prompt"]) and "src/b.py" in allowed_of(fr[0]["prompt"]),
+              "runs=%d %s" % (b.runs(), b.labels()))
+
+# -- a fixer that cannot fix from here (#572) ----------------------------------------------------
+b = Box("blocked", [finding("r0-1", "src/a.py"), finding("r0-2", "src/b.py")])
+b.script([{"role": "fixer", "label": "unit-a1-1",
+           "output": {"status": "blocked", "summary": "could not",
+                      "blocked": {"reason": "The schema is generated; I cannot run the generator.",
+                                  "needs": "shell", "what": "make schema"}}},
+          w("unit-a1-2", "src/b.py"), verdicts(("r0-2", True))])
+res = fix.run(b.ctx)
+launched = [x for x in b.launches() if x["label"] == "unit-a1-1"]
+log = (b.flow.path / "journal.md").read_text()
+h.test_result("a blocked fixer is launched once: no retry on a stronger model",
+              len(launched) == 1 and "unit-a1-2" in b.labels(), str(b.labels()))
+h.test_result("the other fix still lands and the blocked finding stays open, with the fixer's reason kept",
+              res.kind == "done" and "r0-1" in b.rounds()[-1]["open"] and "r0-2" not in b.rounds()[-1]["open"]
+              and "make schema" in log and "I cannot run the generator." in log, str(b.rounds()))
+
+# -- F9: check_attempt branches ------------------------------------------------------------------
+# Test check_attempt branch 1: fixer succeeds, check passes
+b1 = Box("check_attempt_pass", [finding("r0-1", "src/a.py")])
+b1.results("fail", "pass")  # First run fails, fixer succeeds, check passes
+b1.script([w("unit-a1-1", "src/a.py"), w("fix-r1", "src/a.py", "x = 1\n"),
+           verdicts(("r0-1", True))])
+res1 = fix.run(b1.ctx)
+h.test_result("F9: check_attempt branch 1 - fixer fixes check and it passes",
+              res1.kind == "done" and b1.runs() == 2 and b1.rounds()[0]["open"] == [],
+              "runs=%d, rounds=%s" % (b1.runs(), b1.rounds()))
+
+# Test check_attempt branch 2: fixer blocked (raises Blocked exception)
+# When a fixer is blocked, the check is still attempted by the fix step
+b2 = Box("check_attempt_blocked", [finding("r0-1", "src/a.py")])
+b2.results("fail", "fail")  # Fixer blocked, check runs but fails
+b2.script([w("unit-a1-1", "src/a.py"),
+           {"role": "fixer", "label": "fix-r1",
+            "output": {"status": "blocked", "summary": "cannot fix",
+                       "blocked": {"reason": "Need a tool", "needs": "environment", "what": "npm"}}},
+           verdicts(("r0-1", False)),  # Finding stays open after blocked fixer
+           w("unit-a2-1", "src/a.py"),
+           {"role": "fixer", "label": "fix-r1",
+            "output": {"status": "blocked", "summary": "cannot fix",
+                       "blocked": {"reason": "Need a tool", "needs": "environment", "what": "npm"}}},
+           verdicts(("r0-1", False))])
+res2 = fix.run(b2.ctx)
+# When fixer is blocked, the check still runs but stays red, finding remains open
+h.test_result("F9: check_attempt branch 2 - fixer blocked, check still attempted",
+              res2.kind == "done" and "r0-1" in b2.rounds()[-1]["open"] and b2.runs() == 2,
+              "runs=%d, open=%s" % (b2.runs(), b2.rounds()[-1].get("open", [])))
 
 if __name__ == "__main__":
     h.summarize_and_exit()

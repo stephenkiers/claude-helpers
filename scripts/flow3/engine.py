@@ -9,7 +9,7 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
-from scripts.flow3 import driver, record
+from scripts.flow3 import checks, driver, record
 from scripts.flow3.stages import StageFn
 from scripts.flow3.state import FlowDir
 from scripts.flow3.types import Action, Event, FlowStop, StageResult
@@ -74,6 +74,8 @@ def _run_flow(flow: FlowDir, event: Event, stages: Mapping[str, StageFn],
         state, action = driver.step(before, event, resume_command(flow))
         if event.kind == "resume" and before.status == "stopped":
             record.clear_stop(flow)
+            # The human may have changed the machine while the flow was stopped: measure reds again.
+            checks.clear_reds(flow.path)
         flow.set_flow_state(state)
         flow.event("transition", event=event.kind, stage=event.stage, to_stage=state.stage,
                    status=state.status)

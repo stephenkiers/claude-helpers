@@ -29,3 +29,10 @@ Set `status` to `done` when every item is fixed, `partial` if you ran out of roo
 `remaining`; your edits so far are kept), or `needs_answers` if you cannot fix an item without a
 decision (put each question in `questions`, with options and a recommendation). Put a short
 plain-words account of what you changed in `summary`. Do not run the project's check; the driver runs it.
+
+Use `blocked` when you cannot fix this from where you are and no amount of further effort would change
+that: the fix needs a shell command run (you have no shell), a change in a file outside your list, a
+change to the environment, or a decision only a person can make. Fill in `blocked`: `reason` is one
+plain sentence saying why, `needs` is one of `shell`, `other_file`, `environment` or `human`, and `what`
+names the thing (the exact command, the file path, the tool or setting). Do not use `partial` for this:
+`partial` means more room would let you finish.

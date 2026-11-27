@@ -151,6 +151,41 @@ If this session restarts: read this file first, then continue from the first uni
 37. **A red check on a branch behind the base merges the base first.** Found by the first real-repo
     trial (FEEDBACK entry 12). Before the flaky re-run and the fixer rounds, the driver fetches, and if
     the base has moved it merges it in with the existing base-stale heal, then re-runs the check.
+38. **A tree is measured once per command, red or green (#571).** Green results were already cached
+    across flows. Red results are now recorded per flow (`check-reds.json` in the flow directory) and reused:
+    the journal line names the mode, the command and the tree, and a `check_reused` event carries the
+    full tree. Reds are per flow, never shared, because a red can come from that worktree's
+    environment. They are forgotten when the install heal runs and when a stopped flow is resumed,
+    since both mean something outside the tree may have changed. One deliberate exception to "never":
+    a fresh red is run once more before a fixer is paid for, to catch a flaky test. That is the only
+    repeat, and `check.confirm_red: false` removes it. `doctor` says so when `check.fast` and
+    `check.full` are the same command.
+39. **The check runs once per stage, not once per unit (#571).** Implement runs the fast check after
+    its last unit and fix runs it after its last fix. `check.per_unit: true` restores the old
+    behaviour. The cost: with one check at the end, a red cannot be pinned on one unit, so the fixer
+    may edit the files of every unit in the stage. Protected paths are still off limits.
+40. **"I cannot do this from here" is an outcome, not a shortfall (#572).** A worker returns
+    `blocked` with what it needs (`shell`, `other_file`, `environment`, `human`), the thing itself and
+    its reason. The driver commits any partial work, never retries on a stronger model, and routes on
+    the need: `other_file` becomes a handoff to the unit that owns the file (a stop when no later unit
+    does); `environment` runs the install once and stops as `environment` if that changes nothing or
+    there is no install; `shell` stops as `environment` naming the command; `human` stops as `human`.
+    Every stop quotes the worker's reason. In the fix stage a blocked fix does not stop the flow: the
+    finding stays open and reaches the merge gate, because the other fixes are still worth landing.
+41. **Only a question a person alone can answer becomes a card (#570).** The resolver now returns
+    `who` (`human` or `driver`) and, for `driver`, a kind: ownership, ordering, tooling or fact.
+    Ownership and ordering are settled by a fixed rule (the worker stays inside its unit and describes
+    the change for the unit that owns the file), tooling by the rule that the driver runs commands and
+    workers do not, and a fact goes to the scout. Each is journalled with source `driver` and never
+    shown. Two limits on purpose. The classifying call is only added when a unit worker asked the
+    question and no principles file would have caused a resolver call anyway, so plan questions do
+    not cost an extra call. And the driver also catches the case without the model: an option that
+    asks it to reorganise units, or to run something by hand, is one it cannot carry out. On a
+    question that is not a risk, that settles it by the same rule. On a risk or purpose card, the card
+    goes back for repair once and then stops as `runner`; it never reaches the inbox. A shown card
+    that names a unit carries a **Terms** line saying what the unit is and which files it covers.
+    Found while writing the tests: the option matcher treated the dot in `src/other.py` as the end of
+    a sentence, so an option naming a file never matched. Fixed.
 
 ## Spend (notional USD, real model calls)
 

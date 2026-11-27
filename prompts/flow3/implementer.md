@@ -48,3 +48,10 @@ Set `status` to `done` when everything you can do in your own files is complete,
 of room on work in your own files (list what is left in `remaining`; your edits so far are kept), or `needs_answers` if you cannot continue without a decision
 (put each question in `questions`, with options and a recommendation). Put a short plain-words account
 of what you changed in `summary`. Do not run the project's check; the driver runs it.
+
+Use `blocked` only when the whole unit cannot be done from where you are and more effort would not
+change that: it needs a shell command run (you have no shell), a change to the environment, or every
+step needs a file outside your list. Fill in `blocked`: `reason` is one plain sentence saying why,
+`needs` is one of `shell`, `other_file`, `environment` or `human`, and `what` names the thing (the exact
+command, the file path, the tool). Do not use `partial` for this: `partial` means more room would let
+you finish. A single step that belongs in another file still goes in `elsewhere`, not here.

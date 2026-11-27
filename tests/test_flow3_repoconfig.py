@@ -108,6 +108,21 @@ h.test_result("wrong type: commit_hooks", raises("check: {full: x}\ncommit_hooks
 h.test_result("wrong type: format", raises("check: {full: x}\nformat: [a]\n", "format"))
 h.test_result("wrong type: check.base", raises("check: {full: x, base: sometimes}\n", "check.base"))
 h.test_result("wrong type: timeout bool", raises("check: {full: x, timeout_secs: true}\n", "check.timeout_secs"))
+
+# check.per_unit and check.confirm_red (#571)
+h.test_result("check.per_unit defaults off and check.confirm_red defaults on",
+              cfg.check_per_unit is False and cfg.check_confirm_red is True)
+knobs = repoconfig.parse("check: {full: x, per_unit: true, confirm_red: false}\n")
+h.test_result("check.per_unit and check.confirm_red parse", knobs.check_per_unit is True and knobs.check_confirm_red is False)
+h.test_result("wrong type: check.per_unit", raises("check: {full: x, per_unit: often}\n", "check.per_unit"))
+h.test_result("wrong type: check.confirm_red", raises("check: {full: x, confirm_red: 1}\n", "check.confirm_red"))
+plain = repoconfig.render({"check": {"full": "just check"}})
+h.test_result("the template explains both keys and sets neither by default",
+              "# per_unit: true" in plain and "# confirm_red: false" in plain
+              and repoconfig.parse(plain).check_per_unit is False and repoconfig.parse(plain).check_confirm_red is True, plain)
+set_ = repoconfig.parse(repoconfig.render({"check": {"full": "just check", "per_unit": True, "confirm_red": False}}))
+h.test_result("render keeps per_unit and confirm_red when they are set",
+              set_.check_per_unit is True and set_.check_confirm_red is False)
 h.test_result("wrong type: protected_paths", raises("check: {full: x}\nprotected_paths: a\n", "protected_paths"))
 h.test_result("wrong type: check not a mapping", raises("check: just check\n", "check"))
 h.test_result("wrong type: budget", raises("check: {full: x}\nbudget: {soft_usd: lots}\n", "budget.soft_usd"))
@@ -190,6 +205,9 @@ h.test_result("doctor reports each step", any("install" in x for x in rep.lines)
               and any("skip checks" in x for x in rep.lines) and any("base" in x for x in rep.lines), str(rep.lines))
 h.test_result("doctor warns when fast and full are the same command",
               any(x.startswith("note check.fast") for x in rep.lines), str(rep.lines))
+h.test_result("doctor says a red mid-flow check is re-run once when the one command is also the full check",
+              any("check.confirm_red: false" in x for x in rep.lines)
+              and not any("check.per_unit is on" in x for x in rep.lines), str(rep.lines))
 h.test_result("check.base defaults to false and parses true",
               repoconfig.load(green).check_base is False)
 name = repoconfig.repo_name(green)

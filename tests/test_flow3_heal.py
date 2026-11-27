@@ -29,6 +29,7 @@ test names printed by this file):
       tried is non-empty wherever a heal was attempted
   Also: limit, denied, check-flaky, budget (hard and soft), pure classification
 """
+import dataclasses
 import json
 import os
 import subprocess
@@ -50,7 +51,8 @@ os.environ.pop("FLOW3_LIMIT_CEILING_SECS", None)
 
 from _test_harness import Harness  # noqa: E402
 
-from scripts.flow3 import context, gitops, heal, runner, schemas  # noqa: E402
+from scripts.flow3 import checks, context, gitops, heal, runner, schemas  # noqa: E402
+from scripts.flow3.steps import work  # noqa: E402
 from scripts.flow3.state import FlowDir  # noqa: E402
 from scripts.flow3.types import CallResult, CallSpec, CheckRun, FlowStop  # noqa: E402
 
@@ -484,6 +486,13 @@ h.test_result("check: a recorded pass on a clean tree is reused without running"
               run.ok and run.reused and f1.runs() == 2
               and any(e["kind"] == "check_reused" for e in f1.flow.events()))
 
+def edit(box: Box, text: str) -> None:
+    """What a fixer that changed something leaves behind: a new commit, so a new tree."""
+    (box.clone / "fixed.txt").write_text(text)
+    sh(["git", "add", "-A"], box.clone)
+    sh(["git", "commit", "-q", "-m", "fix " + text.strip()], box.clone)
+
+
 w1 = Box("work1")
 w1.results("fail", "fail")
 rounds: List[int] = []
@@ -491,6 +500,7 @@ rounds: List[int] = []
 
 def fixer_round1(run: CheckRun, rnd: int) -> None:
     rounds.append(rnd)
+    edit(w1, "one\n")
     w1.results("pass")
 
 
@@ -504,6 +514,7 @@ rounds2: List[int] = []
 
 def fixer_round2(run: CheckRun, rnd: int) -> None:
     rounds2.append(rnd)
+    edit(w2, "round %d\n" % rnd)
     w2.results("fail" if rnd == 1 else "pass")
 
 
@@ -513,20 +524,141 @@ h.test_result("check-work: round 2 fixes", run.ok and rounds2 == [1, 2] and w2.r
 w3 = Box("work3")
 w3.results("fail", "fail", "fail", "fail")
 rounds3: List[int] = []
-stop = expect_stop(lambda: heal.check(w3.ctx, "fast", fixer=lambda r, n: rounds3.append(n)), "check")
+stop = expect_stop(lambda: heal.check(w3.ctx, "fast", fixer=lambda r, n: (rounds3.append(n), edit(w3, "r%d\n" % n))),
+                   "check")
 h.test_result("check-work: neither round fixes it stops `check` (two rounds, four runs)",
               stop is not None and rounds3 == [1, 2] and w3.runs() == 4 and stop.evidence is not None
               and any("fixer round 2" in t for t in stop.tried), str(stop))
 
 w4 = Box("work4")
 w4.results("fail", "fail", "fail", "fail")
-red = heal.check(w4.ctx, "fast", fixer=lambda r, n: None, raise_on_fail=False)
+red = heal.check(w4.ctx, "fast", fixer=lambda r, n: edit(w4, "r%d\n" % n), raise_on_fail=False)
 h.test_result("check-work: raise_on_fail=False returns the red run", not red.ok and w4.runs() == 4)
 
 w5 = Box("work5")
 w5.results("fail", "fail")
 stop = expect_stop(lambda: heal.check(w5.ctx, "fast"), "check")
 h.test_result("check-work: no fixer stops `check`", stop is not None and w5.runs() == 2, str(stop))
+
+# =============================================================================================
+# A tree is measured once per command (#571)
+# =============================================================================================
+
+
+def journal_of(box: Box) -> str:
+    p = box.flow.path / "journal.md"
+    return p.read_text() if p.is_file() else ""
+
+
+def without_confirm(box: Box) -> Any:
+    return dataclasses.replace(box.ctx, cfg=dataclasses.replace(box.ctx.cfg, check_confirm_red=False))
+
+
+r1 = Box("reuse1")
+r1.results("fail", "fail", "fail", "fail")
+idle: List[int] = []
+stop = expect_stop(lambda: heal.check(r1.ctx, "fast", fixer=lambda r, n: idle.append(n)), "check")
+r1_tree = sh(["git", "rev-parse", "HEAD^{tree}"], r1.clone)
+h.test_result("reuse: fixer rounds that change nothing do not re-run the check (two runs, not four)",
+              stop is not None and idle == [1, 2] and r1.runs() == 2, "runs=%d" % r1.runs())
+h.test_result("reuse: the journal records each reuse with the tree it was keyed on",
+              journal_of(r1).count("not re-run: tree %s already failed" % r1_tree[:12]) == 2, journal_of(r1))
+h.test_result("reuse: each reuse is an event carrying the full tree",
+              [e.get("tree") for e in r1.flow.events() if e["kind"] == "check_reused"] == [r1_tree, r1_tree])
+
+red = heal.check(r1.ctx, "fast", raise_on_fail=False)
+h.test_result("reuse: a later check of the same red tree runs nothing", not red.ok and red.reused and r1.runs() == 2)
+
+edit(r1, "moved\n")
+r1.results("pass")
+run = heal.check(r1.ctx, "fast")
+h.test_result("reuse: a new tree is measured", run.ok and not run.reused and r1.runs() == 3)
+
+r2 = Box("reuse2")
+r2.results("fail", "pass")
+red = heal.check(without_confirm(r2), "fast", raise_on_fail=False)
+h.test_result("confirm_red off: a red is not re-run to look for a flake", not red.ok and r2.runs() == 1)
+
+r3 = Box("reuse3")
+r3.results("fail", "fail", "pass")
+heal.check(r3.ctx, "fast", raise_on_fail=False)
+checks.clear_reds(r3.flow.path)
+run = heal.check(r3.ctx, "fast")
+h.test_result("reuse: clearing the reds (resume, install) measures the same tree again",
+              run.ok and not run.reused and r3.runs() == 3)
+
+r4 = Box("reuse4")
+r4.results("fail", "fail")
+other = FlowDir.create("reuse4-other", 2, "Other flow", r4.clone)
+other.set("worktree", str(r4.clone))
+other.set("base", "main")
+heal.check(r4.ctx, "fast", raise_on_fail=False)
+h.test_result("reuse: a red belongs to its flow, never to another flow on the same repo",
+              checks.red_before(r4.flow.path, sh(["git", "rev-parse", "HEAD^{tree}"], r4.clone),
+                                r4.ctx.cfg.check_fast) is not None
+              and checks.red_before(other.path, sh(["git", "rev-parse", "HEAD^{tree}"], r4.clone),
+                                    r4.ctx.cfg.check_fast) is None)
+
+# =============================================================================================
+# A fixer that says it cannot fix from here (#572)
+# =============================================================================================
+
+
+def blocked(needs: str, what: str, reason: str) -> Dict[str, Any]:
+    return {"status": "blocked", "summary": "could not", "blocked": {"reason": reason, "needs": needs, "what": what}}
+
+
+k1 = Box("blocked1")
+k1.results("fail", "fail")
+k1.script([{"role": "fixer", "output": blocked("shell", "git merge origin/main",
+                                                 "The branch is behind the base and I have no shell.")}],
+          default={"output": DONE})
+caught: List[FlowStop] = []
+try:
+    heal.check(k1.ctx, "fast", fixer=work.check_fixer(k1.ctx, ["a.py"]))
+except FlowStop as exc:
+    caught.append(exc)
+    STOPS.append(exc)
+k1s = caught[0] if caught else None
+h.test_result("blocked: one fixer launch, no retry on a stronger model, no second round",
+              len(k1.launches()) == 1 and k1.runs() == 2, "%d launches" % len(k1.launches()))
+h.test_result("blocked: the stop is `environment`, names the need and quotes the fixer",
+              isinstance(k1s, heal.Blocked) and k1s.cls == "environment" and "a shell command" in k1s.reason
+              and "git merge origin/main" in k1s.reason
+              and "The branch is behind the base and I have no shell." in k1s.reason, str(k1s))
+h.test_result("blocked: recorded as a heal event and in the journal, not as a shortfall",
+              len(k1.heals("blocked")) == 1 and k1.heals("blocked")[0]["needs"] == "shell"
+              and not k1.heals("unit-shortfall") and "not retried on a stronger model" in journal_of(k1))
+
+k2 = Box("blocked2", install=True)
+k2.results("fail", "fail", "pass")
+k2.script([{"role": "fixer", "output": blocked("environment", "the pytest plugin", "A plugin is not installed.")}],
+          default={"output": DONE})
+run = heal.check(k2.ctx, "fast", fixer=work.check_fixer(k2.ctx, ["a.py"]))
+h.test_result("blocked: an environment need runs the install once and re-checks (the allowed heal)",
+              run.ok and k2.installs() == 1 and len(k2.launches()) == 1 and k2.runs() == 3)
+
+k3 = Box("blocked3")
+k3.results("fail", "fail")
+k3.script([{"role": "fixer", "output": blocked("environment", "node 20", "The tool is too old.")}],
+          default={"output": DONE})
+stop = expect_stop(lambda: heal.check(k3.ctx, "fast", fixer=work.check_fixer(k3.ctx, ["a.py"])), "environment")
+h.test_result("blocked: an environment need with no install command stops, naming it",
+              stop is not None and "node 20" in stop.reason and len(k3.launches()) == 1, str(stop))
+
+k4 = Box("blocked4")
+k4.script([{"output": dict(blocked("other_file", "src/other.py", "The bug is in a file I may not edit."),
+                           ), "write_files": {"a.py": "x = 2\n"}}])
+stop = expect_stop(lambda: heal.write_call(k4.ctx, work_spec(k4), ["a.py"], [], "unit 1"), "implement")
+h.test_result("blocked: an implementer is not retried either, and work inside its bounds is kept",
+              isinstance(stop, heal.Blocked) and stop.needs == "other_file" and stop.what == "src/other.py"
+              and len(k4.launches()) == 1 and any("(partial)" in x for x in k4.log_subjects()), str(stop))
+
+k5 = Box("blocked5")
+k5.script([{"output": {"status": "blocked", "summary": "Needs a product call."}}])
+stop = expect_stop(lambda: heal.write_call(k5.ctx, work_spec(k5), ["a.py"], [], "unit 1"), "human")
+h.test_result("blocked: with no detail it is a human need quoting the summary",
+              stop is not None and "Needs a product call." in stop.reason, str(stop))
 
 # =============================================================================================
 # base-stale
@@ -751,6 +883,55 @@ h.test_result("cleanup: success first time is None with no retry",
               heal.after_merge(c1.ctx, "x", lambda: None) is None)
 
 # =============================================================================================
+# F12: reused_red_base_moved - verify sync_base happens when base moves with tree unchanged
+# =============================================================================================
+
+rb1 = Box("reused_red_base_moved", files={"shared.txt": "base\n"})
+sh(["git", "checkout", "-q", "-b", "flow/x"], rb1.clone)
+(rb1.clone / "mine.txt").write_text("m\n")
+sh(["git", "add", "-A"], rb1.clone)
+sh(["git", "commit", "-q", "-m", "own work"], rb1.clone)
+rb1.script([])
+rb1.results("fail", "fail", "pass")
+heal.check(rb1.ctx, "fast", raise_on_fail=False)  # records the red against this tree (base not yet moved)
+other1 = TMP / "reused_red_base_moved-other2"
+sh(["git", "clone", "-q", str(rb1.origin), str(other1)], TMP)
+sh(["git", "config", "user.name", "o"], other1)
+sh(["git", "config", "user.email", "o@example.invalid"], other1)
+(other1 / "theirs.txt").write_text("t\n")
+sh(["git", "add", "-A"], other1)
+sh(["git", "commit", "-q", "-m", "base moved"], other1)
+sh(["git", "push", "-q", "origin", "main"], other1)  # base moves; the branch's tree is unchanged
+fixer_calls: List[int] = []
+run_moved = heal.check(rb1.ctx, "fast", fixer=lambda r, n: fixer_calls.append(n), raise_on_fail=False)
+h.test_result("reused_red_base_moved: the base is merged in before a reused red reaches a fixer",
+              run_moved.ok and (rb1.clone / "theirs.txt").exists() and not fixer_calls,
+              "ok=%s theirs=%s fixer=%s" % (run_moved.ok, (rb1.clone / "theirs.txt").exists(), fixer_calls))
+
+# =============================================================================================
+# F14: Blocked-needs vocabulary equality test
+# =============================================================================================
+
+h.test_result("F14: heal.BLOCKED_NEEDS keys match schemas.BLOCKED_NEEDS",
+              set(heal.BLOCKED_NEEDS.keys()) == set(schemas.BLOCKED_NEEDS),
+              f"heal keys {set(heal.BLOCKED_NEEDS.keys())} != schemas {set(schemas.BLOCKED_NEEDS)}")
+
+# =============================================================================================
+# F13: Unreadable red output treated as absent (run fresh)
+# =============================================================================================
+
+rb2 = Box("reused_red_unreadable_output")
+rb2.results("fail", "fail")
+red_first = heal.check(rb2.ctx, "fast", raise_on_fail=False)  # records a red with an output file
+Path(red_first.output_path).unlink()  # the recorded output can no longer be read
+rb2.results("pass")
+rb2_fixer: List[int] = []
+run_after_unreadable = heal.check(rb2.ctx, "fast", fixer=lambda r, n: rb2_fixer.append(n), raise_on_fail=False)
+h.test_result("F13: unreadable red output is treated as absent, check runs fresh",
+              run_after_unreadable.ok and not run_after_unreadable.reused and not rb2_fixer,
+              "ok=%s reused=%s fixer=%s" % (run_after_unreadable.ok, run_after_unreadable.reused, rb2_fixer))
+
+# =============================================================================================
 # No stop without a reason
 # =============================================================================================
 
@@ -758,7 +939,7 @@ h.test_result("every stop raised in this suite has a class, a reason, and (where
               len(STOPS) >= 15 and all(s.cls and s.reason.strip() for s in STOPS), str(len(STOPS)))
 h.test_result("every heal stop carries a stop class from the table",
               all(s.cls in ("limit", "runner", "environment", "conflict", "check", "implement", "permission",
-                            "protected", "budget") for s in STOPS))
+                            "protected", "budget", "human") for s in STOPS))
 h.test_result("every heal event is a heal with a cls and an action",
               all("cls" in e and "action" in e for b in (box, e1, w3, s2, u1, p1)
                   for e in b.flow.events() if e["kind"] == "heal"))

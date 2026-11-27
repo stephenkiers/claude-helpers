@@ -7,7 +7,7 @@ the driver's own vocabulary: calls, checks, failures, stops, stage results, and 
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 # The stages a flow moves through, in order. "merge_gate" is the human gate; "done" is terminal.
 STAGES: Tuple[str, ...] = (
@@ -44,7 +44,8 @@ QUESTION_KINDS: Tuple[str, ...] = ("purpose", "architecture", "behaviour", "risk
 # Kinds that always go to the human unless a principle may decide them (see questions.py).
 HUMAN_KINDS: Tuple[str, ...] = ("purpose", "architecture", "behaviour", "risk")
 # Who answered a question.
-ANSWER_SOURCES: Tuple[str, ...] = ("human", "principle", "assumed", "fact")
+ANSWER_SOURCES: Tuple[str, ...] = ("human", "principle", "assumed", "fact", "driver")
+AnswerSource = Literal["human", "principle", "assumed", "fact", "driver"]
 
 FLOW_STATUSES: Tuple[str, ...] = ("running", "waiting_human", "merge_gate", "stopped", "done")
 
@@ -131,7 +132,7 @@ class CheckRun:
     tree: str  # git tree id the run was made against ("" when it could not be read)
     output_path: str  # full output on disk
     trimmed: str  # the part worth showing a fixer or a human
-    reused: bool = False  # True when a recorded pass for this tree was reused instead of running
+    reused: bool = False  # True when a recorded result for this tree was reused (which may be a failure); readers wanting a passed result should check `reused and ok`
 
 
 @dataclass(frozen=True)
@@ -271,7 +272,7 @@ class Answer:
     question_id: str
     option_id: str  # the chosen option's id, or "" when the answer is free text only
     text: str  # the answer in words (the option label, or what the human said)
-    source: str  # one of ANSWER_SOURCES
+    source: AnswerSource  # who answered: human, principle, assumed, fact, or driver
     principle_id: str = ""  # set when source == "principle"
     reason: str = ""  # why: the principle's statement, the fact found, the human's words (quoted)
     verbatim_path: str = ""  # human/<timestamp>.md when source == "human"
