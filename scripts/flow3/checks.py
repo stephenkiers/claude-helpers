@@ -21,8 +21,10 @@ from scripts.workflow.fsutil import atomic_write_text, read_json_object
 
 _INTERESTING = re.compile(r"FAIL|Error|error:|Traceback")
 _MAX_LINE = 300
-_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\\\)")
-# A line that marks one failed test (bun, jest, vitest, pytest, unittest, cargo, TAP).
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+# A line that marks one failed test (bun, jest, vitest, pytest, unittest, cargo, TAP). This one only
+# detects that such a line exists; heal._FAILED_TEST_LINES extracts the test names. A new runner format
+# must be added to both.
 FAILED_TEST = re.compile(
     r"^\s*(?:✗|✘|×|\(fail\)|FAILED\b|FAIL\b|ERROR:|not ok\b)|\.\.\. FAILED\s*$")
 # A line that belongs to a failure's detail: an assertion, a compiler or lint error, a traceback.
@@ -98,7 +100,8 @@ def trim(output: str, max_chars: int = 12000) -> str:
     what was cut. Colour codes are removed first. When the output has failure blocks (a failed-test
     line, or failing that an assertion or a compiler error), those and the lines around them come
     first and the tail gets a quarter of the room. Otherwise the tail gets most of it, plus earlier lines that mention
-    an error.
+    an error. Output within max_chars is returned whole, with no note; a longer one comes back as a note
+    line, the picked failure blocks and the tail.
     """
     output = strip_ansi(output)
     if len(output) <= max_chars:

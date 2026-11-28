@@ -30,6 +30,8 @@ _MISSING_DEP = re.compile(
     r"ModuleNotFoundError|No module named|command not found|Cannot find module|ERR_MODULE_NOT_FOUND"
     r"|node_modules[^\n]*(?:not found|missing|no such)|(?:missing|no such)[^\n]*node_modules",
     re.IGNORECASE)
+# Name-extracting patterns for failed-test lines. checks.FAILED_TEST detects the same runners' failure
+# lines without extracting names. A new runner format must be added to both.
 _FAILED_TEST_LINES = (
     re.compile(r"^\s*(?:FAILED|FAIL|ERROR)[: ]+(\S.*?)\s*$"),
     re.compile(r"^\s*(?:✗|✘|×|\(fail\))\s*(\S.*?)\s*$"),
@@ -38,6 +40,7 @@ _FAILED_TEST_LINES = (
 )
 _MAX_NAMES = 10
 _OUTPUT_READ_CAP = 16 * 1024 * 1024
+_DEP_READ_CAP = 200 * 1024
 _TIMING = re.compile(r"\s*[\[(]\d+(?:\.\d+)?\s*m?s[\])]\s*$")
 _BLOCKED_TEXT_CAP = 300
 
@@ -114,14 +117,28 @@ def classify_call(result: CallResult, spec: CallSpec) -> Optional[Failure]:
     return Failure("transient", "the %s call failed (%s)" % (result.role, result.subtype or "unknown"))
 
 
-def _read_output(run: CheckRun) -> str:
+def _read_last(run: CheckRun, cap: int) -> str:
+    """The last `cap` bytes of the run's output, decoded and with colour codes removed."""
     try:
-        text = Path(run.output_path).read_text(encoding="utf-8", errors="replace")
-        # Colour codes hide line starts from the patterns here, and a big suite prints its failures
-        # far above the tail, so the whole log is read (up to a size no real check output reaches).
-        return checks.strip_ansi(text[-_OUTPUT_READ_CAP:])
+        with open(run.output_path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - cap))
+            data = fh.read()
+        return checks.strip_ansi(data.decode("utf-8", errors="replace"))
     except (OSError, ValueError):
         return checks.strip_ansi(run.trimmed)
+
+
+def _read_output(run: CheckRun) -> str:
+    # Colour codes hide line starts from the patterns here, and a big suite prints its failures
+    # far above the tail, so the whole log is read (up to a size no real check output reaches).
+    return _read_last(run, _OUTPUT_READ_CAP)
+
+
+def _read_tail(run: CheckRun) -> str:
+    """The end of the output, for dependency classification only (never for failing-test names)."""
+    return _read_last(run, _DEP_READ_CAP)
 
 
 def _failing_tests(output: str) -> List[str]:
@@ -146,7 +163,10 @@ def failing_text(run: CheckRun, limit: int = 4) -> str:
     names = _failing_tests(_read_output(run))
     if not names:
         return ""
-    more = " and %d more" % (len(names) - limit) if len(names) > limit else ""
+    if len(names) > limit and len(names) >= _MAX_NAMES:
+        more = " and at least %d more" % (len(names) - limit)
+    else:
+        more = " and %d more" % (len(names) - limit) if len(names) > limit else ""
     return "Failing: %s%s." % ("; ".join(n if len(n) <= 100 else n[:100] + "…" for n in names[:limit]), more)
 
 
@@ -156,7 +176,7 @@ def classify_check(first: CheckRun, rerun: Optional[CheckRun]) -> Failure:
         return Failure("environment", "the check timed out", evidence=first.output_path,
                        detail={"kind": "timeout"})
     output = _read_output(first)
-    if first.exit_code == 127 or _MISSING_DEP.search(output):
+    if first.exit_code == 127 or _MISSING_DEP.search(_read_tail(first)):
         return Failure("environment", "the check could not find a dependency or tool",
                        evidence=first.output_path, detail={"kind": "missing-dependency"})
     if rerun is not None and rerun.ok:
@@ -532,7 +552,7 @@ def _external_missing(ctx: Ctx, run: CheckRun) -> List[str]:
                 parts = str(f).split("/")
                 planned.extend(parts[:-1] + [parts[-1].rsplit(".", 1)[0]])
     out: List[str] = []
-    for name in _NO_MODULE.findall(_read_output(run)):
+    for name in _NO_MODULE.findall(_read_tail(run)):
         top = name.split(".")[0]
         local = (ctx.worktree / top).exists() or (ctx.worktree / (top + ".py")).exists() or top in planned
         if not local and top not in out:
