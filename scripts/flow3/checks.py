@@ -22,6 +22,10 @@ from scripts.workflow.fsutil import atomic_write_text, read_json_object
 _INTERESTING = re.compile(r"FAIL|Error|error:|Traceback")
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 # Lines a test runner or compiler writes to mark a failure, as opposed to lines that mention one.
+# These matchers know bun, pytest, TAP and Go output. vitest, jest `●`, mocha and unittest `FAIL:`
+# lines are not recognised, so `failures()` names are poorer for them, and a red whose output names
+# no spec file falls back to the old stop (it fails closed). The list is the contract; it is
+# extended from trial evidence.
 _STRONG = re.compile(
     r"^\s*(\(fail\)|✗|×|FAIL(ED)?\b|not ok\b|--- FAIL|error(\[\w+\])?:|Error:|\w*(Error|Exception):|Traceback|E   |"
     r"Expected:|Received:|AssertionError|assert\w* failed)|\berror TS\d+")
@@ -80,7 +84,7 @@ def failures(output: str, limit: int = 5) -> List[str]:
     """
     out: List[str] = []
     for ln in strip_ansi(output).splitlines():
-        m = _FAILED_TEST.match(ln)
+        m = _FAILED_TEST.match(ln[:_MAX_LINE])
         if not m:
             continue
         name = " ".join(m.group(1).split())[:160]
@@ -129,20 +133,20 @@ def trim(output: str, max_chars: int = 6000) -> str:
     for i in range(start):
         if _FAILED_TEST.match(lines[i]):
             if not take(i):
-                break
+                continue
             for j in range(i - 1, max(i - _CONTEXT, 0) - 1, -1):
                 if not take(j):
-                    break
+                    continue
             take(i + 1)
     for i in range(start):
         if i not in keep and _STRONG.search(lines[i]):
             if not take(i):
-                break
+                continue
             take(i + 1)
     for i in range(start):
         if i not in keep and _INTERESTING.search(lines[i]):
             if not take(i):
-                break
+                continue
     picked = [lines[i] for i in sorted(keep)]
     tail = lines[start:]
     kept = len(picked) + len(tail)

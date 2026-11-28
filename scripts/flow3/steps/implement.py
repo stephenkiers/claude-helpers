@@ -83,6 +83,27 @@ def _unit_prompt(ctx: Ctx, plan: Dict[str, Any], unit: Dict[str, Any],
         handoffs=_handoffs_text(handoffs or [], str(unit["id"])))
 
 
+def _tail_occurrence_ok(text: str, start: int, prefix: List[str]) -> bool:
+    """
+    Whether a spec path tail found at `start` in the log may name its spec file. Bare, or preceded by
+    a non-path character, it may. Preceded by a directory, that directory must be a suffix of the
+    spec path's leading parts (`prefix`); otherwise it names a different file.
+    """
+    if start == 0 or text[start - 1] != "/":
+        return True
+    j = start - 1
+    while j > 0 and re.match(r"[\w./-]", text[j - 1]):
+        j -= 1
+    comps = [c for c in text[j:start].split("/") if c]
+    if not comps:
+        return False
+    if not prefix:  # the full spec path under an absolute directory (for example a checkout root)
+        return text[j] == "/"
+    if len(comps) > len(prefix):
+        return False
+    return prefix[len(prefix) - len(comps):] == comps
+
+
 def _heal_count(ctx: Ctx) -> int:
     return len([e for e in ctx.flow.events() if e.get("kind") == "heal"])
 
@@ -389,17 +410,26 @@ class _Stage:
 
     def _spec_files_in(self, run: CheckRun) -> List[str]:
         """
-        The spec test files a red run's output names. A runner started in a package directory prints
-        paths relative to it, so a spec file also counts when the output names the end of its path
-        (at least its file name, on a path boundary).
+        The spec test files a red run's output names. The full path counts when it occurs on a path
+        boundary. A runner started in a package directory prints paths relative to it, so a shorter
+        tail of the path also counts, but only when no other spec file ends with that same tail and
+        every occurrence of the tail is either bare or preceded by a directory that is a suffix of the
+        spec path's own leading parts (so `other/tests/test_x.py` does not name `tests/test_x.py`).
+        A file name followed by a further extension (`test_x.py.orig`) does not count.
         """
         text = checks.strip_ansi(work.read_text(run.output_path, run.trimmed) + "\n" + run.trimmed)
         found: List[str] = []
-        for f in self.spec_files:
-            parts = str(f).split("/")
+        spec_names = [str(f) for f in self.spec_files]
+        for f in spec_names:
+            parts = f.split("/")
             for i in range(len(parts)):
                 tail = "/".join(parts[i:])
-                if re.search(r"(?<![\w.-])" + re.escape(tail) + r"(?![\w-])", text):
+                if i > 0:
+                    ambiguous = any(g != f and (g == tail or g.endswith("/" + tail)) for g in spec_names)
+                    if ambiguous:
+                        continue
+                pattern = re.compile(r"(?<![\w.-])" + re.escape(tail) + r"(?![\w-]|\.\w)")
+                if any(_tail_occurrence_ok(text, m.start(), parts[:i]) for m in pattern.finditer(text)):
                     found.append(f)
                     break
         return found
