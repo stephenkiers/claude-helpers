@@ -170,6 +170,11 @@ def failing_text(run: CheckRun, limit: int = 4) -> str:
     return "Failing: %s%s." % ("; ".join(n if len(n) <= 100 else n[:100] + "…" for n in names[:limit]), more)
 
 
+def failing_tests(run: CheckRun) -> List[str]:
+    """Names of the failed tests in the whole check log, or [] when the log names none."""
+    return _failing_tests(_read_output(run))
+
+
 def classify_check(first: CheckRun, rerun: Optional[CheckRun]) -> Failure:
     """Classify a failed check. `rerun` is the immediate second run, when one was made."""
     if first.timed_out:
@@ -221,6 +226,10 @@ assert set(BLOCKED_NEEDS.keys()) == set(schemas.BLOCKED_NEEDS), (
     "BLOCKED_NEEDS keys %s do not match schemas.BLOCKED_NEEDS %s; they must stay in sync"
     % (sorted(BLOCKED_NEEDS.keys()), sorted(schemas.BLOCKED_NEEDS))
 )
+
+# A blocked fixer's need may go to the judge only when it is a file it may not edit; `human` always becomes a card.
+JUDGE_ROUTABLE_NEEDS = frozenset({"other_file"})
+assert JUDGE_ROUTABLE_NEEDS <= set(BLOCKED_NEEDS.keys()), "JUDGE_ROUTABLE_NEEDS must be a subset of BLOCKED_NEEDS"
 
 
 class Blocked(FlowStop):

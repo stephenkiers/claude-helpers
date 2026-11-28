@@ -12,6 +12,7 @@ card is open and picks up from the saved phase when the answers arrive.
 """
 
 import json
+import os
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from scripts.flow3 import checks, config, gitops, heal, prompts, questions, record, schemas, voice
@@ -314,19 +315,42 @@ class _Stage:
 
     def _after_blocked_fixer(self, unit: Dict[str, Any], run: CheckRun, blocked: "heal.Blocked") -> bool:
         """
-        A check fixer said it cannot fix the red check from where it is. It is not retried. When it
-        needs a file it may not edit (or a person) and the failures are in the flow's own spec tests,
-        which no fixer may edit, the judge decides whether the tests or the code are wrong. Otherwise
-        the stage stops with what the fixer said it needs: later stages do not run on a tree known to
-        be red.
+        A check fixer said it cannot fix the red check from where it is. It is not retried. The judge
+        reads the tests only when the fixer named a spec test file it may not edit and that file is
+        among the failing tests, which no fixer may edit; a `human` need or any other file always raises
+        the Blocked stop as a card. A green recheck does not stop the stage.
         """
+        if run.ok:
+            return self._green(unit)
         uid = str(unit["id"])
-        failing = self._spec_files_in(run) if blocked.needs in ("other_file", "human") else []
-        if not failing or uid in self.d["judged"]:
+        failing = self._blocked_spec_files(run, blocked)
+        if not self._judgeable(uid, failing):
             raise blocked
         record.journal(self.ctx.flow, "The failing tests are this flow's own spec tests (%s), which a fixer may "
                                       "not edit, so a judge reads them next." % ", ".join(failing))
         return self._judge(unit, run, failing)
+
+    def _judgeable(self, uid: str, failing: List[str]) -> bool:
+        """
+        A judge call is made only when there is a failing spec file to judge and this unit has not been
+        judged already.
+        """
+        return bool(failing) and uid not in self.d["judged"]
+
+    def _blocked_spec_files(self, run: CheckRun, blocked: "heal.Blocked") -> List[str]:
+        """
+        The spec files the judge should read for a blocked fixer. Empty unless the need is judge-routable
+        and names a file; otherwise the spec files that are failing, returned only when the named file is
+        one of them.
+        """
+        if blocked.needs not in heal.JUDGE_ROUTABLE_NEEDS or not blocked.what:
+            return []
+        names = heal.failing_tests(run)
+        failing = [f for f in self.spec_files if any(f in n for n in names)]
+        needed = os.path.normpath(blocked.what)
+        if any(needed == os.path.normpath(f) for f in failing):
+            return failing
+        return []
 
     def _fix_files(self, unit: Dict[str, Any], final: bool) -> List[str]:
         """Files a check fixer may edit: the unit's, or every unit's when one check covers the stage."""
@@ -405,7 +429,7 @@ class _Stage:
             if run.ok:
                 return self._green(unit)
             failing = self._spec_files_in(run)
-        if not failing or uid in d["judged"]:
+        if not self._judgeable(uid, failing):
             named = heal.failing_text(run)
             raise FlowStop("check", "the fast check still fails after unit %s (%s)%s"
                            % (uid, run.command, ". " + named if named else ""),
