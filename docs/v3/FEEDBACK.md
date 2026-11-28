@@ -202,3 +202,37 @@ actually happened. The driver could look for the issue number in the commits it 
 
 Trial totals at this stop: 1h21m, 29 model calls, $8.69, one of nine units finished. Most of the
 elapsed time and seven of the stops were driver defects (entries 5 to 12), not the ticket.
+
+## 14. Second trial: a small ticket, stopped at ship on a red the driver could not explain (2026-11-27)
+
+A one-unit front-end ticket in a private project, run after decisions 38 to 41. The flow took 7
+minutes and $2.52 over 30 model calls, asked no questions, and stopped at ship as `check` with the
+fast check red. It reached review, fix and ship for the first time on a real repo. Nothing was
+pushed.
+
+What worked as designed: the red tree was measured once and reused three times; the fixer said it
+was blocked and was not retried on a stronger model; no bookkeeping question reached the human.
+
+The red was the spec tests, not the implementation. The test author sent a status payload with a
+session id of `"A"`; the repo's schema requires a UUID there, so the hook dropped every status event
+and four of six tests failed. The author had flagged the payload shape as an assumption.
+
+Still open:
+
+- **The trimmed check output hid the failures.** The log was 24,149 lines of ANSI-coloured test
+  output. `checks.trim` kept the last 67 lines and 14 "interesting" lines, and all 14 were console
+  noise from passing tests that contain the word `Error`. The four failing test names and their
+  Expected/Received lines were cut. The fixer correctly said it could not see what failed. Trim
+  should strip ANSI codes and prefer a test runner's failure blocks (`(fail)`, `Expected:`,
+  `Received:`, `error:` at line start) over lines that merely mention an error.
+- **A spec test that fails on arrival has no owner.** Spec tests are protected, so the implementer,
+  the check fixer and the review fixer may not edit them. When the only failing tests are the ones
+  the flow just wrote, the driver should either send them back to the test author with the failure
+  or stop with a card that says so. Today it stops as a bare `check`.
+- **Review and fix ran on a tree known to be red.** After the blocked fixer, implement finished as
+  done and the red was left "for the merge gate" (decision 40). Twenty review calls then ran on work
+  whose tests did not pass. A blocked check fixer at the end of implement should stop there.
+- **A test author's stated assumption was not checked.** "I assumed the payload has this field" is a
+  checkable fact; a scout reading the schema would have caught the UUID rule before any test was
+  written.
+- The stop reason says only "the fast check still fails". It should name the failing tests.
