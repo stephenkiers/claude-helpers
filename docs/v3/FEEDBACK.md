@@ -236,3 +236,12 @@ Still open:
   checkable fact; a scout reading the schema would have caught the UUID rule before any test was
   written.
 - The stop reason says only "the fast check still fails". It should name the failing tests.
+- **The plan settled a judgment question without showing it (from the human).** Plan experts raised
+  three questions. Two were facts and the plan checked them in the code, which is right. The third
+  was a scope choice: the ticket's first acceptance test is unreachable as written, so either test
+  the closest reachable case or add the missing behaviour. The plan took the recommended option,
+  listed the other as a non-goal, and no card or decision record was written. The human's rule:
+  until the driver has earned trust, every question that is not straightforward reaches the human as
+  a card with the question, the options, the recommendation and the impact of each, to be
+  rubber-stamped. "Reversible, with a recommendation" is not grounds to settle it silently. Fewer
+  questions is the goal later, and it should be reached by an explicit opt-in, not by default.
