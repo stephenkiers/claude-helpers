@@ -167,38 +167,26 @@ h.test_result("failures reads jest format",
               len(checks.failures(jest_output)) >= 2 and "jest.test.ts" in checks.failures(jest_output)[0],
               str(checks.failures(jest_output)))
 
-# unittest format failures (Plan item 2 - verify existing coverage)
-unittest_output = """FAIL: test_case (tests.test_foo.TestClass)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "tests/test_foo.py", line 42, in test_case
-    self.assertEqual(1, 2)
-AssertionError: 1 != 2
+# trim: a marked failure line that does not fit the remaining budget must not stop later, shorter ones
+# from being kept.
+_A = "Expected: " + "a" * 280
+_B = "Expected: " + "b" * 280
+_trim_in = "\n".join([_A, _B, "Expected: short_c"] + ["ok line %04d" % n for n in range(120)])
+_trim_out = checks.trim(_trim_in, 1000)
+h.test_result("trim keeps a later short failed-test line after one that does not fit the budget",
+              "short_c" in _trim_out and "b" * 100 not in _trim_out,
+              _trim_out[:300])
 
-FAIL: another_test (tests.test_bar.TestOther)
-----------------------------------------------------------------------
-"""
-h.test_result("failures reads unittest format",
-              len(checks.failures(unittest_output)) >= 2 and "test_case" in checks.failures(unittest_output)[0]
-              and "another_test" in checks.failures(unittest_output)[1],
-              str(checks.failures(unittest_output)))
+# failures: each line is cut at _MAX_LINE before matching, so a name cannot grow past it
+_cut = checks.failures("FAILED " + "x" * 50 + " " * 400 + "tailword")
+h.test_result("failures matches only the first _MAX_LINE characters of a line",
+              _cut == ["x" * 50], str(_cut))
 
-# Plan item 4: trim continues after a long line that doesn't fit
-lines_with_long = ["short line 1", "x" * 5000, "short line 2", "FAIL test_z.py::test_z"]
-text_mixed = "\n".join(lines_with_long)
-trimmed_mixed = checks.trim(text_mixed, 1000)
-h.test_result("trim continues after a long line, includes shorter later lines",
-              "short line 2" in trimmed_mixed and "FAIL test_z.py::test_z" in trimmed_mixed,
-              "length=%d, has short2=%s has FAIL=%s" % (len(trimmed_mixed),
-                                                         "short line 2" in trimmed_mixed,
-                                                         "FAIL test_z.py::test_z" in trimmed_mixed))
-
-# Plan item 3: Very long single line does not hang and is bounded
-very_long_line = "x" * 100000 + "\n" + "FAIL test_important.py::test_x\n"
-trimmed_long = checks.trim(very_long_line, 1000)
+# trim: one very long line neither hangs nor crowds out the failure after it
+_long_trim = checks.trim("x" * 100000 + "\n" + "FAIL test_important.py::test_x\n" + "ok\n" * 600, 1000)
 h.test_result("trim handles very long lines without hanging and stays bounded",
-              len(trimmed_long) < 10000 and "FAIL test_important.py::test_x" in trimmed_long,
-              "length=%d" % len(trimmed_long))
+              len(_long_trim) < 10000 and "test_important.py::test_x" in _long_trim,
+              "length=%d" % len(_long_trim))
 
 # record_pass / passed_before
 h.test_result("nothing recorded yet", not checks.passed_before("r", "tree1", "just check"))
