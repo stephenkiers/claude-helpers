@@ -199,7 +199,7 @@ If this session restarts: read this file first, then continue from the first uni
     round. Judge-routable means need `other_file` only, and only when the fixer's `what` names a
     failing spec test file; a `human` need is always a card. A `test_wrong` verdict that does not
     weaken the test is applied by a fixer allowed to edit that file; a weakening one, or `spec_wrong`,
-    is a risk card. In every other case the stage stops with the fixer's need and reason. The fix
+    is a risk card. In every other case the stage stops with the fixer's need and reason. A recheck that has gone green lets the stage proceed, except for a `human` need, which is raised anyway. The fix
     stage is unchanged: a blocked fix leaves its finding open, because the other fixes are still
     worth landing.
 44. **Test data must pass the project's own validation.** The test author is told to read the type,

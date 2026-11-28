@@ -257,7 +257,7 @@ def _assume(q: Dict[str, Any], reason: str) -> Optional[Answer]:
 
 
 def _fact(ctx: Ctx, q: Dict[str, Any]) -> Optional[Answer]:
-    """One scout call. Answers when the fact is found; otherwise the recommendation, as assumed."""
+    """One scout call. Answers when the fact is found; otherwise None, so the question goes to the human as a card."""
     qid = str(q["id"])
     raw = str(ctx.flow.get("worktree") or "")
     cwd = ctx.repo_root
@@ -276,7 +276,7 @@ def _fact(ctx: Ctx, q: Dict[str, Any]) -> Optional[Answer]:
         if opt or text:
             return Answer(qid, str(opt["id"]) if opt else "", text, "fact",
                           reason=str(found.get("evidence") or found.get("answer") or "checked in the repository"))
-    return _assume(q, "the fact could not be checked, so the step's recommended option was taken")
+    return None
 
 
 def _prompt_question(q: Dict[str, Any]) -> Dict[str, Any]:
@@ -346,7 +346,7 @@ def _decide(ctx: Ctx, q: Dict[str, Any], text: str, by_id: Dict[str, Principle],
         if not str(q.get("risk") or "").strip():
             q["risk"] = "This question is about a protected path (%s); only you can allow a change there." % ", ".join(named)
     if kind == "fact":
-        out.answer = _fact(ctx, q)  # None only when the step gave no usable recommendation
+        out.answer = _fact(ctx, q)  # None when the scout cannot find the fact: a card
         return out
     if kind not in NEVER_BY_PRINCIPLE and owner is not None:
         bad = unhonourable({"options": _options(q)}, owner)

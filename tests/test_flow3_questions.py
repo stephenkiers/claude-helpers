@@ -129,9 +129,8 @@ ctx = make_ctx()
 script([{"role": "fact_scout", "label": "f2", "output": {"answers": [{"question_id": "f2", "found": False}]}}])
 auto, human = questions.resolve(ctx, "plan", [q("f2", "fact", rec="b")])
 a = auto.get("f2")
-h.test_result("fact the scout cannot decide takes the recommendation, never asks", a is not None and a.source == "assumed"
-              and a.option_id == "b" and "could not be checked" in a.reason and human == []
-              and questions.open_batch(ctx.flow) is None)
+h.test_result("fact the scout cannot decide goes to the human as a card, never assumed", a is None
+              and [str(x.get("id")) for x in human] == ["f2"])
 
 # A worktree, when it exists, is the scout's cwd.
 ctx = make_ctx()

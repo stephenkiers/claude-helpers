@@ -319,9 +319,10 @@ class _Stage:
         A check fixer said it cannot fix the red check from where it is. It is not retried. The judge
         reads the tests only when the fixer named a spec test file it may not edit and that file is
         among the failing tests, which no fixer may edit; a `human` need or any other file always raises
-        the Blocked stop as a card. A green recheck does not stop the stage.
+        the Blocked stop as a card. A green recheck does not stop the stage, except for a `human` need,
+        which is a person's question and is always raised.
         """
-        if run.ok:
+        if run.ok and blocked.needs != "human":
             return self._green(unit)
         uid = str(unit["id"])
         failing = self._blocked_spec_files(run, blocked)
