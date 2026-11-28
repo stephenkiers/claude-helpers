@@ -103,6 +103,35 @@ h.test_result("trim drops boring middle lines", "line 300 ok" not in trimmed)
 h.test_result("trim leaves short output alone", checks.trim("short\n") == "short\n")
 h.test_result("trim caps very long lines", len(checks.trim("x" * 20000 + "\nFAIL\n", 1000)) < 1500)
 
+# trim puts the failed tests first: a long run with noisy passing tests and four real failures
+noisy: list = []
+for i in range(3000):
+    noisy.append("\x1b[32m(pass)\x1b[0m suite > case %d [0.1ms]" % i)
+    if i % 10 == 0:
+        noisy.append("error: logged on purpose by passing case %d" % i)
+for n in (400, 900, 1500, 2100):
+    noisy[n:n] = ["src/hooks/__tests__/thing.test.ts:", "error: expect(received).toBe(expected)", "",
+                  "Expected: true", "Received: false", "      at <anonymous> (thing.test.ts:%d:5)" % n,
+                  "\x1b[31m(fail)\x1b[0m thing > T%d: does the thing \x1b[2m[12.34ms]\x1b[0m" % n]
+long_run = "\n".join(noisy)
+cut = checks.trim(long_run, 6000)
+h.test_result("trim strips colour codes", "\x1b[" not in cut)
+h.test_result("trim keeps every failed test's name",
+              all("T%d: does the thing" % n in cut for n in (400, 900, 1500, 2100)), cut[:400])
+h.test_result("trim keeps what each failed test expected and received",
+              cut.count("Expected: true") == 4 and cut.count("Received: false") == 4, str(cut.count("Expected: true")))
+h.test_result("trim keeps the file a failed test is in", "src/hooks/__tests__/thing.test.ts" in cut)
+h.test_result("trim stays near its budget on a noisy run", len(cut) < 7000, str(len(cut)))
+h.test_result("failures names the failed tests, without timing or colour",
+              checks.failures(long_run) == ["thing > T%d: does the thing" % n for n in (400, 900, 1500, 2100)],
+              str(checks.failures(long_run)))
+h.test_result("failures stops at its limit", len(checks.failures(long_run, limit=2)) == 2)
+h.test_result("failures reads other runners' lines",
+              checks.failures("FAILED tests/test_a.py::test_one - assert 1 == 2\nnot ok 3 - parses\n--- FAIL: TestX (0.00s)\n")
+              == ["tests/test_a.py::test_one - assert 1 == 2", "parses", "TestX (0.00s)"],
+              str(checks.failures("FAILED tests/test_a.py::test_one - assert 1 == 2\nnot ok 3 - parses\n--- FAIL: TestX (0.00s)\n")))
+h.test_result("failures is empty for a run that names none", checks.failures("exit 1\n") == [])
+
 # record_pass / passed_before
 h.test_result("nothing recorded yet", not checks.passed_before("r", "tree1", "just check"))
 checks.record_pass("r", "tree1", "just check")

@@ -198,6 +198,26 @@ If this session restarts: read this file first, then continue from the first uni
     still take the recommendation (the rule in `questions.py`), and facts still go to a scout. This
     is enforced by prompts and one extra input, not by code that compares question ids; if a trial
     shows it leaking, the next step is a `settled` list in the synthesis output that the driver checks.
+43. **A spec test that is wrong gets repaired, and a red tree does not go to review.** Found by the
+    second real-repo trial: the spec tests sent ids the existing code's validator rejects, so four
+    tests could never pass. The check fixer correctly said it could not fix this (it may not edit a
+    spec test), and the driver then finished the stage as done, ran review and fix on the red tree
+    and stopped at ship with "the fast check still fails". The judge that can correct a wrong spec
+    test was never called. Five changes. (a) On the stage's last check, a blocked check fixer with a
+    spec test red goes to the judge; the existing rules apply (a correction that does not weaken is
+    applied, one that weakens or a wrong spec is a risk card). (b) Any other blocked check fixer on
+    the last check, a blocked judged fix, and a blocked end-of-stage check now stop with the worker's
+    need. A unit that is not the last still finishes, because later units may turn the check green.
+    This narrows decision 40 for implement only; the fix stage still leaves a blocked finding open
+    for the merge gate. (c) A spec file is recognised in the log by the end of its path, since a
+    runner started in a package directory prints paths relative to it. (d) The trimmed log strips
+    colour codes and puts each failed test first with the lines above it (what was expected and
+    received), then other error lines; before this, a noisy run filled the budget with error lines
+    logged by passing tests and neither fixer nor judge saw the real failures. A check stop now ends
+    with "Failing:" and up to five test names. (e) The test author is told to read the existing code
+    its test data passes through, give values that pass existing validators, and reuse fixtures from
+    the tests beside the target. (e) is a prompt rule, so it lowers the rate and does not remove the
+    case; (a) is what catches the rest. Numbered 43 because 42 is the plan-questions decision above.
 
 ## Spend (notional USD, real model calls)
 

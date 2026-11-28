@@ -529,6 +529,8 @@ stop = expect_stop(lambda: heal.check(w3.ctx, "fast", fixer=lambda r, n: (rounds
 h.test_result("check-work: neither round fixes it stops `check` (two rounds, four runs)",
               stop is not None and rounds3 == [1, 2] and w3.runs() == 4 and stop.evidence is not None
               and any("fixer round 2" in t for t in stop.tried), str(stop))
+h.test_result("the stop names the failing test, so a person need not open the log",
+              stop is not None and "Failing: tests/test_a.py::test_one" in stop.reason, str(stop))
 
 w4 = Box("work4")
 w4.results("fail", "fail", "fail", "fail")

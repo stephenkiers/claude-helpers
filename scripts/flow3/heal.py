@@ -541,7 +541,20 @@ def _passed(ctx: Ctx, run: CheckRun) -> CheckRun:
 
 
 def _stop_check(ctx: Ctx, cls: str, run: CheckRun, reason: str, tried: List[str]) -> FlowStop:
-    return _stop(ctx, cls, "%s (%s)" % (reason, run.command), run.output_path, tried)
+    return _stop(ctx, cls, "%s (%s)%s" % (reason, run.command, failing_text(run)), run.output_path, tried)
+
+
+def failing_text(run: CheckRun) -> str:
+    """A clause naming the tests a red run reports as failed, for a stop reason. Empty when none are named."""
+    text = run.trimmed
+    if run.output_path:
+        try:
+            with open(run.output_path, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            pass
+    names = checks.failures(text)
+    return ". Failing: %s" % "; ".join(names) if names else ""
 
 
 def _measure(ctx: Ctx, mode: str, command: str) -> CheckRun:
