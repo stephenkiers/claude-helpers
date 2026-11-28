@@ -673,10 +673,9 @@ h.test_result("a human need from a blocked fixer is a card even when the recheck
               "%s %s %s" % (labels(rc_human_green), res_hg, exc_hg))
 
 # an absolute blocked.what path to a failing spec file routes to the judge
-import os as _os
 rc_abs = mkbox("i-blocked-abs-spec", mkplan(two=False))
 rc_abs.results("fail", "fail", "pass")
-abs_spec_path = _os.path.abspath(str(rc_abs.clone / "tests/test_a.py"))
+abs_spec_path = os.path.abspath(str(rc_abs.clone / "tests/test_a.py"))
 FIXED_ABS = "def test_one():\n    assert 1 + 1 == 2\n"
 rc_abs.script([w("unit-u1", "src/a.py"),
                {"role": "fixer", "label": "fix-r1",
