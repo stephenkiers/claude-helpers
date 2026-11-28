@@ -39,11 +39,11 @@ Title: {{title}}
    human should have decided and nobody did?
 4. Does it respect the principles, or knowingly depart from one?
 5. For each question the experts raised: was it answered above, settled by a fact the plan names
-   (a file and what it shows), or decided directly by a principle? If none of those, the plan chose
-   for the human. That is an `unasked_question` gap, even when the plan took the recommended option
-   and the choice is reversible. The same holds when the plan delivers less than the ticket's own
-   acceptance criteria or moves part of the ticket to a non-goal or follow-up. Naming and placement
-   details are the only exception.
+   (a file and what it shows), decided directly by a principle, or listed in the plan's `settled`
+   field as a `kind: "detail"` question, a fact the plan verified in code (file named), or a principle-decided
+   question? If none of those, the plan chose for the human. That is an `unasked_question` gap, even when
+   the plan took the recommended option and the choice is reversible. The same holds when the plan delivers
+   less than the ticket's own acceptance criteria or moves part of the ticket to a non-goal or follow-up.
 
 ## What to return
 

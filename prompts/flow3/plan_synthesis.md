@@ -79,6 +79,10 @@ alone. Each question has:
   unit's `files` (a separate author writes the tests first; units never write them).
 - `existing_test_edits`: existing tests whose current assertions the plan expects to change, and why.
   Adding new tests is not an existing-test edit.
+- `settled` (optional): expert questions the synthesis settled without asking the human, for transparency.
+  Each entry has `question` (the question text), `chosen` (the option label taken), `basis` (one of
+  `detail`, `fact`, `principle`) and `evidence` (file or principle name). This is a report for the
+  human to skim; it never replaces asking a non-exempt question.
 
 Every acceptance criterion must be satisfied by at least one unit. Smallest change that meets the
 ticket; anything else is a non-goal.
