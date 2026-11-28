@@ -478,6 +478,55 @@ h.test_result("classify_check: flaky, work, timeout",
               and heal.classify_check(CheckRun(**{**fr.__dict__, "timed_out": True}), None).cls == "environment"
               and heal.classify_check(fr, okr).detail["tests"] == ["tests/x.py::t1", "other"])
 
+# failing_text at the name cap: never more than 10 names, and it says the count is a floor
+many_failures = CheckRun(**{**fr.__dict__, "trimmed": "".join("FAILED tests/x.py::t%d\n" % i for i in range(12))})
+ft_many = heal.failing_text(many_failures)
+h.test_result("failing_text at the name cap names at most 10 tests and says 'and at least N more'",
+              "and at least" in ft_many and "tests/x.py::t9" in ft_many
+              and "tests/x.py::t10" not in ft_many and "tests/x.py::t11" not in ft_many, ft_many)
+
+
+def _mk_check_log(name: str, head: bytes, filler: bytes, filler_count: int, tail: bytes) -> Path:
+    """A check log: head, then filler repeated filler_count times, then tail."""
+    p = TMP / "logs" / (name + ".log")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "wb") as fh:
+        fh.write(head)
+        for _ in range(filler_count):
+            fh.write(filler)
+        fh.write(tail)
+    return p
+
+
+def _red_run_on(log: Path) -> CheckRun:
+    """A red run whose trimmed text names no dependency, so only the log can drive the classification."""
+    return CheckRun(**{**fr.__dict__, "output_path": str(log), "trimmed": "FAIL tests/x.py::t1\n"})
+
+
+MISSING = b"ModuleNotFoundError: No module named 'foo'\n"
+line_1k = b"x" * 1023 + b"\n"
+far_head = _mk_check_log("far-head", MISSING, line_1k, 300, b"FAIL tests/x.py::t1 - assert\n")
+h.test_result("classify_check: a missing module far from the tail of a large log does not drive the classification",
+              heal.classify_check(_red_run_on(far_head), None).cls == "check-work")
+near_tail = _mk_check_log("near-tail", b"start\n", line_1k, 300, MISSING)
+h.test_result("classify_check: a missing module in the tail of a large log is an environment failure",
+              heal.classify_check(_red_run_on(near_tail), None).cls == "environment")
+
+# a check log over the 16 MB cap: only its last 16 MB is read, and invalid UTF-8 does not raise
+invalid_filler = b"\xff\xfe" * (512 * 1024)  # 1 MB of undecodable bytes per copy
+huge_head = _mk_check_log("huge-head", MISSING, invalid_filler, 18, b"FAIL tests/x.py::t1 - assert\n")
+huge_ok = False
+try:
+    huge_cls = heal.classify_check(_red_run_on(huge_head), None).cls
+    huge_ok = huge_cls == "check-work"
+except Exception as exc:  # a raise here is the failure being tested for
+    huge_cls = "raised %s: %s" % (type(exc).__name__, exc)
+h.test_result("classify_check: a 18 MB log of invalid UTF-8 does not raise and ignores an early missing module",
+              huge_ok, huge_cls)
+huge_tail = _mk_check_log("huge-tail", b"start\n", invalid_filler, 18, MISSING)
+h.test_result("classify_check: a huge log of invalid UTF-8 still finds a missing module in its tail",
+              heal.classify_check(_red_run_on(huge_tail), None).cls == "environment")
+
 # =============================================================================================
 # check-flaky, check-work, reuse
 # =============================================================================================

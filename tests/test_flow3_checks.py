@@ -115,6 +115,22 @@ h.test_result("trim keeps the failed test's own block when passing tests print e
               "T1: emits once" in out and "Expected length: 1" in out and "Received length: 0" in out, out[:300])
 h.test_result("trim says the kept lines are failure blocks", "lines from failure blocks" in out.splitlines()[0], out.splitlines()[0])
 h.test_result("strip_ansi leaves plain text alone", checks.strip_ansi("a \x1b[1;31mb\x1b[0m c") == "a b c")
+h.test_result("strip_ansi removes an OSC sequence terminated by the string terminator (ESC backslash)",
+              checks.strip_ansi("\x1b]0;window title\x1b\\hello") == "hello"
+              and checks.strip_ansi("a\x1b]8;;http://example.invalid\x1b\\b") == "ab")
+h.test_result("strip_ansi removes an OSC sequence terminated by BEL",
+              checks.strip_ansi("\x1b]0;window title\x07hello") == "hello")
+
+# trim with the default budget: a long output is shortened, keeps the failure and the tail
+long_lines = ["line %d ok" % i for i in range(3000)]
+long_lines[1500] = "FAIL tests/test_y.py::test_late - AssertionError"
+long_text = "\n".join(long_lines)
+t_default = checks.trim(long_text)
+h.test_result("trim with the default budget shortens a long output, keeps the failure line and the last line",
+              isinstance(t_default, str) and len(t_default) < len(long_text)
+              and len(t_default) <= 12000 + 500
+              and "FAIL tests/test_y.py::test_late" in t_default and "line 2999 ok" in t_default,
+              str(len(t_default)))
 
 # record_pass / passed_before
 h.test_result("nothing recorded yet", not checks.passed_before("r", "tree1", "just check"))
