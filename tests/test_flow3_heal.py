@@ -482,8 +482,8 @@ h.test_result("classify_check: flaky, work, timeout",
 many_failures = CheckRun(**{**fr.__dict__, "trimmed": "".join("FAILED tests/x.py::t%d\n" % i for i in range(12))})
 ft_many = heal.failing_text(many_failures)
 h.test_result("failing_text at the name cap names at most 10 tests and says 'and at least N more'",
-              "and at least" in ft_many and "tests/x.py::t9" in ft_many
-              and "tests/x.py::t10" not in ft_many and "tests/x.py::t11" not in ft_many, ft_many)
+              "and at least 6 more" in ft_many and "tests/x.py::t3" in ft_many
+              and "tests/x.py::t4" not in ft_many, ft_many)
 
 
 def _mk_check_log(name: str, head: bytes, filler: bytes, filler_count: int, tail: bytes) -> Path:
