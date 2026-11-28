@@ -560,6 +560,34 @@ h.test_result("a bare file name matches too", st._spec_files_in(red("FAIL test_b
 h.test_result("a longer file name that only ends the same way does not match",
               st._spec_files_in(red("FAIL other_test_b.py and src/not_my_test_a.py")) == [])
 
+# Plan item 1: _spec_files_in ambiguity cases
+# Full path wins over bare tail
+b_fullpath = mkbox("i-spec-fullpath", mkplan(two=False))
+b_fullpath.flow.set_data("spec_tests", {"files": ["tests/test_foo.py", "other/test_foo.py"],
+                                        "commit": None, "skipped": ""})
+st_fullpath = implement._Stage(context.build(b_fullpath.flow))
+h.test_result("full path wins: full path in output prefers over bare tail",
+              st_fullpath._spec_files_in(red("other/test_foo.py: failed")) == ["other/test_foo.py"],
+              str(st_fullpath._spec_files_in(red("other/test_foo.py: failed"))))
+
+# Ambiguous bare tail (matching 2 spec files) is not accepted
+b_ambig = mkbox("i-spec-ambig", mkplan(two=False))
+b_ambig.flow.set_data("spec_tests", {"files": ["tests/test_important.py", "subdir/test_important.py"],
+                                     "commit": None, "skipped": ""})
+st_ambig = implement._Stage(context.build(b_ambig.flow))
+h.test_result("ambiguous tail rejected: a bare filename matching 2 spec files is not accepted",
+              st_ambig._spec_files_in(red("FAIL test_important.py")) == [],
+              str(st_ambig._spec_files_in(red("FAIL test_important.py"))))
+
+# A tail like test_x.py.orig does not match test_x.py
+b_orig = mkbox("i-spec-orig", mkplan(two=False))
+b_orig.flow.set_data("spec_tests", {"files": ["tests/test_core.py"],
+                                    "commit": None, "skipped": ""})
+st_orig = implement._Stage(context.build(b_orig.flow))
+h.test_result("not-matching tail: test_x.py.orig does not match test_x.py",
+              st_orig._spec_files_in(red("ERROR tests/test_core.py.orig")) == [],
+              str(st_orig._spec_files_in(red("ERROR tests/test_core.py.orig"))))
+
 # -- a unit's bookkeeping question never becomes a card (#570) -----------------------------------
 OWN_Q = {"id": "own1", "question": "Which unit should own the edit to src/b.py?",
          "context": "u1 needs src/b.py changed but may only edit src/a.py.",

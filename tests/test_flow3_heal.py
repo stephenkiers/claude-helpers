@@ -934,6 +934,24 @@ h.test_result("F13: unreadable red output is treated as absent, check runs fresh
               "ok=%s reused=%s fixer=%s" % (run_after_unreadable.ok, run_after_unreadable.reused, rb2_fixer))
 
 # =============================================================================================
+# Plan item 3: heal.failing_text and failures() bounded on large output
+# =============================================================================================
+
+# Verify that failures() doesn't hang or take unbounded time on very large content
+huge_output = "line\n" * 50000 + "FAILED tests/test_important.py::test_large - AssertionError\n"
+failures_result = checks.failures(huge_output)
+h.test_result("Plan 3: failures() stays bounded on 50k+ line output and finds failures",
+              len(failures_result) > 0 and "tests/test_important.py::test_large" in failures_result[0],
+              str(len(failures_result)))
+
+# Verify the same with an extremely long single line (the _FAILED_TEST quadratic issue)
+massive_single_line = "x" * 1000000 + "\nFAILED tests/bounded.py::test_x - error\n"
+result_massive = checks.failures(massive_single_line)
+h.test_result("Plan 3: failures() handles 1M char single line without hanging",
+              len(result_massive) > 0 and "tests/bounded.py::test_x" in result_massive[0],
+              "result=%s" % str(result_massive))
+
+# =============================================================================================
 # No stop without a reason
 # =============================================================================================
 

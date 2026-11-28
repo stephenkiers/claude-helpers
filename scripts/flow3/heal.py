@@ -548,7 +548,7 @@ _FAILING_READ_HALF = 1_000_000  # bytes read from each end of a long output file
 
 
 def _read_bounded(path: str) -> str:
-    """The head and the tail of a file (at most two halves of _FAILING_READ_HALF bytes), decoded."""
+    """The head and the tail of a file (at most two halves of _FAILING_READ_HALF bytes), decoded. The middle of a longer file is skipped on purpose (bounded read)."""
     size = os.path.getsize(path)
     with open(path, "rb") as fh:
         if size <= 2 * _FAILING_READ_HALF:

@@ -132,6 +132,74 @@ h.test_result("failures reads other runners' lines",
               str(checks.failures("FAILED tests/test_a.py::test_one - assert 1 == 2\nnot ok 3 - parses\n--- FAIL: TestX (0.00s)\n")))
 h.test_result("failures is empty for a run that names none", checks.failures("exit 1\n") == [])
 
+# vitest format failures (Plan item 2)
+vitest_output = """FAIL  src/hooks/__tests__/vitest.test.ts > suite > test name [1234ms]
+Error: expect(received).toBe(expected)
+Expected: true
+Received: false
+ ❯ src/hooks/__tests__/vitest.test.ts:5:12
+   5 |   expect(result).toBe(true)
+     |               ^
+"""
+h.test_result("failures reads vitest format",
+              "vitest.test.ts > suite > test name" in checks.failures(vitest_output)[0],
+              str(checks.failures(vitest_output)))
+
+# jest format failures (Plan item 2)
+jest_output = """FAIL  src/hooks/__tests__/jest.test.ts
+  suite
+    ✕ test case (10ms)
+
+● suite › test case
+
+  expect(received).toBe(expected)
+
+  Expected: 42
+  Received: 0
+
+      at Object.<anonymous> (src/hooks/__tests__/jest.test.ts:3:5)
+
+FAIL  src/other/__tests__/another.test.ts
+  other suite
+    ✕ another test (5ms)
+"""
+h.test_result("failures reads jest format",
+              len(checks.failures(jest_output)) >= 2 and "jest.test.ts" in checks.failures(jest_output)[0],
+              str(checks.failures(jest_output)))
+
+# unittest format failures (Plan item 2 - verify existing coverage)
+unittest_output = """FAIL: test_case (tests.test_foo.TestClass)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_foo.py", line 42, in test_case
+    self.assertEqual(1, 2)
+AssertionError: 1 != 2
+
+FAIL: another_test (tests.test_bar.TestOther)
+----------------------------------------------------------------------
+"""
+h.test_result("failures reads unittest format",
+              len(checks.failures(unittest_output)) >= 2 and "test_case" in checks.failures(unittest_output)[0]
+              and "another_test" in checks.failures(unittest_output)[1],
+              str(checks.failures(unittest_output)))
+
+# Plan item 4: trim continues after a long line that doesn't fit
+lines_with_long = ["short line 1", "x" * 5000, "short line 2", "FAIL test_z.py::test_z"]
+text_mixed = "\n".join(lines_with_long)
+trimmed_mixed = checks.trim(text_mixed, 1000)
+h.test_result("trim continues after a long line, includes shorter later lines",
+              "short line 2" in trimmed_mixed and "FAIL test_z.py::test_z" in trimmed_mixed,
+              "length=%d, has short2=%s has FAIL=%s" % (len(trimmed_mixed),
+                                                         "short line 2" in trimmed_mixed,
+                                                         "FAIL test_z.py::test_z" in trimmed_mixed))
+
+# Plan item 3: Very long single line does not hang and is bounded
+very_long_line = "x" * 100000 + "\n" + "FAIL test_important.py::test_x\n"
+trimmed_long = checks.trim(very_long_line, 1000)
+h.test_result("trim handles very long lines without hanging and stays bounded",
+              len(trimmed_long) < 10000 and "FAIL test_important.py::test_x" in trimmed_long,
+              "length=%d" % len(trimmed_long))
+
 # record_pass / passed_before
 h.test_result("nothing recorded yet", not checks.passed_before("r", "tree1", "just check"))
 checks.record_pass("r", "tree1", "just check")
