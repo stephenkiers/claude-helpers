@@ -660,5 +660,51 @@ h.test_result("a unit already judged is not judged again, while an unjudged unit
               judge_calls(rc_judged) == [] and judge_calls(rc_control) == ["judge-u1"],
               "judged=%s control=%s" % (judge_calls(rc_judged), judge_calls(rc_control)))
 
+# a human need from a blocked fixer is always a card, even when the recheck passes (green tree)
+rc_human_green = mkbox("i-blocked-human-green", mkplan(two=False))
+rc_human_green.results("fail", "fail", "pass")
+rc_human_green.script([w("unit-u1", "src/a.py"),
+                       {"role": "fixer", "label": "fix-r1",
+                        "output": blocked("human", "tests/test_a.py", "Which id format does the spec want?")}])
+res_hg, exc_hg = run_capture(rc_human_green.ctx)
+h.test_result("a human need from a blocked fixer is a card even when the recheck is green, and never goes to the judge",
+              judge_calls(rc_human_green) == [] and res_hg is None and exc_hg is not None
+              and getattr(exc_hg, "cls", None) == "human" and labels(rc_human_green) == ["unit-u1", "fix-r1"],
+              "%s %s %s" % (labels(rc_human_green), res_hg, exc_hg))
+
+# an absolute blocked.what path to a failing spec file routes to the judge
+import os as _os
+rc_abs = mkbox("i-blocked-abs-spec", mkplan(two=False))
+rc_abs.results("fail", "fail", "pass")
+abs_spec_path = _os.path.abspath(str(rc_abs.clone / "tests/test_a.py"))
+FIXED_ABS = "def test_one():\n    assert 1 + 1 == 2\n"
+rc_abs.script([w("unit-u1", "src/a.py"),
+               {"role": "fixer", "label": "fix-r1",
+                "output": blocked("other_file", abs_spec_path, "The fixture schema is wrong.")},
+               {"role": "judge", "output": {"verdict": "test_wrong", "reason": "fixture issue",
+                                            "edit_weakens": False, "test_edit": "use a real id"}},
+               w("fix-test-u1", "tests/test_a.py", FIXED_ABS, role="fixer")])
+res_abs, exc_abs = run_capture(rc_abs.ctx)
+h.test_result("a fixer blocked on a spec file with an absolute path routes to the judge and judge runs",
+              res_abs is not None and res_abs.kind == "done" and "judge-u1" in judge_calls(rc_abs)
+              and labels(rc_abs) == ["unit-u1", "fix-r1", "judge-u1", "fix-test-u1"]
+              and rc_abs.read("tests/test_a.py") == FIXED_ABS, "%s %s" % (labels(rc_abs), judge_calls(rc_abs)))
+
+# a failing test name that is not an exact match (e.g. old/tests/a.py.bak::t) does not make tests/a.py a failing spec
+MIXED_CHECK = '''
+import sys
+print("FAILED old/tests/a.py.bak::test_renamed - assert 1 == 2")
+sys.exit(1)
+'''
+rc_nomatch = mkbox("i-blocked-nomatch", mkplan(two=False))
+(rc_nomatch.ctl / "check.py").write_text(MIXED_CHECK)
+rc_nomatch.script([w("unit-u1", "src/a.py"),
+                   {"role": "fixer", "label": "fix-r1",
+                    "output": blocked("other_file", "tests/test_a.py", "The spec test file is wrong.")}])
+res_nomatch, exc_nomatch = run_capture(rc_nomatch.ctx)
+h.test_result("a failing test name that is not an exact match does not route to the judge",
+              judge_calls(rc_nomatch) == [] and res_nomatch is None and exc_nomatch is not None
+              and labels(rc_nomatch) == ["unit-u1", "fix-r1"], "%s %s" % (labels(rc_nomatch), exc_nomatch))
+
 if __name__ == "__main__":
     h.summarize_and_exit()
