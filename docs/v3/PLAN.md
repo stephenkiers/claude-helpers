@@ -315,11 +315,18 @@ After each unit the driver inspects `git`: files outside the unit or inside prot
 `protected` failure; otherwise the driver commits. Then the driver runs the check (section 5 handles
 failure).
 
-A spec test still red after the heal budget goes to a judge call: *code wrong*, *test wrong*, or
+A spec test still red goes to a judge call in two cases: after the heal budget is spent, and
+immediately when a check fixer returns blocked with need `other_file` whose `what` names a failing
+spec test file (parsed from the failed-test lines of the check output). A `human` need is always a
+card and is never routed to the judge. The judge's verdict is *code wrong*, *test wrong*, or
 *spec wrong*. Code wrong: one more fixer round on the stronger model. Test wrong, and the edit
 tightens or corrects without weakening: the judge's edit is applied and recorded. Test wrong and the
 edit weakens or removes an assertion, or spec wrong: a `risk` question to the human, leading with
 the risk.
+
+The flow3 judge may apply a non-weakening `test_wrong` edit to a spec test unattended. This diverges
+from ADR-0019, where "spec was wrong" is reserved for a human. Weakening edits and spec-wrong verdicts
+still go to a human card. The judge's rules are in `prompts/flow3/judge.md`.
 
 ### 7.5 Review
 

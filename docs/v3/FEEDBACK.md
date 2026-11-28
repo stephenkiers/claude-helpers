@@ -248,3 +248,9 @@ Still open:
   a card with the question, the options, the recommendation and the impact of each, to be
   rubber-stamped. "Reversible, with a recommendation" is not grounds to settle it silently. Fewer
   questions is the goal later, and it should be reached by an explicit opt-in, not by default.
+
+Earlier related work: issues #570 ("only show a card when the question is one a human alone can
+answer") and #572 ("a fixer that says it cannot fix from here is not a shortfall"), both closed.
+
+Note for landing: sibling branches fix/flow3-spec-test-repair and fix/flow3-plan-asks-judgment-questions
+also touch docs/v3, so check for overlap and conflicts in these files before landing this one.

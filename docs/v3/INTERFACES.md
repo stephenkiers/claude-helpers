@@ -152,6 +152,8 @@ def check(ctx: Ctx, mode: str = "fast", fixer: Optional[Callable[[CheckRun, int]
 def sync_base(ctx: Ctx) -> bool                   # True when base was merged in; raises FlowStop("conflict")
 def path_violations(changed: List[str], allowed: List[str], protected: List[str]) -> List[str]
 def after_merge(ctx: Ctx, what: str, fn: Callable[[], None]) -> Optional[str]   # cleanup row: retry once, then a warning string
+def failing_tests(run: CheckRun) -> List[str]     # names of the failed tests in a check run
+def failing_text(run: CheckRun, limit: int = 4) -> str   # short failing-test summary for a stop reason
 ```
 
 ## context.py
@@ -205,7 +207,9 @@ def doctor_passed(repo_root: Path) -> bool         # a recorded pass for the cur
 ```python
 def run(command: str, cwd: Path, mode: str, timeout_secs: int, out_path: Path,
         env: Optional[Mapping[str, str]] = None) -> CheckRun
-def trim(output: str, max_chars: int = 6000) -> str
+def strip_ansi(text: str) -> str
+FAILED_TEST: Pattern                               # regex: a failed-test line from a known runner
+def trim(output: str, max_chars: int = 12000) -> str
 def passed_before(repo: str, tree: str, command: str) -> bool
 def record_pass(repo: str, tree: str, command: str) -> None
 ```

@@ -107,7 +107,8 @@ If this session restarts: read this file first, then continue from the first uni
 29. **A fixer that cannot finish leaves its findings open for the merge gate.** In the fix stage an
     unfinished unit after the one escalation no longer stops the flow: the work that was done is
     checked and kept, the verifier rules per finding, and the rest shows as open at the gate. The
-    implement stage still stops. Found by the fleet run, where the remaining work sat in protected tests.
+    implement stage still stops (for implement see decision 43). Found by the fleet run, where the
+    remaining work sat in protected tests.
 30. **A worker's question that names a protected path is a risk.** Whatever kind the step gave it, the
     driver sends it to the human and no principle or default answers it. Found by the fleet run: a
     fixer asked to lift protection for a test file, called it a detail, and its own recommendation
@@ -195,15 +196,18 @@ If this session restarts: read this file first, then continue from the first uni
     Decision 40 left the red "for the merge gate", and the second trial paid for a full review of
     work whose tests did not pass. Now: when the fixer needs a file it may not edit, or a person, and
     the red names this flow's own spec tests, the judge is called at once, with no second fixer
-    round. A `test_wrong` verdict that does not weaken the test is applied by a fixer allowed to edit
-    that file; a weakening one, or `spec_wrong`, is a risk card. In every other case the stage stops
-    with the fixer's need and reason. The fix stage is unchanged: a blocked fix leaves its finding
-    open, because the other fixes are still worth landing.
+    round. Judge-routable means need `other_file` only, and only when the fixer's `what` names a
+    failing spec test file; a `human` need is always a card. A `test_wrong` verdict that does not
+    weaken the test is applied by a fixer allowed to edit that file; a weakening one, or `spec_wrong`,
+    is a risk card. In every other case the stage stops with the fixer's need and reason. The fix
+    stage is unchanged: a blocked fix leaves its finding open, because the other fixes are still
+    worth landing.
 44. **Test data must pass the project's own validation.** The test author is told to read the type,
     schema or validator behind any payload, fixture or mock before writing it, and to ask a `fact`
     question (answered by the scout, never shown) when it cannot find one. The judge is told that a
     test whose setup the real code rejects is `test_wrong`, and that correcting setup so the same
-    assertions run is not a weakening. This is prompt text, so it is not enforced; decision 43 is the
+    assertions run is not a weakening. A `fact` question the scout cannot answer falls back to a card
+    (see prompts/flow3/test_author.md). This is prompt text, so it is not enforced; decision 43 is the
     net under it.
 
 ## Spend (notional USD, real model calls)
