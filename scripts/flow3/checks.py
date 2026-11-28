@@ -20,7 +20,18 @@ from scripts.flow3.types import CheckRun
 from scripts.workflow.fsutil import atomic_write_text, read_json_object
 
 _INTERESTING = re.compile(r"FAIL|Error|error:|Traceback")
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# Lines a test runner or compiler writes to mark a failure, as opposed to lines that mention one.
+# These matchers know bun, pytest, TAP and Go output. vitest, jest `●`, mocha and unittest `FAIL:`
+# lines are not recognised, so `failures()` names are poorer for them, and a red whose output names
+# no spec file falls back to the old stop (it fails closed). The list is the contract; it is
+# extended from trial evidence.
+_STRONG = re.compile(
+    r"^\s*(\(fail\)|✗|×|FAIL(ED)?\b|not ok\b|--- FAIL|error(\[\w+\])?:|Error:|\w*(Error|Exception):|Traceback|E   |"
+    r"Expected:|Received:|AssertionError|assert\w* failed)|\berror TS\d+")
+_FAILED_TEST = re.compile(r"^\s*(?:\(fail\)|✗|×|FAIL(?:ED)?:?|not ok(?: \d+)?(?: -)?|--- FAIL:)\s+(\S.*?)(?:\s+\[[\d.]+ ?m?s\])?\s*$")
 _MAX_LINE = 300
+_CONTEXT = 8  # lines kept before a failed test's name
 
 
 def run(command: str, cwd: Path, mode: str, timeout_secs: int, out_path: Path,
@@ -60,31 +71,84 @@ def run(command: str, cwd: Path, mode: str, timeout_secs: int, out_path: Path,
                     trimmed=trim(output), reused=False)
 
 
+def strip_ansi(text: str) -> str:
+    """Text without terminal colour and cursor codes, so patterns match what a person would read."""
+    return _ANSI.sub("", text)
+
+
+def failures(output: str, limit: int = 5) -> List[str]:
+    """
+    The names of the tests (or the first words of the errors) a check output reports as failed, in
+    order, without repeats, at most `limit`. Empty when the output has no line a test runner marks
+    as a failure. Used to name the failure in a stop and to rank lines in `trim`.
+    """
+    out: List[str] = []
+    for ln in strip_ansi(output).splitlines():
+        m = _FAILED_TEST.match(ln[:_MAX_LINE])
+        if not m:
+            continue
+        name = " ".join(m.group(1).split())[:160]
+        if name and name not in out:
+            out.append(name)
+            if len(out) >= limit:
+                break
+    return out
+
+
 def trim(output: str, max_chars: int = 6000) -> str:
     """
-    The part of an output worth showing a fixer or a human: the tail, plus earlier lines that look
-    like failures (FAIL, Error, error:, Traceback), within about max_chars, with a note of what was cut.
+    The part of an output worth showing a fixer or a human, within about max_chars, with a note of
+    what was cut. Colour codes are removed. Kept, in this order of preference: the tail; each failed
+    test's name with the few lines above it; other lines a test runner or compiler marks as a failure
+    (Expected and Received, an `error:` at the start of a line, a traceback), each with the line
+    after it; then lines that only mention an error. A long log full of passing tests that print the word Error must not crowd out
+    the few lines that say what failed.
     """
+    output = strip_ansi(output)
     if len(output) <= max_chars:
         return output
     lines = [ln if len(ln) <= _MAX_LINE else ln[:_MAX_LINE] + "..." for ln in output.splitlines()]
-    tail_budget = int(max_chars * 0.6)
-    tail: List[str] = []
+    tail_budget = int(max_chars * 0.4)
     used = 0
     start = len(lines)
     while start > 0 and used + len(lines[start - 1]) + 1 <= tail_budget:
         start -= 1
         used += len(lines[start]) + 1
-        tail.insert(0, lines[start])
-    head_budget = max_chars - used - 200
-    picked: List[str] = []
-    used_head = 0
-    for ln in lines[:start]:
-        if _INTERESTING.search(ln):
-            if used_head + len(ln) + 1 > head_budget:
-                break
-            picked.append(ln)
-            used_head += len(ln) + 1
+    budget = max_chars - used - 200
+    keep: Dict[int, bool] = {}
+
+    def take(idx: int) -> bool:
+        nonlocal budget
+        if idx in keep or idx >= start:
+            return True
+        cost = len(lines[idx]) + 1
+        if cost > budget:
+            return False
+        budget -= cost
+        keep[idx] = True
+        return True
+
+    # First the lines that name a failed test, each with the lines just before it (runners print the
+    # assertion, Expected and Received above the name) and the one after.
+    for i in range(start):
+        if _FAILED_TEST.match(lines[i]):
+            if not take(i):
+                continue
+            for j in range(i - 1, max(i - _CONTEXT, 0) - 1, -1):
+                if not take(j):
+                    continue
+            take(i + 1)
+    for i in range(start):
+        if i not in keep and _STRONG.search(lines[i]):
+            if not take(i):
+                continue
+            take(i + 1)
+    for i in range(start):
+        if i not in keep and _INTERESTING.search(lines[i]):
+            if not take(i):
+                continue
+    picked = [lines[i] for i in sorted(keep)]
+    tail = lines[start:]
     kept = len(picked) + len(tail)
     note = "[output trimmed: kept %d of %d lines (%d matching lines plus the last %d)]" % (
         kept, len(lines), len(picked), len(tail))

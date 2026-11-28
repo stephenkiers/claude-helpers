@@ -30,6 +30,17 @@ Read one or two of the project's existing tests first and follow them: the same 
 layout, the same way of importing the code. Use only test libraries the existing tests already use. Do
 not introduce a new dependency: a test that imports a tool the project does not have can never pass.
 
+The behaviour is new, but the code around it is not. Before you write a test, read the existing code
+the test will pass through and check every assumption your test data rests on:
+
+- If a value in your test travels through a validator, schema or parser that already exists (an id that
+  must be a UUID, a date format, an enum, a required field), give it a value that passes. A made-up
+  short value such as `"A"` that the existing code rejects makes the test fail for a reason that has
+  nothing to do with the behaviour, and nobody downstream may edit your test to correct it.
+- Where an existing test beside the target already builds the same kind of data, reuse its fixtures,
+  helpers and mocks, not shapes of your own.
+- Read the real shape of events, payloads and return values in the code. Do not assume it.
+
 Write each behaviour into the file named for it. Do not touch any other file. Do not run the tests;
 the driver runs them. Write tests that check behaviour, not implementation details, and keep them
 small and readable.

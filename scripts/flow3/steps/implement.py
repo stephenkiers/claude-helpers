@@ -12,9 +12,10 @@ card is open and picks up from the saved phase when the answers arrive.
 """
 
 import json
+import re
 from typing import Any, Dict, List, Optional, Tuple, cast
 
-from scripts.flow3 import config, gitops, heal, prompts, questions, record, schemas, voice
+from scripts.flow3 import checks, config, gitops, heal, prompts, questions, record, schemas, voice
 from scripts.flow3.context import Ctx
 from scripts.flow3.steps import work
 from scripts.flow3.types import Answer, CallResult, CallSpec, CheckRun, FlowStop, StageResult
@@ -80,6 +81,27 @@ def _unit_prompt(ctx: Ctx, plan: Dict[str, Any], unit: Dict[str, Any],
         acceptance=_acceptance_text(plan, unit), interfaces=work.interfaces_text(plan),
         protected=work.list_text(work.protected_paths(ctx)), directions=voice.directions_text(ctx.flow),
         handoffs=_handoffs_text(handoffs or [], str(unit["id"])))
+
+
+def _tail_occurrence_ok(text: str, start: int, prefix: List[str]) -> bool:
+    """
+    Whether a spec path tail found at `start` in the log may name its spec file. Bare, or preceded by
+    a non-path character, it may. Preceded by a directory, that directory must be a suffix of the
+    spec path's leading parts (`prefix`); otherwise it names a different file.
+    """
+    if start == 0 or text[start - 1] != "/":
+        return True
+    j = start - 1
+    while j > 0 and re.match(r"[\w./-]", text[j - 1]):
+        j -= 1
+    comps = [c for c in text[j:start].split("/") if c]
+    if not comps:
+        return False
+    if not prefix:  # the full spec path under an absolute directory (for example a checkout root)
+        return text[j] == "/"
+    if len(comps) > len(prefix):
+        return False
+    return prefix[len(prefix) - len(comps):] == comps
 
 
 def _heal_count(ctx: Ctx) -> int:
@@ -309,10 +331,29 @@ class _Stage:
         run, blocked = work.check_unit_or_blocked(self.ctx, self._fix_files(unit, final), raise_on_fail=False,
                                                   use_fixer=final)
         if blocked is not None:
-            # A blocked fixer is not retried: the red stays for the merge gate and no judge is called.
+            return self._blocked_check(unit, final, run, blocked)
+        return self._settle(unit, final, run)
+
+    def _blocked_check(self, unit: Dict[str, Any], final: bool, run: CheckRun, blocked: "heal.Blocked") -> bool:
+        """
+        A check fixer said it cannot fix the red from where it is. It is never retried. What happens
+        next depends on what is red. A unit that is not the last is finished: later units may still
+        turn the check green. On the last check, a red in the flow's own spec tests goes to the judge,
+        which can find the test wrong and have it corrected (the fixer may not edit a spec test, so it
+        is the wrong worker to ask). Any other red stops here with the fixer's need: review is not run
+        on work whose check is known to fail.
+        """
+        uid = str(unit["id"])
+        if not final:
             self.d["check_blocked"] = True
             return self._green(unit)
-        return self._settle(unit, final, run)
+        failing = self._spec_files_in(run)
+        if failing and uid not in self.d["judged"]:
+            record.journal(self.ctx.flow, "The failing tests are in the spec tests this flow wrote (%s), which a "
+                           "fixer may not edit, so a judge decides whether the tests or the code are wrong."
+                           % ", ".join(failing))
+            return self._judge(unit, run, failing)
+        raise blocked
 
     def _fix_files(self, unit: Dict[str, Any], final: bool) -> List[str]:
         """Files a check fixer may edit: the unit's, or every unit's when one check covers the stage."""
@@ -368,8 +409,30 @@ class _Stage:
                        % (uid, len(rows), "; ".join(rows)))
 
     def _spec_files_in(self, run: CheckRun) -> List[str]:
-        text = work.read_text(run.output_path, run.trimmed) + "\n" + run.trimmed
-        return [f for f in self.spec_files if f in text]
+        """
+        The spec test files a red run's output names. The full path counts when it occurs on a path
+        boundary. A runner started in a package directory prints paths relative to it, so a shorter
+        tail of the path also counts, but only when no other spec file ends with that same tail and
+        every occurrence of the tail is either bare or preceded by a directory that is a suffix of the
+        spec path's own leading parts (so `other/tests/test_x.py` does not name `tests/test_x.py`).
+        A file name followed by a further extension (`test_x.py.orig`) does not count.
+        """
+        text = checks.strip_ansi(work.read_text(run.output_path, run.trimmed) + "\n" + run.trimmed)
+        found: List[str] = []
+        spec_names = [str(f) for f in self.spec_files]
+        for f in spec_names:
+            parts = f.split("/")
+            for i in range(len(parts)):
+                tail = "/".join(parts[i:])
+                if i > 0:
+                    ambiguous = any(g != f and (g == tail or g.endswith("/" + tail)) for g in spec_names)
+                    if ambiguous:
+                        continue
+                pattern = re.compile(r"(?<![\w.-])" + re.escape(tail) + r"(?![\w-]|\.\w)")
+                if any(_tail_occurrence_ok(text, m.start(), parts[:i]) for m in pattern.finditer(text)):
+                    found.append(f)
+                    break
+        return found
 
     def _settle(self, unit: Dict[str, Any], final: bool, run: CheckRun) -> bool:
         ctx, d = self.ctx, self.d
@@ -386,7 +449,8 @@ class _Stage:
                 return self._green(unit)
             failing = self._spec_files_in(run)
         if not failing or uid in d["judged"]:
-            raise FlowStop("check", "the fast check still fails after unit %s (%s)" % (uid, run.command),
+            raise FlowStop("check", "the fast check still fails after unit %s (%s)%s"
+                           % (uid, run.command, heal.failing_text(run)),
                            evidence=run.output_path or None,
                            tried=["re-ran the check", "two fixer rounds"] + (["a judge call"] if uid in d["judged"] else []))
         return self._judge(unit, run, failing)
@@ -426,7 +490,7 @@ class _Stage:
             _, blocked = work.guard_blocked(heal.write_call, ctx, fspec, allowed, protected,
                                             "flow3 #%d: fix code the judge found wrong" % ctx.issue)
             if blocked is not None:
-                return self._green(unit)  # a blocked fixer is not retried: the red stays for the merge gate
+                raise blocked  # not retried; the judge found the code wrong, so this cannot go on to review
             return self._recheck(unit)
         if verdict == "test_wrong" and not weakens:
             self._edit_tests(row, approved=False)
@@ -510,11 +574,13 @@ class _Stage:
             allowed += [str(f) for f in u["files"] if str(f) not in allowed]
         # A recorded pass for an unchanged tree is reused, so this only runs when something changed.
         if d.get("check_blocked"):
-            # A check fixer already said it cannot fix this from here: do not launch another, and leave
-            # the red check for the merge gate.
-            work.check_unit_or_blocked(ctx, allowed, raise_on_fail=False, use_fixer=False)
+            # A check fixer on an earlier unit already said it cannot fix this from here: do not launch
+            # another. If the check is still red now, stop; review is not run on a known-red tree.
+            heal.check(ctx, "fast", fixer=None, raise_on_fail=True)
         else:
-            work.check_unit_or_blocked(ctx, allowed)
+            _run, blocked = work.check_unit_or_blocked(ctx, allowed)
+            if blocked is not None:
+                raise blocked  # the end-of-stage check is red and its fixer cannot go on: stop before review
         d["phase"] = "done"
         self.save()
         sections: List[Tuple[str, str]] = []

@@ -25,7 +25,7 @@ from _test_harness import Harness  # noqa: E402
 
 from scripts.flow3 import context, gitops, heal, questions, runner  # noqa: E402
 from scripts.flow3.state import FlowDir  # noqa: E402
-from scripts.flow3.types import FlowStop  # noqa: E402
+from scripts.flow3.types import CheckRun, FlowStop  # noqa: E402
 
 heal._sleep = lambda s: None  # type: ignore[assignment]
 runner._sleep = lambda s: None  # type: ignore[assignment]
@@ -493,16 +493,100 @@ stop = expect_stop(lambda: implement.run(b.ctx), "implement")
 h.test_result("a file no later unit owns is a stop, not a handoff",
               stop is not None and "src/zzz.py" in stop.reason and labels(b) == ["unit-u1"], str(stop))
 
+BLOCKED_FIX = {"role": "fixer", "label": "fix-r1",
+               "output": blocked("other_file", "tests/test_a.py", "The test sends data the code rejects; I may not edit it.")}
 b = mkbox("i-blocked-fixer", mkplan(two=False))
+b.results("fail", "fail", "pass")
+b.script([w("unit-u1", "src/a.py"), BLOCKED_FIX,
+          {"role": "judge", "output": {"verdict": "test_wrong", "reason": "the test data fails validation",
+                                       "edit_weakens": False, "test_edit": "use a valid id"}},
+          w("fix-test-u1", "tests/test_a.py", TIGHT, role="fixer")])
+res = implement.run(b.ctx)
+models = [x["model"] for x in b.launches() if x["role"] == "fixer" and x["label"].startswith("fix-r")]
+h.test_result("a blocked check fixer with a spec test red: no round 2, the judge rules and the test is corrected",
+              res.kind == "done" and labels(b) == ["unit-u1", "fix-r1", "judge-u1", "fix-test-u1"] and len(models) == 1
+              and b.read("tests/test_a.py") == TIGHT, "%s %s" % (labels(b), res))
+h.test_result("the journal says why the judge was called",
+              "a judge decides whether the tests or the code are wrong" in journal(b))
+
+b = mkbox("i-blocked-fixer-weakens", mkplan(two=False))
+b.results("fail", "fail")
+b.script([w("unit-u1", "src/a.py"), BLOCKED_FIX,
+          {"role": "judge", "output": {"verdict": "test_wrong", "reason": "the assertion is too strict",
+                                       "edit_weakens": True, "test_edit": "drop the assertion"}}])
+res = implement.run(b.ctx)
+h.test_result("a correction that would weaken the spec test is a card, never applied silently",
+              res.kind == "needs_human" and card_of(b).get("kind") == "risk"
+              and b.read("tests/test_a.py") == "def test_one():\n    assert True\n", str(res))
+
+b = mkbox("i-blocked-fixer-codewrong", mkplan(two=False))
+b.results("fail", "fail")
+b.script([w("unit-u1", "src/a.py"), BLOCKED_FIX,
+          {"role": "judge", "output": {"verdict": "code_wrong", "reason": "the code is wrong"}},
+          {"role": "fixer", "label": "fix-judged-u1",
+           "output": blocked("shell", "git merge origin/main", "I have no shell.")}])
+stop = expect_stop(lambda: implement.run(b.ctx), "environment")
+h.test_result("a judged fix that is blocked too is a stop: review never runs on a known-red tree",
+              stop is not None and "git merge origin/main" in stop.reason
+              and labels(b) == ["unit-u1", "fix-r1", "judge-u1", "fix-judged-u1"], "%s %s" % (labels(b), stop))
+
+b = mkbox("i-blocked-fixer-nospec", mkplan(two=False))
+b.flow.set_data("spec_tests", {"files": ["tests/test_other.py"], "commit": None, "skipped": ""})
+b.ctx = context.build(b.flow)
 b.results("fail", "fail")
 b.script([w("unit-u1", "src/a.py"),
           {"role": "fixer", "label": "fix-r1",
            "output": blocked("shell", "git merge origin/main", "The branch is behind the base and I have no shell.")}])
-res = implement.run(b.ctx)
-models = [x["model"] for x in b.launches() if x["role"] == "fixer"]
-h.test_result("a check fixer that says it cannot fix from here: no stop, no round 2, no judge, no stronger model",
-              res.kind == "done" and labels(b) == ["unit-u1", "fix-r1"] and len(models) == 1,
-              "%s %s" % (labels(b), res))
+stop = expect_stop(lambda: implement.run(b.ctx), "environment")
+h.test_result("a blocked check fixer with no spec test red is a stop with its need: no judge, no round 2",
+              stop is not None and "git merge origin/main" in stop.reason and labels(b) == ["unit-u1", "fix-r1"],
+              "%s %s" % (labels(b), stop))
+
+# -- a runner started in a package directory prints paths relative to it ----------------------------
+b = mkbox("i-spec-suffix", mkplan(two=False))
+b.flow.set_data("spec_tests", {"files": ["pkg/tests/test_a.py", "pkg/tests/test_b.py", "pkg/src/my_test_a.py"],
+                               "commit": None, "skipped": ""})
+st = implement._Stage(context.build(b.flow))
+
+
+def red(text: str) -> CheckRun:
+    return CheckRun(ok=False, command="c", mode="fast", exit_code=1, timed_out=False, duration_secs=0.0,
+                    tree="", output_path="", trimmed=text)
+
+
+h.test_result("a spec file is matched by the end of its path, colour codes or not",
+              st._spec_files_in(red("\x1b[31mtest_a.py\x1b[0m:\n(fail) one")) == ["pkg/tests/test_a.py"])
+h.test_result("a bare file name matches too", st._spec_files_in(red("FAIL test_b.py > two")) == ["pkg/tests/test_b.py"])
+h.test_result("a longer file name that only ends the same way does not match",
+              st._spec_files_in(red("FAIL other_test_b.py and src/not_my_test_a.py")) == [])
+
+# Plan item 1: _spec_files_in ambiguity cases
+# Full path wins over bare tail
+b_fullpath = mkbox("i-spec-fullpath", mkplan(two=False))
+b_fullpath.flow.set_data("spec_tests", {"files": ["tests/test_foo.py", "other/test_foo.py"],
+                                        "commit": None, "skipped": ""})
+st_fullpath = implement._Stage(context.build(b_fullpath.flow))
+h.test_result("full path wins: full path in output prefers over bare tail",
+              st_fullpath._spec_files_in(red("other/test_foo.py: failed")) == ["other/test_foo.py"],
+              str(st_fullpath._spec_files_in(red("other/test_foo.py: failed"))))
+
+# Ambiguous bare tail (matching 2 spec files) is not accepted
+b_ambig = mkbox("i-spec-ambig", mkplan(two=False))
+b_ambig.flow.set_data("spec_tests", {"files": ["tests/test_important.py", "subdir/test_important.py"],
+                                     "commit": None, "skipped": ""})
+st_ambig = implement._Stage(context.build(b_ambig.flow))
+h.test_result("ambiguous tail rejected: a bare filename matching 2 spec files is not accepted",
+              st_ambig._spec_files_in(red("FAIL test_important.py")) == [],
+              str(st_ambig._spec_files_in(red("FAIL test_important.py"))))
+
+# A tail like test_x.py.orig does not match test_x.py
+b_orig = mkbox("i-spec-orig", mkplan(two=False))
+b_orig.flow.set_data("spec_tests", {"files": ["tests/test_core.py"],
+                                    "commit": None, "skipped": ""})
+st_orig = implement._Stage(context.build(b_orig.flow))
+h.test_result("not-matching tail: test_x.py.orig does not match test_x.py",
+              st_orig._spec_files_in(red("ERROR tests/test_core.py.orig")) == [],
+              str(st_orig._spec_files_in(red("ERROR tests/test_core.py.orig"))))
 
 # -- a unit's bookkeeping question never becomes a card (#570) -----------------------------------
 OWN_Q = {"id": "own1", "question": "Which unit should own the edit to src/b.py?",

@@ -315,7 +315,7 @@ After each unit the driver inspects `git`: files outside the unit or inside prot
 `protected` failure; otherwise the driver commits. Then the driver runs the check (section 5 handles
 failure).
 
-A spec test still red after the heal budget goes to a judge call: *code wrong*, *test wrong*, or
+A spec test still red after the heal budget, or after a check fixer says it cannot fix the red from where it is (it may not edit a spec test), goes to a judge call: *code wrong*, *test wrong*, or
 *spec wrong*. Code wrong: one more fixer round on the stronger model. Test wrong, and the edit
 tightens or corrects without weakening: the judge's edit is applied and recorded. Test wrong and the
 edit weakens or removes an assertion, or spec wrong: a `risk` question to the human, leading with

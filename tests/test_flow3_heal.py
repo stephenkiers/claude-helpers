@@ -32,6 +32,7 @@ test names printed by this file):
 import dataclasses
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -529,6 +530,8 @@ stop = expect_stop(lambda: heal.check(w3.ctx, "fast", fixer=lambda r, n: (rounds
 h.test_result("check-work: neither round fixes it stops `check` (two rounds, four runs)",
               stop is not None and rounds3 == [1, 2] and w3.runs() == 4 and stop.evidence is not None
               and any("fixer round 2" in t for t in stop.tried), str(stop))
+h.test_result("the stop names the failing test, so a person need not open the log",
+              stop is not None and "Failing: tests/test_a.py::test_one" in stop.reason, str(stop))
 
 w4 = Box("work4")
 w4.results("fail", "fail", "fail", "fail")
@@ -930,6 +933,43 @@ run_after_unreadable = heal.check(rb2.ctx, "fast", fixer=lambda r, n: rb2_fixer.
 h.test_result("F13: unreadable red output is treated as absent, check runs fresh",
               run_after_unreadable.ok and not run_after_unreadable.reused and not rb2_fixer,
               "ok=%s reused=%s fixer=%s" % (run_after_unreadable.ok, run_after_unreadable.reused, rb2_fixer))
+
+# =============================================================================================
+# Plan item 3: heal.failing_text bounded on large output and long lines
+# =============================================================================================
+
+# Test with a >2MB file: head has one failure, tail has another. Output is bounded.
+# This exercises the _read_bounded middle-gap logic and the ln[:_MAX_LINE] truncation.
+huge_file_tmpdir = Path(tempfile.mkdtemp(prefix="flow3-huge-"))
+huge_file = huge_file_tmpdir / "huge.log"
+# Create a file with failures in head and tail, with large gap in middle
+head_part = "line\n" * 1000 + "FAILED tests/test_head.py::test_at_start - error\n"
+# Middle gap (1M+ of boring lines)
+middle_part = "boring output\n" * 300000
+# Tail with another failure
+tail_part = "FAILED tests/test_tail.py::test_at_end - error\n" + "line\n" * 10000
+huge_file.write_text(head_part + middle_part + tail_part, encoding="utf-8")
+
+huge_run = CheckRun(ok=False, command="c", mode="fast", exit_code=1, timed_out=False,
+                    duration_secs=0.1, tree="t", output_path=str(huge_file), trimmed="")
+failing_text_huge = heal.failing_text(huge_run)
+h.test_result("heal.failing_text: finds failures in head and tail of 2MB+ file, stays bounded",
+              "test_head" in failing_text_huge and "test_tail" in failing_text_huge
+              and len(failing_text_huge) < 2000,  # Should be short, just a clause
+              "len=%d text=%s" % (len(failing_text_huge), failing_text_huge[:200]))
+
+# A name that only grows past _MAX_LINE after the cut must be shortened by the cut.
+long_line_file = huge_file_tmpdir / "long_line.log"
+long_line_file.write_text("FAILED " + "x" * 50 + " " * 400 + "tailword\n", encoding="utf-8")
+long_line_run = CheckRun(ok=False, command="c", mode="fast", exit_code=1, timed_out=False,
+                         duration_secs=0.1, tree="t", output_path=str(long_line_file), trimmed="")
+failing_text_long = heal.failing_text(long_line_run)
+h.test_result("heal.failing_text cuts a long line at _MAX_LINE before matching",
+              failing_text_long == ". Failing: " + "x" * 50 and "tailword" not in failing_text_long,
+              "text=%s" % failing_text_long)
+
+# Clean up temp files
+shutil.rmtree(str(huge_file_tmpdir))
 
 # =============================================================================================
 # No stop without a reason

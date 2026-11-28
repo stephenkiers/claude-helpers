@@ -541,7 +541,34 @@ def _passed(ctx: Ctx, run: CheckRun) -> CheckRun:
 
 
 def _stop_check(ctx: Ctx, cls: str, run: CheckRun, reason: str, tried: List[str]) -> FlowStop:
-    return _stop(ctx, cls, "%s (%s)" % (reason, run.command), run.output_path, tried)
+    return _stop(ctx, cls, "%s (%s)%s" % (reason, run.command, failing_text(run)), run.output_path, tried)
+
+
+_FAILING_READ_HALF = 1_000_000  # bytes read from each end of a long output file
+
+
+def _read_bounded(path: str) -> str:
+    """The head and the tail of a file (at most two halves of _FAILING_READ_HALF bytes), decoded. The middle of a longer file is skipped on purpose (bounded read)."""
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        if size <= 2 * _FAILING_READ_HALF:
+            return fh.read().decode("utf-8", errors="replace")
+        head = fh.read(_FAILING_READ_HALF)
+        fh.seek(size - _FAILING_READ_HALF)
+        tail = fh.read(_FAILING_READ_HALF)
+    return (head + b"\n" + tail).decode("utf-8", errors="replace")
+
+
+def failing_text(run: CheckRun) -> str:
+    """A clause naming the tests a red run reports as failed, for a stop reason. Empty when none are named."""
+    text = run.trimmed
+    if run.output_path:
+        try:
+            text = _read_bounded(run.output_path)
+        except OSError:
+            pass
+    names = checks.failures(text)
+    return ". Failing: %s" % "; ".join(names) if names else ""
 
 
 def _measure(ctx: Ctx, mode: str, command: str) -> CheckRun:
