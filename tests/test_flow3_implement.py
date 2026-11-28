@@ -555,7 +555,7 @@ def red(text: str) -> CheckRun:
 
 
 h.test_result("a spec file is matched by the end of its path, colour codes or not",
-              st._spec_files_in(red("\x1b[31mtests/test_a.py\x1b[0m:\n(fail) one")) == ["pkg/tests/test_a.py"])
+              st._spec_files_in(red("\x1b[31mtest_a.py\x1b[0m:\n(fail) one")) == ["pkg/tests/test_a.py"])
 h.test_result("a bare file name matches too", st._spec_files_in(red("FAIL test_b.py > two")) == ["pkg/tests/test_b.py"])
 h.test_result("a longer file name that only ends the same way does not match",
               st._spec_files_in(red("FAIL other_test_b.py and src/not_my_test_a.py")) == [])
