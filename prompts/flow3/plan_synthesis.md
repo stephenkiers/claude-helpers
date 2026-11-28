@@ -37,6 +37,12 @@ Return `status` and either `questions` or `plan`.
    matters and you cannot find it, ask it with `kind: "fact"` (a scout will check it). Use
    `kind: "detail"` for naming, placement and similar, with your best option as `recommended`.
    Merge the experts' questions: drop duplicates, drop what the principles already decide.
+   Do not settle an expert's question yourself by taking its recommended option. Unless it is a
+   detail, a fact you verified in the code (name the file in the plan), or decided by a principle,
+   ask it, with the recommendation and each option's consequence, even when the choice is
+   reversible and looks obvious. The human wants to see these decisions and confirm them. A plan
+   that would deliver less than the ticket's acceptance criteria, or move part of the ticket to a
+   non-goal or follow-up, is such a decision: ask it as `kind: "behaviour"`.
 2. Otherwise return `status: "done"` and the `plan`.
 
 ### The question format

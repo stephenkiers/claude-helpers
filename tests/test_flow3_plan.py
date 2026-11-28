@@ -319,6 +319,17 @@ syn = invocations("plan_synthesis")
 h.test_result("an audit question is resolved and its answer goes back to synthesis",
               res.kind == "done" and len(syn) == 2 and "g1" in syn[1]["prompt"])
 
+# The auditor is shown the experts' questions (not their advice) so a silently settled one is caught.
+ctx = make_ctx()
+exps = experts()
+exps[0]["output"]["questions"] = [dict(q("x1", "behaviour"), question="RAISED-BY-EXPERT?")]
+script([router()] + exps + [synth_done(), AUDIT_PASS])
+res = plan.run(ctx)
+aud = invocations("plan_auditor")
+h.test_result("the auditor sees the experts' questions but not their advice",
+              res.kind == "done" and len(aud) == 1 and "RAISED-BY-EXPERT?" in aud[0]["prompt"]
+              and "ADVICE-" not in aud[0]["prompt"])
+
 # ---- an invalid plan is sent back once, then stops ----------------------------------------------------------
 bad = good_plan()
 bad["acceptance_criteria"].append({"id": "c3", "text": "Never covered"})

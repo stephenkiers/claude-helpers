@@ -186,6 +186,18 @@ If this session restarts: read this file first, then continue from the first uni
     that names a unit carries a **Terms** line saying what the unit is and which files it covers.
     Found while writing the tests: the option matcher treated the dot in `src/other.py` as the end of
     a sentence, so an option naming a file never matched. Fixed.
+42. **The plan may not settle an expert's judgment question on its own (2026-11-27, from the human).**
+    On a second trial the synthesis took an expert's recommended option on a scope question, moved the
+    other option to a non-goal, and the auditor passed it; the human never saw the choice. The human
+    wants every question that is not straightforward shown with its options, recommendation and
+    impact until the driver has earned trust. Two changes. The synthesis prompt now says an expert's
+    question is asked unless it is a detail, a fact verified in the code, or decided by a principle,
+    and that delivering less than the ticket's acceptance criteria is a `behaviour` question. The
+    auditor is now shown the experts' questions (still not their advice) and reports any that was
+    settled silently as an `unasked_question`, which becomes a card by the existing path. Details
+    still take the recommendation (the rule in `questions.py`), and facts still go to a scout. This
+    is enforced by prompts and one extra input, not by code that compares question ids; if a trial
+    shows it leaking, the next step is a `settled` list in the synthesis output that the driver checks.
 
 ## Spend (notional USD, real model calls)
 
