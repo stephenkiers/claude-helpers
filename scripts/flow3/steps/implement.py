@@ -13,6 +13,7 @@ card is open and picks up from the saved phase when the answers arrive.
 
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from scripts.flow3 import checks, config, gitops, heal, prompts, questions, record, schemas, voice
@@ -346,8 +347,14 @@ class _Stage:
         if blocked.needs not in heal.JUDGE_ROUTABLE_NEEDS or not blocked.what:
             return []
         names = heal.failing_tests(run)
-        failing = [f for f in self.spec_files if any(f in n for n in names)]
-        needed = os.path.normpath(blocked.what)
+        # A failing name's file part is what precedes "::", a space or "(". Compare it for equality, not as a
+        # substring, so "old/tests/a.py.bak" does not count as "tests/a.py".
+        named = {os.path.normpath(re.split(r"::|\s|\(", n, maxsplit=1)[0]) for n in names}
+        failing = [f for f in self.spec_files if os.path.normpath(f) in named]
+        what = blocked.what.strip()
+        if os.path.isabs(what):
+            what = os.path.relpath(what, self.wt)
+        needed = os.path.normpath(what)
         if any(needed == os.path.normpath(f) for f in failing):
             return failing
         return []
