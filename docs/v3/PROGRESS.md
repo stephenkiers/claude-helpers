@@ -186,6 +186,25 @@ If this session restarts: read this file first, then continue from the first uni
     that names a unit carries a **Terms** line saying what the unit is and which files it covers.
     Found while writing the tests: the option matcher treated the dot in `src/other.py` as the end of
     a sentence, so an option naming a file never matched. Fixed.
+42. **The failure a fixer or a human is shown is the failed tests' own blocks.** `checks.trim` strips
+    colour codes, takes the lines around each failed-test line first, gives what room is left to
+    other failure detail, and keeps a shorter tail. The budget is 12,000 characters, up from 6,000.
+    Before this, lines that merely contained the word "error" won, and on a noisy suite every one of
+    them came from a passing test. A stop for a red check now names the failing tests.
+43. **A blocked check fixer in implement no longer lets the stage finish (amends decision 40).**
+    Decision 40 left the red "for the merge gate", and the second trial paid for a full review of
+    work whose tests did not pass. Now: when the fixer needs a file it may not edit, or a person, and
+    the red names this flow's own spec tests, the judge is called at once, with no second fixer
+    round. A `test_wrong` verdict that does not weaken the test is applied by a fixer allowed to edit
+    that file; a weakening one, or `spec_wrong`, is a risk card. In every other case the stage stops
+    with the fixer's need and reason. The fix stage is unchanged: a blocked fix leaves its finding
+    open, because the other fixes are still worth landing.
+44. **Test data must pass the project's own validation.** The test author is told to read the type,
+    schema or validator behind any payload, fixture or mock before writing it, and to ask a `fact`
+    question (answered by the scout, never shown) when it cannot find one. The judge is told that a
+    test whose setup the real code rejects is `test_wrong`, and that correcting setup so the same
+    assertions run is not a weakening. This is prompt text, so it is not enforced; decision 43 is the
+    net under it.
 
 ## Spend (notional USD, real model calls)
 

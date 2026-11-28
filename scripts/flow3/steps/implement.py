@@ -14,7 +14,7 @@ card is open and picks up from the saved phase when the answers arrive.
 import json
 from typing import Any, Dict, List, Optional, Tuple, cast
 
-from scripts.flow3 import config, gitops, heal, prompts, questions, record, schemas, voice
+from scripts.flow3 import checks, config, gitops, heal, prompts, questions, record, schemas, voice
 from scripts.flow3.context import Ctx
 from scripts.flow3.steps import work
 from scripts.flow3.types import Answer, CallResult, CallSpec, CheckRun, FlowStop, StageResult
@@ -309,10 +309,24 @@ class _Stage:
         run, blocked = work.check_unit_or_blocked(self.ctx, self._fix_files(unit, final), raise_on_fail=False,
                                                   use_fixer=final)
         if blocked is not None:
-            # A blocked fixer is not retried: the red stays for the merge gate and no judge is called.
-            self.d["check_blocked"] = True
-            return self._green(unit)
+            return self._after_blocked_fixer(unit, run, blocked)
         return self._settle(unit, final, run)
+
+    def _after_blocked_fixer(self, unit: Dict[str, Any], run: CheckRun, blocked: "heal.Blocked") -> bool:
+        """
+        A check fixer said it cannot fix the red check from where it is. It is not retried. When it
+        needs a file it may not edit (or a person) and the failures are in the flow's own spec tests,
+        which no fixer may edit, the judge decides whether the tests or the code are wrong. Otherwise
+        the stage stops with what the fixer said it needs: later stages do not run on a tree known to
+        be red.
+        """
+        uid = str(unit["id"])
+        failing = self._spec_files_in(run) if blocked.needs in ("other_file", "human") else []
+        if not failing or uid in self.d["judged"]:
+            raise blocked
+        record.journal(self.ctx.flow, "The failing tests are this flow's own spec tests (%s), which a fixer may "
+                                      "not edit, so a judge reads them next." % ", ".join(failing))
+        return self._judge(unit, run, failing)
 
     def _fix_files(self, unit: Dict[str, Any], final: bool) -> List[str]:
         """Files a check fixer may edit: the unit's, or every unit's when one check covers the stage."""
@@ -368,7 +382,11 @@ class _Stage:
                        % (uid, len(rows), "; ".join(rows)))
 
     def _spec_files_in(self, run: CheckRun) -> List[str]:
-        text = work.read_text(run.output_path, run.trimmed) + "\n" + run.trimmed
+        # The trimmed output is the failure blocks when the runner marks failed tests. A runner that
+        # lists every test file it ran would otherwise make every red look like a spec test's.
+        text = run.trimmed
+        if not any(checks.FAILED_TEST.search(ln) for ln in text.splitlines()):
+            text = checks.strip_ansi(work.read_text(run.output_path, run.trimmed)) + "\n" + run.trimmed
         return [f for f in self.spec_files if f in text]
 
     def _settle(self, unit: Dict[str, Any], final: bool, run: CheckRun) -> bool:
@@ -382,11 +400,15 @@ class _Stage:
                 d["units"][uid]["deferred_red"] = failing
                 return self._green(unit)
             run, blocked = work.check_unit_or_blocked(ctx, self._fix_files(unit, final), raise_on_fail=False)
-            if blocked is not None or run.ok:
+            if blocked is not None:
+                return self._after_blocked_fixer(unit, run, blocked)
+            if run.ok:
                 return self._green(unit)
             failing = self._spec_files_in(run)
         if not failing or uid in d["judged"]:
-            raise FlowStop("check", "the fast check still fails after unit %s (%s)" % (uid, run.command),
+            named = heal.failing_text(run)
+            raise FlowStop("check", "the fast check still fails after unit %s (%s)%s"
+                           % (uid, run.command, ". " + named if named else ""),
                            evidence=run.output_path or None,
                            tried=["re-ran the check", "two fixer rounds"] + (["a judge call"] if uid in d["judged"] else []))
         return self._judge(unit, run, failing)
@@ -426,7 +448,7 @@ class _Stage:
             _, blocked = work.guard_blocked(heal.write_call, ctx, fspec, allowed, protected,
                                             "flow3 #%d: fix code the judge found wrong" % ctx.issue)
             if blocked is not None:
-                return self._green(unit)  # a blocked fixer is not retried: the red stays for the merge gate
+                raise blocked  # not retried, and the stage does not go on with a red check
             return self._recheck(unit)
         if verdict == "test_wrong" and not weakens:
             self._edit_tests(row, approved=False)
@@ -509,12 +531,9 @@ class _Stage:
         for u in ordered_units(self.plan):
             allowed += [str(f) for f in u["files"] if str(f) not in allowed]
         # A recorded pass for an unchanged tree is reused, so this only runs when something changed.
-        if d.get("check_blocked"):
-            # A check fixer already said it cannot fix this from here: do not launch another, and leave
-            # the red check for the merge gate.
-            work.check_unit_or_blocked(ctx, allowed, raise_on_fail=False, use_fixer=False)
-        else:
-            work.check_unit_or_blocked(ctx, allowed)
+        _, blocked = work.check_unit_or_blocked(ctx, allowed)
+        if blocked is not None:
+            raise blocked
         d["phase"] = "done"
         self.save()
         sections: List[Tuple[str, str]] = []

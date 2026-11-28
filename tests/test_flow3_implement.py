@@ -498,11 +498,48 @@ b.results("fail", "fail")
 b.script([w("unit-u1", "src/a.py"),
           {"role": "fixer", "label": "fix-r1",
            "output": blocked("shell", "git merge origin/main", "The branch is behind the base and I have no shell.")}])
-res = implement.run(b.ctx)
+stop = expect_stop(lambda: implement.run(b.ctx), "environment")
 models = [x["model"] for x in b.launches() if x["role"] == "fixer"]
-h.test_result("a check fixer that says it cannot fix from here: no stop, no round 2, no judge, no stronger model",
-              res.kind == "done" and labels(b) == ["unit-u1", "fix-r1"] and len(models) == 1,
+h.test_result("a check fixer that needs a command run stops the stage: no round 2, no judge, no stronger model",
+              stop is not None and "git merge origin/main" in stop.reason
+              and labels(b) == ["unit-u1", "fix-r1"] and len(models) == 1, "%s %s" % (labels(b), stop))
+h.test_result("the stage is not recorded done on a red check, so no later stage runs on it",
+              b.flow.data("implement").get("phase") != "done", str(b.flow.data("implement").get("phase")))
+
+SPEC_BLOCKED = blocked("other_file", "tests/test_a.py", "The test sends an id the schema rejects.")
+b = mkbox("i-blocked-spec", mkplan(two=False))
+b.results("fail", "fail", "pass")
+FIXED = "def test_one():\n    assert 1 + 1 == 2\n"
+b.script([w("unit-u1", "src/a.py"), {"role": "fixer", "label": "fix-r1", "output": SPEC_BLOCKED},
+          {"role": "judge", "output": {"verdict": "test_wrong", "reason": "the fixture is not a valid id",
+                                       "edit_weakens": False, "test_edit": "use a real id"}},
+          w("fix-test-u1", "tests/test_a.py", FIXED, role="fixer")])
+res = implement.run(b.ctx)
+h.test_result("a fixer blocked on a red spec test sends it to the judge, and the test is corrected",
+              res.kind == "done" and labels(b) == ["unit-u1", "fix-r1", "judge-u1", "fix-test-u1"]
+              and b.read("tests/test_a.py") == FIXED and questions.open_batch(b.flow) is None,
               "%s %s" % (labels(b), res))
+h.test_result("the journal says why a judge was called", "a judge reads them next" in journal(b), journal(b)[-300:])
+
+b = mkbox("i-blocked-spec-weak", mkplan(two=False))
+b.results("fail", "fail")
+b.script([w("unit-u1", "src/a.py"), {"role": "fixer", "label": "fix-r1", "output": SPEC_BLOCKED},
+          {"role": "judge", "output": {"verdict": "test_wrong", "reason": "too strict",
+                                       "edit_weakens": True, "test_edit": "drop the assertion"}}])
+res = implement.run(b.ctx)
+h.test_result("a weakening verdict after a blocked fixer still goes to the human as a risk card",
+              res.kind == "needs_human" and card_of(b).get("kind") == "risk", str(res))
+
+b = mkbox("i-blocked-notspec", mkplan(two=False))
+b.flow.set("protected", ["tests/test_other.py"])
+b.flow.set_data("spec_tests", {"files": ["tests/test_other.py"], "commit": None, "skipped": ""})
+b.results("fail", "fail")
+b.script([w("unit-u1", "src/a.py"),
+          {"role": "fixer", "label": "fix-r1", "output": blocked("other_file", "src/zzz.py", "The bug is elsewhere.")}])
+stop = expect_stop(lambda: implement.run(b.ctx), "implement")
+h.test_result("a blocked fixer on a red that is not this flow's spec tests stops the stage with no judge",
+              stop is not None and "src/zzz.py" in stop.reason and labels(b) == ["unit-u1", "fix-r1"],
+              "%s %s" % (labels(b), stop))
 
 # -- a unit's bookkeeping question never becomes a card (#570) -----------------------------------
 OWN_Q = {"id": "own1", "question": "Which unit should own the edit to src/b.py?",

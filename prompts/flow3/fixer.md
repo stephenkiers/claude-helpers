@@ -33,5 +33,7 @@ Use `blocked` when you cannot fix this from where you are and no amount of furth
 that: the fix needs a shell command run (you have no shell), a change in a file outside your list, a
 change to the environment, or a decision only a person can make. Fill in `blocked`: `reason` is one
 plain sentence saying why, `needs` is one of `shell`, `other_file`, `environment` or `human`, and `what`
-names the thing (the exact command, the file path, the tool or setting). Do not use `partial` for this:
+names the thing (the exact command, the file path, the tool or setting). If a failing test is on the
+protected list and you believe the test itself is wrong, that is `other_file` with the test's path in
+`what`; say in `reason` what in the test is wrong. Do not use `partial` for this:
 `partial` means more room would let you finish.

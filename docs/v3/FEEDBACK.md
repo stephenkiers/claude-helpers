@@ -224,18 +224,21 @@ Still open:
   noise from passing tests that contain the word `Error`. The four failing test names and their
   Expected/Received lines were cut. The fixer correctly said it could not see what failed. Trim
   should strip ANSI codes and prefer a test runner's failure blocks (`(fail)`, `Expected:`,
-  `Received:`, `error:` at line start) over lines that merely mention an error.
+  `Received:`, `error:` at line start) over lines that merely mention an error. **Done (PROGRESS decision 42).**
 - **A spec test that fails on arrival has no owner.** Spec tests are protected, so the implementer,
   the check fixer and the review fixer may not edit them. When the only failing tests are the ones
   the flow just wrote, the driver should either send them back to the test author with the failure
-  or stop with a card that says so. Today it stops as a bare `check`.
+  or stop with a card that says so. Today it stops as a bare `check`. **Done (PROGRESS decision 43):** the judge reads them, and a
+  wrong test is corrected or carded.
 - **Review and fix ran on a tree known to be red.** After the blocked fixer, implement finished as
   done and the red was left "for the merge gate" (decision 40). Twenty review calls then ran on work
-  whose tests did not pass. A blocked check fixer at the end of implement should stop there.
+  whose tests did not pass. A blocked check fixer at the end of implement should stop there. **Done (PROGRESS
+  decision 43).**
 - **A test author's stated assumption was not checked.** "I assumed the payload has this field" is a
   checkable fact; a scout reading the schema would have caught the UUID rule before any test was
-  written.
-- The stop reason says only "the fast check still fails". It should name the failing tests.
+  written. **Done as prompt text only (PROGRESS decision 44).**
+- The stop reason says only "the fast check still fails". It should name the failing tests. **Done (PROGRESS
+  decision 42).**
 - **The plan settled a judgment question without showing it (from the human).** Plan experts raised
   three questions. Two were facts and the plan checked them in the code, which is right. The third
   was a scope choice: the ticket's first acceptance test is unreachable as written, so either test

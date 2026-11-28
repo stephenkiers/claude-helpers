@@ -6,7 +6,11 @@ code:
 
 - `code_wrong`: the test states the behaviour correctly and the code does not do it.
 - `test_wrong`: the code does what the spec says, and the test asserts something the spec does not
-  say (or asserts it incorrectly). Say in `test_edit`, in words, what to change in the test. Set
+  say (or asserts it incorrectly), or the test's own setup is wrong so the behaviour is never reached:
+  a payload, fixture or mock that the project's real types, schemas or validators reject. Check the
+  setup against the code that consumes it before blaming the code. Say in `test_edit`, in words, what
+  to change in the test, exactly enough for someone else to make the edit. Correcting setup so the
+  same assertions run is not a weakening. Set
   `edit_weakens` to true if that change removes or loosens an assertion, so the test would prove less
   than it did; false if it only corrects or tightens.
 - `spec_wrong`: the spec itself contradicts the ticket or cannot be satisfied as written.

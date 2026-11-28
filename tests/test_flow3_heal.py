@@ -463,6 +463,14 @@ fr = CheckRun(ok=False, command="c", mode="fast", exit_code=1, timed_out=False, 
               output_path="/nonexistent", trimmed="FAILED tests/x.py::t1\nFAIL other\n")
 okr = CheckRun(ok=True, command="c", mode="fast", exit_code=0, timed_out=False, duration_secs=0.1, tree="t",
                output_path="", trimmed="")
+named = CheckRun(**{**fr.__dict__, "trimmed": "\x1b[31m(fail)\x1b[0m suite > T1: emits once [40.01ms]\n"
+                                              "FAILED tests/x.py::t2\n" + "".join("FAIL t%d\n" % i for i in range(5))})
+ft = heal.failing_text(named)
+h.test_result("failing_text names the failed tests without colour codes or timings, and counts the rest",
+              ft.startswith("Failing: ") and "suite > T1: emits once" in ft and "40.01ms" not in ft
+              and "\x1b" not in ft and "more." in ft, ft)
+h.test_result("failing_text is empty for a green run or a red that names no test",
+              heal.failing_text(okr) == "" and heal.failing_text(CheckRun(**{**fr.__dict__, "trimmed": "boom\n"})) == "")
 h.test_result("classify_check: flaky, work, timeout",
               heal.classify_check(fr, okr).cls == "check-flaky"
               and heal.classify_check(fr, None).cls == "check-work"

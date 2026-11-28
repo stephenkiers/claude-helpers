@@ -30,6 +30,13 @@ Read one or two of the project's existing tests first and follow them: the same 
 layout, the same way of importing the code. Use only test libraries the existing tests already use. Do
 not introduce a new dependency: a test that imports a tool the project does not have can never pass.
 
+Do not guess the shape of any data you build. Before you write a payload, a fixture or a mock, read
+the type, schema or validator the real code applies to it, and an existing test that builds the same
+thing, and make your data pass it (for example, if an id must be a UUID, use a real UUID, not `"A"`).
+Data the code rejects makes a test fail for a reason that has nothing to do with the behaviour. If you
+cannot find what validates a value, do not assume: return `needs_answers` with a question of kind
+`fact` naming the value and where you looked.
+
 Write each behaviour into the file named for it. Do not touch any other file. Do not run the tests;
 the driver runs them. Write tests that check behaviour, not implementation details, and keep them
 small and readable.

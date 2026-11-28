@@ -103,6 +103,19 @@ h.test_result("trim drops boring middle lines", "line 300 ok" not in trimmed)
 h.test_result("trim leaves short output alone", checks.trim("short\n") == "short\n")
 h.test_result("trim caps very long lines", len(checks.trim("x" * 20000 + "\nFAIL\n", 1000)) < 1500)
 
+# trim on a test runner's output: colour codes go, and the failed test's block beats console noise
+noise = []
+for i in range(400):
+    noise += ["\x1b[32m(pass)\x1b[0m suite > case %d" % i, "error: a mock rejected the request", "    at mock.ts:%d" % i]
+block = ["  expect(calls).toHaveLength(1)", "error: expect(received).toHaveLength(expected)", "Expected length: 1",
+         "Received length: 0", "\x1b[31m\u2717\x1b[0m suite > T1: emits once [4.02ms]"]
+out = checks.trim("\n".join(noise[:600] + block + noise[600:]) + "\n", 3000)
+h.test_result("trim removes colour codes", "\x1b" not in out)
+h.test_result("trim keeps the failed test's own block when passing tests print errors too",
+              "T1: emits once" in out and "Expected length: 1" in out and "Received length: 0" in out, out[:300])
+h.test_result("trim says the kept lines are failure blocks", "lines from failure blocks" in out.splitlines()[0], out.splitlines()[0])
+h.test_result("strip_ansi leaves plain text alone", checks.strip_ansi("a \x1b[1;31mb\x1b[0m c") == "a b c")
+
 # record_pass / passed_before
 h.test_result("nothing recorded yet", not checks.passed_before("r", "tree1", "just check"))
 checks.record_pass("r", "tree1", "just check")

@@ -32,10 +32,13 @@ _MISSING_DEP = re.compile(
     re.IGNORECASE)
 _FAILED_TEST_LINES = (
     re.compile(r"^\s*(?:FAILED|FAIL|ERROR)[: ]+(\S.*?)\s*$"),
-    re.compile(r"^\s*(?:✗|✘|×)\s*(\S.*?)\s*$"),
+    re.compile(r"^\s*(?:✗|✘|×|\(fail\))\s*(\S.*?)\s*$"),
+    re.compile(r"^test (\S.*?) \.\.\. FAILED\s*$"),
     re.compile(r"^\s*not ok \d+\s*-?\s*(\S.*?)\s*$"),
 )
 _MAX_NAMES = 10
+_OUTPUT_READ_CAP = 16 * 1024 * 1024
+_TIMING = re.compile(r"\s*[\[(]\d+(?:\.\d+)?\s*m?s[\])]\s*$")
 _BLOCKED_TEXT_CAP = 300
 
 
@@ -114,9 +117,11 @@ def classify_call(result: CallResult, spec: CallSpec) -> Optional[Failure]:
 def _read_output(run: CheckRun) -> str:
     try:
         text = Path(run.output_path).read_text(encoding="utf-8", errors="replace")
-        return text[-200000:]
+        # Colour codes hide line starts from the patterns here, and a big suite prints its failures
+        # far above the tail, so the whole log is read (up to a size no real check output reaches).
+        return checks.strip_ansi(text[-_OUTPUT_READ_CAP:])
     except (OSError, ValueError):
-        return run.trimmed
+        return checks.strip_ansi(run.trimmed)
 
 
 def _failing_tests(output: str) -> List[str]:
@@ -125,13 +130,24 @@ def _failing_tests(output: str) -> List[str]:
         for pattern in _FAILED_TEST_LINES:
             match = pattern.match(line)
             if match:
-                name = match.group(1)[:200]
+                name = _TIMING.sub("", match.group(1))[:200]
                 if name not in names:
                     names.append(name)
                 break
         if len(names) >= _MAX_NAMES:
             break
     return names
+
+
+def failing_text(run: CheckRun, limit: int = 4) -> str:
+    """A sentence naming the tests a red check failed, or "" when the output names none."""
+    if run.ok:
+        return ""
+    names = _failing_tests(_read_output(run))
+    if not names:
+        return ""
+    more = " and %d more" % (len(names) - limit) if len(names) > limit else ""
+    return "Failing: %s%s." % ("; ".join(n if len(n) <= 100 else n[:100] + "…" for n in names[:limit]), more)
 
 
 def classify_check(first: CheckRun, rerun: Optional[CheckRun]) -> Failure:
@@ -541,7 +557,9 @@ def _passed(ctx: Ctx, run: CheckRun) -> CheckRun:
 
 
 def _stop_check(ctx: Ctx, cls: str, run: CheckRun, reason: str, tried: List[str]) -> FlowStop:
-    return _stop(ctx, cls, "%s (%s)" % (reason, run.command), run.output_path, tried)
+    named = failing_text(run)
+    return _stop(ctx, cls, "%s (%s)%s" % (reason, run.command, ". " + named if named else ""),
+                 run.output_path, tried)
 
 
 def _measure(ctx: Ctx, mode: str, command: str) -> CheckRun:

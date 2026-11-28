@@ -100,8 +100,9 @@ def check_unit_or_blocked(ctx: Ctx, fixer_allowed: Sequence[str], raise_on_fail:
                           use_fixer: bool = True) -> Tuple[CheckRun, Optional["heal.Blocked"]]:
     """
     check_unit with a blocked check fixer handled in one place. A fixer that reports it cannot finish
-    from here is not retried: the red check is returned as it stands (never raised) for the merge gate,
-    together with the Blocked that ended the fixing, so a caller can skip further work on it.
+    from here is not retried: the red check is returned as it stands (never raised), together with the
+    Blocked that ended the fixing. The caller decides what the red means: implement sends a red spec
+    test to the judge and otherwise raises the Blocked; fix leaves the finding open.
     """
     run, blocked = guard_blocked(check_unit, ctx, fixer_allowed, raise_on_fail=raise_on_fail,
                                  use_fixer=use_fixer)

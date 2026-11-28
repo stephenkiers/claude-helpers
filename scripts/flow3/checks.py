@@ -21,6 +21,20 @@ from scripts.workflow.fsutil import atomic_write_text, read_json_object
 
 _INTERESTING = re.compile(r"FAIL|Error|error:|Traceback")
 _MAX_LINE = 300
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\\\)")
+# A line that marks one failed test (bun, jest, vitest, pytest, unittest, cargo, TAP).
+FAILED_TEST = re.compile(
+    r"^\s*(?:✗|✘|×|\(fail\)|FAILED\b|FAIL\b|ERROR:|not ok\b)|\.\.\. FAILED\s*$")
+# A line that belongs to a failure's detail: an assertion, a compiler or lint error, a traceback.
+_FAILURE_DETAIL = re.compile(
+    r"^\s*(?:error(?:\[\w+\])?:|Expected:|Received:|AssertionError|Traceback \(most recent|E  \s|\d+:\d+\s+error\b)"
+    r"|\berror TS\d+|panicked at")
+_BEFORE, _AFTER = 14, 2
+
+
+def strip_ansi(text: str) -> str:
+    """Text without terminal colour and cursor codes, which hide line starts from every pattern here."""
+    return _ANSI.sub("", text)
 
 
 def run(command: str, cwd: Path, mode: str, timeout_secs: int, out_path: Path,
@@ -60,40 +74,81 @@ def run(command: str, cwd: Path, mode: str, timeout_secs: int, out_path: Path,
                     trimmed=trim(output), reused=False)
 
 
-def trim(output: str, max_chars: int = 6000) -> str:
+def _windows(lines: List[str], pattern: "re.Pattern[str]", upto: int, taken: List[bool], budget: int) -> int:
+    """Mark each matching line below `upto`, with the lines around it, in `taken`. Returns matches left out."""
+    used = sum(len(lines[i]) + 1 for i in range(upto) if taken[i])
+    left_out = 0
+    for i in range(upto):
+        if not pattern.search(lines[i]):
+            continue
+        want = [j for j in range(max(0, i - _BEFORE), min(upto, i + _AFTER + 1)) if not taken[j]]
+        cost = sum(len(lines[j]) + 1 for j in want)
+        if used + cost > budget:
+            left_out += 1
+            continue
+        for j in want:
+            taken[j] = True
+        used += cost
+    return left_out
+
+
+def trim(output: str, max_chars: int = 12000) -> str:
     """
-    The part of an output worth showing a fixer or a human: the tail, plus earlier lines that look
-    like failures (FAIL, Error, error:, Traceback), within about max_chars, with a note of what was cut.
+    The part of an output worth showing a fixer or a human, within about max_chars, with a note of
+    what was cut. Colour codes are removed first. When the output has failure blocks (a failed-test
+    line, or failing that an assertion or a compiler error), those and the lines around them come
+    first and the tail gets a quarter of the room. Otherwise the tail gets most of it, plus earlier lines that mention
+    an error.
     """
+    output = strip_ansi(output)
     if len(output) <= max_chars:
         return output
     lines = [ln if len(ln) <= _MAX_LINE else ln[:_MAX_LINE] + "..." for ln in output.splitlines()]
-    tail_budget = int(max_chars * 0.6)
-    tail: List[str] = []
+    focused = any(FAILED_TEST.search(ln) or _FAILURE_DETAIL.search(ln) for ln in lines)
+    tail_budget = int(max_chars * (0.25 if focused else 0.6))
     used = 0
     start = len(lines)
     while start > 0 and used + len(lines[start - 1]) + 1 <= tail_budget:
         start -= 1
         used += len(lines[start]) + 1
-        tail.insert(0, lines[start])
+    tail = lines[start:]
     head_budget = max_chars - used - 200
-    picked: List[str] = []
-    used_head = 0
-    for ln in lines[:start]:
-        if _INTERESTING.search(ln):
-            if used_head + len(ln) + 1 > head_budget:
-                break
-            picked.append(ln)
-            used_head += len(ln) + 1
-    kept = len(picked) + len(tail)
-    note = "[output trimmed: kept %d of %d lines (%d matching lines plus the last %d)]" % (
-        kept, len(lines), len(picked), len(tail))
+    taken = [False] * start
+    left_out = 0
+    if focused:
+        # The blocks around failed-test lines are taken first: passing tests print errors of their own
+        # (a rejected mock, a logged warning) that look like failure detail and would crowd them out.
+        # Whatever room is left goes to other failure detail, since some runners print the detail far
+        # from the line that names the failed test.
+        left_out = _windows(lines, FAILED_TEST, start, taken, head_budget)
+        more = _windows(lines, _FAILURE_DETAIL, start, taken, head_budget)
+        if not any(FAILED_TEST.search(ln) for ln in lines):
+            left_out += more
+    else:
+        used_head = 0
+        for i in range(start):
+            if _INTERESTING.search(lines[i]):
+                if used_head + len(lines[i]) + 1 > head_budget:
+                    break
+                taken[i] = True
+                used_head += len(lines[i]) + 1
+    picked = sum(1 for t in taken if t)
+    kept = picked + len(tail)
+    note = "[output trimmed: kept %d of %d lines (%d %s plus the last %d)%s]" % (
+        kept, len(lines), picked, "lines from failure blocks" if focused else "matching lines", len(tail),
+        "; %d more failure lines did not fit, the full log has them" % left_out if left_out else "")
     parts = [note]
-    if picked:
-        parts += picked
+    prev = -1
+    for i in range(start):
+        if not taken[i]:
+            continue
+        if prev >= 0 and i != prev + 1:
+            parts.append("[...]")
+        parts.append(lines[i])
+        prev = i
     parts.append("[... %d lines cut ...]" % (len(lines) - kept))
     parts += tail
-    return "\n".join(parts)
+    return "\n".join(parts) + "\n"
 
 
 def _record_path(repo: str) -> Path:
