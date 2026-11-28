@@ -227,6 +227,23 @@ def _advice_text(d: Dict[str, Any]) -> str:
     return "\n\n".join(blocks)
 
 
+def _raised_text(d: Dict[str, Any]) -> str:
+    """
+    The questions the experts raised, without their advice, for the auditor. The auditor checks that
+    each one was asked, checked as a fact, or decided by a principle, and not settled silently.
+    """
+    lines: List[str] = []
+    for name in d["chosen"]:
+        for q in (d["advice"].get(name) or {}).get("questions") or []:
+            if not isinstance(q, dict) or not q.get("question"):
+                continue
+            opts = "; ".join("%s (%s)" % (o.get("label") or "?", o.get("consequence") or "?") for o in q.get("options") or []
+                             if isinstance(o, dict))
+            lines.append("- %s (kind %s): %s%s" % (name, q.get("kind") or "unstated", q.get("question"),
+                                                    " Options: " + opts if opts else ""))
+    return "\n".join(lines) if lines else "(the experts raised no questions)"
+
+
 def _take(ctx: Ctx, d: Dict[str, Any], result: CallResult, what: str) -> None:
     """Keep a synthesis output and its session."""
     d["syn"] = _output(result, what)
@@ -314,7 +331,7 @@ def _repair_prompt(notes: str, wanted: List[Dict[str, Any]]) -> str:
 def _run_audit(ctx: Ctx, d: Dict[str, Any], inp: Dict[str, str]) -> None:
     prompt = prompts.render(
         "plan_auditor", title=inp["title"], body=inp["body"], plan=_dumps(d["syn"]["plan"]),
-        answers=_qa_text(d), directions=inp["directions"], principles=inp["principles"])
+        answers=_qa_text(d), raised=_raised_text(d), directions=inp["directions"], principles=inp["principles"])
     result = _call(ctx, _spec(ctx, "plan_auditor", prompt, "audit"))
     d["audit"] = _output(result, "plan audit")
     d["audit_session"] = result.session_id
@@ -372,6 +389,18 @@ def _render_plan(plan: Dict[str, Any]) -> List[Tuple[str, str]]:
     if plan.get("existing_test_edits"):
         sections.append(("Existing tests expected to change", "\n".join(
             "- `%s`: %s" % (e.get("file"), e.get("why")) for e in plan["existing_test_edits"])))
+    settled = plan.get("settled")
+    if settled and isinstance(settled, list):
+        settled_lines = []
+        for item in settled:
+            if isinstance(item, dict) and item.get("question"):
+                q = item.get("question") or ""
+                chosen = item.get("chosen") or "?"
+                basis = item.get("basis") or "?"
+                evidence = item.get("evidence") or ""
+                settled_lines.append("- %s Chose %s (%s: %s)" % (q, chosen, basis, evidence))
+        if settled_lines:
+            sections.append(("Decisions made for you", "\n".join(settled_lines)))
     return sections
 
 
@@ -467,7 +496,10 @@ def run(ctx: Ctx) -> StageResult:
                     if got is None:
                         return StageResult("needs_human")
                     answers_now = got
+                had_unasked_questions = any("Decision nobody made" in g for g in gaps)
                 _revise(ctx, d, gaps, answers_now)
+                if had_unasked_questions and d["syn"].get("status") != "needs_answers":
+                    return StageResult("needs_human")
                 continue
 
         errors = validate_plan(syn["plan"])

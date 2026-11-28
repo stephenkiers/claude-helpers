@@ -22,3 +22,7 @@ and form no cycle; every acceptance criterion is satisfied by at least one unit 
 `acceptance` ids exist; `test_spec` is not empty unless `untestable_reason` says why. Return
 `status: "needs_answers"` with complete questions only if a point cannot be fixed without a human
 decision.
+
+**Important:** When a gap is labelled "Decision nobody made", it must be answered with
+`status: "needs_answers"` and a complete question for the human to decide — never silently resolve it
+as `done`.

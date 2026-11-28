@@ -37,6 +37,12 @@ Return `status` and either `questions` or `plan`.
    matters and you cannot find it, ask it with `kind: "fact"` (a scout will check it). Use
    `kind: "detail"` for naming, placement and similar, with your best option as `recommended`.
    Merge the experts' questions: drop duplicates, drop what the principles already decide.
+   Do not settle an expert's question yourself by taking its recommended option. Unless it is a
+   detail, a fact you verified in the code (name the file in the plan), or decided by a principle,
+   ask it, with the recommendation and each option's consequence, even when the choice is
+   reversible and looks obvious. The human wants to see these decisions and confirm them. A plan
+   that would deliver less than the ticket's acceptance criteria, or move part of the ticket to a
+   non-goal or follow-up, is such a decision: ask it as `kind: "behaviour"`.
 2. Otherwise return `status: "done"` and the `plan`.
 
 ### The question format
@@ -73,6 +79,10 @@ alone. Each question has:
   unit's `files` (a separate author writes the tests first; units never write them).
 - `existing_test_edits`: existing tests whose current assertions the plan expects to change, and why.
   Adding new tests is not an existing-test edit.
+- `settled` (optional): expert questions the synthesis settled without asking the human, for transparency.
+  Each entry has `question` (the question text), `chosen` (the option label taken), `basis` (one of
+  `detail`, `fact`, `principle`) and `evidence` (file or principle name). This is a report for the
+  human to skim; it never replaces asking a non-exempt question.
 
 Every acceptance criterion must be satisfied by at least one unit. Smallest change that meets the
 ticket; anything else is a non-goal.

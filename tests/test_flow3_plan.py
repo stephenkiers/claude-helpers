@@ -319,6 +319,17 @@ syn = invocations("plan_synthesis")
 h.test_result("an audit question is resolved and its answer goes back to synthesis",
               res.kind == "done" and len(syn) == 2 and "g1" in syn[1]["prompt"])
 
+# The auditor is shown the experts' questions (not their advice) so a silently settled one is caught.
+ctx = make_ctx()
+exps = experts()
+exps[0]["output"]["questions"] = [dict(q("x1", "behaviour"), question="RAISED-BY-EXPERT?")]
+script([router()] + exps + [synth_done(), AUDIT_PASS])
+res = plan.run(ctx)
+aud = invocations("plan_auditor")
+h.test_result("the auditor sees the experts' questions but not their advice",
+              res.kind == "done" and len(aud) == 1 and "RAISED-BY-EXPERT?" in aud[0]["prompt"]
+              and "ADVICE-" not in aud[0]["prompt"])
+
 # ---- an invalid plan is sent back once, then stops ----------------------------------------------------------
 bad = good_plan()
 bad["acceptance_criteria"].append({"id": "c3", "text": "Never covered"})
@@ -346,5 +357,108 @@ ctx = make_ctx()
 script([router()] + experts() + [{"role": "plan_synthesis", "output": {"status": "done"}}])
 exc = stop_of(ctx)
 h.test_result("done with no plan is a runner stop", exc is not None and exc.cls == "runner", repr(exc))
+
+# ---- unasked_question gaps without cards: synthesis done vs needs_answers -------------------------
+# When auditor returns unasked_question gap with no cards, and synthesis returns done (not needs_answers),
+# the plan stage returns needs_human and the plan is not accepted.
+ctx = make_ctx()
+script([router()] + experts() + [
+    synth_done(),
+    {"role": "plan_auditor", "output": {"verdict": "gaps", "gaps": [{"text": "Need to decide between X and Y", "kind": "unasked_question"}]}},
+    synth_done(), AUDIT_PASS])
+res = plan.run(ctx)
+h.test_result("unasked_question gap without cards, synthesis done: returns needs_human",
+              res.kind == "needs_human")
+plan_data = ctx.flow.data("plan")
+h.test_result("the plan is not accepted (phase is not done)",
+              plan_data.get("phase") != "done")
+
+# When auditor returns unasked_question gap with no cards, but synthesis returns needs_answers with question,
+# the normal question path works (doesn't crash, processes the questions).
+ctx = make_ctx()
+q_unasked = q("uq1", "architecture", rec="a")
+script([router()] + experts() + [
+    synth_done(),
+    {"role": "plan_auditor", "output": {"verdict": "gaps", "gaps": [{"text": "Need to decide between X and Y", "kind": "unasked_question"}]}},
+    synth_asks(q_unasked)])
+res = plan.run(ctx)
+# When synthesis returns needs_answers with questions, the step should return needs_human (waiting for answers)
+# not needs_human from the unasked_question path (which only happens if status != needs_answers).
+h.test_result("unasked_question gap without cards, synthesis needs_answers with question: parks for question",
+              res.kind == "needs_human")
+batch = questions.open_batch(ctx.flow)
+h.test_result("the question is in an open batch",
+              batch is not None and len(batch.get("cards") or []) > 0 and batch["cards"][0].get("id") == "uq1")
+
+# ---- settled rendering: "Decisions made for you" section -----------------------------------------------
+# A plan with settled renders the section correctly.
+plan_with_settled = good_plan()
+plan_with_settled["settled"] = [
+    {"question": "Should we use X or Y?", "chosen": "X", "basis": "simplicity", "evidence": "RFC-123"},
+    {"question": "Should we add Z?", "chosen": "yes", "basis": "principle", "evidence": "P-reuse"}
+]
+sections = plan._render_plan(plan_with_settled)
+section_dict = {name: text for name, text in sections}
+h.test_result("settled items render as 'Decisions made for you' section",
+              "Decisions made for you" in section_dict and
+              "Should we use X or Y?" in section_dict.get("Decisions made for you", "") and
+              "Chose X" in section_dict.get("Decisions made for you", ""))
+
+# Malformed settled (not a list) renders nothing.
+plan_malformed_settled_str = good_plan()
+plan_malformed_settled_str["settled"] = "not a list"
+sections_str = plan._render_plan(plan_malformed_settled_str)
+section_dict_str = {name: text for name, text in sections_str}
+h.test_result("malformed settled (string) does not crash and renders nothing",
+              "Decisions made for you" not in section_dict_str)
+
+# Malformed settled (list of non-dicts) renders nothing.
+plan_malformed_settled_list = good_plan()
+plan_malformed_settled_list["settled"] = ["not a dict", 123, None]
+sections_list = plan._render_plan(plan_malformed_settled_list)
+section_dict_list = {name: text for name, text in sections_list}
+h.test_result("malformed settled (non-dict items) does not crash and renders nothing",
+              "Decisions made for you" not in section_dict_list)
+
+# Malformed settled (dict without question) is skipped.
+plan_incomplete_settled = good_plan()
+plan_incomplete_settled["settled"] = [
+    {"chosen": "X", "basis": "simplicity"},  # missing question
+    {"question": "Valid one", "chosen": "Y", "basis": "test", "evidence": ""}
+]
+sections_incomplete = plan._render_plan(plan_incomplete_settled)
+section_dict_incomplete = {name: text for name, text in sections_incomplete}
+h.test_result("settled items without question are skipped",
+              "Decisions made for you" in section_dict_incomplete and
+              "Valid one" in section_dict_incomplete.get("Decisions made for you", "") and
+              "X" not in section_dict_incomplete.get("Decisions made for you", ""))
+
+# ---- _raised_text: render "?" for missing label or consequence ----------
+# Options with missing label or consequence render as "?".
+test_advice = {
+    "rachel": {
+        "advice": ["advice1"],
+        "questions": [
+            q("opt1", "behaviour", rec="a"),  # normal question with label and consequence
+            {
+                "id": "opt2", "question": "About features?", "kind": "architecture",
+                "options": [
+                    {"id": "a", "consequence": "Consequence A"},  # missing label
+                    {"id": "b", "label": "Option B"}  # missing consequence
+                ],
+                "recommended": "a"
+            }
+        ]
+    }
+}
+d_test = {
+    "chosen": ["rachel"],
+    "advice": test_advice
+}
+raised = plan._raised_text(d_test)
+h.test_result("_raised_text renders '?' for missing label",
+              "? (Consequence A)" in raised)
+h.test_result("_raised_text renders '?' for missing consequence",
+              "Option B (?)" in raised)
 
 h.summarize_and_exit()
